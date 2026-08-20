@@ -808,9 +808,17 @@ pub const Scanner = struct {
         }
         _ = self.scanNumberFragment(gpa, isDecimalDigit, self.pos > start, &saw_separator);
 
-        // Optional decimal fraction.
+        // Optional decimal fraction. TypeScript keeps the dot separate for a
+        // legacy-octal literal followed by a property name (`000.toString`).
+        // A digit after the dot still forms the invalid fraction (`01.0`),
+        // which the parser diagnoses as TS1121 + TS1005.
         var saw_decimal_point = self.source[start] == '.';
-        if (!self.isAtEnd() and self.source[self.pos] == '.') {
+        const legacy_octal_property = self.pos > start + 1 and
+            self.source[start] == '0' and
+            isLegacyOctalDigits(self.source[start..self.pos]) and
+            self.pos + 1 < self.source.len and
+            isIdentStart(self.source[self.pos + 1]);
+        if (!self.isAtEnd() and self.source[self.pos] == '.' and !legacy_octal_property) {
             saw_decimal_point = true;
             self.pos += 1;
             _ = self.scanNumberFragment(gpa, isDecimalDigit, false, &saw_separator);
@@ -898,6 +906,13 @@ pub const Scanner = struct {
         while (!self.isAtEnd() and isDecimalDigit(self.source[self.pos])) {
             self.pos += 1;
         }
+    }
+
+    fn isLegacyOctalDigits(raw: []const u8) bool {
+        for (raw) |ch| {
+            if (!isOctalDigit(ch)) return false;
+        }
+        return true;
     }
 
     const NumericIdentifierMode = enum {
@@ -1918,6 +1933,18 @@ test "Scanner: numeric literals" {
     try t.expectEqual(TokenKind.bigint_literal, toks.items[10].kind);
     try t.expectEqualStrings("1n", toks.items[10].bytes(s.source));
     try t.expectEqual(TokenKind.bigint_literal, toks.items[11].kind);
+}
+
+test "Scanner: legacy octal property access keeps the member dot" {
+    var s = Scanner.init(t.allocator, "000.toString() 01.0");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqualStrings("000", toks.items[0].bytes(s.source));
+    try t.expectEqual(TokenKind.dot, toks.items[1].kind);
+    try t.expectEqualStrings("toString", toks.items[2].bytes(s.source));
+    try t.expectEqualStrings("01.0", toks.items[5].bytes(s.source));
 }
 
 test "Scanner: invalid bigint suffix on fractional and scientific numeric literals" {

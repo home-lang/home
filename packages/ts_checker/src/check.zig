@@ -100720,6 +100720,9 @@ pub const Checker = struct {
                         substituted_t;
                     break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                 }
+                if (try self.lookupFreshLogicalObjectLiteralReadMember(node, m.object, obj_t, m.name)) |t| {
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                }
                 if (self.hir.kindOf(m.object) == .identifier) {
                     const root_name = hir_mod.identifierOf(self.hir, m.object).name;
                     if (try self.programScriptObjectExpandoStaticType(root_name, m.name, node)) |static_t| {
@@ -101295,13 +101298,39 @@ pub const Checker = struct {
                     }
                     break :blk try self.optionalChainResult(access.value_type, element_is_optional_chain);
                 }
-                if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_union) {
+                const obj_or_index_is_union = obj_t < self.interner.pool.typeCount() and
+                    (self.interner.pool.flagsOf(obj_t).is_union or
+                        (idx_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(idx_t).is_union));
+                if (obj_or_index_is_union) {
                     if (try self.resolveObjectIndexedAccessType(obj_t, union_tuple_idx_t)) |resolved| {
                         break :blk try self.optionalChainResult(resolved, element_is_optional_chain);
                     }
                     if (!self.strict_flags.no_implicit_any) {
                         break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
                     }
+                }
+                if (!self.checking_element_write_target and self.hir.kindOf(e.index) == .literal_string) {
+                    const lit = hir_mod.literalStringOf(self.hir, e.index);
+                    if (try self.lookupFreshLogicalObjectLiteralReadMember(node, e.object, obj_t, lit.value)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, element_is_optional_chain);
+                    }
+                }
+                if (self.checking_element_write_target and
+                    self.logicalReceiverHasFreshEmptyObjectLiteral(e.object) and
+                    self.hir.kindOf(e.index) == .literal_string)
+                {
+                    const lit = hir_mod.literalStringOf(self.hir, e.index);
+                    const index_name = try self.allocStringLiteralDisplay(lit.value);
+                    try self.reportElementImplicitAnyMissingProperty(
+                        node,
+                        index_name,
+                        "{}",
+                        self.string_interner.get(lit.value),
+                    );
+                    if (self.inlineObjectElementAccessDiagnosticPos(node)) |pos| {
+                        self.diagnostics.items[self.diagnostics.items.len - 1].pos = pos;
+                    }
+                    break :blk types.Primitive.any;
                 }
                 if (self.checking_element_write_target) {
                     if (!self.nodeIsThisReference(e.object)) {
@@ -101601,6 +101630,9 @@ pub const Checker = struct {
                             }
                         }
                         if (self.interner.objectMember(obj_t, lit.value)) |t| break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        if (try self.lookupArrayLikePrototypeMember(obj_t, lit.value)) |t| {
+                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        }
                         if (try self.patternIndexValueForStringKey(obj_t, lit.value)) |pattern_idx| {
                             break :blk try self.optionalChainResult(pattern_idx, element_is_optional_chain);
                         }
@@ -101638,7 +101670,7 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(function_idx), element_is_optional_chain);
                         }
                     }
-                    if (self.typeMaybeNumberIndexLike(idx_t)) {
+                    if (self.typeEntirelyNumberIndexLike(idx_t)) {
                         const v = self.interner.objectNumberIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
@@ -101750,7 +101782,7 @@ pub const Checker = struct {
                         self.interner.objectNumberIndex(obj_t) != types.Primitive.none and
                         self.interner.objectStringIndex(obj_t) == types.Primitive.none and
                         self.interner.objectSymbolIndex(obj_t) == types.Primitive.none and
-                        !self.typeMaybeNumberIndexLike(idx_t))
+                        !self.typeEntirelyNumberIndexLike(idx_t))
                     {
                         try self.report(
                             e.index,
@@ -135733,6 +135765,59 @@ pub const Checker = struct {
         return std.mem.indexOfScalar(u8, self.nodeSourceTextOrEmpty(object_node), '{') != null;
     }
 
+    fn logicalReceiverHasFreshEmptyObjectLiteral(self: *Checker, object_node: NodeId) bool {
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .logical_op) return false;
+        const logical = hir_mod.logicalOf(self.hir, object_node);
+        if (logical.op != .@"or") return false;
+        const candidates = [_]NodeId{ logical.lhs, logical.rhs };
+        for (candidates) |candidate| {
+            if (self.hir.kindOf(candidate) == .object_literal and
+                hir_mod.objectLiteralProps(self.hir, candidate).len == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn lookupFreshLogicalObjectLiteralReadMember(
+        self: *Checker,
+        access_node: NodeId,
+        object_node: NodeId,
+        object_t: TypeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (self.isInAssignmentTargetChain(access_node) or
+            !self.logicalReceiverHasFreshEmptyObjectLiteral(object_node) or
+            object_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(object_t).is_union)
+        {
+            return null;
+        }
+        const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(object_t));
+        defer self.gpa.free(members);
+        var values: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer values.deinit(self.gpa);
+        for (members) |member| {
+            if (try self.lookupObjectMember(member, name)) |member_t| {
+                try values.append(self.gpa, member_t);
+                continue;
+            }
+            if (!self.typeIsEmptyObjectShape(member)) return null;
+        }
+        if (values.items.len == 0) return null;
+        if (values.items.len == 1) return values.items[0];
+        return self.interner.internUnion(values.items) catch return error.OutOfMemory;
+    }
+
+    fn typeIsEmptyObjectShape(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_object_type) return false;
+        return self.interner.objectMembers(t).len == 0 and
+            self.interner.objectStringIndex(t) == types.Primitive.none and
+            self.interner.objectNumberIndex(t) == types.Primitive.none and
+            self.interner.objectSymbolIndex(t) == types.Primitive.none;
+    }
+
     fn reportElementImplicitAnyDidYouMeanCall(
         self: *Checker,
         node: NodeId,
@@ -136781,6 +136866,26 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(t)) return true;
         if (self.typeMaybeBigintLike(t)) return false;
         return self.typeMaybeNumericLike(t);
+    }
+
+    fn typeEntirelyNumberIndexLike(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.typeEntirelyNumberIndexLike(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.typeEntirelyNumberIndexLike(constraint);
+        }
+        return flags.is_number;
     }
 
     fn typeMaybeBigintLike(self: *Checker, t: TypeId) bool {
@@ -151006,6 +151111,22 @@ pub const Checker = struct {
         if (try self.unionTupleLiteralIndexAccess(obj, index_t)) |access| {
             return access.value_type;
         }
+        if (index_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(index_t).is_union) {
+            const index_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(index_t));
+            defer self.gpa.free(index_members);
+            var values: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer values.deinit(self.gpa);
+            for (index_members) |index_member| {
+                const resolved = (try self.resolveObjectIndexedAccessType(obj, index_member)) orelse return null;
+                try values.append(self.gpa, resolved);
+            }
+            if (values.items.len == 0) return null;
+            if (values.items.len == 1) return values.items[0];
+            return if (self.checking_element_write_target)
+                self.interner.internIntersection(values.items) catch return error.OutOfMemory
+            else
+                self.interner.internUnion(values.items) catch return error.OutOfMemory;
+        }
         if (obj_flags.is_union) {
             const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(obj));
             defer self.gpa.free(members);
@@ -151045,7 +151166,7 @@ pub const Checker = struct {
         var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer keys.deinit(self.gpa);
         if (!self.collectKnownStringKeysFromIndexType(index_t, &keys) or keys.items.len == 0) {
-            if (self.typeMaybeNumberIndexLike(index_t)) {
+            if (self.typeEntirelyNumberIndexLike(index_t)) {
                 const number_idx = self.interner.objectNumberIndex(obj);
                 if (number_idx != types.Primitive.none) return number_idx;
             }
@@ -170402,18 +170523,14 @@ pub const Checker = struct {
         {
             return;
         }
-        // When the target has a number index signature but NO named
-        // members, tsc treats it as an "open" container and
-        // suppresses the excess-property check for non-numeric keys
-        // ÃÂ¢ÃÂÃÂ TS2411 (member-type vs index-type mismatch) covers the
-        // strict cases (`2.0: number` against `[x: number]: string`)
-        // and the structural relation check fires TS2322 for the
-        // rest. Mirrors `numericIndexerConstrainsPropertyDeclarations`
-        // baseline which expects no TS2353 for string-keyed members.
+        // A numeric-only index signature does not admit arbitrary string
+        // keys. When a numeric property's value already violates the index
+        // signature, that assignment error is the primary diagnostic and
+        // tsc suppresses additional excess-property noise.
         if (has_number_index and
             self.interner.objectStringIndex(declared_t) == types.Primitive.none and
             self.interner.objectMembers(declared_t).len == 0 and
-            !try self.objectLiteralHasComputedSymbolKey(init_node))
+            try self.objectLiteralHasNumberIndexValueMismatch(init_node, declared_t))
         {
             return;
         }
@@ -170442,7 +170559,10 @@ pub const Checker = struct {
                 // Mirrors fixtures `symbolProperty21/44` baselines.
                 const computed_inner = self.computedMemberNameInner(raw_name);
                 const wrap_symbol = computed_inner == null and std.mem.startsWith(u8, raw_name, "Symbol.");
-                const name_str = if (computed_inner) |inner|
+                const written_string_name = self.stringLiteralPropertySourceText(op.key);
+                const name_str = if (written_string_name) |written|
+                    written
+                else if (computed_inner) |inner|
                     try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner})
                 else if (wrap_symbol)
                     try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw_name})
@@ -170494,6 +170614,40 @@ pub const Checker = struct {
                 try self.checkExcessProperties(op.value, declared_member_t.?);
             }
         }
+    }
+
+    fn stringLiteralPropertySourceText(self: *Checker, key_node: NodeId) ?[]const u8 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(key_node);
+        if (span.start == 0 or span.end >= src.len) return null;
+        const first = src[span.start];
+        if ((first == '\'' or first == '"') and src[span.end - 1] == first) {
+            return src[span.start..span.end];
+        }
+        const quote = src[span.start - 1];
+        if ((quote == '\'' or quote == '"') and src[span.end] == quote) {
+            return src[span.start - 1 .. span.end + 1];
+        }
+        return null;
+    }
+
+    fn objectLiteralHasNumberIndexValueMismatch(self: *Checker, init_node: NodeId, target_t: TypeId) CheckError!bool {
+        const number_index_t = self.interner.objectNumberIndex(target_t);
+        if (number_index_t == types.Primitive.none) return false;
+        for (hir_mod.objectLiteralProps(self.hir, init_node)) |prop_node| {
+            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (prop.value == hir_mod.none_node_id) continue;
+            const name = self.propertyNameFromKeyNode(prop.key) orelse continue;
+            if (!self.isNumericPropertyName(name)) continue;
+            const raw_value_t = if (self.hir.typeOf(prop.value) != types.Primitive.none)
+                self.hir.typeOf(prop.value)
+            else
+                try self.checkExpression(prop.value);
+            const accessor_value_t = try self.objectAccessorPropertyType(prop.value, raw_value_t);
+            if (!try self.checkerAssignableExpressionTo(prop.value, accessor_value_t, number_index_t)) return true;
+        }
+        return false;
     }
 
     fn mappedTypeAcceptsPropertyName(self: *Checker, mapped_t: TypeId, key_name: hir_mod.StringId) CheckError!bool {
@@ -189077,6 +189231,71 @@ test "checker: number index signature suppresses numeric excess property diagnos
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.object_literal_excess_property);
     }
+}
+
+test "checker: number index signature rejects a nonnumeric fresh property" {
+    const s = try newSetup("let p: { [key: number]: string } = { 3: 'three', 'three': 'three' };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_literal_excess_property));
+    var saw_three = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.object_literal_excess_property and std.mem.eql(
+            u8,
+            diag.message,
+            "Object literal may only specify known properties, and ''three'' does not exist in type '{ [key: number]: string; }'.",
+        )) saw_three = true;
+    }
+    try T.expect(saw_three);
+}
+
+test "checker: property access distributes string-number union index keys" {
+    const s = try newSetup(
+        \\class A { a: number; }
+        \\class B extends A { b: number; }
+        \\declare var numberOnly: { [n: number]: string };
+        \\declare var both: { [s: string]: A; [n: number]: B };
+        \\declare var key: string | number;
+        \\var anyResult = numberOnly[key];
+        \\var anyResult: any;
+        \\var unionResult = both[key];
+        \\var unionResult: A;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'unionResult' must be of type 'A | B', but here has type 'A'.",
+    ));
+}
+
+test "checker: logical empty object property reads stay fresh but writes widen" {
+    const s = try newSetup(
+        \\function g(headerNames: any) {
+        \\    let t = [{ hasLineBreak: false, cells: [] }];
+        \\    const table = [{ cells: headerNames }]["concat"](t);
+        \\}
+        \\function f(options?: { a: string, b: number }) {
+        \\    let x1 = (options || {}).a;
+        \\    let x2 = (options || {})["a"];
+        \\    (options || {}).a = 1;
+        \\    (options || {})["a"] = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any_index_not_number));
+    var saw_empty_object_index = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.element_implicitly_any and
+            std.mem.indexOf(u8, diag.message, "expression of type '\"a\"' can't be used to index type '{}'.") != null) saw_empty_object_index = true;
+    }
+    try T.expect(saw_empty_object_index);
 }
 
 test "checker: exactOptionalPropertyTypes flags explicit undefined on optional property" {

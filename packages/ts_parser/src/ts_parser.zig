@@ -30258,6 +30258,16 @@ test "parser: legacy octal literal with stray fraction reports TS1121 + TS1005" 
     try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[1].message);
 }
 
+test "parser: legacy octal property access reports only TS1121" {
+    var s = try newTestSetup("000.toString();");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o0'.", s.parser.diagnostics.items[0].message);
+}
+
 test "parser: invalid later binary and octal digits in var initializers report comma expected" {
     var s = try newTestSetup("var bin = 0b1102110;\nvar oct = 0o34318592;");
     defer destroyTestSetup(s);
