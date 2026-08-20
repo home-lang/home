@@ -92162,6 +92162,8 @@ test "bootstrap runner preserves node worker contracts" {
     const cases = [_]struct { path: []const u8, passed: usize }{
         .{ .path = "js/node/worker_threads/15787.test.ts", .passed = 1 },
         .{ .path = "js/node/worker_threads/worker-async-dispose.test.ts", .passed = 2 },
+        .{ .path = "js/node/worker_threads/worker_destruction.test.ts", .passed = 3 },
+        .{ .path = "js/node/worker_threads/worker_heap_snapshot_gc.test.ts", .passed = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
