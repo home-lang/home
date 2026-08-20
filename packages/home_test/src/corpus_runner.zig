@@ -37178,49 +37178,278 @@ const harness_prelude =
     \\    } catch (error) { next(error); }
     \\  };
     \\}
-    \\function __home_express() {
-    \\  const middleware = [], routes = [], events = Object.create(null);
-    \\  const app = async function homeExpressApplication(request, response) {
-    \\    const parsed = new URL(String(request.url || "/"), "http://localhost");
-    \\    request.query = Object.fromEntries(parsed.searchParams);
-    \\    request.path = parsed.pathname;
-    \\    request.res = response;
-    \\    const originalEnd = response.end.bind(response);
-    \\    let closed = false;
-    \\    response.end = function() {
-    \\      const result = originalEnd.apply(response, arguments);
-    \\      if (!closed) { closed = true; Promise.resolve().then(() => { request.emit("close"); response.emit("close"); }); }
-    \\      return result;
-    \\    };
-    \\    response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
-    \\    response.send = function(body) { const payload = body === undefined || body === null ? "" : (body instanceof Uint8Array ? Buffer.from(body) : String(body)); if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength)); return this.end(payload); };
-    \\    response.json = function(value) { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); return this.send(JSON.stringify(value)); };
-    \\    const invoke = handler => new Promise((resolve, reject) => {
-    \\      let settled = false;
-    \\      const next = error => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
-    \\      try { const result = handler(request, response, next); if (handler.length < 3) Promise.resolve(result).then(() => next(), next); else if (result && typeof result.then === "function") result.catch(next); }
-    \\      catch (error) { next(error); }
-    \\    });
-    \\    try {
-    \\      for (const handler of middleware) await invoke(handler);
-    \\      const route = routes.find(entry => entry.method === String(request.method || "GET").toUpperCase() && entry.path === parsed.pathname);
-    \\      if (!route) return response.status(404).send("Not Found");
-    \\      for (const handler of route.handlers) await invoke(handler);
-    \\    } catch (error) {
-    \\      app.emit("error", error);
-    \\      if (!closed) response.status(500).send("Internal Server Error");
+    \\const __home_http_methods = ["ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD", "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL", "MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST", "PROPFIND", "PROPPATCH", "PURGE", "PUT", "QUERY", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE"];
+    \\function __home_express_flatten_handlers(values, output) {
+    \\  output = output || [];
+    \\  for (const value of values) Array.isArray(value) ? __home_express_flatten_handlers(value, output) : output.push(value);
+    \\  return output;
+    \\}
+    \\function __home_express_decode(value) {
+    \\  try { return { value: decodeURIComponent(value) }; }
+    \\  catch (cause) { const error = new URIError("Failed to decode param '" + value + "'"); error.status = error.statusCode = 400; error.cause = cause; return { error }; }
+    \\}
+    \\function __home_express_compile_string(path, middleware, caseSensitive, strict) {
+    \\  let source = "", keys = [];
+    \\  const input = String(path || "/");
+    \\  if (middleware && input === "/") return { regexp: /^/, keys };
+    \\  const escapeLiteral = value => "\\.^$*+?()[]{}|".includes(value) ? String.fromCharCode(92) + value : value;
+    \\  for (let index = 0; index < input.length;) {
+    \\    const character = input[index];
+    \\    if (character.charCodeAt(0) === 92 && index + 1 < input.length) { source += escapeLiteral(input[index + 1]); index += 2; continue; }
+    \\    if (character === ":") {
+    \\      let end = index + 1;
+    \\      while (end < input.length && /[A-Za-z0-9_]/.test(input[end])) end++;
+    \\      keys.push(input.slice(index + 1, end)); source += "([^/]+?)"; index = end; continue;
     \\    }
+    \\    source += escapeLiteral(character); index++;
+    \\  }
+    \\  if (middleware) {
+    \\    if (source.length > 1 && source.endsWith("/")) source = source.slice(0, -1);
+    \\    return { regexp: new RegExp("^" + source + "(?=/|$)", caseSensitive ? "" : "i"), keys };
+    \\  }
+    \\  return { regexp: new RegExp("^" + source + (strict ? "$" : "/?$"), caseSensitive ? "" : "i"), keys };
+    \\}
+    \\function __home_express_match(pathPattern, pathname, middleware, settings) {
+    \\  if (Array.isArray(pathPattern)) {
+    \\    for (const item of pathPattern) { const result = __home_express_match(item, pathname, middleware, settings); if (result) return result; }
+    \\    return null;
+    \\  }
+    \\  let match, keys = [];
+    \\  if (pathPattern instanceof RegExp) { pathPattern.lastIndex = 0; match = pathPattern.exec(pathname); if (!match || match.index !== 0) return null; }
+    \\  else { const compiled = __home_express_compile_string(pathPattern, middleware, !!settings["case sensitive routing"], !!settings["strict routing"]); keys = compiled.keys; match = compiled.regexp.exec(pathname); if (!match) return null; }
+    \\  const params = {};
+    \\  for (let index = 1; index < match.length; index++) {
+    \\    if (match[index] === undefined) continue;
+    \\    const decoded = __home_express_decode(match[index]);
+    \\    if (decoded.error) return { error: decoded.error };
+    \\    params[keys[index - 1] === undefined ? index - 1 : keys[index - 1]] = decoded.value;
+    \\  }
+    \\  return { params, consumed: match[0] || "" };
+    \\}
+    \\function __home_express_merge_params(parent, own) {
+    \\  const output = {}, parentKeys = parent && typeof parent === "object" ? Object.keys(parent) : [];
+    \\  let numericOffset = 0;
+    \\  for (const key of parentKeys) { output[key] = parent[key]; if (/^[0-9]+$/.test(key)) numericOffset = Math.max(numericOffset, Number(key) + 1); }
+    \\  for (const key of Object.keys(own || {})) { const target = /^[0-9]+$/.test(key) ? String(Number(key) + numericOffset) : key; output[target] = own[key]; }
+    \\  return output;
+    \\}
+    \\function __home_express_invoke(handler, request, response, error) {
+    \\  return new Promise(resolve => {
+    \\    let settled = false;
+    \\    const finish = result => { if (settled) return; settled = true; if (response.__home_express_waiters) response.__home_express_waiters.delete(onEnd); resolve(result); };
+    \\    const onEnd = () => finish({ kind: "end" });
+    \\    if (response.__home_express_waiters) response.__home_express_waiters.add(onEnd);
+    \\    const next = value => {
+    \\      if (value === "route") return finish({ kind: "route" });
+    \\      if (value === "router") return finish({ kind: "router" });
+    \\      if (value !== undefined && value !== null) return finish({ kind: "next", error: value instanceof Error ? value : new Error(String(value)) });
+    \\      finish({ kind: "next" });
+    \\    };
+    \\    try {
+    \\      const result = error === undefined ? handler(request, response, next) : handler(error, request, response, next);
+    \\      if (result && typeof result.then === "function") result.then(() => { if (response.finished || response.writableEnded) onEnd(); }, reason => next(reason === undefined ? new Error("Rejected promise") : reason));
+    \\      else if (response.finished || response.writableEnded) onEnd();
+    \\    } catch (thrown) { next(thrown); }
+    \\  });
+    \\}
+    \\async function __home_express_run_handlers(handlers, request, response, initialError) {
+    \\  let error = initialError;
+    \\  for (const handler of handlers) {
+    \\    const isErrorHandler = handler.length === 4;
+    \\    if ((error === undefined && isErrorHandler) || (error !== undefined && !isErrorHandler)) continue;
+    \\    const result = await __home_express_invoke(handler, request, response, error);
+    \\    if (result.kind !== "next") return result;
+    \\    error = result.error;
+    \\  }
+    \\  return { kind: "next", error };
+    \\}
+    \\async function __home_express_dispatch(router, request, response) {
+    \\  const incomingParams = request.params;
+    \\  const parentParams = incomingParams && typeof incomingParams === "object" ? incomingParams : {};
+    \\  let error;
+    \\  for (let index = 0; index < router.__home_layers.length; index++) {
+    \\    const layer = router.__home_layers[index];
+    \\    const parsed = new URL(String(request.url || "/"), "http://localhost");
+    \\    request.path = parsed.pathname;
+    \\    if (layer.method !== null && layer.method !== "ALL" && layer.method !== String(request.method || "GET").toUpperCase()) continue;
+    \\    const matched = __home_express_match(layer.path, parsed.pathname, layer.method === null, router.__home_settings);
+    \\    if (!matched) continue;
+    \\    if (matched.error) { error = matched.error; continue; }
+    \\    const previousParams = request.params, previousUrl = request.url, previousBaseUrl = request.baseUrl || "";
+    \\    request.params = matched.params;
+    \\    if (router.__home_merge_params) request.params = __home_express_merge_params(parentParams, matched.params);
+    \\    if (layer.method === null && matched.consumed && matched.consumed !== "/") {
+    \\      request.baseUrl = previousBaseUrl + matched.consumed;
+    \\      const remainder = parsed.pathname.slice(matched.consumed.length) || "/";
+    \\      request.url = remainder + parsed.search;
+    \\      request.path = remainder;
+    \\    }
+    \\    const result = await __home_express_run_handlers(layer.handlers, request, response, error);
+    \\    request.params = previousParams;
+    \\    if (request.url === (layer.method === null && matched.consumed && matched.consumed !== "/" ? (parsed.pathname.slice(matched.consumed.length) || "/") + parsed.search : previousUrl)) request.url = previousUrl;
+    \\    request.baseUrl = previousBaseUrl;
+    \\    if (result.kind === "end") { request.params = incomingParams; return result; }
+    \\    if (result.kind === "router") { request.params = incomingParams; return { kind: "next" }; }
+    \\    error = result.error;
+    \\  }
+    \\  request.params = incomingParams;
+    \\  return { kind: "next", error };
+    \\}
+    \\function __home_express_router(options) {
+    \\  const router = function homeExpressRouter(request, response, next) {
+    \\    const dispatched = __home_express_dispatch(router, request, response);
+    \\    dispatched.then(result => { if (result.kind !== "end" && typeof next === "function") next(result.error); }, error => { if (typeof next === "function") next(error); });
+    \\    return dispatched;
     \\  };
-    \\  app.use = function(handler) { if (typeof handler !== "function") throw new TypeError("Express middleware must be a function"); middleware.push(handler); return app; };
-    \\  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) app[method.toLowerCase()] = function(path) { const handlers = Array.prototype.slice.call(arguments, 1); if (!handlers.length || handlers.some(handler => typeof handler !== "function")) throw new TypeError("Express route handlers must be functions"); routes.push({ method, path: String(path), handlers }); return app; };
-    \\  app.on = function(name, handler) { if (typeof handler === "function") (events[String(name)] || (events[String(name)] = [])).push(handler); return app; };
-    \\  app.emit = function(name) { const args = Array.prototype.slice.call(arguments, 1); for (const handler of (events[String(name)] || []).slice()) handler.apply(app, args); return (events[String(name)] || []).length > 0; };
-    \\  app.listen = function(port, callback) { const server = globalThis.__home_modules["http"].createServer(app); server.listen(port, () => { const address = server.address(); if (typeof callback === "function") callback(null, address.address, address.port); }); return server; };
-    \\  return app;
+    \\  router.__home_layers = [];
+    \\  router.__home_options = Object.assign({ mergeParams: false }, options || {});
+    \\  router.__home_merge_params = !!(options && options.mergeParams);
+    \\  router.__home_settings = Object.create(null);
+    \\  router.handle = router;
+    \\  router.use = function() {
+    \\    const values = Array.from(arguments);
+    \\    const hasPath = typeof values[0] === "string" || values[0] instanceof RegExp || Array.isArray(values[0]);
+    \\    const path = hasPath ? values.shift() : "/", handlers = __home_express_flatten_handlers(values);
+    \\    if (!handlers.length || handlers.some(handler => typeof handler !== "function")) throw new TypeError("argument handler must be a function");
+    \\    router.__home_layers.push({ method: null, path, handlers }); return router;
+    \\  };
+    \\  for (const method of __home_http_methods.concat("ALL")) router[method.toLowerCase()] = function(path) {
+    \\    const handlers = __home_express_flatten_handlers(Array.prototype.slice.call(arguments, 1));
+    \\    if (!handlers.length || handlers.some(handler => typeof handler !== "function")) throw new TypeError("argument handler must be a function");
+    \\    router.__home_layers.push({ method, path, handlers }); return router;
+    \\  };
+    \\  router.enable = function(name) { router.__home_settings[String(name)] = true; return router; };
+    \\  router.disable = function(name) { router.__home_settings[String(name)] = false; return router; };
+    \\  router.enabled = function(name) { return !!router.__home_settings[String(name)]; };
+    \\  router.disabled = function(name) { return !router.enabled(name); };
+    \\  router.set = function(name, value) { router.__home_settings[String(name)] = value; return router; };
+    \\  return router;
+    \\}
+    \\function __home_express_prepare(request, response) {
+    \\  if (response.__home_express_prepared) return;
+    \\  response.__home_express_prepared = true;
+    \\  response.__home_express_waiters = new Set();
+    \\  request.originalUrl = request.originalUrl || String(request.url || "/");
+    \\  request.baseUrl = request.baseUrl || "";
+    \\  request.res = response;
+    \\  const parsed = new URL(String(request.url || "/"), "http://localhost");
+    \\  request.query = Object.fromEntries(parsed.searchParams);
+    \\  request.path = parsed.pathname;
+    \\  const originalEnd = response.end.bind(response);
+    \\  response.end = function() {
+    \\    if (this.finished || this.writableEnded) return this;
+    \\    const result = originalEnd.apply(this, arguments);
+    \\    this.finished = this.writableEnded = this.headersSent = true;
+    \\    for (const waiter of Array.from(this.__home_express_waiters)) waiter();
+    \\    Promise.resolve().then(() => { if (typeof request.emit === "function") request.emit("close"); if (typeof response.emit === "function") response.emit("close"); });
+    \\    return result;
+    \\  };
+    \\  response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
+    \\  response.set = function(name, value) { if (name && typeof name === "object") { for (const key of Object.keys(name)) this.setHeader(key, name[key]); } else this.setHeader(name, value); return this; };
+    \\  response.header = response.set;
+    \\  response.send = function(body) {
+    \\    let payload = body === undefined || body === null ? "" : body;
+    \\    if (!(payload instanceof Uint8Array) && typeof payload === "object") { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); payload = JSON.stringify(payload); }
+    \\    else if (!(payload instanceof Uint8Array)) payload = String(payload);
+    \\    if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength));
+    \\    return this.end(payload);
+    \\  };
+    \\  response.json = function(value) { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); return this.send(JSON.stringify(value)); };
+    \\}
+    \\function __home_express() {
+    \\  const app = __home_express_router();
+    \\  const events = Object.create(null);
+    \\  const application = function homeExpressApplication(request, response) {
+    \\    __home_express_prepare(request, response);
+    \\    const dispatched = __home_express_dispatch(application, request, response);
+    \\    dispatched.then(result => {
+    \\      if (result.kind === "end" || response.finished || response.writableEnded) return;
+    \\      if (result.error) { response.__home_express_error = result.error; application.emit("error", result.error); response.status(result.error.status || result.error.statusCode || 500).send("Internal Server Error"); }
+    \\      else response.status(404).send("Not Found");
+    \\    }, error => { response.__home_express_error = error; application.emit("error", error); if (!response.finished) response.status(500).send("Internal Server Error"); });
+    \\    return dispatched;
+    \\  };
+    \\  Object.assign(application, app);
+    \\  application.__home_layers = app.__home_layers; application.__home_options = app.__home_options; application.__home_merge_params = app.__home_merge_params; application.__home_settings = app.__home_settings;
+    \\  for (const name of ["use", "enable", "disable", "set"].concat(__home_http_methods.map(method => method.toLowerCase()), "all")) application[name] = function() { app[name].apply(app, arguments); return application; };
+    \\  application.enabled = name => app.enabled(name); application.disabled = name => app.disabled(name);
+    \\  application.on = function(name, handler) { if (typeof handler === "function") (events[String(name)] || (events[String(name)] = [])).push(handler); return application; };
+    \\  application.emit = function(name) { const args = Array.prototype.slice.call(arguments, 1); for (const handler of (events[String(name)] || []).slice()) handler.apply(application, args); return (events[String(name)] || []).length > 0; };
+    \\  application.listen = function(port, callback) { const server = globalThis.__home_modules["http"].createServer(application); server.listen(port, () => { const address = server.address(); if (typeof callback === "function") callback(null, address.address, address.port); }); return server; };
+    \\  return application;
+    \\}
+    \\function __home_supertest_response_equal(actual, expected) {
+    \\  if (expected instanceof RegExp) return expected.test(String(actual));
+    \\  if (expected && typeof expected === "object") { try { return JSON.stringify(actual) === JSON.stringify(expected); } catch {} }
+    \\  return String(actual) === String(expected);
+    \\}
+    \\function __home_supertest(app) {
+    \\  const makeRequest = (method, path) => {
+    \\    const expectations = [], requestHeaders = {};
+    \\    let body;
+    \\    const chain = {
+    \\      set(name, value) { if (name && typeof name === "object") Object.assign(requestHeaders, name); else requestHeaders[String(name).toLowerCase()] = value; return chain; },
+    \\      send(value) { body = value; return chain; },
+    \\      expect() {
+    \\        const args = Array.from(arguments), callback = args.length > 1 && typeof args[args.length - 1] === "function" ? args.pop() : null;
+    \\        if (typeof args[0] === "function") expectations.push({ kind: "callback", value: args[0] });
+    \\        else if (typeof args[0] === "number") { expectations.push({ kind: "status", value: args[0] }); if (args.length > 1) expectations.push({ kind: "body", value: args[1] }); }
+    \\        else if (args.length > 1) expectations.push({ kind: "header", name: String(args[0]).toLowerCase(), value: args[1] });
+    \\        else expectations.push({ kind: "body", value: args[0] });
+    \\        if (callback) chain.end(callback);
+    \\        return chain;
+    \\      },
+    \\      end(callback) {
+    \\        let delivered = false;
+    \\        const done = (error, response) => { if (delivered) return; delivered = true; callback(error || null, response); };
+    \\        __home_supertest_execute(app, method, path, requestHeaders, body).then(response => {
+    \\          try {
+    \\            for (const expected of expectations) {
+    \\              if (expected.kind === "callback") expected.value(response);
+    \\              else if (expected.kind === "status" && response.status !== expected.value) throw new Error("expected " + expected.value + ", got " + response.status + (response.error ? "\\nCaused by: " + String(response.error) + (response.error.stack ? "\\n" + response.error.stack : "") : ""));
+    \\              else if (expected.kind === "header" && !__home_supertest_response_equal(response.headers[expected.name], expected.value)) throw new Error("expected header " + expected.name + " to equal " + String(expected.value) + ", got " + String(response.headers[expected.name]));
+    \\              else if (expected.kind === "body" && !__home_supertest_response_equal(typeof expected.value === "object" && !(expected.value instanceof RegExp) ? response.body : response.text, expected.value)) throw new Error("expected response body " + JSON.stringify(expected.value) + ", got " + JSON.stringify(response.text));
+    \\            }
+    \\            done(null, response);
+    \\          } catch (error) { if (response.error && error.cause === undefined) error.cause = response.error; done(error, response); }
+    \\        }, error => done(error));
+    \\        return chain;
+    \\      },
+    \\      then(resolve, reject) { return __home_supertest_execute(app, method, path, requestHeaders, body).then(resolve, reject); },
+    \\    };
+    \\    return chain;
+    \\  };
+    \\  const agent = {};
+    \\  for (const method of __home_http_methods) agent[method.toLowerCase()] = path => makeRequest(method, path);
+    \\  return agent;
+    \\}
+    \\function __home_supertest_execute(app, method, path, headers, body) {
+    \\  return new Promise((resolve, reject) => {
+    \\    const request = Object.assign(__home_http_event_target(), { method, url: String(path || "/"), headers: Object.assign({}, headers), __home_raw_body: body === undefined ? undefined : (typeof body === "string" ? body : JSON.stringify(body)), get(name) { return this.headers[String(name).toLowerCase()]; }, resume() { return this; } });
+    \\    const chunks = [], response = Object.assign(__home_http_event_target(), {
+    \\      statusCode: 200, headers: {},
+    \\      setHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value); return this; },
+    \\      getHeader(name) { return this.headers[String(name).toLowerCase()]; },
+    \\      getHeaders() { return Object.assign({}, this.headers); },
+    \\      write(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk instanceof Uint8Array ? Buffer.from(chunk).toString() : String(chunk)); return true; },
+    \\      end(chunk) {
+    \\        if (chunk !== undefined && chunk !== null) this.write(chunk);
+    \\        const text = chunks.join(""), contentType = String(this.headers["content-type"] || "").toLowerCase();
+    \\        let parsedBody = text;
+    \\        if (contentType.includes("json")) { try { parsedBody = JSON.parse(text); } catch {} }
+    \\        resolve({ status: this.statusCode, statusCode: this.statusCode, headers: Object.assign({}, this.headers), text, body: parsedBody, error: this.__home_express_error });
+    \\        this.emit("finish"); return this;
+    \\      },
+    \\    });
+    \\    try { const result = app(request, response); if (result && typeof result.catch === "function") result.catch(reject); }
+    \\    catch (error) { reject(error); }
+    \\  });
     \\}
     \\__home_express.json = __home_express_json;
     \\__home_express.raw = __home_express_raw;
-    \\globalThis.__home_modules["express"] = { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json, raw: __home_express_raw };
+    \\__home_express.Router = __home_express_router;
+    \\globalThis.__home_modules["express"] = Object.assign(__home_express, { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json, raw: __home_express_raw, Router: __home_express_router });
+    \\globalThis.__home_modules["supertest"] = __home_supertest;
     \\globalThis.__home_modules["body-parser"] = { json: __home_express_json };
     \\const __home_cp1251_special = [0x0402,0x0403,0x201a,0x0453,0x201e,0x2026,0x2020,0x2021,0x20ac,0x2030,0x0409,0x2039,0x040a,0x040c,0x040b,0x040f,0x0452,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0xfffd,0x2122,0x0459,0x203a,0x045a,0x045c,0x045b,0x045f,0x00a0,0x040e,0x045e,0x0408,0x00a4,0x0490,0x00a6,0x00a7,0x0401,0x00a9,0x0404,0x00ab,0x00ac,0x00ad,0x00ae,0x0407,0x00b0,0x00b1,0x0406,0x0456,0x0491,0x00b5,0x00b6,0x00b7,0x0451,0x2116,0x0454,0x00bb,0x0458,0x0405,0x0455,0x0457];
     \\function __home_iconv_encoding(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
@@ -57202,7 +57431,7 @@ const harness_prelude =
     \\    this.freeSockets = Object.create(null);
     \\  }
     \\}
-    \\const __home_node_http = { Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
+    \\const __home_node_http = { METHODS: __home_http_methods.slice(), Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
     \\function __home_https_create_server(options, handler) {
@@ -100587,6 +100816,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/comlink/comlink.test.ts", .passed = 1 },
         .{ .path = "js/third_party/es-module-lexer/es-module-lexer.test.ts", .passed = 1 },
         .{ .path = "js/third_party/esbuild/esbuild-child_process.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/express/app.router.test.ts", .passed = 77, .todo = 45 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
