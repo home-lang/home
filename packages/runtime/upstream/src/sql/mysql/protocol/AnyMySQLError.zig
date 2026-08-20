@@ -8,6 +8,7 @@ pub const Error = error{
     AuthenticationFailed,
     FailedToEncryptPassword,
     InvalidPublicKey,
+    PublicKeyRetrievalNotAllowed,
     UnsupportedAuthPlugin,
     UnsupportedProtocolVersion,
 

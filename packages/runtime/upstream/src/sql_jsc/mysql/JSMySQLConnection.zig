@@ -614,11 +614,6 @@ fn failWithJSValue(this: *@This(), value: JSValue) void {
     this.ref();
 
     defer {
-        if (this.#vm.isShuttingDown()) {
-            this.#connection.close();
-        } else {
-            this.#connection.cleanQueueAndClose(value, this.getQueriesArray());
-        }
         this.updateReferenceType();
         this.deref();
     }
@@ -627,7 +622,23 @@ fn failWithJSValue(this: *@This(), value: JSValue) void {
     if (this.#connection.status == .failed) return;
 
     this.#connection.status = .failed;
-    if (this.#vm.isShuttingDown()) return;
+    if (this.#vm.isShuttingDown()) {
+        this.#connection.close();
+        return;
+    }
+
+    var js_error = value.toError() orelse value;
+    if (js_error == .zero) {
+        js_error = AnyMySQLError.mysqlErrorToJS(this.#globalObject, "Connection closed", error.ConnectionClosed);
+    }
+    bun.assertf(js_error != .zero, "MySQL connection failure reason is zero", .{});
+
+    // on_close is user JavaScript and can drain microtasks before the deferred
+    // queue cleanup runs. Keep the error alive across that callback so every
+    // pending query receives the same valid Error instead of a collected value.
+    var protected_error = jsc.Strong.create(js_error, this.#globalObject);
+    defer protected_error.deinit();
+    defer this.#connection.cleanQueueAndClose(protected_error.get(), this.getQueriesArray());
 
     const on_close = this.consumeOnCloseCallback(this.#globalObject) orelse return;
     on_close.ensureStillAlive();
@@ -635,16 +646,12 @@ fn failWithJSValue(this: *@This(), value: JSValue) void {
     // loop.enter();
     // defer loop.exit();
     this.ensureJSValueIsAlive();
-    var js_error = value.toError() orelse value;
-    if (js_error == .zero) {
-        js_error = AnyMySQLError.mysqlErrorToJS(this.#globalObject, "Connection closed", error.ConnectionClosed);
-    }
-    js_error.ensureStillAlive();
+    protected_error.get().ensureStillAlive();
 
     const queries_array = this.getQueriesArray();
     queries_array.ensureStillAlive();
     // this.#globalObject.queueMicrotask(on_close, &[_]JSValue{ js_error, queries_array });
-    loop.runCallback(on_close, this.#globalObject, .js_undefined, &[_]JSValue{ js_error, queries_array });
+    loop.runCallback(on_close, this.#globalObject, .js_undefined, &[_]JSValue{ protected_error.get(), queries_array });
 }
 
 fn fail(this: *@This(), message: []const u8, err: AnyMySQLError.Error) void {

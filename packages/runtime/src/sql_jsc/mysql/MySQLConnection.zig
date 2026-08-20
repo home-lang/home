@@ -35,6 +35,9 @@ _ssl_mode: SSLMode = .disable,
 /// Whether the user opted in to public-key retrieval over an unencrypted
 /// connection (see the gate in handleAuth). Defaults false — fail closed.
 _allow_public_key_retrieval: bool = false,
+/// Set before draining pending requests so JS rejection callbacks that call
+/// connection.close() cannot recursively close the same socket and queue.
+_close_started: bool = false,
 _flags: ConnectionFlags = .{},
 
 pub fn init(
@@ -158,6 +161,9 @@ pub fn close(this: *@This()) void {
     this._write_buffer.clearAndFree(bun.default_allocator);
 }
 pub fn cleanQueueAndClose(this: *@This(), js_reason: ?jsc.JSValue, js_queries_array: JSValue) void {
+    if (this._close_started) return;
+    this._close_started = true;
+
     // cleanup requests
     this.queue.clean(
         js_reason,

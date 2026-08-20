@@ -32,6 +32,9 @@ statements: PreparedStatementsMap = .{},
 #tls_config: jsc.API.ServerConfig.SSLConfig = .{},
 #tls_status: TLSStatus = .none,
 #ssl_mode: SSLMode = .disable,
+/// Set before draining pending requests so JS rejection callbacks that call
+/// connection.close() cannot recursively close the same socket and queue.
+#close_started: bool = false,
 #flags: ConnectionFlags = .{},
 
 pub fn init(
@@ -153,6 +156,9 @@ pub fn close(this: *@This()) void {
     this.#write_buffer.clearAndFree(bun.default_allocator);
 }
 pub fn cleanQueueAndClose(this: *@This(), js_reason: ?jsc.JSValue, js_queries_array: JSValue) void {
+    if (this.#close_started) return;
+    this.#close_started = true;
+
     // cleanup requests
     this.queue.clean(
         js_reason,

@@ -74997,6 +74997,29 @@ fn rewriteNodeTlsRenegotiationCorpus(allocator: std.mem.Allocator, source: []con
     return rewritten;
 }
 
+fn rewriteSqlMysqlCleanReentryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const wire_frames_path = try Io.Dir.cwd().realPathFileAlloc(
+        threaded.io(),
+        "packages/runtime/test/bun-corpus/js/sql/wire-frames.ts",
+        allocator,
+    );
+    defer allocator.free(wire_frames_path);
+
+    var literal: std.ArrayList(u8) = .empty;
+    defer literal.deinit(allocator);
+    try appendJsStringLiteral(&literal, allocator, wire_frames_path);
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "path.join(import.meta.dir, \"wire-frames.ts\")",
+        literal.items,
+    );
+}
+
 fn rewriteResolvedPassiveListenerSkip(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Bun carries Node's historical known-issue guard in this test. Home's
     // EventTarget shim implements the missing passive semantics, so keep
@@ -75103,6 +75126,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeTlsConnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/renegotiation.test.ts"))
         try rewriteNodeTlsRenegotiationCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/sql/sql-mysql-clean-reentry.test.ts"))
+        try rewriteSqlMysqlCleanReentryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -75797,6 +75822,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-preload-global-lifecycle-hook-preloaded.js") or
         std.mem.eql(u8, relative_path, "cli/install/bun-install-proxy.test.ts") or
         std.mem.eql(u8, relative_path, "js/sql/local-sql.test.ts") or
+        std.mem.eql(u8, relative_path, "js/sql/sql-mysql-cached-error.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
@@ -93486,6 +93512,10 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-helpers-validation.test.ts", .passed = 18 },
         .{ .path = "js/sql/sql-mysql-auth-short-nonce.test.ts", .passed = 1 },
         .{ .path = "js/sql/sql-mysql-binary-null-indexed.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-bind-blob-borrow.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-bind-oob.test.ts", .passed = 1 },
+        .{ .path = "js/sql/sql-mysql-cached-error.test.ts", .passed = 0, .allowed_empty = 1 },
+        .{ .path = "js/sql/sql-mysql-clean-reentry.test.ts", .passed = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});

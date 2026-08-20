@@ -1,9 +1,8 @@
 // Copied from bun/src/sql/mysql/protocol/AnyMySQLError.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 //
-// The upstream file's `mysqlErrorToJS` re-export reaches into
-// `sql_jsc/mysql/protocol/any_mysql_error_jsc.zig` (JSC bridge). It
-// re-lands under `src/sql_jsc/` in Phase 12.2.
+// The JSC bridge lives under sql_jsc so the wire protocol remains usable
+// without JavaScriptCore. Runtime builds re-export it here, matching Bun.
 
 pub const Error = error{
     ConnectionClosed,
@@ -47,9 +46,7 @@ pub const Error = error{
     InvalidState,
 };
 
-pub fn mysqlErrorToJS(_: *@import("home").jsc.JSGlobalObject, _: []const u8, _: anyerror) @import("home").jsc.JSValue {
-    return .zero;
-}
+pub const mysqlErrorToJS = @import("../../../sql_jsc/mysql/protocol/any_mysql_error_jsc.zig").mysqlErrorToJS;
 
 test "AnyMySQLError.Error: canonical wire failure tags can be raised" {
     const std = @import("std");
