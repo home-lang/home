@@ -44251,6 +44251,10 @@ pub const Checker = struct {
             try self.reportReadonlyMemberAssignment(target, m.name);
             return true;
         }
+        if (self.nodeIsThisReference(m.object) and self.asConstObjectLiteralOwnsMember(target, m.name)) {
+            try self.reportReadonlyMemberAssignment(target, m.name);
+            return true;
+        }
         var obj_t = self.hir.typeOf(m.object);
         if (obj_t == types.Primitive.none) return false;
         if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_type_parameter) {
@@ -44274,6 +44278,31 @@ pub const Checker = struct {
         }
         try self.reportReadonlyMemberAssignment(target, m.name);
         return true;
+    }
+
+    fn asConstObjectLiteralOwnsMember(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = node;
+        var depth: u8 = 0;
+        while (cur != hir_mod.none_node_id and depth < 32) : (depth += 1) {
+            if (self.hir.kindOf(cur) == .object_literal) {
+                const parent = self.hir.parentOf(cur);
+                if (parent == hir_mod.none_node_id or
+                    (self.hir.kindOf(parent) != .as_expr and self.hir.kindOf(parent) != .type_assertion))
+                {
+                    return false;
+                }
+                const assertion = hir_mod.asExpressionOf(self.hir, parent);
+                if (assertion.expr != cur or
+                    assertion.type_node == hir_mod.none_node_id or
+                    !self.isAsConstMarker(assertion.type_node))
+                {
+                    return false;
+                }
+                return self.findObjectLiteralPropNode(cur, name) != null;
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        return false;
     }
 
     fn importedDefaultMemberIsReadonly(
@@ -81317,6 +81346,13 @@ pub const Checker = struct {
                 )) break :blk true;
                 break :blk try self.checkerAssignableTo(init_type, declared_type);
             };
+            const asserted_object_property_diag_emitted = if (!ok)
+                if (self.asConstObjectLiteral(v.init)) |object_literal|
+                    try self.tryReportObjectLiteralPropertyMismatch(object_literal, declared_type)
+                else
+                    false
+            else
+                false;
             var open_spread_tuple_diag_emitted = false;
             if (!ok and
                 self.hir.kindOf(v.init) == .array_literal and
@@ -81361,7 +81397,10 @@ pub const Checker = struct {
             var excess_property_diag_emitted = false;
             var direct_shorthand_excess_property_diag_emitted = false;
             if (!ok) {
-                if (binding_pattern_source_diag_fired) {
+                if (asserted_object_property_diag_emitted) {
+                    // The assertion owns the readonly result type; the inner
+                    // object literal owns property-level error elaboration.
+                } else if (binding_pattern_source_diag_fired) {
                     // The declared destructuring source itself is invalid
                     // (for example `{ }: undefined`), so tsc reports the
                     // pattern diagnostic and skips the outer assignment prose.
@@ -86071,7 +86110,7 @@ pub const Checker = struct {
                             node,
                             self.sliceStartPos(src, tag.type_text),
                             1355,
-                            "A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
+                            "A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
                         );
                     }
                     result_t = self.literalizeForAsConst(node, result_t) catch result_t;
@@ -102069,10 +102108,11 @@ pub const Checker = struct {
                     // allowed. Reject binary ops, calls, new exprs,
                     // identifiers, and other compound shapes.
                     if (!self.asConstOperandIsValid(a.expr)) {
-                        try self.report(
+                        try self.reportAt(
                             a.expr,
+                            self.symbolOperandAnchorPos(a.expr),
                             1355,
-                            "A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
+                            "A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
                         );
                     }
                     break :blk self.literalizeForAsConst(a.expr, inner_t) catch inner_t;
@@ -168138,6 +168178,19 @@ pub const Checker = struct {
         return std.mem.eql(u8, name, "const");
     }
 
+    fn asConstObjectLiteral(self: *Checker, node: NodeId) ?NodeId {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return null;
+        const assertion = hir_mod.asExpressionOf(self.hir, node);
+        if (assertion.type_node == hir_mod.none_node_id or
+            !self.isAsConstMarker(assertion.type_node) or
+            self.hir.kindOf(assertion.expr) != .object_literal)
+        {
+            return null;
+        }
+        return assertion.expr;
+    }
+
     fn flowTypeForAssignmentValue(self: *Checker, value_node: NodeId, fallback: TypeId) CheckError!TypeId {
         return switch (self.hir.kindOf(value_node)) {
             .literal_string => blk: {
@@ -232848,7 +232901,7 @@ test "checker: TS1355 fires for invalid 'as const' operands" {
         if (d.code == 1355) {
             ts1355 += 1;
             try T.expectEqualStrings(
-                "A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
+                "A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals.",
                 d.message,
             );
         }
@@ -232873,6 +232926,35 @@ test "checker: TS1355 does NOT fire for valid 'as const' operands" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != 1355);
     }
+}
+
+test "checker: const assertions preserve readonly and nested assignment diagnostics" {
+    const source =
+        \\interface Target { a: 1; b: 2 }
+        \\const value: Target = { a: 1, b: 3 } as const;
+        \\const object = { x: 10, method() { this.x = 20; } } as const;
+        \\const invalid = (true ? 1 : 0) as const;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '3' is not assignable to type '2'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.readonly_property,
+        "Cannot assign to 'x' because it is a read-only property.",
+    ));
+    const invalid_pos: u32 = @intCast(std.mem.indexOf(u8, source, "(true ? 1 : 0)").?);
+    var saw_invalid_anchor = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1355 and diagnostic.pos == invalid_pos) saw_invalid_anchor = true;
+    }
+    try T.expect(saw_invalid_anchor);
 }
 
 test "checker: TS1165 fires for ambient class computed key (declare class)" {
