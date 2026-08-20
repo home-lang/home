@@ -170603,6 +170603,7 @@ pub const Checker = struct {
 
     fn parameterTypeCanBeOmitted(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.void_t) return true;
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
         if (self.typeIncludesUndefined(t)) return true;
         return false;
     }
@@ -187613,15 +187614,14 @@ test "checker: class implements interface checks instance shape" {
         \\class C implements String {
         \\  length: number = 0;
         \\  charAt(pos: number): string { return ""; }
+        \\  match(regexp: any): RegExpMatchArray { return undefined; }
+        \\  split(separator: any, limit?: number): string[] { return []; }
         \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.class_incorrectly_implements_interface) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
 }
 
 test "checker: class implements weak interface reports TS2559 only without overlap" {
@@ -233276,6 +233276,16 @@ test "checker: String split accepts RegExp separator" {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
+}
+
+test "checker: String match and split require their first argument" {
+    const s = try newSetup(
+        \\"abc".match();
+        \\"abc".split();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: JSDoc RegExp resolves as builtin type" {

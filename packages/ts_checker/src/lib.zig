@@ -241,7 +241,7 @@ pub fn stringProto(
     const sig_str_num = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, number_t, false);
     // `(i: number): string`
     const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
-    // `split(separator?: string | RegExp, limit?: number): string[]`.
+    // `split(separator: string | RegExp, limit?: number): string[]`.
     // The separator accepts both `string` and `RegExp`; model it as `any`
     // like `match`/`replace` so regex literals don't spuriously fail.
     const sig_split = try ti.internSignature(&[_]TypeId{ any_t, optional_number_t }, string_arr, false);
