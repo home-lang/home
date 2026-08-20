@@ -31059,10 +31059,6 @@ pub const Checker = struct {
     fn isIterableLikeType(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t == types.Primitive.string_t) return true;
-        if (t < self.interner.pool.typeCount()) {
-            const primitive_flags = self.interner.pool.flagsOf(t);
-            if (primitive_flags.is_string and !primitive_flags.is_object_type) return true;
-        }
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_type_parameter) {
@@ -31082,6 +31078,7 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (flags.is_string and !flags.is_object_type) return true;
         if (!flags.is_object_type) return false;
         const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
         if (self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
@@ -99119,6 +99116,17 @@ pub const Checker = struct {
                 if (checked_js_cross_virtual_function_class) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     break :blk types.Primitive.any;
+                }
+                if (self.sourceHasCheckJsDirective() and self.strict_flags.no_implicit_any and
+                    self.hir.kindOf(c.callee) == .identifier)
+                {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.jsConstructorFunctionDeclForName(c.callee, id.name)) |fn_node| {
+                        if (!self.fnHasJsDocClassOrConstructorTag(fn_node)) {
+                            try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                            break :blk types.Primitive.any;
+                        }
+                    }
                 }
                 if ((self.strict_flags.no_implicit_any or
                     (self.sourceHasCheckJsDirective() and !self.sourceHasStrictFalseDirective())) and
@@ -216877,6 +216885,23 @@ test "checker: current tsgo bare constructor function reports implicit this" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
+test "checker: strict checked JavaScript rejects untagged constructor functions" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @param {number} x */
+        \\function C(x) { this.x = x; }
+        \\const c = new C(1);
+        \\c.x = undefined;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: checkjs prototype method assignments use constructor-inferred this members" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -242643,6 +242668,20 @@ test "checker: ES5 for-of reports the rejected union constituent" {
     s.checker.setTargetEmitEs5(true);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_array_type));
+}
+
+test "checker: ES2015 for-of rejects a partially iterable union" {
+    const s = try newSetup(
+        \\declare let values: string | number;
+        \\for (const value of values) { value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.yield_star_not_iterable,
+        "Type 'string | number' must have a '[Symbol.iterator]()' method that returns an iterator.",
+    ));
 }
 
 test "checker: ES5 for-of preserves the rejected non-string union" {

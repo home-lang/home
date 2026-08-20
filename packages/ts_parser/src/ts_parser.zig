@@ -1325,6 +1325,7 @@ pub const Parser = struct {
             try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
             try self.scanJSDocParamParentDiagnostics(body_start, body_end);
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            try self.scanJSDocTypedefModuleQualifierDiagnostics(body_start, body_end);
             try self.scanJSDocImportTagDiagnostics(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
@@ -1519,6 +1520,33 @@ pub const Parser = struct {
             try self.reportCodeAt(
                 @intCast(name_start),
                 self.lineAt(@intCast(name_start)),
+                1003,
+                "Identifier expected.",
+            );
+        }
+    }
+
+    fn scanJSDocTypedefModuleQualifierDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "typedef")) continue;
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            const type_start = firstNonWhitespace(self.source, tag_name_end, line_end);
+            if (type_start >= line_end or self.source[type_start] != '{') continue;
+            const close_after = self.jsDocTagTypeAnnotationEnd(type_start, line_end) orelse continue;
+            const type_text = self.source[type_start + 1 .. close_after - 1];
+            if (!std.mem.startsWith(u8, type_text, "module:")) continue;
+            const colon = type_start + 1 + "module".len;
+            try self.reportCodeAt(
+                @intCast(colon - 1),
+                self.lineAt(@intCast(colon - 1)),
                 1003,
                 "Identifier expected.",
             );
@@ -32568,6 +32596,28 @@ test "parser: JSDoc property private-name spelling reports TS1003" {
     try T.expectEqual(@as(u32, 3), d.line);
     const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
     try T.expectEqual(@as(u32, 23), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc typedef module qualifier reports tsgo recovery diagnostics" {
+    var s = try newTestSetup("/** @typedef {module:locale} hi */");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    var saw_identifier = false;
+    var saw_close_brace = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003) {
+            saw_identifier = true;
+            try T.expectEqualStrings("Identifier expected.", d.message);
+            try T.expectEqual(@as(u32, 20), d.pos + 1);
+        } else if (d.code == 1005) {
+            saw_close_brace = true;
+            try T.expectEqualStrings("'}' expected.", d.message);
+        }
+    }
+    try T.expect(saw_identifier);
+    try T.expect(saw_close_brace);
 }
 
 test "parser: JSDoc implements missing type reports TS1003" {
