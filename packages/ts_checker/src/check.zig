@@ -107476,10 +107476,14 @@ pub const Checker = struct {
                 );
                 const object_arrow = self.hir.kindOf(fn_node) == .arrow_fn and
                     self.hir.kindOf(self.hir.parentOf(fn_node)) == .object_property;
-                const diagnostic_pos = if (object_arrow)
-                    self.hir.spanOf(f.body).start -| 1
-                else
-                    null;
+                const body_start = self.hir.spanOf(f.body).start;
+                const diagnostic_pos = if (object_arrow) blk: {
+                    const source = self.source orelse break :blk body_start;
+                    break :blk if (body_start > 0 and source[body_start - 1] == '(')
+                        body_start - 1
+                    else
+                        body_start;
+                } else null;
                 try self.diagnostics.append(self.gpa, .{
                     .node = f.body,
                     .pos = diagnostic_pos,
@@ -208856,6 +208860,24 @@ test "checker: typed object arrows report contextual comma return mismatches at 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.comma_left_unused));
     const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "(x, undefined)") orelse unreachable);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
+    }
+}
+
+test "checker: unparenthesized object arrow return mismatches start at the body" {
+    const source =
+        \\interface Show { show: (x: number) => string; }
+        \\interface Nested { nested: Show; }
+        \\function f({ nested = { show: value => value } }: Nested) {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    const expected_pos: u32 = @intCast(std.mem.lastIndexOf(u8, source, "value") orelse unreachable);
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.type_not_assignable) continue;
         try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
