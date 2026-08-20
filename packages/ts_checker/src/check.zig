@@ -13514,8 +13514,13 @@ pub const Checker = struct {
         value_space_only: bool = false,
     };
 
+    const ImportLocalKey = struct {
+        name: hir_mod.StringId,
+        section_start: usize,
+    };
+
     fn checkImportLocalConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
-        var imports_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, ImportLocalInfo) = .empty;
+        var imports_by_name: std.AutoHashMapUnmanaged(ImportLocalKey, ImportLocalInfo) = .empty;
         defer imports_by_name.deinit(self.gpa);
 
         for (stmts) |stmt| {
@@ -13525,23 +13530,23 @@ pub const Checker = struct {
             if (imp.import_equals != hir_mod.none_node_id) {
                 if (self.importEqualsAliasName(stmt)) |alias_name| {
                     if (self.importEqualsTargetHasRuntimeValue(stmt, 0)) {
-                        try imports_by_name.put(self.gpa, alias_name, .{ .node = stmt, .module = imp.module, .section_start = import_section, .value_space_only = true });
+                        try imports_by_name.put(self.gpa, .{ .name = alias_name, .section_start = import_section }, .{ .node = stmt, .module = imp.module, .section_start = import_section, .value_space_only = true });
                     }
                 }
                 continue;
             }
             if (!imp.is_type_only and imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.default_binding);
-                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.default_binding, .module = imp.module, .section_start = import_section });
+                try imports_by_name.put(self.gpa, .{ .name = id.name, .section_start = import_section }, .{ .node = imp.default_binding, .module = imp.module, .section_start = import_section });
             }
             if (!imp.is_type_only and imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
-                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.namespace_binding, .module = imp.module, .section_start = import_section });
+                try imports_by_name.put(self.gpa, .{ .name = id.name, .section_start = import_section }, .{ .node = imp.namespace_binding, .module = imp.module, .section_start = import_section });
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (imp.is_type_only or spec.is_type_only) continue;
-                try imports_by_name.put(self.gpa, spec.local, .{ .node = spec_node, .module = imp.module, .section_start = import_section });
+                try imports_by_name.put(self.gpa, .{ .name = spec.local, .section_start = import_section }, .{ .node = spec_node, .module = imp.module, .section_start = import_section });
             }
         }
 
@@ -13549,8 +13554,10 @@ pub const Checker = struct {
             const local = self.unwrapExportDecl(stmt);
             if (local == hir_mod.none_node_id or self.hir.kindOf(local) == .import_decl) continue;
             const name = self.declarationName(local) orelse continue;
-            const import_info = imports_by_name.get(name) orelse continue;
-            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(local) != import_info.section_start) continue;
+            const import_info = imports_by_name.get(.{
+                .name = name,
+                .section_start = self.virtualSectionStartForNode(local),
+            }) orelse continue;
             const local_kind = self.hir.kindOf(local);
             if (local_kind == .type_alias_decl or local_kind == .interface_decl) continue;
             if (try self.ambientModuleExportsName(stmts, import_info.module, name)) continue;
@@ -112254,7 +112261,11 @@ pub const Checker = struct {
     ) CheckError!void {
         if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return;
         const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
-        const info = self.generic_aliases.get(class_name) orelse return;
+        const info = self.generic_aliases.get(class_name) orelse blk: {
+            const target = (try self.virtualExportAssignmentTargetDeclForLocal(class_name, callee_node)) orelse return;
+            const target_name = self.declarationName(target) orelse return;
+            break :blk self.generic_aliases.get(target_name) orelse return;
+        };
         if (info.params.len == 0 or !self.interner.isSignature(constructor_sig)) return;
 
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -178324,6 +178335,49 @@ test "checker: namespace declaration conflicts with imported local" {
         if (d.code == TsCodes.import_conflicts_with_local) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: const enum import conflicts with a same-name namespace merge" {
+    const b = try newBoundSetup(
+        \\// @Filename: enum.ts
+        \\export const enum Enum { One = 1 }
+        \\// @Filename: merge.ts
+        \\import { Enum } from "./enum";
+        \\namespace Enum { export type Foo = number; }
+        \\export { Enum };
+        \\// @Filename: index.ts
+        \\import { Enum } from "./merge";
+        \\Enum.One;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        b.base,
+        TsCodes.import_conflicts_with_local,
+        "Import declaration conflicts with local declaration of 'Enum'.",
+    ));
+}
+
+test "checker: export assignment import aliases preserve generic constraints" {
+    const b = try newBoundSetup(
+        \\// @Filename: foo_0.ts
+        \\class Foo<T extends { a: string; b: number }> {
+        \\  test: T;
+        \\  constructor(value: T) {}
+        \\}
+        \\export = Foo;
+        \\// @Filename: foo_1.ts
+        \\import foo = require("./foo_0");
+        \\const bad = new foo(true);
+        \\const good = new foo({ a: "ok", b: 1 });
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'boolean' is not assignable to parameter of type '{ a: string; b: number; }'.",
+    ));
 }
 
 test "checker: import-equals reports shadowed module and local value conflicts" {
