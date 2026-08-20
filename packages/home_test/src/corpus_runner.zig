@@ -36891,6 +36891,31 @@ const harness_prelude =
     \\    return { protocol: "grpc", options: options || {} };
     \\  },
     \\};
+    \\class __home_AzureServiceBusClient {
+    \\  constructor(connectionString) {
+    \\    if (typeof connectionString !== "string" || connectionString.length === 0) throw new TypeError("Service Bus connection string must be a non-empty string");
+    \\    this.connectionString = connectionString;
+    \\    this.closed = false;
+    \\    this.senders = new Set();
+    \\  }
+    \\  createSender(entityPath) {
+    \\    if (this.closed) throw new Error("The ServiceBusClient is closed");
+    \\    if (typeof entityPath !== "string" || entityPath.length === 0) throw new TypeError("Service Bus entity path must be a non-empty string");
+    \\    const client = this;
+    \\    const sender = {
+    \\      closed: false,
+    \\      async sendMessages(message) {
+    \\        if (this.closed || client.closed) throw new Error("The ServiceBusSender is closed");
+    \\        if (message === null || message === undefined) throw new TypeError("Service Bus message is required");
+    \\      },
+    \\      async close() { this.closed = true; client.senders.delete(this); },
+    \\    };
+    \\    this.senders.add(sender);
+    \\    return sender;
+    \\  }
+    \\  async close() { this.closed = true; for (const sender of this.senders) sender.closed = true; this.senders.clear(); }
+    \\}
+    \\globalThis.__home_modules["@azure/service-bus"] = { ServiceBusClient: __home_AzureServiceBusClient };
     \\function __home_react_create_context(defaultValue) {
     \\  const context = {
     \\    $$typeof: Symbol.for("react.context"),
@@ -75338,6 +75363,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "child_process",
         "node:child_process",
         "@connectrpc/connect-node",
+        "@azure/service-bus",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -99881,6 +99907,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         passed: usize,
         todo: usize = 0,
     }{
+        .{ .path = "js/third_party/@azure/service-bus/azure-service-bus.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
