@@ -2386,6 +2386,16 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
             {
                 return a.code == 2695;
             }
+            // Reserved array-binding recovery parses the comma tail as a
+            // malformed parenthesized expression. tsgo retains TS2695 before
+            // its same-position TS1005 "'(' expected" diagnostic. Other
+            // TS1005/TS2695 pairs, such as a missing comma after `new`, keep
+            // their normal code order.
+            if ((a.code == 2695 and b.code == 1005 and std.mem.eql(u8, b.message, "'(' expected.")) or
+                (a.code == 1005 and b.code == 2695 and std.mem.eql(u8, a.message, "'(' expected.")))
+            {
+                return a.code == 2695;
+            }
             // A malformed Closure-style JSDoc typedef binds the missing
             // declaration before parser recovery reports the closing brace.
             if ((a.code == 2300 and b.code == 1005) or
@@ -3759,6 +3769,30 @@ test "driver: same-position diagnostics prefer shorter source span" {
 
     try T.expectEqual(@as(u32, 2454), diags[0].code);
     try T.expectEqual(@as(u32, 2365), diags[1].code);
+}
+
+test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
+    var diags = [_]Diagnostic{
+        .{
+            .phase = .parse,
+            .pos = 10,
+            .line = 0,
+            .code = 1005,
+            .message = "'(' expected.",
+        },
+        .{
+            .phase = .parse,
+            .pos = 10,
+            .line = 0,
+            .code = 2695,
+            .message = "Left side of comma operator is unused and has no side effects.",
+        },
+    };
+
+    sortDiagnosticsBySourceOrder(diags[0..]);
+
+    try T.expectEqual(@as(u32, 2695), diags[0].code);
+    try T.expectEqual(@as(u32, 1005), diags[1].code);
 }
 
 test "driver: empty source produces empty JS" {

@@ -243,6 +243,8 @@ pub const Parser = struct {
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
     parameter_list_recovered_jsdoc_function_type: bool,
+    parameter_list_recovered_reserved_array: bool,
+    parameter_list_recovered_reserved_rest: bool,
     legacy_jsdoc_function_tail_pending: bool,
     legacy_jsdoc_function_parameter_name: ?hir_mod.StringId,
     saw_legacy_jsdoc_function_recovery: bool,
@@ -392,6 +394,8 @@ pub const Parser = struct {
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
             .parameter_list_recovered_jsdoc_function_type = false,
+            .parameter_list_recovered_reserved_array = false,
+            .parameter_list_recovered_reserved_rest = false,
             .legacy_jsdoc_function_tail_pending = false,
             .legacy_jsdoc_function_parameter_name = null,
             .saw_legacy_jsdoc_function_recovery = false,
@@ -4411,6 +4415,8 @@ pub const Parser = struct {
         }
         self.parameter_list_recovered_body_as_missing_close = false;
         self.parameter_list_recovered_jsdoc_function_type = false;
+        self.parameter_list_recovered_reserved_array = false;
+        self.parameter_list_recovered_reserved_rest = false;
         const saved_arrow_is_comma = self.parameter_list_arrow_is_comma;
         self.parameter_list_arrow_is_comma = true;
         defer self.parameter_list_arrow_is_comma = saved_arrow_is_comma;
@@ -4425,12 +4431,21 @@ pub const Parser = struct {
             try self.reportCodeAt(body_start.span.start, body_start.line, 1005, "'(' expected.");
             break :blk &.{};
         } else blk: {
+            const parsed = self.parsePotentialBodylessSignatureParameterList() catch |err| switch (err) {
+                error.UnexpectedToken => {
+                    if (!try self.recoverReservedArrayBindingParameterTail()) return err;
+                    break :blk &.{};
+                },
+                else => return err,
+            };
             owns_params = true;
-            break :blk try self.parsePotentialBodylessSignatureParameterList();
+            break :blk parsed;
         };
         defer if (owns_params) self.gpa.free(params);
         const recovered_body_as_missing_close = self.parameter_list_recovered_body_as_missing_close;
         const recovered_jsdoc_function_type = self.parameter_list_recovered_jsdoc_function_type;
+        const recovered_reserved_array = self.parameter_list_recovered_reserved_array;
+        const recovered_reserved_rest = self.parameter_list_recovered_reserved_rest;
 
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
@@ -4456,9 +4471,10 @@ pub const Parser = struct {
 
         var body: NodeId = hir_mod.none_node_id;
         var had_errant_arrow_recovery = false;
-        if (recovered_jsdoc_function_type) {
+        if (recovered_jsdoc_function_type or recovered_reserved_array or recovered_reserved_rest) {
             // The malformed type's `(` starts a new recovered source
-            // element. Leave it unread and keep this declaration bodyless.
+            // element, while reserved binding recovery leaves the function
+            // block as a standalone statement. Keep the declaration bodyless.
         } else if (recovered_body_as_missing_close) {
             const report_pos = if (name != hir_mod.none_node_id) self.hir.spanOf(name).start else start.span.start;
             try self.reportCodeAt(
@@ -4547,9 +4563,55 @@ pub const Parser = struct {
             .{
                 .is_generator = is_generator,
                 .is_expression = is_expression,
-                .has_errant_arrow = had_errant_arrow_recovery or invalid_before_body or recovered_jsdoc_function_type,
+                .has_errant_arrow = had_errant_arrow_recovery or invalid_before_body or recovered_jsdoc_function_type or recovered_reserved_array or recovered_reserved_rest,
             },
         );
+    }
+
+    /// Recover the source-element parse that tsgo performs after a reserved
+    /// word aborts an array binding parameter such as `[while, for, public]`.
+    /// The remaining tokens are interpreted as a malformed comma expression;
+    /// preserving that cascade also lets the checker see a bodyless function.
+    fn recoverReservedArrayBindingParameterTail(self: *Parser) ParseError!bool {
+        if (self.diagnostics.items.len == 0 or
+            self.diagnostics.items[self.diagnostics.items.len - 1].code != 1181 or
+            !isReservedBindingNameToken(self.peek().kind))
+        {
+            return false;
+        }
+
+        _ = self.advance();
+        while (self.peek().kind == .comma) {
+            const comma = self.advance();
+            try self.reportCodeAt(comma.span.start, comma.line, 2695, "Left side of comma operator is unused and has no side effects.");
+            try self.reportCodeAt(comma.span.start, comma.line, 1005, "'(' expected.");
+
+            const token = self.peek();
+            if (token.kind == .close_bracket or token.kind == .eof) break;
+            _ = self.advance();
+            if (token.kind == .kw_public or token.kind == .kw_private or token.kind == .kw_protected) {
+                const name = self.source[token.span.start..token.span.end];
+                try self.reportCodeAt(
+                    token.span.start,
+                    token.line,
+                    2304,
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name}),
+                );
+            } else {
+                try self.reportCodeAt(token.span.start, token.line, 1109, "Expression expected.");
+            }
+        }
+
+        if (self.peek().kind == .close_bracket) {
+            const close_bracket = self.advance();
+            try self.reportCodeAt(close_bracket.span.start, close_bracket.line, 1005, "';' expected.");
+        }
+        if (self.peek().kind == .close_paren) {
+            const close_paren = self.advance();
+            try self.reportCodeAt(close_paren.span.start, close_paren.line, 1128, "Declaration or statement expected.");
+        }
+        self.parameter_list_recovered_reserved_array = true;
+        return true;
     }
 
     /// Commit or drop the TS2463 diagnostics recorded while parsing the
@@ -4793,6 +4855,17 @@ pub const Parser = struct {
                         );
                     }
                 }
+                var recovered_reserved_rest_name: ?NodeId = null;
+                if (flags.is_rest and reservedWordInvalidAsParamName(self.peek().kind)) {
+                    const reserved = self.advance();
+                    try self.reportReservedWordCannotBeUsedHere(reserved);
+                    if (self.peek().kind == .close_paren) {
+                        const close = self.peek();
+                        try self.reportCodeAt(close.span.start, close.line, 1005, "'(' expected.");
+                    }
+                    recovered_reserved_rest_name = try self.missingIdentifierAt(reserved.span.start);
+                    self.parameter_list_recovered_reserved_rest = true;
+                }
                 // §3.A.11 — explicit `this: T` first parameter. TS
                 // doesn't surface it at runtime; we capture it as a
                 // parameter named "this" so the checker's existing
@@ -4878,7 +4951,7 @@ pub const Parser = struct {
                 // the list (mirroring the invalid-character branch above)
                 // so a following `)` / `,` is handled cleanly rather than
                 // hard-failing the parameter list. Mirrors `reservedWords3.ts`.
-                if (reservedWordInvalidAsParamName(self.peek().kind)) {
+                if (recovered_reserved_rest_name == null and reservedWordInvalidAsParamName(self.peek().kind)) {
                     const kw = self.advance();
                     try self.reportCodeAtWithSpan(
                         kw.span.start,
@@ -4900,7 +4973,7 @@ pub const Parser = struct {
                 // the parameter's "name" — downstream the binder walks
                 // the pattern to declare each binding, and the checker
                 // resolves identifier types through the pattern.
-                const name_node: NodeId = if (self.peek().kind == .colon) blk: {
+                const name_node: NodeId = if (recovered_reserved_rest_name) |name| name else if (self.peek().kind == .colon) blk: {
                     // A leading `:` cannot begin a parameter declaration.
                     // Skip it and recover the following identifier as the
                     // parameter name, rather than treating that identifier as
@@ -4957,7 +5030,20 @@ pub const Parser = struct {
                     }
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     try self.reportInvalidYieldName(name_tok, true);
-                    try self.reportInvalidFutureReservedName(name_tok);
+                    // The tsgo binder skips contextual-identifier checks when
+                    // the file already has a syntactic parse error. Preserve
+                    // that behavior for a recovered rest name such as
+                    // `...public`, while clean strict files still get TS1212.
+                    var has_prior_parse_error = false;
+                    if (flags.is_rest) {
+                        for (self.diagnostics.items) |diagnostic| {
+                            if (diagnosticIsSyntacticParseError(diagnostic)) {
+                                has_prior_parse_error = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!has_prior_parse_error) try self.reportInvalidFutureReservedName(name_tok);
                     try self.reportInvalidClassStrictIdentifier(name_tok);
                     try self.reportAwaitReservedInAsyncContext(name_tok);
                     if (flags.is_rest and name_tok.kind == .kw_this) {
@@ -33347,19 +33433,55 @@ test "parser: TS1181 fires when a reserved word starts an array binding element"
     // Mirrors upstream `destructuringParameterDeclaration6.ts(9,14)`:
     //   function a4([while, for, public]){ }
     //                ~~~~~  TS1181 Array element destructuring pattern expected.
-    // Pre-fix Home accepted `while` as a binding identifier and
-    // surfaced TS1359 ("'while' is a reserved word") instead of the
-    // upstream parser-level TS1181. The new gate bails after emitting
-    // TS1181, matching `parseList`'s `parsingContextErrors` recovery;
-    // swallow the `UnexpectedToken` so the test can read diagnostics.
-    var s = try newTestSetup("function a4([while, for, public]) { }");
+    // The parser then resumes the tail as a malformed comma expression,
+    // preserving tsgo's diagnostic order and the following declaration.
+    var s = try newTestSetup(
+        \\function a4([while, for, public]) { }
+        \\function after() {}
+    );
     defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch |err| switch (err) {
-        error.UnexpectedToken => hir_mod.none_node_id,
-        else => return err,
-    };
+    const root = try s.parser.parseSourceFile();
     const d = findDiag(s, 1181) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Array element destructuring pattern expected.", d.message);
+    try T.expectEqualSlices(u32, &.{ 1181, 2695, 1005, 1109, 2695, 1005, 2304, 1005, 1128 }, &.{
+        s.parser.diagnostics.items[0].code,
+        s.parser.diagnostics.items[1].code,
+        s.parser.diagnostics.items[2].code,
+        s.parser.diagnostics.items[3].code,
+        s.parser.diagnostics.items[4].code,
+        s.parser.diagnostics.items[5].code,
+        s.parser.diagnostics.items[6].code,
+        s.parser.diagnostics.items[7].code,
+        s.parser.diagnostics.items[8].code,
+    });
+    try T.expectEqual(@as(usize, 3), hir_mod.blockStmts(&s.hir, root).len);
+}
+
+test "parser: reserved rest parameter keeps a recoverable missing binding" {
+    var s = try newTestSetup(
+        \\function a5(...while) { }
+        \\function a6(...public) { }
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqualSlices(u32, &.{ 1359, 1005 }, &.{
+        s.parser.diagnostics.items[0].code,
+        s.parser.diagnostics.items[1].code,
+    });
+    const statements = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), statements.len);
+    const recovered = hir_mod.fnDeclOf(&s.hir, statements[0]);
+    const recovered_params = hir_mod.fnParams(&s.hir, statements[0]);
+    try T.expectEqual(@as(usize, 1), recovered_params.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, recovered_params[0]).flags.is_rest);
+    try T.expectEqual(hir_mod.none_node_id, recovered.body);
+}
+
+test "parser: clean strict rest parameter retains future-reserved diagnostic" {
+    var s = try newTestSetup("\"use strict\"; function f(...public) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1212));
 }
 
 test "parser: TS1181 fires when a number literal starts an array binding element" {
