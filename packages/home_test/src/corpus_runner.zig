@@ -787,6 +787,7 @@ const harness_prelude =
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
     \\globalThis.__home_fs_watchers = globalThis.__home_fs_watchers || [];
+    \\globalThis.__home_fs_stat_watchers = globalThis.__home_fs_stat_watchers || new Map();
     \\globalThis.__home_array_buffer_transfer_locks = globalThis.__home_array_buffer_transfer_locks || new WeakSet();
     \\const __home_array_buffer_byte_length_descriptor = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength");
     \\if (__home_array_buffer_byte_length_descriptor && typeof __home_array_buffer_byte_length_descriptor.get === "function" && !__home_array_buffer_byte_length_descriptor.get.__home_observes_detached) {
@@ -832,6 +833,24 @@ const harness_prelude =
     \\    else if (watcher.__home_encoding && watcher.__home_encoding !== "utf8" && watcher.__home_encoding !== "utf-8") filename = Buffer.from(filename, "utf8").toString(watcher.__home_encoding);
     \\    Promise.resolve().then(() => { if (!watcher.__home_closed) watcher.emit("change", event, filename); });
     \\  }
+    \\  __home_fs_notify_stat_watchers(changed);
+    \\}
+    \\function __home_fs_watch_file_snapshot(path, bigint, previous) {
+    \\  const text = __home_build_read_text(path);
+    \\  if (text === null && !__home_node_fs.existsSync(path)) return { size: bigint ? 0n : 0, mtimeMs: bigint ? 0n : 0 };
+    \\  const size = __home_text_to_utf8_bytes(text || "").length;
+    \\  const priorTime = previous ? Number(previous.mtimeMs) : 0;
+    \\  const mtime = Math.max(Date.now(), priorTime + 1);
+    \\  return { size: bigint ? BigInt(size) : size, mtimeMs: bigint ? BigInt(mtime) : mtime };
+    \\}
+    \\function __home_fs_notify_stat_watchers(path) {
+    \\  const changed = __home_fs_absolute_path(path);
+    \\  const watcher = globalThis.__home_fs_stat_watchers.get(changed);
+    \\  if (!watcher || watcher.__home_stopped) return;
+    \\  const previous = watcher.__home_snapshot;
+    \\  const current = __home_fs_watch_file_snapshot(changed, watcher.__home_bigint, previous);
+    \\  watcher.__home_snapshot = current;
+    \\  Promise.resolve().then(() => { if (!watcher.__home_stopped) watcher.emit("change", current, previous); });
     \\}
     \\function __home_fs_dir_error(code, message, syscall, path) {
     \\  const error = new Error(code + ": " + message + ", " + syscall + " '" + String(path) + "'");
@@ -50945,6 +50964,15 @@ const harness_prelude =
     \\  if (!this._handle || this._handle.__home_fs_event !== true) throw __home_fs_watch_handle_error();
     \\};
     \\__home_fs_watcher_prototype.start = __home_fs_watcher_prototype[__home_fs_watch_start];
+    \\function __home_StatWatcher() {
+    \\  throw new TypeError("StatWatcher cannot be constructed directly");
+    \\}
+    \\Object.defineProperty(__home_StatWatcher, "name", { configurable: true, value: "StatWatcher" });
+    \\const __home_fs_stat_watcher_prototype = Object.create(__home_EventEmitter.prototype, {
+    \\  constructor: { configurable: true, value: __home_StatWatcher, writable: true },
+    \\});
+    \\__home_fs_stat_watcher_prototype.ref = function() { this.__home_persistent = true; return this; };
+    \\__home_fs_stat_watcher_prototype.unref = function() { this.__home_persistent = false; return this; };
     \\function __home_fs_watch(path, options, listener) {
     \\  if (typeof options === "function") { listener = options; options = {}; }
     \\  if (!options || typeof options !== "object") options = {};
@@ -51007,6 +51035,7 @@ const harness_prelude =
     \\}
     \\const __home_node_fs = {
     \\  FSWatcher: __home_FSWatcher,
+    \\  StatWatcher: __home_StatWatcher,
     \\  Stats: Stats,
     \\  Dirent: Dirent,
     \\  ReadStream: __home_fs_ReadStream,
@@ -51301,6 +51330,45 @@ const harness_prelude =
     \\  watch(path, options, listener) {
     \\    return __home_fs_watch(path, options, listener);
     \\  },
+    \\  watchFile(path, options, listener) {
+    \\    if (typeof options === "function") { listener = options; options = {}; }
+    \\    if (!options || typeof options !== "object") options = {};
+    \\    if (typeof listener !== "function") throw new TypeError("The listener argument must be of type function");
+    \\    let watchPath = path instanceof URL ? __home_url_file_url_to_path(path) : String(path);
+    \\    if (watchPath.startsWith("file:")) watchPath = __home_url_file_url_to_path(watchPath);
+    \\    const absolutePath = __home_fs_absolute_path(watchPath);
+    \\    let watcher = globalThis.__home_fs_stat_watchers.get(absolutePath);
+    \\    if (!watcher || watcher.__home_stopped) {
+    \\      watcher = new __home_EventEmitter();
+    \\      Object.setPrototypeOf(watcher, __home_fs_stat_watcher_prototype);
+    \\      watcher.__home_path = absolutePath;
+    \\      watcher.__home_bigint = options.bigint === true;
+    \\      watcher.__home_persistent = options.persistent !== false;
+    \\      watcher.__home_stopped = false;
+    \\      watcher.__home_snapshot = __home_fs_watch_file_snapshot(absolutePath, watcher.__home_bigint);
+    \\      globalThis.__home_fs_stat_watchers.set(absolutePath, watcher);
+    \\      if (!__home_node_fs.existsSync(absolutePath)) {
+    \\        const zero = watcher.__home_snapshot;
+    \\        Promise.resolve().then(() => { if (!watcher.__home_stopped) watcher.emit("change", zero, zero); });
+    \\      }
+    \\    }
+    \\    watcher.on("change", listener);
+    \\    return watcher;
+    \\  },
+    \\  unwatchFile(path, listener) {
+    \\    let watchPath = path instanceof URL ? __home_url_file_url_to_path(path) : String(path);
+    \\    if (watchPath.startsWith("file:")) watchPath = __home_url_file_url_to_path(watchPath);
+    \\    const absolutePath = __home_fs_absolute_path(watchPath);
+    \\    const watcher = globalThis.__home_fs_stat_watchers.get(absolutePath);
+    \\    if (!watcher) return;
+    \\    if (typeof listener === "function") watcher.removeListener("change", listener);
+    \\    else watcher.removeAllListeners("change");
+    \\    if (watcher.listenerCount("change") === 0) {
+    \\      watcher.__home_stopped = true;
+    \\      globalThis.__home_fs_stat_watchers.delete(absolutePath);
+    \\      watcher.emit("stop");
+    \\    }
+    \\  },
     \\  globSync(pattern, options) {
     \\    return __home_fs_glob_sync(pattern, options || {});
     \\  },
@@ -51342,6 +51410,7 @@ const harness_prelude =
     \\        delete globalThis.__home_written_file_times[oldKey];
     \\      }
     \\    }
+    \\    __home_fs_notify_watchers(newKey, true);
     \\    return result;
     \\  },
     \\  unlinkSync(path) {
@@ -92048,6 +92117,7 @@ test "bootstrap runner preserves node watch contracts" {
         .{ .path = "js/node/watch/fs.watch.events-cb-race.test.ts", .passed = 1 },
         .{ .path = "js/node/watch/fs.watch.rewrite.test.ts", .passed = 5 },
         .{ .path = "js/node/watch/fs.watch.test.ts", .passed = 40, .todo = 2 },
+        .{ .path = "js/node/watch/fs.watchFile.test.ts", .passed = 9, .todo = 2 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
