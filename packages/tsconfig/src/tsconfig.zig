@@ -610,6 +610,15 @@ pub const TsConfig = struct {
 
         const effective_module = effectiveModuleKind(co);
         const effective_module_resolution = effectiveModuleResolution(co, effective_module);
+        if (co.verbatim_module_syntax == true and
+            (effective_module == .amd or effective_module == .umd or effective_module == .system))
+        {
+            try diags.append(gpa, .{
+                .code = 5105,
+                .message = "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'.",
+                .field = "verbatimModuleSyntax",
+            });
+        }
         if (co.allow_importing_ts_extensions == true and !(co.no_emit == true or co.emit_declaration_only == true or co.rewrite_relative_import_extensions == true)) {
             try diags.append(gpa, .{
                 .code = 5096,
@@ -3047,6 +3056,49 @@ test "tsconfig.validate: dependent options report TS5052" {
     try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
     try t.expectEqual(@as(u32, 5052), diags[3].code);
     try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
+}
+
+test "tsconfig.validate: verbatimModuleSyntax rejects legacy wrapper modules" {
+    for ([_][]const u8{ "amd", "umd", "system" }) |module| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = try std.fmt.allocPrint(
+            t.allocator,
+            "{{\"compilerOptions\":{{\"module\":\"{s}\",\"verbatimModuleSyntax\":true}}}}",
+            .{module},
+        );
+        defer t.allocator.free(source);
+        const cfg = try parseString(t.allocator, arena.allocator(), source);
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        var found = false;
+        for (diags) |diagnostic| {
+            if (diagnostic.code == 5105 and
+                std.mem.eql(u8, diagnostic.field, "verbatimModuleSyntax") and
+                std.mem.eql(u8, diagnostic.message, "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'."))
+            {
+                found = true;
+            }
+        }
+        try t.expect(found);
+    }
+}
+
+test "tsconfig.validate: verbatimModuleSyntax accepts CommonJS and ES modules" {
+    for ([_][]const u8{ "commonjs", "es2015", "esnext", "preserve" }) |module| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const source = try std.fmt.allocPrint(
+            t.allocator,
+            "{{\"compilerOptions\":{{\"module\":\"{s}\",\"verbatimModuleSyntax\":true}}}}",
+            .{module},
+        );
+        defer t.allocator.free(source);
+        const cfg = try parseString(t.allocator, arena.allocator(), source);
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        for (diags) |diagnostic| try t.expect(diagnostic.code != 5105);
+    }
 }
 
 test "tsconfig.validate: dependent options accept required pairs" {

@@ -501,6 +501,37 @@ fn reportDeprecatedOptionDirectives(
         c.has_errors = true;
     }
 
+    const effective_verbatim_module_syntax = directiveBool(source, "verbatimModuleSyntax") orelse
+        if (options.strict_flags) |flags|
+            flags.verbatim_module_syntax
+        else if (options.pub_tsconfig) |cfg|
+            cfg.compiler_options.verbatim_module_syntax orelse false
+        else
+            false;
+    const effective_module = if (options.module_kind.len > 0)
+        options.module_kind
+    else if (directiveValue(source, "module")) |module|
+        std.mem.trim(u8, firstCsvField(module), " \t")
+    else if (options.pub_tsconfig) |cfg| blk: {
+        if (cfg.compiler_options.module) |module| break :blk @tagName(module);
+        break :blk "";
+    } else "";
+    if (effective_verbatim_module_syntax and
+        (std.ascii.eqlIgnoreCase(effective_module, "amd") or
+            std.ascii.eqlIgnoreCase(effective_module, "umd") or
+            std.ascii.eqlIgnoreCase(effective_module, "system")))
+    {
+        try c.diagnostics.append(gpa, .{
+            .phase = .parse,
+            .pos = 0,
+            .line = 0,
+            .code = 5105,
+            .is_global = true,
+            .message = try gpa.dupe(u8, "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'."),
+        });
+        c.has_errors = true;
+    }
+
     const ignore_deprecations = ignoresTypeScriptSixDeprecations(source, options);
     const effective_resolve_json_module = blk: {
         if (directiveBool(source, "resolveJsonModule")) |explicit| break :blk explicit;
@@ -6676,11 +6707,13 @@ test "driver: ignoreDeprecations 6.0 suppresses TypeScript 6 option deprecations
         suppressed.deinit();
         T.allocator.destroy(suppressed);
     }
+    var found_verbatim_compat = false;
     for (suppressed.diagnostics.items) |d| {
         try T.expect(d.code != 5101);
         if (d.code == 5107) try T.expect(std.mem.indexOf(u8, d.message, "deprecated") == null);
-        try T.expect(d.code != 5105);
+        if (d.code == 5105) found_verbatim_compat = true;
     }
+    try T.expect(found_verbatim_compat);
 
     var older_boundary = try compileSource(T.allocator,
         \\// @ignoreDeprecations: 5.0
@@ -6874,18 +6907,43 @@ test "driver: @module: esnext does not emit TS5107" {
     }
 }
 
-test "driver: @verbatimModuleSyntax + @module: system does not emit stale TS5105" {
-    var c = try compileSource(T.allocator,
-        \\// @verbatimModuleSyntax: true
-        \\// @module: system
-        \\export {};
-    , .{ .no_emit = true });
-    defer {
-        c.deinit();
-        T.allocator.destroy(c);
+test "driver: verbatimModuleSyntax rejects AMD UMD and System" {
+    for ([_][]const u8{ "amd", "umd", "system" }) |module| {
+        const source = try std.fmt.allocPrint(
+            T.allocator,
+            "// @verbatimModuleSyntax: true\n// @module: {s}\nexport {{}};",
+            .{module},
+        );
+        defer T.allocator.free(source);
+        var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        var found = false;
+        for (c.diagnostics.items) |d| {
+            if (d.code == 5105 and d.is_global and std.mem.eql(
+                u8,
+                d.message,
+                "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'.",
+            )) found = true;
+        }
+        try T.expect(found);
     }
-    for (c.diagnostics.items) |d| {
-        try T.expect(d.code != 5105);
+
+    for ([_][]const u8{ "commonjs", "es2015", "esnext", "preserve" }) |module| {
+        const source = try std.fmt.allocPrint(
+            T.allocator,
+            "// @verbatimModuleSyntax: true\n// @module: {s}\nexport {{}};",
+            .{module},
+        );
+        defer T.allocator.free(source);
+        var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        for (c.diagnostics.items) |d| try T.expect(d.code != 5105);
     }
 }
 
