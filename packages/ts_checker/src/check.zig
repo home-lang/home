@@ -87400,7 +87400,6 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
-            if (try self.jsConstructorInstanceTypeForHeritage(anchor, name)) |t| return t;
             if (try self.importedTypeRefForLocal(name, anchor)) |t| return t;
             if (self.type_names.get(name)) |t| {
                 if (self.genericTypeAliasVisibleAt(anchor, name)) return t;
@@ -88662,15 +88661,7 @@ pub const Checker = struct {
             type_params = info.params;
             alias_info = info;
         } else if (self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
-            if (try self.jsConstructorInstanceTypeForHeritage(self.jsdoc_diagnostic_anchor, name_id)) |instance_t| {
-                base_t = instance_t;
-                if (self.generic_fns.get(name_id)) |params| {
-                    type_params = params;
-                } else if (self.generic_aliases.get(name_id)) |info| {
-                    type_params = info.params;
-                    alias_info = info;
-                }
-            } else if (try self.jsDocSameFileClassInstanceType(self.jsdoc_diagnostic_anchor, name_id)) |instance_t| {
+            if (try self.jsDocSameFileClassInstanceType(self.jsdoc_diagnostic_anchor, name_id)) |instance_t| {
                 base_t = instance_t;
                 if (self.generic_aliases.get(name_id)) |info| {
                     type_params = info.params;
@@ -155627,13 +155618,11 @@ pub const Checker = struct {
             const seed_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
             try self.class_instance_types.put(self.gpa, name, seed_t);
             try self.class_name_by_instance.put(self.gpa, seed_t, name);
-            try self.type_names.put(self.gpa, name, seed_t);
             try self.collectJsConstructorPrototypeMembers(name, callee_node, &members);
         }
         const instance_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         try self.class_instance_types.put(self.gpa, name, instance_t);
         try self.class_name_by_instance.put(self.gpa, instance_t, name);
-        try self.type_names.put(self.gpa, name, instance_t);
         return instance_t;
     }
 
@@ -217199,6 +217188,23 @@ test "checker: current tsgo bare constructor function reports implicit this" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\function Declared() { this.x = 1; }
+        \\var Assigned = function () { this.y = 1; };
+        \\new Declared();
+        \\new Assigned();
+        \\/** @type {Declared} */ var first;
+        \\/** @type {Assigned} */ var second;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: strict checked JavaScript rejects untagged constructor functions" {
