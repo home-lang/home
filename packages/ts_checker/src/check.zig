@@ -8245,7 +8245,10 @@ pub const Checker = struct {
                         // structural shape, not the bare "Type must have ÃÂ¢ÃÂÃÂ¦"
                         // form. Anchoring on `fr.source` keeps the column at
                         // the source expression (matches existing baselines).
-                        try self.reportIteratorRequired(fr.source, src_t);
+                        try self.reportIteratorRequired(
+                            fr.source,
+                            try self.expressionLiteralType(fr.source, src_t),
+                        );
                     }
                 } else {
                     if (es5_for_of and
@@ -83753,7 +83756,7 @@ pub const Checker = struct {
         if (try self.mappedArraySourceAssignableToArrayTarget(source_t, target_t)) return true;
         if (self.mappedSourceAssignableToOpenAnyIndexTarget(source_t, target_t)) return true;
         if (try self.namedObjectSourceToStringIndexTarget(source_t, target_t)) |ok| return ok;
-        if (self.indexedSourceAssignableToOpenAnyStringIndexTarget(source_t, target_t)) return true;
+        if (self.indexedSourceToOpenStringIndexTargetRelation(source_t, target_t)) |ok| return ok;
         if (try self.filteredMappedKeySourceAssignableToKeyofTarget(source_t, target_t)) return true;
         if (try self.patternIndexSignaturesAssignable(source_t, target_t)) |ok| return ok;
         if (try self.genericIndexSignatureRelationMismatch(source_t, target_t)) return false;
@@ -83831,9 +83834,34 @@ pub const Checker = struct {
         const members = self.interner.objectMembers(target_t);
         if (members.len == 0) return null;
         for (members) |member| {
-            if (!member.is_optional) return false;
+            if (member.is_optional) continue;
+            const source_member = self.interner.objectMemberInfo(source_t, member.name) orelse return false;
+            if (!try self.checkerAssignableTo(source_member.type, member.type)) return false;
         }
         return true;
+    }
+
+    fn upperObjectAssignmentToInferredObjectLiteralVariable(
+        self: *Checker,
+        target_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (!self.typeIsGlobalObjectBuiltin(source_t) and !(try self.typeIsUpperObject(source_t))) return false;
+        if (target_node == hir_mod.none_node_id or self.hir.kindOf(target_node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, target_node).name;
+        const declaration = self.findLocalValueDeclBeforeExpression(target_node, name) orelse return false;
+        const kind = self.hir.kindOf(declaration);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return false;
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        if (variable.type_annotation != hir_mod.none_node_id or
+            variable.init == hir_mod.none_node_id or
+            self.hir.kindOf(variable.init) != .object_literal)
+        {
+            return false;
+        }
+        const inferred_t = self.hir.typeOf(declaration);
+        return inferred_t == types.Primitive.none or inferred_t == target_t;
     }
 
     fn typeIsUniversalEmptyObjectNullishUnion(self: *Checker, t: TypeId) bool {
@@ -84030,20 +84058,31 @@ pub const Checker = struct {
         return true;
     }
 
-    fn indexedSourceAssignableToOpenAnyStringIndexTarget(
+    fn indexedSourceToOpenStringIndexTargetRelation(
         self: *Checker,
         source_t: TypeId,
         target_t: TypeId,
-    ) bool {
-        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+    ) ?bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return null;
         const source_flags = self.interner.pool.flagsOf(source_t);
         const target_flags = self.interner.pool.flagsOf(target_t);
-        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection) return false;
-        if (!target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection) return false;
-        if (self.interner.objectMembers(target_t).len != 0) return false;
-        if (!self.typeIsAnyLike(self.interner.objectStringIndex(target_t))) return false;
-        return self.interner.objectStringIndex(source_t) != types.Primitive.none or
-            self.interner.objectNumberIndex(source_t) != types.Primitive.none;
+        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection) return null;
+        if (!target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection) return null;
+        if (self.interner.objectMembers(target_t).len != 0) return null;
+        const target_index = self.interner.objectStringIndex(target_t);
+        if (target_index == types.Primitive.none) return null;
+        const source_string_index = self.interner.objectStringIndex(source_t);
+        const source_number_index = self.interner.objectNumberIndex(source_t);
+        if (self.typeIsAny(target_index)) {
+            return source_string_index != types.Primitive.none or source_number_index != types.Primitive.none;
+        }
+        if (target_index == types.Primitive.unknown and
+            source_string_index == types.Primitive.none and
+            source_number_index != types.Primitive.none)
+        {
+            return false;
+        }
+        return null;
     }
 
     fn genericConstraintAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -98849,6 +98888,12 @@ pub const Checker = struct {
                         else if (target_from_prior_jsdoc_property_type)
                             try self.checkerAssignableTo(assignment_check_value_t, target_t)
                         else if (self.filteredMappedKeyAssignmentToKeyof(a.value, a.target))
+                            true
+                        else if (try self.upperObjectAssignmentToInferredObjectLiteralVariable(
+                            a.target,
+                            assignment_check_value_t,
+                            target_t,
+                        ))
                             true
                         else if (self.genericKeyofTargetRejectsLiteralAssignment(a.target, a.value))
                             false
@@ -240332,6 +240377,22 @@ test "checker: uppercase Object assignments compare inherited toString signature
     try T.expectEqual(@as(usize, 2), checkerCountChainCode(b.base, TsCodes.object_assignable_to_few_types));
 }
 
+test "checker: uppercase Object assigns to fresh object-literal variable types" {
+    const b = try newBoundSetup(
+        \\declare let o: Object;
+        \\let a = { toString: () => {} };
+        \\a = o;
+        \\interface I { toString(): void; }
+        \\declare let i: I;
+        \\i = o;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountChainCode(b.base, TsCodes.object_assignable_to_few_types));
+}
+
 test "checker: uppercase Object accepts inherited non-nullish values and constraints" {
     const b = try newBoundSetup(
         \\enum E { A }
@@ -242682,6 +242743,28 @@ test "checker: ES2015 for-of rejects a partially iterable union" {
         TsCodes.yield_star_not_iterable,
         "Type 'string | number' must have a '[Symbol.iterator]()' method that returns an iterator.",
     ));
+}
+
+test "checker: ES2015 for-of preserves literal iterator diagnostic types" {
+    const s = try newSetup("for (const value of 0) { value; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.yield_star_not_iterable,
+        "Type '0' must have a '[Symbol.iterator]()' method that returns an iterator.",
+    ));
+}
+
+test "checker: arrays do not satisfy unknown string index signatures" {
+    const s = try newSetup(
+        \\declare let values: number[];
+        \\let unknownIndex: { [key: string]: unknown } = values;
+        \\let anyIndex: { [key: string]: any } = values;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: ES5 for-of preserves the rejected non-string union" {
