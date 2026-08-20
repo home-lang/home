@@ -283,6 +283,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_readFileBytesNative",
+            readFileBytesNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_existsPathNative",
             existsPathNative,
         );
@@ -339,6 +345,18 @@ pub const Runtime = struct {
             self.engine.currentGlobalObject(),
             "__home_brotliDecompressNative",
             brotliDecompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_zstdCompressNative",
+            zstdCompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_zstdDecompressNative",
+            zstdDecompressNative,
         );
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
@@ -4439,6 +4457,41 @@ fn readFileSyncNative(
     };
 }
 
+fn readFileBytesNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.readFileSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const data = Io.Dir.cwd().readFileAlloc(threaded.io(), path, allocator, std.Io.Limit.limited(64 * 1024 * 1024)) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(data);
+    return makeBase64StringValue(actual_ctx, allocator, data) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() byte result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
 fn existsPathNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -4622,20 +4675,140 @@ fn brotliDecompressNative(
     else
         536870912;
 
+    const brotli_c = home_rt.brotli_sys.brotli_c;
+    const decoder = brotli_c.BrotliDecoderCreateInstance(null, null, null) orelse {
+        setException(actual_ctx, exception, "Brotli decompression initialization failed");
+        return null;
+    };
+    defer brotli_c.BrotliDecoderDestroyInstance(decoder);
     var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
-    const reader = home_rt.brotli.BrotliReaderArrayList.newWithOptions(input, &output, allocator, .{}) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "Brotli decompression initialization failed: {s}", .{@errorName(err)});
+    var available_in = input.len;
+    var next_in: ?[*]const u8 = input.ptr;
+    var chunk: [64 * 1024]u8 = undefined;
+    while (true) {
+        var available_out = chunk.len;
+        var next_out: ?[*]u8 = chunk[0..].ptr;
+        const result = brotli_c.BrotliDecoderDecompressStream(decoder, &available_in, &next_in, &available_out, &next_out, null);
+        const produced = chunk.len - available_out;
+        if (output.items.len > max_output_size or produced > max_output_size - output.items.len) {
+            setException(actual_ctx, exception, "Brotli decompression exceeded max output size");
+            return null;
+        }
+        output.appendSlice(allocator, chunk[0..produced]) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Brotli decompression allocation failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        switch (result) {
+            .success => break,
+            .needs_more_output => continue,
+            .needs_more_input => {
+                setException(actual_ctx, exception, "Brotli decompression requires more input");
+                return null;
+            },
+            .err => {
+                setException(actual_ctx, exception, "Brotli decompression failed");
+                return null;
+            },
+        }
+    }
+    return makeBase64StringValue(actual_ctx, allocator, output.items) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Brotli decompression result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn zstdCompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "Zstd compression requires input");
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Zstd compression input failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(input);
+    const level_number = if (argument_count >= 2 and arguments[1] != null)
+        extern_fns.JSValueToNumber(actual_ctx, arguments[1].?, exception)
+    else
+        3;
+    const level: i32 = @intFromFloat(@max(-131072, @min(22, if (std.math.isFinite(level_number)) @floor(level_number) else 3)));
+    const zstd = home_rt.zstd.zstd;
+    const output = allocator.alloc(u8, zstd.compressBound(input.len)) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Zstd compression allocation failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(output);
+    const output_size = switch (zstd.compress(output, input, level)) {
+        .success => |size| size,
+        .err => |message| {
+            setExceptionFmt(actual_ctx, exception, "Zstd compression failed: {s}", .{message});
+            return null;
+        },
+    };
+    return makeBase64StringValue(actual_ctx, allocator, output[0..output_size]) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Zstd compression result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn zstdDecompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "Zstd decompression requires input");
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Zstd decompression input failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(input);
+    const max_output_number = if (argument_count >= 2 and arguments[1] != null)
+        extern_fns.JSValueToNumber(actual_ctx, arguments[1].?, exception)
+    else
+        536870912;
+    const max_output_size: usize = if (std.math.isFinite(max_output_number) and max_output_number >= 0)
+        @intFromFloat(@min(max_output_number, @as(f64, @floatFromInt(std.math.maxInt(usize)))))
+    else
+        536870912;
+
+    var output: std.ArrayListUnmanaged(u8) = .empty;
+    defer output.deinit(allocator);
+    const reader = home_rt.zstd.zstd.ZstdReaderArrayList.init(input, &output, allocator) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Zstd decompression initialization failed: {s}", .{@errorName(err)});
         return null;
     };
     defer reader.deinit();
     reader.max_output_size = max_output_size;
     reader.readAll(true) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "Brotli decompression failed: {s}", .{@errorName(err)});
+        setExceptionFmt(actual_ctx, exception, "Zstd decompression failed: {s}", .{@errorName(err)});
         return null;
     };
     return makeBase64StringValue(actual_ctx, allocator, output.items) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "Brotli decompression result failed: {s}", .{@errorName(err)});
+        setExceptionFmt(actual_ctx, exception, "Zstd decompression result failed: {s}", .{@errorName(err)});
         return null;
     };
 }
