@@ -139987,7 +139987,7 @@ pub const Checker = struct {
                         self.generator_type_info.contains(inferred_param_ret) and
                         self.generator_type_info.contains(actual_ret);
                     if (!parameter_inference_already_fixed_generator) {
-                        try self.inferFromCallbackReturnPair(pr, actual_ret, subs);
+                        try self.inferFromCovariantPair(pr, actual_ret, subs);
                     }
                 }
             }
@@ -139995,7 +139995,7 @@ pub const Checker = struct {
         }
     }
 
-    fn inferFromCallbackReturnPair(
+    fn inferFromCovariantPair(
         self: *Checker,
         param_t: TypeId,
         arg_t: TypeId,
@@ -141542,7 +141542,15 @@ pub const Checker = struct {
                 {
                     source_t = try self.contextualizeInferenceExpression(element, effective_target, source_t);
                 }
-                try self.inferFromArgument(inference_target, source_t, element, subs);
+                const trailing_rest = self.tuple_trailing_rest_types.get(param_t);
+                if (trailing_rest != null and
+                    index >= self.tupleFixedPrefixCount(param_t) and
+                    inference_target == trailing_rest.?)
+                {
+                    try self.inferFromCovariantPair(inference_target, source_t, subs);
+                } else {
+                    try self.inferFromArgument(inference_target, source_t, element, subs);
+                }
             }
         }
     }
@@ -200578,6 +200586,17 @@ test "checker: generic rest inference prefers array union branch" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: tuple rest inference unions unrelated primitive candidates" {
+    const s = try newSetup(
+        \\declare function f<T, U>(value: [T, ...U[]]): [T, U];
+        \\const result = f([1, "hello", true]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: generic rest inference checks later spread element types" {
