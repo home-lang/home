@@ -23413,6 +23413,35 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_crypto_sha1(bytes) {
+    \\  const byteLength = bytes.length, bitLength = byteLength * 8;
+    \\  const paddedLength = Math.ceil((byteLength + 9) / 64) * 64;
+    \\  const padded = new Uint8Array(paddedLength);
+    \\  padded.set(bytes); padded[byteLength] = 0x80;
+    \\  const high = Math.floor(bitLength / 0x100000000), low = bitLength >>> 0;
+    \\  padded[paddedLength - 8] = high >>> 24; padded[paddedLength - 7] = high >>> 16; padded[paddedLength - 6] = high >>> 8; padded[paddedLength - 5] = high;
+    \\  padded[paddedLength - 4] = low >>> 24; padded[paddedLength - 3] = low >>> 16; padded[paddedLength - 2] = low >>> 8; padded[paddedLength - 1] = low;
+    \\  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;
+    \\  const words = new Uint32Array(80);
+    \\  for (let offset = 0; offset < paddedLength; offset += 64) {
+    \\    for (let i = 0; i < 16; i++) { const at = offset + i * 4; words[i] = ((padded[at] << 24) | (padded[at + 1] << 16) | (padded[at + 2] << 8) | padded[at + 3]) >>> 0; }
+    \\    for (let i = 16; i < 80; i++) { const value = words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16]; words[i] = ((value << 1) | (value >>> 31)) >>> 0; }
+    \\    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    \\    for (let i = 0; i < 80; i++) {
+    \\      let f, k;
+    \\      if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5a827999; }
+    \\      else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+    \\      else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+    \\      else { f = b ^ c ^ d; k = 0xca62c1d6; }
+    \\      const rotated = ((a << 5) | (a >>> 27)) >>> 0, next = (rotated + f + e + k + words[i]) >>> 0;
+    \\      e = d; d = c; c = ((b << 30) | (b >>> 2)) >>> 0; b = a; a = next;
+    \\    }
+    \\    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+    \\  }
+    \\  const output = new Uint8Array(20), state = [h0, h1, h2, h3, h4];
+    \\  for (let i = 0; i < state.length; i++) { output[i * 4] = state[i] >>> 24; output[i * 4 + 1] = state[i] >>> 16; output[i * 4 + 2] = state[i] >>> 8; output[i * 4 + 3] = state[i]; }
+    \\  return output;
+    \\}
     \\function __home_crypto_hash_vector(algorithm, chunks, keyBytes) {
     \\  if (keyBytes) return null;
     \\  if (chunks.some(chunk => chunk && chunk.__home_logical_buffer)) {
@@ -23424,9 +23453,7 @@ const harness_prelude =
     \\  const bytes = __home_crypto_concat_chunks(chunks);
     \\  const exact = __home_crypto_hash_vectors[algorithm + "|" + __home_crypto_bytes_to_hex(bytes)];
     \\  if (exact) return __home_crypto_hex_to_bytes(exact);
-    \\  if (algorithm !== "sha1" || chunks.length !== 1) return null;
-    \\  const text = __home_utf8_bytes_to_text(bytes);
-    \\  if (text === "{\"c\u00f3digo\":1,\"c\u00f3digo2\":2,\"c\u00f3digo3\":3,\"c\u00f3digo4\":4,\"c\u00f3digo5\":5,\"\ud83d\ude0bGet\":6,}112343245266666666") return __home_crypto_hex_to_bytes("0bf68c8c4a35576ca3e27240565582ddc7c3ed3f");
+    \\  if (algorithm === "sha1") return __home_crypto_sha1(bytes);
     \\  return null;
     \\}
     \\function __home_crypto_pseudo_digest(algorithm, chunks, keyBytes) {
@@ -37471,6 +37498,7 @@ const harness_prelude =
     \\  response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
     \\  response.set = function(name, value) { if (name && typeof name === "object") { for (const key of Object.keys(name)) this.setHeader(key, name[key]); } else this.setHeader(name, value); return this; };
     \\  response.header = response.set;
+    \\  if (typeof response.removeHeader !== "function") response.removeHeader = function(name) { const key = String(name).toLowerCase(); if (this.headers) delete this.headers[key]; if (this.__home_headers) delete this.__home_headers[key]; return this; };
     \\  response.type = function(value) { const type = String(value || "application/octet-stream"); this.setHeader("Content-Type", type.includes("/") ? type : ({ json: "application/json", html: "text/html", text: "text/plain" })[type.toLowerCase()] || "application/octet-stream"); return this; };
     \\  response.location = function(value) { let location = encodeURI(String(value)); location = location.replace(/%25([0-9A-Fa-f]{2})/g, "%$1").replace(/%5B/gi, "[").replace(/%5D/gi, "]"); this.setHeader("Location", location); return this; };
     \\  response.redirect = function(status, value) {
@@ -37480,14 +37508,44 @@ const harness_prelude =
     \\    const accept = String(__home_express_header(this.req, "accept") || "text/plain").toLowerCase(); let body = "";
     \\    if (accept.includes("text/html")) { const escaped = String(location).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); this.setHeader("Content-Type", "text/html; charset=utf-8"); body = "<p>" + reason + ". Redirecting to " + escaped + "</p>"; }
     \\    else if (accept.includes("text/plain") || accept.includes("*/*")) { this.setHeader("Content-Type", "text/plain; charset=utf-8"); body = reason + ". Redirecting to " + location; }
+    \\    if (body === "") { this.setHeader("Content-Length", "0"); return this.end(); }
     \\    if (String(this.req && this.req.method || "GET").toUpperCase() === "HEAD") { this.setHeader("Content-Length", String(Buffer.byteLength(body))); return this.end(); }
     \\    return this.send(body);
     \\  };
     \\  response.send = function(body) {
-    \\    let payload = body === undefined || body === null ? "" : body;
-    \\    if (!(payload instanceof Uint8Array) && typeof payload === "object") { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); payload = JSON.stringify(payload); }
-    \\    else if (!(payload instanceof Uint8Array)) payload = String(payload);
-    \\    if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength));
+    \\    const response = this, getHeader = name => typeof response.getHeader === "function" ? response.getHeader(name) : (response.headers || response.__home_headers || {})[String(name).toLowerCase()];
+    \\    const removeHeader = name => { if (typeof response.removeHeader === "function") response.removeHeader(name); else { const key = String(name).toLowerCase(); if (response.headers) delete response.headers[key]; if (response.__home_headers) delete response.__home_headers[key]; } };
+    \\    if (body !== null && typeof body === "object" && !(body instanceof Uint8Array)) return this.json(body);
+    \\    const supplied = body !== undefined && body !== null, binary = body instanceof Uint8Array;
+    \\    let payload = supplied ? body : "", contentType = getHeader("Content-Type");
+    \\    if (!binary) {
+    \\      payload = String(payload);
+    \\      if (supplied) {
+    \\        contentType = String(contentType || "text/html");
+    \\        contentType = /charset=/i.test(contentType) ? contentType.replace(/charset\s*=\s*[^;]+/i, "charset=utf-8") : contentType + "; charset=utf-8";
+    \\        this.setHeader("Content-Type", contentType);
+    \\      }
+    \\    } else if (!contentType) this.setHeader("Content-Type", "application/octet-stream");
+    \\    else if (!/charset=/i.test(String(contentType)) && /^text\//i.test(String(contentType))) this.setHeader("Content-Type", String(contentType) + "; charset=utf-8");
+    \\    const length = binary ? payload.byteLength : Buffer.byteLength(payload), currentEtag = getHeader("ETag");
+    \\    if (supplied && currentEtag === undefined) {
+    \\      const setting = this.app && this.app.get("etag"), enabled = setting === undefined || setting === true || setting === "weak" || setting === "strong" || typeof setting === "function";
+    \\      if (enabled) {
+    \\        let etag;
+    \\        if (typeof setting === "function") etag = setting(payload, binary ? undefined : "utf8");
+    \\        else { const digest = Bun.CryptoHasher.hash("sha1", payload, "base64").replace(/=+$/, ""); etag = (setting === "strong" ? "" : "W/") + "\"" + length.toString(16) + "-" + digest + "\""; }
+    \\        if (etag) this.setHeader("ETag", etag);
+    \\      }
+    \\    }
+    \\    const status = Number(this.statusCode) || 200, etag = getHeader("ETag"), noneMatch = __home_express_header(this.req, "if-none-match");
+    \\    if ((status >= 200 && status < 300 || status === 304) && etag && noneMatch) {
+    \\      const target = String(etag).replace(/^W\//, ""), fresh = String(noneMatch).split(",").some(value => { value = value.trim(); return value === "*" || value.replace(/^W\//, "") === target; });
+    \\      if (fresh) this.statusCode = 304;
+    \\    }
+    \\    if (this.statusCode === 204 || this.statusCode === 304) { removeHeader("Content-Type"); removeHeader("Content-Length"); removeHeader("Transfer-Encoding"); return this.end(); }
+    \\    if (this.statusCode === 205) { removeHeader("Transfer-Encoding"); this.setHeader("Content-Length", "0"); return this.end(); }
+    \\    this.setHeader("Content-Length", String(length));
+    \\    if (String(this.req && this.req.method || "GET").toUpperCase() === "HEAD") return this.end();
     \\    return this.end(payload);
     \\  };
     \\  response.json = function(value) {
@@ -37578,6 +37636,7 @@ const harness_prelude =
     \\      setHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value); return this; },
     \\      getHeader(name) { return this.headers[String(name).toLowerCase()]; },
     \\      getHeaders() { return Object.assign({}, this.headers); },
+    \\      removeHeader(name) { delete this.headers[String(name).toLowerCase()]; return this; },
     \\      write(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk instanceof Uint8Array ? Buffer.from(chunk).toString() : String(chunk)); return true; },
     \\      end(chunk) {
     \\        if (chunk !== undefined && chunk !== null) this.write(chunk);
@@ -70111,6 +70170,7 @@ fn appendBootstrapTypeScriptReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "var chunk = !Buffer.isBuffer(body) ? Buffer.from(body, encoding) : body;", .replacement = "var chunk = body; if (!Buffer.isBuffer(body)) chunk = Buffer.from(body, encoding);" },
         .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
         .{ .needle = "expect(requested).toBe(", .replacement = "expect(globalThis.__home_import(\"./dummy.registry.js\").requested).toBe(" },
         .{ .needle = "const N = 50;\nconst concurrency = 16;\nconst delay = isASAN ? 500 : 150;", .replacement = "const N = 4;\nconst concurrency = 2;\nconst delay = 0;" },
@@ -100975,6 +101035,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/res.json.test.ts", .passed = 13 },
         .{ .path = "js/third_party/express/res.location.test.ts", .passed = 12, .todo = 10 },
         .{ .path = "js/third_party/express/res.redirect.test.ts", .passed = 9, .todo = 4 },
+        .{ .path = "js/third_party/express/res.send.test.ts", .passed = 65, .todo = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
