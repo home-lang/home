@@ -34243,6 +34243,10 @@ const harness_prelude =
     \\  const scalarForMatch = match => scalarValues[(shapeText.slice(0, match.index).match(/\?/g) || []).length];
     \\  if (sql.__home_closed) return __home_bun_sql_query_error(new Error("Connection closed"));
     \\  if (sql.__home_open_error) return __home_bun_sql_query_error(sql.__home_open_error);
+    \\  if (sql.options.adapter === "sqlite" && sql.__home_storage_missing && sql.options.create !== false) {
+    \\    __home_build_write_text(sql.__home_storage_filename, "");
+    \\    sql.__home_storage_missing = false;
+    \\  }
     \\  if (sql.options.adapter === "sqlite" && (values || []).length === 0 && !/^\s*CREATE\s+TRIGGER\b/i.test(text)) {
     \\    const statements = text.split(";").map(statement => statement.trim()).filter(Boolean);
     \\    if (statements.length > 1) { let result = __home_bun_sql_query_result([]); for (const statement of statements) result = __home_bun_sql_query(sql, statement, []); return result; }
@@ -34648,19 +34652,20 @@ const harness_prelude =
     \\  const protocol = (text.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//) || [])[1];
     \\  const normalizedProtocol = __home_bun_sql_normalize_adapter(protocol);
     \\  if (normalizedProtocol === "sqlite" || /^file:/i.test(text) || adapter === "sqlite") {
-    \\    let filename = text;
-    \\    if (/^sqlite:\/\//i.test(filename)) filename = filename.slice("sqlite://".length);
-    \\    else if (/^sqlite:/i.test(filename)) filename = filename.slice("sqlite:".length);
-    \\    else if (/^file:\/\//i.test(filename)) filename = filename.slice("file://".length);
-    \\    else if (/^file:/i.test(filename)) filename = filename.slice("file:".length);
-    \\    const queryIndex = filename.indexOf("?");
-    \\    const end = queryIndex >= 0 ? queryIndex : filename.length;
-    \\    const rawQuery = queryIndex >= 0 ? filename.slice(queryIndex + 1) : "";
-    \\    filename = filename.slice(0, end);
+    \\    const queryIndex = text.indexOf("?");
+    \\    const source = queryIndex >= 0 ? text.slice(0, queryIndex) : text;
+    \\    const rawQuery = queryIndex >= 0 ? text.slice(queryIndex + 1) : "";
+    \\    let filename = source;
+    \\    if (/^sqlite:\/\//i.test(source)) filename = source.slice("sqlite://".length);
+    \\    else if (/^sqlite:/i.test(source)) filename = source.slice("sqlite:".length);
+    \\    else if (/^file:\/\//i.test(source)) {
+    \\      try { filename = __home_url_file_url_to_path(source); }
+    \\      catch (_error) { filename = source.slice("file://".length); }
+    \\    } else if (/^file:/i.test(source)) filename = source.slice("file:".length);
     \\    const result = { filename };
     \\    const mode = new URLSearchParams(rawQuery).get("mode");
     \\    if (mode === "ro") result.readonly = true;
-    \\    if (mode === "rw") { result.readonly = false; result.create = false; }
+    \\    if (mode === "rw") result.readonly = false;
     \\    if (mode === "rwc") { result.readonly = false; result.create = true; }
     \\    return result;
     \\  }
@@ -34768,7 +34773,7 @@ const harness_prelude =
     \\    const missing = storageFilename !== "" && storageFilename !== ":memory:" && __home_build_read_text(storageFilename) === null;
     \\    const openError = sql.options.readonly && missing ? new Error("unable to open database file") : null;
     \\    sql.__home_open_error = openError;
-    \\    if (!openError && missing && sql.options.create !== false) __home_build_write_text(storageFilename, "");
+    \\    sql.__home_storage_missing = missing;
     \\    if (storageFilename !== ":memory:" && storageFilename !== "") {
     \\      const database = __home_sqlite_databases[storageFilename] || (__home_sqlite_databases[storageFilename] = { tables: Object.create(null), rows: Object.create(null), sequences: Object.create(null) });
     \\      sql.__home_tables = database.tables;
@@ -94362,6 +94367,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-prepare-false.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/sql/sql.test.ts", .passed = 10 },
         .{ .path = "js/sql/sqlite-sql.test.ts", .passed = 231 },
+        .{ .path = "js/sql/sqlite-url-parsing.test.ts", .passed = 176 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
