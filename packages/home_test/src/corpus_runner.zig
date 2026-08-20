@@ -57857,8 +57857,24 @@ const harness_prelude =
     \\  }));
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
-    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, DEADLINE_EXCEEDED: 4, UNIMPLEMENTED: 12 };
+    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, UNIMPLEMENTED: 12 };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
+    \\let __home_grpc_channelz_next_id = 1;
+    \\const __home_grpc_channelz_channels = new Map();
+    \\const __home_grpc_channelz_subchannels = new Map();
+    \\const __home_grpc_channelz_servers = new Map();
+    \\const __home_grpc_channelz_sockets = new Map();
+    \\function __home_grpc_channelz_data() { return { calls_started: 0, calls_succeeded: 0, calls_failed: 0 }; }
+    \\function __home_grpc_channelz_socket_data() { return { streams_started: 0, streams_succeeded: 0, streams_failed: 0, messages_received: 0, messages_sent: 0 }; }
+    \\function __home_grpc_channelz_allocate_id() { const id = __home_grpc_channelz_next_id; __home_grpc_channelz_next_id += 1; return id; }
+    \\function __home_grpc_channelz_error(operation, entity, id) {
+    \\  const cause = new Error(String(entity) + " " + String(id) + " was not found");
+    \\  cause.code = __home_grpc_status.NOT_FOUND;
+    \\  const failure = new Error("Channelz." + operation + " failed: " + cause.message);
+    \\  failure.code = cause.code; failure.details = cause.message; failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Channelz." + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\function __home_grpc_status_error(code) {
     \\  const label = code === __home_grpc_status.CANCELLED ? "Cancelled" : code === __home_grpc_status.DEADLINE_EXCEEDED ? "Deadline exceeded" : code === __home_grpc_status.UNIMPLEMENTED ? "Method not implemented" : "gRPC call failed";
     \\  const error = new Error(label); error.code = code; error.details = label;
@@ -57873,6 +57889,7 @@ const harness_prelude =
     \\  call.__home_finish = function(code, value) {
     \\    if (this.__home_terminal) return; this.__home_terminal = true;
     \\    if (this.__home_deadline_timer) clearTimeout(this.__home_deadline_timer);
+    \\    if (typeof this.__home_channelz_complete === "function") this.__home_channelz_complete(code, value);
     \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code);
     \\    for (const child of this.__home_children.slice()) if ((code === __home_grpc_status.CANCELLED && child.cancellation) || (code === __home_grpc_status.DEADLINE_EXCEEDED && child.deadline)) child.call.__home_finish(code);
     \\    if (this.__home_callback) this.__home_callback(error, value);
@@ -57883,12 +57900,55 @@ const harness_prelude =
     \\  if (call.__home_deadline) { const delay = Math.max(0, Number(new Date(call.__home_deadline)) - Date.now()); call.__home_deadline_timer = setTimeout(() => call.__home_finish(__home_grpc_status.DEADLINE_EXCEEDED), delay); }
     \\  return call;
     \\}
+    \\function __home_grpc_channelz_register_channel(client) {
+    \\  const channelId = __home_grpc_channelz_allocate_id();
+    \\  const subchannelId = __home_grpc_channelz_allocate_id();
+    \\  const clientSocketId = __home_grpc_channelz_allocate_id();
+    \\  const server = __home_grpc_servers[client.__home_port];
+    \\  const serverSocketId = server && server.__home_channelz_record ? __home_grpc_channelz_allocate_id() : 0;
+    \\  const channel = { id: channelId, data: __home_grpc_channelz_data(), subchannelId, clientSocketId, serverSocketId, server: server || null };
+    \\  const subchannel = { id: subchannelId, data: __home_grpc_channelz_data(), socketId: clientSocketId };
+    \\  __home_grpc_channelz_channels.set(channelId, channel);
+    \\  __home_grpc_channelz_subchannels.set(subchannelId, subchannel);
+    \\  __home_grpc_channelz_sockets.set(clientSocketId, { id: clientSocketId, data: __home_grpc_channelz_socket_data() });
+    \\  if (serverSocketId) {
+    \\    __home_grpc_channelz_sockets.set(serverSocketId, { id: serverSocketId, data: __home_grpc_channelz_socket_data() });
+    \\    server.__home_channelz_record.socketIds.push(serverSocketId);
+    \\  }
+    \\  return channel;
+    \\}
+    \\function __home_grpc_channelz_begin_call(client, call) {
+    \\  const channel = client.__home_channelz_record;
+    \\  if (!channel) return;
+    \\  const subchannel = __home_grpc_channelz_subchannels.get(channel.subchannelId);
+    \\  const clientSocket = __home_grpc_channelz_sockets.get(channel.clientSocketId);
+    \\  channel.data.calls_started += 1; subchannel.data.calls_started += 1;
+    \\  clientSocket.data.streams_started += 1; clientSocket.data.messages_sent += 1;
+    \\  const serverRecord = channel.server && channel.server.__home_channelz_record;
+    \\  const serverSocket = channel.serverSocketId ? __home_grpc_channelz_sockets.get(channel.serverSocketId) : null;
+    \\  if (serverRecord) serverRecord.data.calls_started += 1;
+    \\  if (serverSocket) { serverSocket.data.streams_started += 1; serverSocket.data.messages_received += 1; }
+    \\  let completed = false;
+    \\  call.__home_channelz_complete = function(code) {
+    \\    if (completed) return; completed = true;
+    \\    const successful = code === __home_grpc_status.OK;
+    \\    channel.data[successful ? "calls_succeeded" : "calls_failed"] += 1;
+    \\    subchannel.data[successful ? "calls_succeeded" : "calls_failed"] += 1;
+    \\    clientSocket.data.streams_succeeded += 1;
+    \\    if (successful) clientSocket.data.messages_received += 1;
+    \\    if (serverRecord) serverRecord.data[successful ? "calls_succeeded" : "calls_failed"] += 1;
+    \\    if (serverSocket) { serverSocket.data.streams_succeeded += 1; if (successful) serverSocket.data.messages_sent += 1; }
+    \\  };
+    \\}
     \\function __home_grpc_TestService(target, credentials, options) {
-    \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target);
+    \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target); this.__home_options = Object.assign({}, options || {});
+    \\  this.__home_channelz_record = this.__home_options["grpc.enable_channelz"] === 0 ? null : __home_grpc_channelz_register_channel(this);
     \\}
     \\__home_grpc_TestService.service = { __home_name: "TestService" };
+    \\__home_grpc_TestService.prototype.getChannel = function() { const record = this.__home_channelz_record; return { getChannelzRef() { return { id: record ? record.id : 0 }; } }; };
     \\__home_grpc_TestService.prototype.__home_invoke = function(method, kind, request, options, callback) {
     \\  const call = __home_grpc_client_call(kind, request, options, callback);
+    \\  __home_grpc_channelz_begin_call(this, call);
     \\  Promise.resolve().then(() => {
     \\    const server = __home_grpc_servers[this.__home_port], handler = server && server.__home_services[method];
     \\    if (typeof handler !== "function") { call.__home_finish(__home_grpc_status.UNIMPLEMENTED); return; }
@@ -57901,7 +57961,16 @@ const harness_prelude =
     \\__home_grpc_TestService.prototype.clientStream = function(options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke("clientStream", "clientStream", {}, options, callback); };
     \\__home_grpc_TestService.prototype.serverStream = function(request, options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("serverStream", "serverStream", request, options); };
     \\__home_grpc_TestService.prototype.bidiStream = function(options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("bidiStream", "bidiStream", {}, options); };
-    \\__home_grpc_TestService.prototype.close = function() {};
+    \\__home_grpc_TestService.prototype.close = function() {
+    \\  const record = this.__home_channelz_record;
+    \\  if (!record) return;
+    \\  __home_grpc_channelz_channels.delete(record.id);
+    \\  __home_grpc_channelz_subchannels.delete(record.subchannelId);
+    \\  __home_grpc_channelz_sockets.delete(record.clientSocketId);
+    \\  if (record.serverSocketId) __home_grpc_channelz_sockets.delete(record.serverSocketId);
+    \\  if (record.server && record.server.__home_channelz_record) record.server.__home_channelz_record.socketIds = record.server.__home_channelz_record.socketIds.filter(id => id !== record.serverSocketId);
+    \\  this.__home_channelz_record = null;
+    \\};
     \\function __home_grpc_channel_error(error, operation, component) {
     \\  const cause = error instanceof Error ? error : new Error(String(error));
     \\  const owner = String(component || "ChannelCredentials");
@@ -57986,15 +58055,23 @@ const harness_prelude =
     \\  else handler(serverCall);
     \\  return clientStream;
     \\};
-    \\function __home_grpc_Server() {
+    \\function __home_grpc_Server(options) {
     \\  this.__home_services = {};
     \\  this.__home_port = 0;
+    \\  this.__home_options = Object.assign({}, options || {});
+    \\  if (this.__home_options["grpc.enable_channelz"] === 0) this.__home_channelz_record = null;
+    \\  else {
+    \\    const id = __home_grpc_channelz_allocate_id();
+    \\    this.__home_channelz_record = { id, data: __home_grpc_channelz_data(), socketIds: [] };
+    \\    __home_grpc_channelz_servers.set(id, this.__home_channelz_record);
+    \\  }
     \\}
     \\__home_grpc_Server.prototype.addService = function(service, implementation) {
     \\  this.__home_services = Object.assign({}, implementation || {});
     \\};
     \\__home_grpc_Server.prototype.removeService = function(service) { this.__home_services = {}; return true; };
     \\__home_grpc_Server.prototype.start = function() {};
+    \\__home_grpc_Server.prototype.getChannelzRef = function() { return { id: this.__home_channelz_record ? this.__home_channelz_record.id : 0 }; };
     \\__home_grpc_Server.prototype.bindAsync = function(address, credentials, callback) {
     \\  this.__home_port = __home_grpc_next_port++;
     \\  __home_grpc_servers[this.__home_port] = this;
@@ -58002,6 +58079,10 @@ const harness_prelude =
     \\};
     \\__home_grpc_Server.prototype.forceShutdown = function() {
     \\  delete __home_grpc_servers[this.__home_port];
+    \\  if (this.__home_channelz_record) {
+    \\    __home_grpc_channelz_servers.delete(this.__home_channelz_record.id);
+    \\    for (const id of this.__home_channelz_record.socketIds) __home_grpc_channelz_sockets.delete(id);
+    \\  }
     \\};
     \\function __home_grpc_certificate_error(error, operation, path) {
     \\  const cause = error instanceof Error ? error : new Error(String(error));
@@ -58146,6 +58227,52 @@ const harness_prelude =
     \\  },
     \\  createInsecure() { return { type: "insecure-server" }; },
     \\};
+    \\function __home_grpc_ChannelzClient(target, credentials, options) { this.__home_target = String(target || ""); this.__home_closed = false; }
+    \\__home_grpc_ChannelzClient.prototype.close = function() { this.__home_closed = true; };
+    \\__home_grpc_ChannelzClient.prototype.__home_reply = function(operation, entity, id, callback, createResult) {
+    \\  Promise.resolve().then(() => {
+    \\    const numericId = Number(id);
+    \\    if (!entity) { callback(__home_grpc_channelz_error(operation, operation.replace(/^get/i, "").toLowerCase() || "entity", numericId)); return; }
+    \\    let result;
+    \\    try { result = createResult(entity); }
+    \\    catch (error) { callback(__home_grpc_channel_error(error, operation, "Channelz")); return; }
+    \\    callback(null, result);
+    \\  });
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.GetChannel = function(request, callback) {
+    \\  const id = Number(request && request.channel_id);
+    \\  this.__home_reply("GetChannel", __home_grpc_channelz_channels.get(id), id, callback, channel => ({ channel: { ref: { channel_id: channel.id }, data: Object.assign({}, channel.data), subchannel_ref: [{ subchannel_id: channel.subchannelId }] } }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getChannel = __home_grpc_ChannelzClient.prototype.GetChannel;
+    \\__home_grpc_ChannelzClient.prototype.getTopChannels = function(request, callback) {
+    \\  const start = Number(request && request.start_channel_id || 0), max = Math.max(0, Number(request && request.max_results || 0));
+    \\  const records = Array.from(__home_grpc_channelz_channels.values()).filter(channel => channel.id >= start).sort((a, b) => a.id - b.id);
+    \\  const selected = max > 0 ? records.slice(0, max) : records;
+    \\  Promise.resolve().then(() => callback(null, { channel: selected.map(channel => ({ ref: { channel_id: channel.id }, data: Object.assign({}, channel.data), subchannel_ref: [{ subchannel_id: channel.subchannelId }] })), end: selected.length === records.length }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getSubchannel = function(request, callback) {
+    \\  const id = Number(request && request.subchannel_id);
+    \\  this.__home_reply("getSubchannel", __home_grpc_channelz_subchannels.get(id), id, callback, subchannel => ({ subchannel: { ref: { subchannel_id: subchannel.id }, data: Object.assign({}, subchannel.data), socket_ref: [{ socket_id: subchannel.socketId }] } }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getSocket = function(request, callback) {
+    \\  const id = Number(request && request.socket_id);
+    \\  this.__home_reply("getSocket", __home_grpc_channelz_sockets.get(id), id, callback, socket => ({ socket: { ref: { socket_id: socket.id }, data: Object.assign({}, socket.data) } }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getServer = function(request, callback) {
+    \\  const id = Number(request && request.server_id);
+    \\  this.__home_reply("getServer", __home_grpc_channelz_servers.get(id), id, callback, server => ({ server: { ref: { server_id: server.id }, data: Object.assign({}, server.data) } }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getServers = function(request, callback) {
+    \\  const start = Number(request && request.start_server_id || 0), max = Math.max(0, Number(request && request.max_results || 0));
+    \\  const records = Array.from(__home_grpc_channelz_servers.values()).filter(server => server.id >= start).sort((a, b) => a.id - b.id);
+    \\  const selected = max > 0 ? records.slice(0, max) : records;
+    \\  Promise.resolve().then(() => callback(null, { server: selected.map(server => ({ ref: { server_id: server.id }, data: Object.assign({}, server.data) })), end: selected.length === records.length }));
+    \\};
+    \\__home_grpc_ChannelzClient.prototype.getServerSockets = function(request, callback) {
+    \\  const id = Number(request && request.server_id);
+    \\  this.__home_reply("getServerSockets", __home_grpc_channelz_servers.get(id), id, callback, server => ({ socket_ref: server.socketIds.map(socketId => ({ socket_id: socketId })), end: true }));
+    \\};
+    \\const __home_grpc_channelz_package = { grpc: { channelz: { v1: { Channelz: __home_grpc_ChannelzClient } } } };
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -58156,7 +58283,14 @@ const harness_prelude =
     \\  status: __home_grpc_status,
     \\  propagate: __home_grpc_propagate,
     \\  experimental: { FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider },
-    \\  loadPackageDefinition(definition) { return String(definition && definition.__home_proto_file || "").includes("test_service.proto") ? { TestService: __home_grpc_TestService } : { EchoService: __home_grpc_EchoService }; },
+    \\  getChannelzServiceDefinition() { return { __home_name: "Channelz" }; },
+    \\  getChannelzHandlers() { return {}; },
+    \\  loadPackageDefinition(definition) {
+    \\    const file = String(definition && definition.__home_proto_file || "");
+    \\    if (file.includes("channelz.proto")) return __home_grpc_channelz_package;
+    \\    if (file.includes("test_service.proto")) return { TestService: __home_grpc_TestService };
+    \\    return { EchoService: __home_grpc_EchoService };
+    \\  },
     \\};
     \\__home_grpc_module.default = __home_grpc_module;
     \\globalThis.__home_modules["@grpc/grpc-js"] = __home_grpc_module;
@@ -70732,6 +70866,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "echo(call: ServerUnaryCall<any, any>, callback: sendUnaryData<any>)", .replacement = "echo(call, callback)" },
         .{ .needle = "(error: ServiceError, response: any) =>", .replacement = "(error, response) =>" },
         .{ .needle = "(metadata: grpc.Metadata) =>", .replacement = "(metadata) =>" },
+        .{ .needle = "import { ProtoGrpcType } from \"@grpc/grpc-js/build/src/generated/channelz\";", .replacement = "" },
+        .{ .needle = "import { ChannelzClient } from \"@grpc/grpc-js/build/src/generated/grpc/channelz/v1/Channelz\";", .replacement = "" },
+        .{ .needle = "import { loadProtoFile } from \"./common\";", .replacement = "const loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "const channelzGrpcObject = grpc.loadPackageDefinition(loadedChannelzProto) as unknown as ProtoGrpcType;", .replacement = "const channelzGrpcObject = grpc.loadPackageDefinition(loadedChannelzProto);" },
+        .{ .needle = ".TestService as ServiceClientConstructor;", .replacement = ".TestService;" },
+        .{ .needle = "const testServiceImpl: grpc.UntypedServiceImplementation =", .replacement = "const testServiceImpl =" },
+        .{ .needle = "let channelzClient: ChannelzClient;", .replacement = "let channelzClient;" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -86935,7 +87076,7 @@ test "bootstrap runner mirrors http2 frame-size connect corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
-test "bootstrap grpc credential errors retain causes and operation stacks" {
+test "bootstrap grpc errors retain causes and operation stacks" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
@@ -86994,8 +87135,19 @@ test "bootstrap grpc credential errors retain causes and operation stacks" {
         \\  assert.ok(String(metadataError.stack).includes("ChannelCredentials.generateMetadata"));
         \\  assert.ok(String(metadataError.stack).includes("CallCredentials.generateMetadata"));
         \\});
+        \\
+        \\test("channelz diagnostics", async () => {
+        \\  const Channelz = grpc.loadPackageDefinition({ __home_proto_file: "channelz.proto" }).grpc.channelz.v1.Channelz;
+        \\  const client = new Channelz("127.0.0.1:1", grpc.credentials.createInsecure());
+        \\  const error = await new Promise(resolve => client.getSocket({ socket_id: 999999 }, failure => resolve(failure)));
+        \\  assert.strictEqual(error.code, grpc.status.NOT_FOUND);
+        \\  assert.ok(error.cause instanceof Error);
+        \\  assert.ok(String(error.stack).includes("Channelz.getSocket"));
+        \\  assert.ok(String(error.stack).includes("Caused by:"));
+        \\  client.close();
+        \\});
     ;
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/certificate-provider-errors.test.ts");
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
@@ -87008,10 +87160,10 @@ test "bootstrap grpc credential errors retain causes and operation stacks" {
     defer file_run.deinit(std.testing.allocator);
 
     if (file_run.result.status() != .passed) {
-        std.debug.print("grpc credential diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+        std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101499,6 +101651,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-call-propagation.test.ts", .passed = 8 },
         .{ .path = "js/third_party/grpc-js/test-certificate-provider.test.ts", .passed = 9 },
         .{ .path = "js/third_party/grpc-js/test-channel-credentials.test.ts", .passed = 9, .todo = 1 },
+        .{ .path = "js/third_party/grpc-js/test-channelz.test.ts", .passed = 5 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
