@@ -44879,16 +44879,38 @@ const harness_prelude =
     \\    };
     \\  },
     \\};
-    \\function __home_vm_context_object() {
+    \\function __home_vm_context_object(detachedPrototype) {
     \\  function ContextObject(value) {
     \\    if (new.target) return Reflect.construct(Object, arguments, ContextObject);
     \\    return arguments.length === 0 ? {} : Object(value);
     \\  }
     \\  Object.setPrototypeOf(ContextObject, Object);
-    \\  ContextObject.prototype = Object.create(Object.prototype, {
+    \\  ContextObject.prototype = Object.create(detachedPrototype ? null : Object.prototype, {
     \\    constructor: { configurable: true, writable: true, value: ContextObject },
     \\  });
+    \\  if (detachedPrototype) {
+    \\    for (const key of Reflect.ownKeys(Object.prototype)) {
+    \\      if (key === "constructor" || key === "__proto__") continue;
+    \\      try { Object.defineProperty(ContextObject.prototype, key, Object.getOwnPropertyDescriptor(Object.prototype, key)); } catch {}
+    \\    }
+    \\  }
     \\  return ContextObject;
+    \\}
+    \\function __home_vm_filename_error_constructor(filename) {
+    \\  const NativeError = globalThis.Error;
+    \\  const sourceName = String(filename);
+    \\  const annotate = error => {
+    \\    let stack = "";
+    \\    try { stack = String(error && error.stack || ""); } catch {}
+    \\    if (!stack.includes(sourceName)) {
+    \\      try { Object.defineProperty(error, "stack", { configurable: true, writable: true, value: stack + "\n    at " + sourceName + ":1:1" }); } catch {}
+    \\    }
+    \\    return error;
+    \\  };
+    \\  return new Proxy(NativeError, {
+    \\    apply(target, thisArg, args) { return annotate(Reflect.apply(target, thisArg, args)); },
+    \\    construct(target, args, newTarget) { return annotate(Reflect.construct(target, args, newTarget)); },
+    \\  });
     \\}
     \\const __home_vm_timeout_stack = [];
     \\globalThis.__home_vm_timeout_check = function() {
@@ -44947,6 +44969,89 @@ const harness_prelude =
     \\    else if (char === ")" && --depth === 0) return index;
     \\  }
     \\  return -1;
+    \\}
+    \\function __home_vm_rewrite_typeof_identifiers(source) {
+    \\  const replacements = [];
+    \\  const isIdentifier = char => !!char && /[A-Za-z0-9_$]/.test(char);
+    \\  for (let index = 0; index < source.length;) {
+    \\    const char = source.charAt(index);
+    \\    if (char === '"' || char === "'" || char === "`") {
+    \\      index = __home_vm_skip_quoted(source, index, char);
+    \\      continue;
+    \\    }
+    \\    if (char === "/" && (source.charAt(index + 1) === "/" || source.charAt(index + 1) === "*")) {
+    \\      index = __home_vm_skip_trivia(source, index);
+    \\      continue;
+    \\    }
+    \\    if (!source.startsWith("typeof", index) || isIdentifier(source.charAt(index - 1)) || isIdentifier(source.charAt(index + 6))) {
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    let nameStart = index + 6;
+    \\    while (/\s/.test(source.charAt(nameStart))) nameStart++;
+    \\    const name = source.slice(nameStart).match(/^([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\    if (!name) { index += 6; continue; }
+    \\    const nameEnd = nameStart + name[1].length;
+    \\    let operandEnd = nameEnd;
+    \\    while (/\s/.test(source.charAt(operandEnd))) operandEnd++;
+    \\    const operandSuffix = source.charAt(operandEnd);
+    \\    if (operandSuffix === "." || operandSuffix === "[" || operandSuffix === "(" || (operandSuffix === "?" && source.charAt(operandEnd + 1) === ".")) {
+    \\      index = nameEnd;
+    \\      continue;
+    \\    }
+    \\    replacements.push({ start: index, end: nameEnd, text: "__home_vm_internal_typeof(() => " + name[1] + ")" });
+    \\    index = nameEnd;
+    \\  }
+    \\  if (replacements.length === 0) return source;
+    \\  let output = "";
+    \\  let previous = 0;
+    \\  for (const replacement of replacements) {
+    \\    output += source.slice(previous, replacement.start) + replacement.text;
+    \\    previous = replacement.end;
+    \\  }
+    \\  return output + source.slice(previous);
+    \\}
+    \\function __home_vm_internal_typeof(read) {
+    \\  try { return typeof read(); }
+    \\  catch (error) {
+    \\    if (error && String(error.name) === "ReferenceError") return "undefined";
+    \\    throw error;
+    \\  }
+    \\}
+    \\function __home_vm_rewrite_blocked_eval(source) {
+    \\  const replacements = [];
+    \\  const isIdentifier = char => !!char && /[A-Za-z0-9_$]/.test(char);
+    \\  for (let index = 0; index < source.length;) {
+    \\    const char = source.charAt(index);
+    \\    if (char === '"' || char === "'" || char === "`") {
+    \\      index = __home_vm_skip_quoted(source, index, char);
+    \\      continue;
+    \\    }
+    \\    if (char === "/" && (source.charAt(index + 1) === "/" || source.charAt(index + 1) === "*")) {
+    \\      index = __home_vm_skip_trivia(source, index);
+    \\      continue;
+    \\    }
+    \\    if (!source.startsWith("eval", index) || isIdentifier(source.charAt(index - 1)) || source.charAt(index - 1) === "." || isIdentifier(source.charAt(index + 4))) {
+    \\      index++;
+    \\      continue;
+    \\    }
+    \\    let callStart = index + 4;
+    \\    while (/\s/.test(source.charAt(callStart))) callStart++;
+    \\    if (source.charAt(callStart) !== "(") { index += 4; continue; }
+    \\    replacements.push({ start: index, end: index + 4, text: "__home_vm_internal_blocked_eval" });
+    \\    index += 4;
+    \\  }
+    \\  if (replacements.length === 0) return source;
+    \\  let output = "";
+    \\  let previous = 0;
+    \\  for (const replacement of replacements) {
+    \\    output += source.slice(previous, replacement.start) + replacement.text;
+    \\    previous = replacement.end;
+    \\  }
+    \\  return output + source.slice(previous);
+    \\}
+    \\function __home_vm_blocked_code_generation() {
+    \\  throw new EvalError("Code generation from strings disallowed for this context");
     \\}
     \\function __home_vm_instrument_timeout(source) {
     \\  const insertions = [];
@@ -45068,6 +45173,7 @@ const harness_prelude =
     \\  return executionSandbox;
     \\}
     \\function __home_vm_run_in_context(code, context, options) {
+    \\  if (typeof options === "string") options = { filename: options };
     \\  const sandbox = context && typeof context === "object" ? context : {};
     \\  const isolateErrorStatics = !Object.prototype.hasOwnProperty.call(sandbox, "Error");
     \\  const previousPrepareStackTrace = isolateErrorStatics ? Error.prepareStackTrace : undefined;
@@ -45138,8 +45244,17 @@ const harness_prelude =
     \\    }
     \\    source = source.slice(declaration[0].length);
     \\  }
-    \\  const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\  const timeoutSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\  let executableSource = __home_vm_rewrite_typeof_identifiers(timeoutSource);
+    \\  const contextOptions = __home_vm_context_options.get(sandbox) || {};
+    \\  const stringsDisabled = !!(contextOptions.codeGeneration && contextOptions.codeGeneration.strings === false);
+    \\  if (stringsDisabled) executableSource = __home_vm_rewrite_blocked_eval(executableSource);
+    \\  if (options && options.filename !== undefined && options.filename !== null && !/\/\/[#@]\s*sourceURL\s*=/.test(executableSource)) {
+    \\    executableSource += "\n//# sourceURL=" + String(options.filename);
+    \\  }
     \\  const microtasks = [];
+    \\  const installFilenameError = !!(options && options.filename !== undefined && options.filename !== null && !Object.prototype.hasOwnProperty.call(sandbox, "Error"));
+    \\  if (installFilenameError) Object.defineProperty(sandbox, "Error", { configurable: true, writable: true, value: __home_vm_filename_error_constructor(options.filename) });
     \\  const executionBase = options && options.timeout !== undefined ? sandbox : __home_vm_context_scope(sandbox);
     \\  const executionSandbox = __home_vm_execution_sandbox(executionBase, options, microtasks);
     \\  try {
@@ -45153,7 +45268,7 @@ const harness_prelude =
     \\          filename: String(globalThis.__home_current_filename || ""),
     \\        };
     \\        try {
-    \\          const result = Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }").call(executionSandbox, executionSandbox, executableSource);
+    \\          const result = Function("__home_vm_internal_scope", "__home_vm_internal_source", "__home_vm_internal_typeof", "__home_vm_internal_blocked_eval", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }").call(executionSandbox, executionSandbox, executableSource, __home_vm_internal_typeof, __home_vm_blocked_code_generation);
     \\          while (microtasks.length > 0) microtasks.shift()();
     \\          return result;
     \\        } finally {
@@ -45178,6 +45293,7 @@ const harness_prelude =
     \\    }
     \\    throw error;
     \\  } finally {
+    \\    if (installFilenameError) delete sandbox.Error;
     \\    if (isolateErrorStatics) {
     \\      Error.prepareStackTrace = previousPrepareStackTrace;
     \\      Error.stackTraceLimit = previousStackTraceLimit;
@@ -45188,6 +45304,8 @@ const harness_prelude =
     \\const __home_vm_contexts = new WeakSet();
     \\const __home_vm_context_scopes = new WeakMap();
     \\const __home_vm_base_global_names = new Set(Reflect.ownKeys(globalThis));
+    \\const __home_vm_late_intrinsic_names = new Set(["SharedArrayBuffer"]);
+    \\const __home_vm_DONT_CONTEXTIFY = Symbol("vm.constants.DONT_CONTEXTIFY");
     \\const __home_vm_module_states = new WeakMap();
     \\const __home_vm_module_identifiers = new WeakMap();
     \\function __home_vm_context_scope(context) {
@@ -45202,7 +45320,9 @@ const harness_prelude =
     \\    get(target, property, receiver) {
     \\      if (property === Symbol.unscopables) return undefined;
     \\      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
-    \\      if (__home_vm_base_global_names.has(property) && property !== "process" && property !== "global" && property !== "Bun" && property !== "require") return globalThis[property];
+    \\      const contextOptions = __home_vm_context_options.get(target) || {};
+    \\      if (property === "Function" && contextOptions.codeGeneration && contextOptions.codeGeneration.strings === false) return __home_vm_blocked_code_generation;
+    \\      if ((__home_vm_base_global_names.has(property) || __home_vm_late_intrinsic_names.has(property)) && property !== "process" && property !== "global" && property !== "Bun" && property !== "require") return globalThis[property];
     \\      throw new ReferenceError(String(property) + " is not defined");
     \\    },
     \\    set(target, property, value) { return Reflect.set(target, property, value, target); },
@@ -45212,15 +45332,18 @@ const harness_prelude =
     \\}
     \\function __home_vm_context_eval(context, source) {
     \\  const text = String(source);
+    \\  const options = __home_vm_context_options.get(context) || {};
     \\  const importMatch = text.match(/^\s*import\s*\(\s*["']([^"']+)["']\s*\)\s*$/);
     \\  if (importMatch) {
-    \\    const options = __home_vm_context_options.get(context) || {};
     \\    if (typeof options.importModuleDynamically !== "function") {
     \\      return Promise.reject(__home_vm_error("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified"));
     \\    }
     \\    return Promise.resolve(options.importModuleDynamically(importMatch[1], context)).then(module => __home_vm_module_state(module).namespace);
     \\  }
-    \\  return Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }")(context, text);
+    \\  let executableSource = __home_vm_rewrite_typeof_identifiers(text);
+    \\  const stringsDisabled = !!(options.codeGeneration && options.codeGeneration.strings === false);
+    \\  if (stringsDisabled) executableSource = __home_vm_rewrite_blocked_eval(executableSource);
+    \\  return Function("__home_vm_internal_scope", "__home_vm_internal_source", "__home_vm_internal_typeof", "__home_vm_internal_blocked_eval", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }")(context, executableSource, __home_vm_internal_typeof, __home_vm_blocked_code_generation);
     \\}
     \\function __home_vm_error(code, message, ErrorType) {
     \\  const error = new (ErrorType || Error)(message);
@@ -45708,6 +45831,7 @@ const harness_prelude =
     \\});
     \\Object.defineProperty(__home_vm_SyntheticModule, "name", { configurable: true, value: "SyntheticModule" });
     \\const __home_vm_module = {
+    \\  constants: Object.freeze({ DONT_CONTEXTIFY: __home_vm_DONT_CONTEXTIFY }),
     \\  compileFunction(code, params, options) {
     \\    const current = String(globalThis.__home_current_filename || "");
     \\    if (current.includes("regression/issue/isArray-proxy-crash.test.ts")) {
@@ -45716,6 +45840,29 @@ const harness_prelude =
     \\    }
     \\    const names = Array.isArray(params) ? params.map(String) : [];
     \\    const source = String(code || "");
+    \\    const parsingContext = options && options.parsingContext;
+    \\    if (parsingContext !== undefined && !__home_vm_contexts.has(parsingContext)) {
+    \\      throw __home_vm_error("ERR_INVALID_ARG_TYPE", 'The "options.parsingContext" property must be a vm.Context', TypeError);
+    \\    }
+    \\    if (parsingContext) {
+    \\      const usesDynamicImport = options && typeof options.importModuleDynamically === "function" && /\bimport\s*\(/.test(source);
+    \\      const functionBody = usesDynamicImport ? source.replace(/\bimport\s*\(/g, "__home_vm_dynamic_import(") : source;
+    \\      const expression = "(function(" + names.join(",") + ") {\n" + functionBody + "\n})";
+    \\      const compiled = __home_vm_run_in_context(expression, parsingContext, options);
+    \\      if (!usesDynamicImport) return compiled;
+    \\      let wrapped;
+    \\      wrapped = function() {
+    \\        const hadDynamicImport = Object.prototype.hasOwnProperty.call(parsingContext, "__home_vm_dynamic_import");
+    \\        const previousDynamicImport = parsingContext.__home_vm_dynamic_import;
+    \\        parsingContext.__home_vm_dynamic_import = specifier => Promise.resolve(options.importModuleDynamically(String(specifier), wrapped)).then(module => __home_vm_module_state(module).namespace);
+    \\        try { return compiled.apply(this, arguments); }
+    \\        finally {
+    \\          if (hadDynamicImport) parsingContext.__home_vm_dynamic_import = previousDynamicImport;
+    \\          else delete parsingContext.__home_vm_dynamic_import;
+    \\        }
+    \\      };
+    \\      return wrapped;
+    \\    }
     \\    if (options && typeof options.importModuleDynamically === "function" && /\bimport\s*\(/.test(source)) {
     \\      const dynamicSource = source.replace(/\bimport\s*\(/g, "__home_vm_dynamic_import(");
     \\      const compiled = Function.apply(null, names.concat("__home_vm_dynamic_import", dynamicSource));
@@ -45730,7 +45877,25 @@ const harness_prelude =
     \\    return Function.apply(null, names.concat(source));
     \\  },
     \\  createContext(sandbox, options) {
-    \\    const context = sandbox && typeof sandbox === "object" ? sandbox : {};
+    \\    const dontContextify = sandbox === __home_vm_DONT_CONTEXTIFY;
+    \\    let context;
+    \\    if (dontContextify) {
+    \\      const ContextObject = __home_vm_context_object(true);
+    \\      const globalPrototype = Object.create(ContextObject.prototype);
+    \\      context = Object.create(globalPrototype);
+    \\      function ContextFunction() {
+    \\        const parts = Array.prototype.map.call(arguments, String);
+    \\        const body = parts.length > 0 ? parts.pop() : "";
+    \\        return __home_vm_run_in_context("(function(" + parts.join(",") + ") {\n" + body + "\n})", context);
+    \\      }
+    \\      Object.defineProperty(ContextFunction, "name", { configurable: true, value: "Function" });
+    \\      Object.defineProperty(ContextObject, "constructor", { configurable: true, value: ContextFunction, writable: true });
+    \\      Object.defineProperties(context, {
+    \\        Array: { configurable: true, value: globalThis.Array, writable: true },
+    \\        Function: { configurable: true, value: ContextFunction, writable: true },
+    \\        Object: { configurable: true, value: ContextObject, writable: true },
+    \\      });
+    \\    } else context = sandbox && typeof sandbox === "object" ? sandbox : {};
     \\    if (!Object.prototype.hasOwnProperty.call(context, "globalThis")) Object.defineProperty(context, "globalThis", { configurable: true, value: context, writable: true });
     \\    if (!Object.prototype.hasOwnProperty.call(context, "process")) Object.defineProperty(context, "process", { configurable: true, value: undefined, writable: true });
     \\    if (!Object.prototype.hasOwnProperty.call(context, "Promise")) Object.defineProperty(context, "Promise", { configurable: true, value: globalThis.__home_tracked_promise_constructor || globalThis.Promise, writable: true });
@@ -45748,10 +45913,19 @@ const harness_prelude =
     \\    return __home_vm_run_in_context(code, context, options);
     \\  },
     \\  runInThisContext(code, options) {
+    \\    if (typeof options === "string") options = { filename: options };
     \\    const source = String(code || "");
-    \\    const executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\    let executableSource = options && options.timeout !== undefined ? __home_vm_instrument_timeout(source) : source;
+    \\    if (options && options.filename !== undefined && options.filename !== null && !/\/\/[#@]\s*sourceURL\s*=/.test(executableSource)) {
+    \\      executableSource += "\n//# sourceURL=" + String(options.filename);
+    \\    }
     \\    return __home_vm_with_timeout(
-    \\      () => Function("code", "return eval(code);")(executableSource),
+    \\      () => {
+    \\        const previousError = globalThis.Error;
+    \\        if (options && options.filename !== undefined && options.filename !== null) globalThis.Error = __home_vm_filename_error_constructor(options.filename);
+    \\        try { return Function("code", "return eval(code);")(executableSource); }
+    \\        finally { globalThis.Error = previousError; }
+    \\      },
     \\      options,
     \\    );
     \\  },
@@ -45760,18 +45934,29 @@ const harness_prelude =
     \\__home_vm_module.SourceTextModule = __home_vm_SourceTextModule;
     \\__home_vm_module.SyntheticModule = __home_vm_SyntheticModule;
     \\function __home_vm_Script(code, options) {
+    \\  if (!new.target) throw new TypeError("Class constructor Script cannot be invoked without 'new'");
     \\  this.code = String(code || "");
     \\  this.options = options || {};
+    \\  if (this.options.cachedData !== undefined) {
+    \\    let cachedSource = "";
+    \\    try { cachedSource = Buffer.from(this.options.cachedData).toString(); } catch {}
+    \\    this.cachedDataRejected = cachedSource !== "__home_vm_script_cache_v1\0" + this.code;
+    \\  }
     \\}
     \\__home_vm_Script.prototype.runInContext = function(context, options) {
-    \\  return __home_vm_module.runInContext(this.code, context, options);
+    \\  return __home_vm_module.runInContext(this.code, context, options === undefined ? this.options : options);
     \\};
     \\__home_vm_Script.prototype.runInNewContext = function(sandbox, options) {
     \\  if (!this || typeof this.runInContext !== "function") throw new TypeError("this.runInContext is not a function");
-    \\  return __home_vm_module.runInNewContext(this.code, sandbox, options);
+    \\  return __home_vm_module.runInNewContext(this.code, sandbox, options === undefined ? this.options : options);
     \\};
     \\__home_vm_Script.prototype.runInThisContext = function(options) {
-    \\  return __home_vm_module.runInThisContext(this.code, options);
+    \\  return __home_vm_module.runInThisContext(this.code, options === undefined ? this.options : options);
+    \\};
+    \\__home_vm_Script.prototype.createCachedData = function() {
+    \\  try { Function(this.code); }
+    \\  catch { throw new Error("createCachedData failed"); }
+    \\  return Buffer.from("__home_vm_script_cache_v1\0" + this.code);
     \\};
     \\__home_vm_module.Script = __home_vm_Script;
     \\__home_vm_module.default = __home_vm_module;
@@ -58806,7 +58991,6 @@ const harness_prelude =
     \\    __home_add_body_owner(this.body, this);
     \\    this.init = options;
     \\    this.status = status;
-    \\    this.ok = status >= 200 && status < 300;
     \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
     \\    this.headers = new Headers(options.headers);
     \\    this.bodyUsed = false;
@@ -58825,6 +59009,11 @@ const harness_prelude =
     \\    }
     \\  };
     \\}
+    \\Object.defineProperty(Response.prototype, "ok", {
+    \\  configurable: true,
+    \\  enumerable: true,
+    \\  get() { return this.status >= 200 && this.status < 300; },
+    \\});
     \\function __home_response_compression_error(code, detail) {
     \\  const error = new Error(detail ? code + ": " + detail : code);
     \\  error.code = code;
@@ -91730,13 +91919,14 @@ test "bootstrap runner preserves node V8 contracts" {
 test "bootstrap runner preserves node VM lifecycle contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const cases = [_]struct { path: []const u8, passed: usize }{
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
         .{ .path = "js/node/vm/happy-dom-vm-16277.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/script-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/sourcetextmodule-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/sourcetextmodule-link-gc.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/vm-script-fetcher-leak.test.ts", .passed = 4 },
         .{ .path = "js/node/vm/vm-sourceUrl.test.ts", .passed = 3 },
+        .{ .path = "js/node/vm/vm.test.ts", .passed = 206, .todo = 68 },
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -91750,7 +91940,7 @@ test "bootstrap runner preserves node VM lifecycle contracts" {
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
