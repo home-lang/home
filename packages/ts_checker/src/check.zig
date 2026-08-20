@@ -102619,7 +102619,10 @@ pub const Checker = struct {
                                 // without a separating comma — `{ 2: 1\n
                                 // 2: 1 }` reports only the TS1005
                                 // (numericNamedPropertyDuplicates).
-                                if (!op.is_method and !object_literal_is_destructuring) {
+                                if (!op.is_method and
+                                    !object_literal_is_destructuring and
+                                    !self.objectShorthandHasRecoveredAccessTail(op))
+                                {
                                     const comma_separated = blk_sep: {
                                         if (prior_prop == hir_mod.none_node_id) break :blk_sep true;
                                         const src = self.source orelse break :blk_sep true;
@@ -103281,6 +103284,15 @@ pub const Checker = struct {
             "No value exists in scope for the shorthand property '{s}'. Either declare one or provide an initializer.",
             .{name},
         );
+    }
+
+    fn objectShorthandHasRecoveredAccessTail(self: *const Checker, op: hir_mod.ObjectPropertyPayload) bool {
+        if (!op.is_shorthand or self.source == null) return false;
+        const key_span = self.hir.spanOf(op.key);
+        const src = self.source.?;
+        var next = key_span.end;
+        while (next < src.len and std.ascii.isWhitespace(src[next])) : (next += 1) {}
+        return next < src.len and (src[next] == '.' or src[next] == '[');
     }
 
     fn shorthandPropertyLooksLikeRecoveredSetGenerator(self: *const Checker, value_node: NodeId) bool {
@@ -188203,6 +188215,24 @@ test "checker: unresolved shorthand property reports TS18004" {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
     try T.expect(found);
+}
+
+test "checker: recovered shorthand access tails suppress duplicate property diagnostics" {
+    const s = try newSetup(
+        \\var v = {
+        \\    a.b,
+        \\    a["ss"],
+        \\    a[1],
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var missing_shorthand_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.shorthand_property_no_value) missing_shorthand_count += 1;
+        try T.expect(d.code != TsCodes.object_literal_duplicate_property);
+    }
+    try T.expectEqual(@as(usize, 3), missing_shorthand_count);
 }
 
 test "checker: unresolved destructuring shorthand default reports TS18004" {

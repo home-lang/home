@@ -20725,13 +20725,7 @@ pub const Parser = struct {
             if (!method_is_async and
                 !method_is_generator and
                 (self.peek().kind == .kw_get or self.peek().kind == .kw_set) and
-                (((self.peekAt(1).kind == .identifier or
-                    self.peekAt(1).kind == .private_identifier or
-                    self.peekAt(1).kind == .string_literal or
-                    self.peekAt(1).kind == .number_literal or
-                    self.peekAt(1).kind.isContextualKeyword()) and
-                    (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than)) or
-                    self.peekAt(1).kind == .open_bracket))
+                objectLiteralAccessorNameCanStart(self.peekAt(1).kind))
             {
                 const accessor_kw = self.advance();
                 var is_computed_key = false;
@@ -20762,11 +20756,22 @@ pub const Parser = struct {
                     try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1094, "An accessor cannot have type parameters.");
                 }
                 defer if (type_params.len > 0) self.gpa.free(type_params);
-                const params = try self.parseParameterList();
-                defer self.gpa.free(params);
+                var params: []NodeId = &.{};
+                var owns_params = false;
+                const missing_parameter_list = self.peek().kind != .open_paren;
+                if (missing_parameter_list) {
+                    const at = self.peek();
+                    try self.reportCodeAt(at.span.start, at.line, 1005, "'(' expected.");
+                } else {
+                    params = try self.parseParameterList();
+                    owns_params = true;
+                }
+                defer if (owns_params) self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
-                try self.validateAccessorSignature(accessor_kw.kind, key, params, return_type);
+                if (!missing_parameter_list) {
+                    try self.validateAccessorSignature(accessor_kw.kind, key, params, return_type);
+                }
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
                     // Object-literal accessor bodies are function bodies
@@ -21101,6 +21106,18 @@ pub const Parser = struct {
             );
             try props.append(self.gpa, prop);
             if (self.match(.comma)) continue;
+            if (is_shorthand and self.peek().kind == .dot) {
+                const dot = self.advance();
+                try self.reportCodeAt(dot.span.start, dot.line, 1005, "',' expected.");
+                if (self.peek().kind == .identifier or
+                    self.peek().kind == .private_identifier or
+                    self.peek().kind.isKeyword() or
+                    self.peek().kind.isContextualKeyword())
+                {
+                    _ = self.advance();
+                }
+                if (self.match(.comma)) continue;
+            }
             if (accessibility_shorthand_before_computed and self.peek().kind == .open_bracket) continue;
             if (is_computed and self.peek().kind == .close_bracket) {
                 const close = self.advance();
@@ -21157,6 +21174,19 @@ pub const Parser = struct {
             .asterisk,
             .no_substitution_template,
             .template_head,
+            => true,
+            else => kind.isKeyword() or kind.isContextualKeyword(),
+        };
+    }
+
+    fn objectLiteralAccessorNameCanStart(kind: TokenKind) bool {
+        return switch (kind) {
+            .identifier,
+            .private_identifier,
+            .string_literal,
+            .number_literal,
+            .bigint_literal,
+            .open_bracket,
             => true,
             else => kind.isKeyword() or kind.isContextualKeyword(),
         };
@@ -31347,6 +31377,76 @@ test "parser: non-identifier shorthand property names require colon" {
     for (s.parser.diagnostics.items) |d| {
         try T.expectEqual(@as(u32, 1005), d.code);
     }
+}
+
+test "parser: malformed object shorthand keys recover through the closing brace" {
+    var s = try newTestSetup(
+        \\var y = {
+        \\    "stringLiteral",
+        \\    42,
+        \\    get e,
+        \\    set f,
+        \\    this,
+        \\    super,
+        \\    var,
+        \\    class,
+        \\    typeof
+        \\};
+        \\var x = {
+        \\    a.b,
+        \\    a["ss"],
+        \\    a[1],
+        \\};
+        \\var v = { class };
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), hir_mod.blockStmts(&s.hir, root).len);
+    const expected_messages = [_][]const u8{
+        "':' expected.",
+        "':' expected.",
+        "'(' expected.",
+        "'(' expected.",
+        "':' expected.",
+        "':' expected.",
+        "':' expected.",
+        "':' expected.",
+        "':' expected.",
+        "',' expected.",
+        "',' expected.",
+        "':' expected.",
+        "',' expected.",
+        "':' expected.",
+        "':' expected.",
+    };
+    try T.expectEqual(expected_messages.len, s.parser.diagnostics.items.len);
+    for (expected_messages, s.parser.diagnostics.items) |message, diagnostic| {
+        try T.expectEqual(@as(u32, 1005), diagnostic.code);
+        try T.expectEqualStrings(message, diagnostic.message);
+    }
+}
+
+test "parser: dotted shorthand recovery preserves following namespace statements" {
+    var s = try newTestSetup(
+        \\var x = "Foo";
+        \\namespace m {
+        \\    export var x;
+        \\}
+        \\namespace n {
+        \\    export var y = {
+        \\        m.x
+        \\    };
+        \\}
+        \\m.y.x;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 4), hir_mod.blockStmts(&s.hir, root).len);
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: variable list trailing comma before return recovers as return statement" {
