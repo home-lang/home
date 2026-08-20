@@ -1649,7 +1649,8 @@ fn appendJsxDirectiveDiagnostics(
             !std.mem.eql(u8, mode, "react") and
             !std.mem.startsWith(u8, mode, "react-jsx") and
             has_fragment and
-            !has_jsx_frag_pragma)
+            !has_jsx_frag_pragma and
+            !sourceHasJsxCompilerOptionDirective(source))
         {
             try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
         }
@@ -5916,6 +5917,20 @@ test "driver: jsx pragma with fragment requires jsxFrag pragma" {
         if (d.code == 17017) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: jsx compiler option matrix does not require an inline jsxFrag pragma" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: preserve, react
+        \\let v = <></>;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 17017);
+    }
 }
 
 test "driver: jsxFactory compiler option with fragment reports TS17016" {
