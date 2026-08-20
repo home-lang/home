@@ -37471,6 +37471,7 @@ const harness_prelude =
     \\  response.set = function(name, value) { if (name && typeof name === "object") { for (const key of Object.keys(name)) this.setHeader(key, name[key]); } else this.setHeader(name, value); return this; };
     \\  response.header = response.set;
     \\  response.type = function(value) { const type = String(value || "application/octet-stream"); this.setHeader("Content-Type", type.includes("/") ? type : ({ json: "application/json", html: "text/html", text: "text/plain" })[type.toLowerCase()] || "application/octet-stream"); return this; };
+    \\  response.location = function(value) { let location = encodeURI(String(value)); location = location.replace(/%25([0-9A-Fa-f]{2})/g, "%$1").replace(/%5B/gi, "[").replace(/%5D/gi, "]"); this.setHeader("Location", location); return this; };
     \\  response.send = function(body) {
     \\    let payload = body === undefined || body === null ? "" : body;
     \\    if (!(payload instanceof Uint8Array) && typeof payload === "object") { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); payload = JSON.stringify(payload); }
@@ -100961,6 +100962,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/express.test.ts", .passed = 1 },
         .{ .path = "js/third_party/express/express.text.test.ts", .passed = 33, .todo = 7 },
         .{ .path = "js/third_party/express/res.json.test.ts", .passed = 13 },
+        .{ .path = "js/third_party/express/res.location.test.ts", .passed = 12, .todo = 10 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
