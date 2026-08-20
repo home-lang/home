@@ -34936,29 +34936,46 @@ pub const Checker = struct {
         return params[0] == types.Primitive.any or params[0] == types.Primitive.unknown;
     }
 
-    /// Lower a class declaration into an instance object type. Each
-    /// TS2725 ÃÂ¢ÃÂÃÂ `export class Object {}` is forbidden when the
-    /// emit target is ES5+ and the effective module emit format is below
-    /// ES2015 (CommonJS in the conformance matrix). Fires only on classes
-    /// whose name is
-    /// literally `Object` and only on the export-prefixed forms
-    /// (`export class Object`, `export default class Object`) since
-    /// those are what tsc reports ÃÂ¢ÃÂÃÂ non-exported `class Object` is
-    /// still permitted.
-    fn checkClassNamedObjectInCommonJsLikeModule(self: *Checker, node: NodeId) CheckError!void {
+    /// Return the display spelling for an effective pre-ES2015 module
+    /// format. These are precisely the formats covered by tsgo's
+    /// `GetEmitModuleFormatOfFile(...) < ModuleKindES2015` predicate.
+    fn classObjectCollisionModuleName(self: *Checker) ?[]const u8 {
+        inline for (.{
+            .{ "commonjs", "CommonJS" },
+            .{ "amd", "AMD" },
+            .{ "umd", "UMD" },
+            .{ "system", "System" },
+        }) |entry| {
+            if (self.effectiveModuleKindIs(entry[0])) return entry[1];
+        }
+
+        // With no explicit module kind, current tsgo derives CommonJS
+        // only for pre-ES2015 targets; an omitted target defaults to ESM.
+        if (self.module_kind.len != 0 or self.sourceHasDirective("module")) return null;
+        if (self.target_emit_es5 or
+            self.sourceDirectiveValueMentions("target", "es3") or
+            self.sourceDirectiveValueMentions("target", "es5"))
+        {
+            return "CommonJS";
+        }
+        return null;
+    }
+
+    /// TS2725 applies to every non-ambient class-like declaration named
+    /// `Object` when its file emits in a pre-ES2015 module format.
+    fn checkClassNamedObjectInLegacyModule(self: *Checker, node: NodeId) CheckError!void {
         const c = hir_mod.classOf(self.hir, node);
         if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, c.name);
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "Object")) return;
-        const parent = self.hir.parentOf(node);
-        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .export_decl) return;
         if (self.classHasLeadingDeclare(node)) return;
+        if (self.classNodeIsInsideAmbientDeclaredModule(node)) return;
         if (self.virtualSectionIsDeclarationFile(node)) return;
-        if (!self.sourceDirectiveValueMentions("module", "commonjs")) return;
+        const module_name = self.classObjectCollisionModuleName() orelse return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Class name cannot be 'Object' when targeting ES5 and above with module {s}.",
-            .{"CommonJS"},
+            .{module_name},
         );
         try self.diagnostics.append(self.gpa, .{
             .node = c.name,
@@ -36852,7 +36869,7 @@ pub const Checker = struct {
         try self.checkClassMemberDecoratorDiagnostics(members);
         try self.detectClassMemberDuplicates(members);
         try self.checkAccessorPairAccessibility(members);
-        try self.checkClassNamedObjectInCommonJsLikeModule(node);
+        try self.checkClassNamedObjectInLegacyModule(node);
         try self.checkHeritagePrivateNames(node, self.declarationName(node), true);
         try self.checkExportedClassMemberPrivateNames(node);
         try self.checkJsDocTemplateBracketedName(node);
@@ -244384,6 +244401,71 @@ test "checker: parity batch CommonJS reserves Object only for its own transform"
     defer destroyBoundSetup(esnext);
     try esnext.base.checker.checkSourceFile(esnext.base.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(esnext.base, TsCodes.duplicate_identifier_reserves_name));
+}
+
+test "checker: TS2725 covers every pre-ES2015 module format" {
+    const cases = [_]struct {
+        source: []const u8,
+        module_name: []const u8,
+    }{
+        .{ .source = "// @module: commonjs\nexport class Object {}", .module_name = "CommonJS" },
+        .{ .source = "// @module: amd\nexport class Object {}", .module_name = "AMD" },
+        .{ .source = "// @module: umd\nexport class Object {}", .module_name = "UMD" },
+        .{ .source = "// @module: system\nexport class Object {}", .module_name = "System" },
+    };
+
+    for (cases) |case| {
+        const b = try newBoundSetup(case.source);
+        defer destroyBoundSetup(b);
+        try b.base.checker.checkSourceFile(b.base.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.class_name_object_es5_module));
+        const expected = try std.fmt.allocPrint(
+            T.allocator,
+            "Class name cannot be 'Object' when targeting ES5 and above with module {s}.",
+            .{case.module_name},
+        );
+        defer T.allocator.free(expected);
+        try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.class_name_object_es5_module, expected));
+    }
+}
+
+test "checker: TS2725 follows class-like, target-default, and ambient semantics" {
+    const class_like = try newBoundSetup(
+        \\// @module: amd
+        \\class Object {}
+        \\const C = class Object {};
+    );
+    defer destroyBoundSetup(class_like);
+    try class_like.base.checker.checkSourceFile(class_like.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(class_like.base, TsCodes.class_name_object_es5_module));
+
+    const target_default = try newBoundSetup("class Object {}");
+    defer destroyBoundSetup(target_default);
+    target_default.base.checker.setTargetEmitEs5(true);
+    try target_default.base.checker.checkSourceFile(target_default.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        target_default.base,
+        TsCodes.class_name_object_es5_module,
+        "Class name cannot be 'Object' when targeting ES5 and above with module CommonJS.",
+    ));
+
+    const modern = try newBoundSetup(
+        \\// @module: esnext
+        \\class Object {}
+        \\const C = class Object {};
+    );
+    defer destroyBoundSetup(modern);
+    try modern.base.checker.checkSourceFile(modern.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(modern.base, TsCodes.class_name_object_es5_module));
+
+    const ambient = try newBoundSetup(
+        \\// @module: commonjs
+        \\declare class Object {}
+        \\declare namespace N { class Object {} }
+    );
+    defer destroyBoundSetup(ambient);
+    try ambient.base.checker.checkSourceFile(ambient.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(ambient.base, TsCodes.class_name_object_es5_module));
 }
 
 test "checker: parity batch qualified JSDoc extends mismatches resolve the full type name" {
