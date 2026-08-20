@@ -127560,6 +127560,18 @@ pub const Checker = struct {
         }
         const ap = self.interner.signatureParams(a);
         const bp = self.interner.signatureParams(b);
+        if (self.signatureIsConstruct(a) and self.signatureIsConstruct(b)) {
+            const a_has_rest = self.rest_signatures.contains(a);
+            const b_has_rest = self.rest_signatures.contains(b);
+            if (!a_has_rest and !b_has_rest and
+                self.signatureMinRequiredArgs(a, ap) == 0 and
+                self.signatureMinRequiredArgs(b, bp) == 0)
+            {
+                return true;
+            }
+            if (try self.contextualFunctionSignatureAssignable(a, b)) return true;
+            return try self.contextualFunctionSignatureAssignable(b, a);
+        }
         const compare_len = @min(ap.len, bp.len);
         var i: usize = 0;
         while (i < compare_len) : (i += 1) {
@@ -136751,7 +136763,8 @@ pub const Checker = struct {
                 const rendered = type_name.?;
                 if (std.mem.eql(u8, rendered, "{}") or
                     std.mem.indexOf(u8, rendered, "__home_promise_value") != null or
-                    (std.mem.indexOfScalar(u8, source_name, '[') != null and
+                    (!self.objectTypeIsCallOrConstructOnly(checked_t) and
+                        std.mem.indexOfScalar(u8, source_name, '[') != null and
                         std.mem.indexOfScalar(u8, source_name, ']') != null) or
                     std.mem.indexOfScalar(u8, source_name, '|') != null)
                 {
@@ -165201,7 +165214,8 @@ pub const Checker = struct {
         const source_name = self.visibleAnnotatedIdentifierTypeText(operand) orelse return null;
         if (source_name.len == 0) return null;
         // Indexed-access annotations (`T[P]`) render from their source text.
-        if (std.mem.indexOfScalar(u8, source_name, '[') != null and
+        if (!self.objectTypeIsCallOrConstructOnly(display_t) and
+            std.mem.indexOfScalar(u8, source_name, '[') != null and
             std.mem.indexOfScalar(u8, source_name, ']') != null)
         {
             return try self.normalizedTypeAnnotationText(source_name);
@@ -182216,6 +182230,44 @@ test "checker: TS2367 suppressed for two construct-signature object types" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.no_overlap_comparison);
     }
+}
+
+test "checker: construct signature comparisons require one consistent subtype direction" {
+    const s = try newSetup(
+        \\interface Base { a: string }
+        \\interface Derived extends Base { b: string }
+        \\interface Other { c: string }
+        \\declare const crossedA: { new (a: Derived, b: Base): Base };
+        \\declare const crossedB: { new (a: Base, b: Derived): Base };
+        \\crossedA === crossedB;
+        \\crossedB !== crossedA;
+        \\declare const relatedA: { new (a: Base): Base };
+        \\declare const relatedB: { new (a: Derived): Base };
+        \\relatedA === relatedB;
+        \\declare const optionalA: { new (a?: Base): Base };
+        \\declare const optionalB: { new (a?: Other): Base };
+        \\optionalA === optionalB;
+        \\declare const restRelatedA: { new (...a: Base[]): Base };
+        \\declare const restRelatedB: { new (...a: Derived[]): Base };
+        \\restRelatedA === restRelatedB;
+        \\declare const restOther: { new (...a: Other[]): Base };
+        \\restRelatedA === restOther;
+        \\restRelatedA < restOther;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_overlap_comparison));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.no_overlap_comparison,
+        "This comparison appears to be unintentional because the types 'new (...a: Base[]) => Base' and 'new (...a: Other[]) => Base' have no overlap.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.operator_cannot_be_applied,
+        "Operator '<' cannot be applied to types 'new (...a: Base[]) => Base' and 'new (...a: Other[]) => Base'.",
+    ));
 }
 
 test "checker: TS2469 relational op anchors at symbol-typed operand" {
