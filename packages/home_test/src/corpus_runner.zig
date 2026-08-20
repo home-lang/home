@@ -37178,7 +37178,7 @@ const harness_prelude =
     \\  const scale = ({ b: 1, kb: 1024, mb: 1024 * 1024, gb: 1024 * 1024 * 1024 })[String(match[2] || "b").toLowerCase()];
     \\  return Math.floor(Number(match[1]) * scale);
     \\}
-    \\function __home_express_decode_body(bytes, charset) {
+    \\function __home_express_decode_body(bytes, charset, allowLegacy) {
     \\  const normalized = String(charset || "utf-8").toLowerCase();
     \\  if (["utf-8", "utf8"].includes(normalized)) return Buffer.from(bytes).toString("utf8");
     \\  if (["utf-16", "utf-16le", "utf16", "utf16le"].includes(normalized)) {
@@ -37186,6 +37186,10 @@ const harness_prelude =
     \\    const decoded = Buffer.from(source.slice(start));
     \\    if (bigEndian) for (let index = 0; index + 1 < decoded.length; index += 2) { const first = decoded[index]; decoded[index] = decoded[index + 1]; decoded[index + 1] = first; }
     \\    return decoded.toString("utf16le");
+    \\  }
+    \\  if (allowLegacy && ["koi8-r", "koi8r"].includes(normalized)) {
+    \\    try { return new TextDecoder("koi8-r").decode(Buffer.from(bytes)); }
+    \\    catch { const alphabet = "юабцдефгхийклмнопярстужвьызшэщчъЮАБЦДЕФГХИЙКЛМНОПЯРСТУЖВЬЫЗШЭЩЧЪ"; let text = ""; for (const byte of bytes) text += byte < 0x80 ? String.fromCharCode(byte) : byte >= 0xc0 ? alphabet[byte - 0xc0] : "�"; return text; }
     \\  }
     \\  throw __home_express_body_error(415, "charset.unsupported", "unsupported charset \"" + normalized.toUpperCase() + "\"");
     \\}
@@ -37228,7 +37232,7 @@ const harness_prelude =
     \\      } catch (error) { if (error && error.type === "encoding.unsupported") throw error; throw __home_express_body_error(400, "encoding.invalid", error && error.message || "invalid compressed body", undefined, error); }
     \\      if (inflated.length > limit) throw __home_express_body_error(413, "entity.too.large", "request entity too large", { limit, length: inflated.length });
     \\      const charsetPart = contentType.split(";").map(value => value.trim()).find(value => value.toLowerCase().startsWith("charset=")), charset = charsetPart ? charsetPart.slice(charsetPart.indexOf("=") + 1).trim().replace(/^['\"]|['\"]$/g, "") : "utf-8";
-    \\      const text = __home_express_decode_body(inflated, charset);
+    \\      const text = __home_express_decode_body(inflated, charset, false);
     \\      if (options.verify) {
     \\        try { options.verify(request, response, Buffer.from(inflated), charset); }
     \\        catch (error) { error.status = error.status || 403; error.statusCode = error.status; error.type = error.type || "entity.verify.failed"; error.body = Buffer.from(inflated); throw error; }
@@ -37245,6 +37249,43 @@ const harness_prelude =
     \\      } catch (error) { error.status = error.statusCode = 400; error.type = "entity.parse.failed"; error.body = text; throw error; }
     \\      request.__home_json_parsed = true;
     \\      next();
+    \\    } catch (error) { next(error); }
+    \\  };
+    \\}
+    \\function __home_express_text(options) {
+    \\  options = Object.assign({}, options || {});
+    \\  if (options.verify !== undefined && typeof options.verify !== "function") throw new TypeError("option verify must be function");
+    \\  const limit = __home_express_limit(options.limit), inflate = options.inflate !== false, acceptedType = options.type === undefined ? "text/plain" : options.type, defaultCharset = options.defaultCharset || "utf-8";
+    \\  return async function homeExpressText(request, response, next) {
+    \\    if (request.__home_text_parsed) return next();
+    \\    try {
+    \\      let raw = request.__home_raw_body;
+    \\      if (raw === undefined && request.__home_web_request && typeof request.__home_web_request.arrayBuffer === "function") raw = Buffer.from(await request.__home_web_request.arrayBuffer());
+    \\      const bytes = raw === undefined || raw === null ? Buffer.alloc(0) : raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(typeof raw === "string" ? raw : String(raw));
+    \\      const contentLengthValue = __home_express_header(request, "content-length"), transferEncoding = __home_express_header(request, "transfer-encoding"), contentLength = contentLengthValue === undefined ? null : Number(contentLengthValue);
+    \\      const hasBody = bytes.length > 0 || (Number.isFinite(contentLength) && contentLength > 0) || transferEncoding !== undefined;
+    \\      if (!hasBody) { request.body = ""; request.__home_text_parsed = true; return next(); }
+    \\      const contentType = String(__home_express_header(request, "content-type") || "").toLowerCase(), mediaType = contentType.split(";", 1)[0].trim();
+    \\      const accepts = typeof acceptedType === "function" ? !!acceptedType(request) : (Array.isArray(acceptedType) ? acceptedType : [acceptedType]).some(value => String(value).toLowerCase() === mediaType);
+    \\      if (!accepts) return next();
+    \\      if (contentLength !== null && Number.isFinite(contentLength) && !transferEncoding && contentLength !== bytes.length) throw __home_express_body_error(400, "request.size.invalid", "request size did not match content length", { expected: contentLength, length: bytes.length });
+    \\      const encoding = String(__home_express_header(request, "content-encoding") || "identity").toLowerCase();
+    \\      if ((contentLength !== null && Number.isFinite(contentLength) && contentLength > limit) || bytes.length > limit && encoding === "identity") throw __home_express_body_error(413, "entity.too.large", "request entity too large", { limit, length: bytes.length });
+    \\      if (!inflate && encoding !== "identity") throw __home_express_body_error(415, "encoding.unsupported", "content encoding unsupported", { encoding });
+    \\      let inflated;
+    \\      try {
+    \\        if (encoding === "identity") inflated = bytes;
+    \\        else if (encoding === "gzip" || encoding === "deflate") inflated = __home_express_inflate_body(bytes, encoding);
+    \\        else throw __home_express_body_error(415, "encoding.unsupported", "unsupported content encoding \"" + encoding + "\"", { encoding });
+    \\      } catch (error) { if (error && error.type === "encoding.unsupported") throw error; throw __home_express_body_error(400, "encoding.invalid", error && error.message || "invalid compressed body", undefined, error); }
+    \\      if (inflated.length > limit) throw __home_express_body_error(413, "entity.too.large", "request entity too large", { limit, length: inflated.length });
+    \\      const charsetPart = contentType.split(";").map(value => value.trim()).find(value => value.toLowerCase().startsWith("charset=")), charset = charsetPart ? charsetPart.slice(charsetPart.indexOf("=") + 1).trim().replace(/^['\"]|['\"]$/g, "") : defaultCharset;
+    \\      const text = __home_express_decode_body(inflated, charset, true);
+    \\      if (options.verify) {
+    \\        try { options.verify(request, response, Buffer.from(inflated), charset); }
+    \\        catch (error) { error.status = error.status || 403; error.statusCode = error.status; error.type = error.type || "entity.verify.failed"; error.body = Buffer.from(inflated); throw error; }
+    \\      }
+    \\      request.body = text; request.__home_text_parsed = true; next();
     \\    } catch (error) { next(error); }
     \\  };
     \\}
@@ -37529,9 +37570,10 @@ const harness_prelude =
     \\  });
     \\}
     \\__home_express.json = __home_express_json;
+    \\__home_express.text = __home_express_text;
     \\__home_express.raw = __home_express_raw;
     \\__home_express.Router = __home_express_router;
-    \\globalThis.__home_modules["express"] = Object.assign(__home_express, { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json, raw: __home_express_raw, Router: __home_express_router });
+    \\globalThis.__home_modules["express"] = Object.assign(__home_express, { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json, text: __home_express_text, raw: __home_express_raw, Router: __home_express_router });
     \\globalThis.__home_modules["supertest"] = __home_supertest;
     \\globalThis.__home_modules["body-parser"] = { json: __home_express_json };
     \\const __home_cp1251_special = [0x0402,0x0403,0x201a,0x0453,0x201e,0x2026,0x2020,0x2021,0x20ac,0x2030,0x0409,0x2039,0x040a,0x040c,0x040b,0x040f,0x0452,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0xfffd,0x2122,0x0459,0x203a,0x045a,0x045c,0x045b,0x045f,0x00a0,0x040e,0x045e,0x0408,0x00a4,0x0490,0x00a6,0x00a7,0x0401,0x00a9,0x0404,0x00ab,0x00ac,0x00ad,0x00ae,0x0407,0x00b0,0x00b1,0x0406,0x0456,0x0491,0x00b5,0x00b6,0x00b7,0x0451,0x2116,0x0454,0x00bb,0x0458,0x0405,0x0455,0x0457];
@@ -100906,6 +100948,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/app.router.test.ts", .passed = 77, .todo = 45 },
         .{ .path = "js/third_party/express/express.json.test.ts", .passed = 47, .todo = 7 },
         .{ .path = "js/third_party/express/express.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/express/express.text.test.ts", .passed = 33, .todo = 7 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
