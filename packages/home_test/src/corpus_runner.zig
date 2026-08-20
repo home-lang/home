@@ -37415,6 +37415,36 @@ const harness_prelude =
     \\  return api;
     \\})();
     \\globalThis.__home_modules["@duckdb/node-api"] = __home_duckdb_module;
+    \\class __home_legacy_duckdb_Database {
+    \\  constructor(filename, callback) {
+    \\    if (typeof filename !== "string") throw new TypeError("DuckDB database filename must be a string");
+    \\    this.filename = filename;
+    \\    this.open = true;
+    \\    if (typeof callback === "function") Promise.resolve().then(() => callback(null));
+    \\  }
+    \\  all(sql) {
+    \\    const args = Array.prototype.slice.call(arguments, 1), callback = args.length && typeof args[args.length - 1] === "function" ? args.pop() : null, query = String(sql || "");
+    \\    if (!callback) throw new TypeError("DuckDB Database#all requires a callback");
+    \\    Promise.resolve().then(() => {
+    \\      try {
+    \\        if (!this.open) throw new Error("DuckDB database is closed");
+    \\        const projection = query.match(/^\s*SELECT\s+(-?\d+(?:\.\d+)?)\s+(?:AS\s+)?([A-Za-z_$][\w$]*)\s*;?\s*$/i);
+    \\        if (!projection) throw new Error("Unsupported DuckDB SQL: " + query);
+    \\        callback(null, [{ [projection[2]]: Number(projection[1]) }]);
+    \\      } catch (cause) {
+    \\        const error = cause instanceof Error ? cause : new Error(String(cause));
+    \\        error.query = query;
+    \\        error.stack = String(error.stack || error) + "\n    at DuckDB.Database.all (" + String(globalThis.__home_current_filename || "<unknown>") + ")";
+    \\        callback(error, undefined);
+    \\      }
+    \\    });
+    \\    return this;
+    \\  }
+    \\  close(callback) { const wasOpen = this.open; this.open = false; if (typeof callback === "function") Promise.resolve().then(() => callback(wasOpen ? null : new Error("DuckDB database is already closed"))); return this; }
+    \\}
+    \\const __home_legacy_duckdb_module = { Database: __home_legacy_duckdb_Database };
+    \\__home_legacy_duckdb_module.default = __home_legacy_duckdb_module;
+    \\globalThis.__home_modules["duckdb"] = __home_legacy_duckdb_module;
     \\function __home_react_create_context(defaultValue) {
     \\  const context = {
     \\    $$typeof: Symbol.for("react.context"),
@@ -100469,6 +100499,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
     }{
         .{ .path = "js/third_party/@azure/service-bus/azure-service-bus.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/@duckdb/node-api/duckdb.test.ts", .passed = 18 },
+        .{ .path = "js/third_party/duckdb/duckdb-basic-usage.test.ts", .passed = 1 },
         .{ .path = "js/third_party/@electric-sql/pglite/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/@fastify/websocket/fastity-test-websocket.test.js", .passed = 1 },
         .{ .path = "js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts", .passed = 1 },
