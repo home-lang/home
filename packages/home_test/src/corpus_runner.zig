@@ -824,9 +824,10 @@ const harness_prelude =
     \\    const watched = watcher.__home_path;
     \\    const direct = changed === watched;
     \\    const child = __home_fs_normalize_path(__home_build_dirname(changed)) === watched;
-    \\    if (!direct && !child) continue;
-    \\    const event = child && !existed ? "rename" : "change";
-    \\    const filename = child ? __home_build_basename(changed) : __home_build_basename(watched);
+    \\    const descendant = watcher.__home_recursive && changed.startsWith(watched.replace(/\/+$/, "") + "/");
+    \\    if (!direct && !child && !descendant) continue;
+    \\    const event = !direct && !existed ? "rename" : "change";
+    \\    const filename = direct ? __home_build_basename(watched) : changed.slice(watched.replace(/\/+$/, "").length + 1);
     \\    Promise.resolve().then(() => { if (!watcher.__home_closed) watcher.emit("change", event, filename); });
     \\  }
     \\}
@@ -50907,8 +50908,10 @@ const harness_prelude =
     \\};
     \\function __home_fs_watch(path, options, listener) {
     \\  if (typeof options === "function") { listener = options; options = {}; }
+    \\  if (!options || typeof options !== "object") options = {};
     \\  const watcher = __home_http_event_target();
     \\  watcher.__home_path = __home_fs_absolute_path(path);
+    \\  watcher.__home_recursive = options.recursive === true;
     \\  watcher.__home_closed = false;
     \\  watcher._handle = { __home_fs_event: true, close() {} };
     \\  watcher.close = function() {
@@ -91906,6 +91909,34 @@ test "bootstrap runner preserves node V8 contracts" {
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("node V8 contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node watch contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/node/watch/fs.watch.deadlock.test.ts", .passed = 1 },
+        .{ .path = "js/node/watch/fs.watch.events-cb-race.test.ts", .passed = 1 },
+        .{ .path = "js/node/watch/fs.watch.rewrite.test.ts", .passed = 5 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node watch contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
