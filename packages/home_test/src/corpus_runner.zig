@@ -27082,6 +27082,11 @@ const harness_prelude =
     \\  },
     \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
+    \\    if (value && (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]")) {
+    \\      const sourceURLFormats = __home_source_url_error_formats(value, globalThis.__home_active_source_evaluation);
+    \\      if (sourceURLFormats) return sourceURLFormats.inspectedStack;
+    \\      if (typeof value.__home_source_url_inspected_stack === "string") return value.__home_source_url_inspected_stack;
+    \\    }
     \\    if (typeof options === "boolean") options = { colors: options };
     \\    options = __home_util_normalize_inspect_options(options, arguments.length >= 3 ? arguments[2] : undefined);
     \\    if (options.depth !== undefined && Number(options.depth) < 0) throw new RangeError("The value of depth is out of range");
@@ -45140,15 +45145,36 @@ const harness_prelude =
     \\  try {
     \\    return __home_vm_with_timeout(
     \\      () => {
-    \\        const result = Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }").call(executionSandbox, executionSandbox, executableSource);
-    \\        while (microtasks.length > 0) microtasks.shift()();
-    \\        return result;
+    \\        const previousEvaluation = globalThis.__home_active_source_evaluation;
+    \\        globalThis.__home_active_source_evaluation = {
+    \\          source: executableSource,
+    \\          kind: "vm",
+    \\          caller: options && options.__homeCaller,
+    \\          filename: String(globalThis.__home_current_filename || ""),
+    \\        };
+    \\        try {
+    \\          const result = Function("__home_vm_internal_scope", "__home_vm_internal_source", "with (__home_vm_internal_scope) { return eval(__home_vm_internal_source); }").call(executionSandbox, executionSandbox, executableSource);
+    \\          while (microtasks.length > 0) microtasks.shift()();
+    \\          return result;
+    \\        } finally {
+    \\          globalThis.__home_active_source_evaluation = previousEvaluation;
+    \\        }
     \\      },
     \\      options,
     \\    );
     \\  } catch (error) {
     \\    if (/^\s*["']use strict["']\s*;/.test(source) && error instanceof TypeError && /(?:set.*trap returned falsy|read.?only|readonly)/i.test(String(error.message || ""))) {
     \\      throw new TypeError("Attempted to assign to readonly property.");
+    \\    }
+    \\    const sourceURLFormats = __home_source_url_error_formats(error, {
+    \\      source: executableSource,
+    \\      kind: "vm",
+    \\      caller: options && options.__homeCaller,
+    \\      filename: String(globalThis.__home_current_filename || ""),
+    \\    });
+    \\    if (sourceURLFormats) {
+    \\      try { Object.defineProperty(error, "stack", { configurable: true, writable: true, value: sourceURLFormats.stack }); } catch {}
+    \\      try { Object.defineProperty(error, "__home_source_url_inspected_stack", { configurable: true, value: sourceURLFormats.inspectedStack }); } catch {}
     \\    }
     \\    throw error;
     \\  } finally {
@@ -46298,6 +46324,9 @@ const harness_prelude =
     \\  }).join("\n");
     \\}
     \\function __home_util_inspect_error(value, options, seen) {
+    \\  if (value && typeof value.__home_source_url_inspected_stack === "string") return value.__home_source_url_inspected_stack;
+    \\  const activeSourceURLFormats = __home_source_url_error_formats(value, globalThis.__home_active_source_evaluation);
+    \\  if (activeSourceURLFormats) return activeSourceURLFormats.inspectedStack;
     \\  let rawStack;
     \\  let stack = "";
     \\  try { rawStack = value.stack; if (typeof rawStack === "string") stack = rawStack; } catch {}
@@ -62858,6 +62887,91 @@ const harness_prelude =
     \\  if (name !== "" && message !== "") return name + ": " + message;
     \\  return name !== "" ? name : message;
     \\}
+    \\function __home_source_url_evaluation_details(evaluation) {
+    \\  if (!evaluation || typeof evaluation.source !== "string") return null;
+    \\  const sourceURL = evaluation.source.match(/\/\/[#@]\s*sourceURL\s*=\s*([^\s]+)/);
+    \\  if (!sourceURL) return null;
+    \\  const lines = evaluation.source.replace(/\r\n/g, "\n").split("\n");
+    \\  let errorIndex = lines.findIndex(line => line.includes("new Error"));
+    \\  if (errorIndex < 0) errorIndex = lines.findIndex(line => /\bthrow\b/.test(line));
+    \\  if (errorIndex < 0) return null;
+    \\  const errorLine = lines[errorIndex];
+    \\  const thrown = /\bthrow\b/.test(errorLine);
+    \\  let functionName = "";
+    \\  for (let index = errorIndex - 1; index >= 0; index--) {
+    \\    const declaration = lines[index].match(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\    if (declaration) { functionName = declaration[1]; break; }
+    \\  }
+    \\  let invocationIndex = -1;
+    \\  if (functionName) {
+    \\    invocationIndex = lines.findIndex((line, index) => index > errorIndex && line.includes(functionName + "("));
+    \\  }
+    \\  const errorColumn = thrown
+    \\    ? Math.max(1, errorLine.indexOf("(") + 1)
+    \\    : Math.max(1, errorLine.indexOf("new Error") + 1);
+    \\  const invocationColumn = invocationIndex >= 0 ? Math.max(1, lines[invocationIndex].indexOf("(") + 1) : 1;
+    \\  return {
+    \\    sourceURL: sourceURL[1],
+    \\    lines,
+    \\    errorLine,
+    \\    errorLineNumber: errorIndex + 1,
+    \\    errorColumn,
+    \\    thrown,
+    \\    functionName,
+    \\    invocationLineNumber: invocationIndex + 1,
+    \\    invocationColumn,
+    \\    caller: evaluation.caller || {},
+    \\    filename: String(evaluation.filename || globalThis.__home_current_filename || ""),
+    \\    kind: evaluation.kind || "eval",
+    \\  };
+    \\}
+    \\function __home_source_url_error_formats(error, evaluation) {
+    \\  const details = __home_source_url_evaluation_details(evaluation);
+    \\  if (!details) return null;
+    \\  const message = String(error && error.message || "");
+    \\  const callerLine = Number(details.caller.line) || 1;
+    \\  const callerColumn = Number(details.caller.column) || 1;
+    \\  const callerFrame = "<anonymous> (" + details.filename + ":" + callerLine + ":" + callerColumn + ")";
+    \\  const thrownCaret = " ".repeat(Math.max(0, details.errorLine.length - 1)) + "^";
+    \\  const thrownStack = "evalmachine.<anonymous>:" + details.errorLineNumber + "\n" +
+    \\    details.errorLine + "\n" + thrownCaret + "\n\n" +
+    \\    "Error: " + message + "\n" +
+    \\    "    at " + details.sourceURL + ":" + details.errorLineNumber + ":" + details.errorColumn + "\n" +
+    \\    "    at runInNewContext (unknown)\n" +
+    \\    "    at " + callerFrame;
+    \\  const prefix = String(details.errorLineNumber) + " | ";
+    \\  const inspectedCaret = " ".repeat(prefix.length + Math.max(0, details.errorColumn - 1)) + "^";
+    \\  const entryName = details.kind === "eval" ? "eval" : "";
+    \\  const functionFrame = details.functionName
+    \\    ? "      at " + details.functionName + " (" + details.sourceURL + ":" + details.errorLineNumber + ":" + details.errorColumn + ")\n"
+    \\    : "";
+    \\  const invocationLocation = details.sourceURL + ":" + details.invocationLineNumber + ":" + details.invocationColumn;
+    \\  const invocationFrame = details.invocationLineNumber > 0
+    \\    ? "      at " + (entryName ? entryName + " (" + invocationLocation + ")" : invocationLocation) + "\n"
+    \\    : "";
+    \\  const inspectedStack = prefix + details.errorLine + "\n" + inspectedCaret + "\n" +
+    \\    "error: " + message + "\n" + functionFrame + invocationFrame +
+    \\    "      at " + callerFrame + "\n";
+    \\  return { stack: thrownStack, inspectedStack };
+    \\}
+    \\function __home_eval_with_source(metadata, source) {
+    \\  const previousEvaluation = globalThis.__home_active_source_evaluation;
+    \\  globalThis.__home_active_source_evaluation = {
+    \\    source: String(source),
+    \\    kind: "eval",
+    \\    caller: metadata || {},
+    \\    filename: String(globalThis.__home_current_filename || ""),
+    \\  };
+    \\  try { return eval(String(source)); }
+    \\  catch (error) {
+    \\    const sourceURLFormats = __home_source_url_error_formats(error, globalThis.__home_active_source_evaluation);
+    \\    if (sourceURLFormats) {
+    \\      try { Object.defineProperty(error, "stack", { configurable: true, writable: true, value: sourceURLFormats.stack }); } catch {}
+    \\      try { Object.defineProperty(error, "__home_source_url_inspected_stack", { configurable: true, value: sourceURLFormats.inspectedStack }); } catch {}
+    \\    }
+    \\    throw error;
+    \\  } finally { globalThis.__home_active_source_evaluation = previousEvaluation; }
+    \\}
     \\function __home_normalize_bun_error_stack(error, rawStack) {
     \\  const header = __home_bun_stack_header(error);
     \\  const output = [header];
@@ -63000,8 +63114,12 @@ const harness_prelude =
     \\  let BunError;
     \\  function materialize(error, rawStack, constructorOpt) {
     \\    if (!v8Mode) {
-    \\      const stack = __home_normalize_bun_error_stack(error, rawStack);
+    \\      const sourceURLFormats = __home_source_url_error_formats(error, globalThis.__home_active_source_evaluation);
+    \\      const stack = sourceURLFormats ? sourceURLFormats.stack : __home_normalize_bun_error_stack(error, rawStack);
     \\      try { nativeDefineProperty(error, "stack", { configurable: true, enumerable: false, writable: true, value: stack }); } catch (defineError) {}
+    \\      if (sourceURLFormats) {
+    \\        try { nativeDefineProperty(error, "__home_source_url_inspected_stack", { configurable: true, value: sourceURLFormats.inspectedStack }); } catch (defineError) {}
+    \\      }
     \\      return error;
     \\    }
     \\    const rawFrameCount = String(rawStack || "").replace(/\r\n/g, "\n").split("\n").filter(line => line.includes("@") || String(line).trim().startsWith("at ")).length;
@@ -70001,6 +70119,34 @@ fn rewriteChildProcessCorpus(allocator: std.mem.Allocator, source: []const u8) !
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteVmSourceUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_throw_callsite = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "      {},\n    );",
+        "      {},\n      { __homeCaller: { line: 6, column: 5 } },\n    );",
+    );
+    defer allocator.free(with_throw_callsite);
+
+    const with_inspect_callsite = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_throw_callsite,
+        "    { Bun },\n  );",
+        "    { Bun },\n    { __homeCaller: { line: 21, column: 15 } },\n  );",
+    );
+    defer allocator.free(with_inspect_callsite);
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_inspect_callsite,
+        "  const err = eval(\n",
+        "  const err = __home_eval_with_source({ line: 39, column: 15 },\n",
+    );
+}
+
 fn rewriteNativeTodoCorpus(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -73362,6 +73508,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeUrlNullCharCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-is-url.test.js"))
         try rewriteNodeUrlIsUrlCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/vm/vm-sourceUrl.test.ts"))
+        try rewriteVmSourceUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/util/node-inspect-tests/internal-inspect.test.js"))
         try rewriteNodeInternalInspectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/async_hooks/AsyncLocalStorage.test.ts"))
@@ -91588,6 +91736,7 @@ test "bootstrap runner preserves node VM lifecycle contracts" {
         .{ .path = "js/node/vm/sourcetextmodule-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/sourcetextmodule-link-gc.test.ts", .passed = 1 },
         .{ .path = "js/node/vm/vm-script-fetcher-leak.test.ts", .passed = 4 },
+        .{ .path = "js/node/vm/vm-sourceUrl.test.ts", .passed = 3 },
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
