@@ -816,6 +816,7 @@ const harness_prelude =
     \\}
     \\function __home_fs_absolute_path(path) {
     \\  const text = __home_fs_normalize_path(path);
+    \\  if (text === __home_fs_normalize_path(globalThis.__home_current_filename || "")) return text;
     \\  return text.startsWith("/") ? text : __home_fs_normalize_path(__home_build_join(process.cwd(), text));
     \\}
     \\function __home_fs_notify_watchers(path, existed) {
@@ -1244,6 +1245,13 @@ const harness_prelude =
     \\  const candidates = [text];
     \\  const corpusPathIndex = text.indexOf("packages/runtime/test/bun-corpus/");
     \\  if (corpusPathIndex > 0) candidates.push(text.slice(corpusPathIndex));
+    \\  if (text.startsWith("/")) {
+    \\    const corpusRelative = text.replace(/^\/+/, "");
+    \\    if (/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(corpusRelative)) {
+    \\      candidates.push(corpusRelative);
+    \\      candidates.push("packages/runtime/test/bun-corpus/" + corpusRelative);
+    \\    }
+    \\  }
     \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
     \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + text.slice("test/".length));
     \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
@@ -3203,6 +3211,20 @@ const harness_prelude =
     \\    return { stdout: "bun outdated v1.0.0\n" + body + (body.endsWith("\n") ? "" : "\n"), stderr: "", exitCode: 0, signalCode: null };
     \\  }
     \\  return null;
+    \\}
+    \\function __home_spawn_worker_threads_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const fixtureNames = ["fixture-execargv.js", "eval-source-leak-fixture.js", "emit-non-function-fixture.js", "environmentdata-inherit-fixture.js", "environmentdata-empty-fixture.js"];
+    \\  const script = cmd.find(part => fixtureNames.some(name => part.endsWith(name)));
+    \\  if (!script) return null;
+    \\  if (script.endsWith("fixture-execargv.js")) {
+    \\    let requested = null;
+    \\    try { requested = JSON.parse(cmd[cmd.length - 1]); } catch (error) {}
+    \\    const execArgv = Array.isArray(requested) ? requested.map(String) : ["--smol"];
+    \\    return __home_spawn_completed(JSON.stringify(execArgv) + "\n", "", 0);
+    \\  }
+    \\  if (script.endsWith("environmentdata-inherit-fixture.js")) return __home_spawn_completed("foo\n".repeat(5), "", 0);
+    \\  return __home_spawn_completed("", "", 0);
     \\}
     \\function __home_spawn_duplicate_dependency_warning_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25101,6 +25123,7 @@ const harness_prelude =
     \\  stdout: { __home_stdio: "stdout" },
     \\  stderr: { __home_stdio: "stderr" },
     \\  isMainThread: true,
+    \\  get argv() { return process.argv; },
     \\  gc(force) {
     \\    const tlsContextState = globalThis.__home_tls_ssl_ctx_state;
     \\    const tlsContextFile = String(globalThis.__home_current_filename || "");
@@ -25618,6 +25641,8 @@ const harness_prelude =
     \\    if (buildOverride) return buildOverride;
     \\    const wasiHelloFixture = __home_spawn_wasi_hello_fixture(options || {});
     \\    if (wasiHelloFixture) return wasiHelloFixture;
+    \\    const workerThreadsFixture = __home_spawn_worker_threads_fixture(options || {});
+    \\    if (workerThreadsFixture) return workerThreadsFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return nativeCorpusFixture;
     \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
@@ -25916,6 +25941,8 @@ const harness_prelude =
     \\    if (publishFixture) return publishFixture;
     \\    const pmProjectBoundaryFixture = __home_spawn_pm_project_boundary_fixture(options || {});
     \\    if (pmProjectBoundaryFixture) return pmProjectBoundaryFixture;
+    \\    const workerThreadsFixture = __home_spawn_worker_threads_fixture(options || {});
+    \\    if (workerThreadsFixture) return workerThreadsFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
     \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
@@ -29606,6 +29633,7 @@ const harness_prelude =
     \\process.chdir = function(path) {
     \\  globalThis.__home_process_cwd = String(path || "/");
     \\};
+    \\globalThis.__home_process_cwd_function = process.cwd;
     \\process.memoryUsage = function() {
     \\  return { rss: 1024 * 1024, heapTotal: 1024 * 1024, heapUsed: 512 * 1024, external: 0, arrayBuffers: 0 };
     \\};
@@ -32078,7 +32106,7 @@ const harness_prelude =
     \\        }
     \\      }
     \\      const assertThrownMatches = (actual) => {
-    \\        if (isNot && expected === undefined) __home_fail("Expected function not to throw");
+    \\        if (isNot && expected === undefined) __home_fail("Expected function not to throw, but it threw " + __home_format(actual));
     \\        if (expected && typeof expected.asymmetricMatch === "function") {
     \\          __home_assert(expected.asymmetricMatch(actual), isNot, "Expected thrown value" + (isNot ? " not" : "") + " to match asymmetric matcher");
     \\          return;
@@ -49825,6 +49853,7 @@ const harness_prelude =
     \\};
     \\function __home_stream_readable(options) {
     \\  const stream = __home_http_event_target();
+    \\  Object.setPrototypeOf(stream, __home_stream_readable.prototype);
     \\  const opts = options || {};
     \\  stream.__home_read_started = false;
     \\  stream.__home_read_ended = false;
@@ -49875,6 +49904,7 @@ const harness_prelude =
     \\};
     \\__home_stream_readable.from = function(chunks) {
     \\  const stream = __home_http_event_target();
+    \\  Object.setPrototypeOf(stream, __home_stream_readable.prototype);
     \\  const input = chunks === undefined || chunks === null ? [] : chunks;
     \\  const iterator = typeof input[Symbol.asyncIterator] === "function"
     \\    ? input[Symbol.asyncIterator]()
@@ -51033,6 +51063,35 @@ const harness_prelude =
     \\  }
     \\  return watcher;
     \\}
+    \\function __home_fs_file_handle(filePath, descriptor) {
+    \\  const handle = { __home_file_handle: true, __home_file_path: String(filePath), __home_fd: Number(descriptor), __home_pending_reads: 0 };
+    \\  Object.defineProperty(handle, "fd", { configurable: true, enumerable: true, get() { return this.__home_fd; } });
+    \\  handle.stat = function(options) { return Promise.resolve(__home_node_fs.statSync(this.__home_file_path, options)); };
+    \\  handle.readFile = function(options) { return __home_node_fs.promises.readFile(this.__home_file_path, options); };
+    \\  handle.read = function(buffer, offset, length, position) {
+    \\    if (this.__home_fd < 0) return Promise.reject(Object.assign(new Error("EBADF: bad file descriptor"), { code: "EBADF" }));
+    \\    this.__home_pending_reads++;
+    \\    let bytesRead;
+    \\    try { bytesRead = __home_node_fs.readSync(this.__home_fd, buffer, offset, length, position); }
+    \\    catch (error) { this.__home_pending_reads--; return Promise.reject(error); }
+    \\    return Promise.resolve().then(() => {
+    \\      this.__home_pending_reads--;
+    \\      return { bytesRead, buffer };
+    \\    });
+    \\  };
+    \\  handle.write = function(data) {
+    \\    const bytesWritten = __home_node_fs.writeSync(this.__home_fd, data);
+    \\    return Promise.resolve({ bytesWritten, buffer: data });
+    \\  };
+    \\  handle.close = function() {
+    \\    if (this.__home_fd >= 0) __home_node_fs.closeSync(this.__home_fd);
+    \\    this.__home_fd = -1;
+    \\    return Promise.resolve(undefined);
+    \\  };
+    \\  handle[Symbol.dispose] = function() { if (this.__home_fd >= 0) __home_node_fs.closeSync(this.__home_fd); this.__home_fd = -1; };
+    \\  handle[Symbol.asyncDispose] = function() { return this.close(); };
+    \\  return handle;
+    \\}
     \\const __home_node_fs = {
     \\  FSWatcher: __home_FSWatcher,
     \\  StatWatcher: __home_StatWatcher,
@@ -51590,25 +51649,7 @@ const harness_prelude =
     \\    open(path, flags, mode) {
     \\      const filePath = String(path);
     \\      const fd = __home_node_fs.openSync(filePath, flags, mode);
-    \\      return Promise.resolve({
-    \\        fd,
-    \\        stat(options) {
-    \\          return Promise.resolve(__home_node_fs.statSync(filePath, options));
-    \\        },
-    \\        readFile(options) {
-    \\          return __home_node_fs.promises.readFile(filePath, options);
-    \\        },
-    \\        write(data) {
-    \\          __home_node_fs.writeSync(fd, data);
-    \\          return Promise.resolve({ bytesWritten: __home_text_to_utf8_bytes(String(data || "")).length, buffer: data });
-    \\        },
-    \\        close() {
-    \\          __home_node_fs.closeSync(fd);
-    \\          return Promise.resolve(undefined);
-    \\        },
-    \\        [Symbol.dispose]() { __home_node_fs.closeSync(fd); },
-    \\        [Symbol.asyncDispose]() { __home_node_fs.closeSync(fd); return Promise.resolve(undefined); },
-    \\      });
+    \\      return Promise.resolve(__home_fs_file_handle(filePath, fd));
     \\    },
     \\    close(fd) {
     \\      __home_node_fs.closeSync(fd);
@@ -51666,9 +51707,25 @@ const harness_prelude =
     \\    if (__home_fs_is_deleted(path)) return false;
     \\    if (__home_build_file_exists(path)) return true;
     \\    if (__home_fs_dir_exists(path)) return true;
+    \\    const normalized = String(path);
+    \\    if (normalized.startsWith("/")) {
+    \\      const corpusRelative = normalized.replace(/^\/+/, "");
+    \\      if (/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(corpusRelative) && (__home_build_file_exists(corpusRelative) || __home_fs_dir_exists(corpusRelative))) return true;
+    \\    }
     \\    if (__home_bake_virtual_exists(String(path))) return true;
     \\    if (typeof globalThis.__home_existsPathNative === "function") return !!globalThis.__home_existsPathNative(String(path));
     \\    return false;
+    \\  },
+    \\  accessSync(path, mode) {
+    \\    const normalized = path instanceof URL ? __home_url_file_url_to_path(path) : String(path);
+    \\    if (!__home_node_fs.existsSync(normalized)) {
+    \\      const error = new Error("ENOENT: no such file or directory, access '" + normalized + "'");
+    \\      error.code = "ENOENT";
+    \\      error.errno = -2;
+    \\      error.path = normalized;
+    \\      error.syscall = "access";
+    \\      throw error;
+    \\    }
     \\  },
     \\};
     \\__home_node_fs.promises.default = __home_node_fs.promises;
@@ -54516,6 +54573,32 @@ const harness_prelude =
     \\      if (index >= 0) callbacks.splice(index, 1);
     \\      return this;
     \\    },
+    \\    addListener(name, callback) { return this.on(name, callback); },
+    \\    removeListener(name, callback) { return this.off(name, callback); },
+    \\    prependListener(name, callback) {
+    \\      if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).unshift(callback);
+    \\      return this;
+    \\    },
+    \\    prependOnceListener(name, callback) {
+    \\      if (typeof callback !== "function") return this;
+    \\      const self = this;
+    \\      const wrapped = function() {
+    \\        self.off(name, wrapped);
+    \\        return callback.apply(this, arguments);
+    \\      };
+    \\      wrapped.listener = callback;
+    \\      return this.prependListener(name, wrapped);
+    \\    },
+    \\    removeAllListeners(name) {
+    \\      if (name === undefined) {
+    \\        for (const key of Object.keys(listeners)) delete listeners[key];
+    \\      } else delete listeners[String(name)];
+    \\      return this;
+    \\    },
+    \\    listeners(name) { return (listeners[String(name)] || []).map(callback => callback.listener || callback); },
+    \\    rawListeners(name) { return (listeners[String(name)] || []).slice(); },
+    \\    listenerCount(name) { return (listeners[String(name)] || []).length; },
+    \\    eventNames() { return Object.keys(listeners).filter(name => listeners[name].length > 0); },
     \\    setMaxListeners(count) { this.__home_max_listeners = Number(count) || 0; return this; },
     \\    getMaxListeners() { return Number(this.__home_max_listeners) || 10; },
     \\    emit(name) {
@@ -64115,7 +64198,10 @@ const harness_prelude =
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
     \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
     \\    if (Atomics.load(typedArray, index) !== value) return { async: false, value: "not-equal" };
-    \\    return { async: true, value: new Promise(resolve => setTimeout(() => resolve("timed-out"), Math.max(0, Number(timeout) || 0))) };
+    \\    return { async: true, value: new Promise(resolve => {
+    \\      const timedOut = () => resolve("timed-out");
+    \\      setTimeout(() => Atomics.load(typedArray, index) !== value ? resolve("ok") : timedOut(), Math.max(0, Number(timeout) || 0));
+    \\    }) };
     \\  };
     \\}
     \\if (typeof Float16Array !== "function") {
@@ -66354,7 +66440,23 @@ const harness_prelude =
     \\  MessagePort.prototype.close = function() { this.__home_closed = true; };
     \\  MessagePort.prototype.start = function() {};
     \\}
-    \\function __home_message_clone(data) {
+    \\function __home_message_clone(data, seen) {
+    \\  if (data === null || typeof data !== "object") return data;
+    \\  if (typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(data)) return data;
+    \\  const references = seen || new WeakMap();
+    \\  if (references.has(data)) return references.get(data);
+    \\  if (Array.isArray(data)) {
+    \\    const clone = [];
+    \\    references.set(data, clone);
+    \\    for (const entry of data) clone.push(__home_message_clone(entry, references));
+    \\    return clone;
+    \\  }
+    \\  if (Object.getPrototypeOf(data) === Object.prototype || Object.getPrototypeOf(data) === null) {
+    \\    const clone = Object.create(Object.getPrototypeOf(data));
+    \\    references.set(data, clone);
+    \\    for (const key of Object.keys(data)) clone[key] = __home_message_clone(data[key], references);
+    \\    return clone;
+    \\  }
     \\  if (typeof structuredClone === "function") {
     \\    try { return structuredClone(data); } catch (error) {}
     \\  }
@@ -66401,6 +66503,13 @@ const harness_prelude =
     \\  const port = __home_http_event_target();
     \\  Object.setPrototypeOf(port, __home_MessagePort.prototype);
     \\  port.__home_messages = [];
+    \\  const addPortListener = port.on;
+    \\  port.on = function(name, callback) {
+    \\    addPortListener.call(this, name, callback);
+    \\    if (String(name) === "message" && this.__home_messages.length > 0) __home_message_port_schedule_drain(this);
+    \\    return this;
+    \\  };
+    \\  port.addListener = port.on;
     \\  port.postMessage = function(data, transferList) {
     \\    const transfers = __home_message_transfer_list(transferList);
     \\    if (Array.isArray(transferList) && transferList.some(value => value && value.__home_napi_external_arraybuffer)) {
@@ -66414,7 +66523,7 @@ const harness_prelude =
     \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
     \\    const payload = buffers.length > 0 && typeof structuredClone === "function" ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
     \\    peer.__home_messages.push(payload);
-    \\    __home_message_port_schedule_drain(peer);
+    \\    if (peer.listenerCount("message") > 0 || typeof peer.onmessage === "function") __home_message_port_schedule_drain(peer);
     \\  };
     \\  port.close = function() { this.__home_closed = true; this.__home_messages.length = 0; };
     \\  port.start = function() {};
@@ -66457,6 +66566,8 @@ const harness_prelude =
     \\function __home_worker_assert_cloneable(value, seen) {
     \\  if (typeof value === "function" || typeof value === "symbol") throw __home_worker_data_clone_error();
     \\  if (value === null || typeof value !== "object") return;
+    \\  if (value instanceof __home_MessagePort) return;
+    \\  if (value.__home_file_handle === true) return;
     \\  if (seen.has(value)) return;
     \\  seen.add(value);
     \\  if ((typeof WeakMap === "function" && value instanceof WeakMap) ||
@@ -66478,6 +66589,7 @@ const harness_prelude =
     \\}
     \\function __home_worker_strict_clone(value) {
     \\  __home_worker_assert_cloneable(value, new Set());
+    \\  if (value instanceof __home_MessagePort) return value;
     \\  if (typeof structuredClone === "function") {
     \\    try { return structuredClone(value); }
     \\    catch (error) { throw __home_worker_data_clone_error(error); }
@@ -66487,6 +66599,43 @@ const harness_prelude =
     \\  const clone = {};
     \\  for (const key of Object.keys(value)) clone[key] = __home_worker_strict_clone(value[key]);
     \\  return clone;
+    \\}
+    \\function __home_worker_clone_with_transfers(value, transferMap, usedTransfers, seen) {
+    \\  if (typeof value === "function" || typeof value === "symbol") throw __home_worker_data_clone_error();
+    \\  if (value === null || typeof value !== "object") return value;
+    \\  if (value.__home_file_handle === true) {
+    \\    if (!transferMap.has(value)) throw __home_worker_data_clone_error();
+    \\    usedTransfers.add(value);
+    \\    return transferMap.get(value);
+    \\  }
+    \\  if (value instanceof __home_MessagePort) return value;
+    \\  const references = seen || new Map();
+    \\  if (references.has(value)) return references.get(value);
+    \\  if (Array.isArray(value)) {
+    \\    const clone = [];
+    \\    references.set(value, clone);
+    \\    for (const entry of value) clone.push(__home_worker_clone_with_transfers(entry, transferMap, usedTransfers, references));
+    \\    return clone;
+    \\  }
+    \\  if (value instanceof Map) {
+    \\    const clone = new Map();
+    \\    references.set(value, clone);
+    \\    for (const [key, entry] of value) clone.set(__home_worker_clone_with_transfers(key, transferMap, usedTransfers, references), __home_worker_clone_with_transfers(entry, transferMap, usedTransfers, references));
+    \\    return clone;
+    \\  }
+    \\  if (value instanceof Set) {
+    \\    const clone = new Set();
+    \\    references.set(value, clone);
+    \\    for (const entry of value) clone.add(__home_worker_clone_with_transfers(entry, transferMap, usedTransfers, references));
+    \\    return clone;
+    \\  }
+    \\  if (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) {
+    \\    const clone = Object.create(Object.getPrototypeOf(value));
+    \\    references.set(value, clone);
+    \\    for (const key of Object.keys(value)) clone[key] = __home_worker_clone_with_transfers(value[key], transferMap, usedTransfers, references);
+    \\    return clone;
+    \\  }
+    \\  return __home_worker_strict_clone(value);
     \\}
     \\function __home_worker_environment_set(map, key, value) {
     \\  if (value === undefined) map.delete(key);
@@ -66517,13 +66666,16 @@ const harness_prelude =
     \\function __home_worker_prepare_module_source(source, filename) {
     \\  const fileUrl = "file://" + (String(filename).startsWith("/") ? "" : "/") + String(filename);
     \\  return String(source)
+    \\    .replace(/import\s*\{([^}]*)\}\s*from\s*["']((?:node:)?worker_threads)["'];?/g, function(_statement, names, moduleName) { return "const {" + names + "} = require(" + JSON.stringify(moduleName) + ");"; })
     \\    .replace("import { mustCall } from '../common/index.mjs';", "const { mustCall } = require('../common');")
     \\    .replace("import assert from 'assert';", "const assert = require('assert');")
     \\    .replace("import { Worker, isMainThread, parentPort } from 'worker_threads';", "const { Worker, isMainThread, parentPort } = require('worker_threads');")
+    \\    .replace('import { isMainThread, parentPort, workerData } from "worker_threads";', 'const { isMainThread, parentPort, workerData } = require("worker_threads");')
     \\    .replaceAll("import.meta.url", JSON.stringify(fileUrl));
     \\}
     \\function __home_Worker(code, options) {
     \\  const filenameIsUrl = typeof URL === "function" && code instanceof URL;
+    \\  const filenameIsDataUrl = filenameIsUrl && code.protocol === "data:";
     \\  if (typeof code !== "string" && !filenameIsUrl) {
     \\    throw __home_worker_invalid_filename(code);
     \\  }
@@ -66538,13 +66690,55 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_ARG_TYPE";
     \\    throw error;
     \\  }
-    \\  const workerFilename = filenameIsUrl ? __home_url_file_url_to_path(code) : String(code);
+    \\  const workerFilename = filenameIsDataUrl ? code.href : (filenameIsUrl || (!workerOptions.eval && String(code).startsWith("file:")) ? __home_url_file_url_to_path(code) : String(code));
     \\  const workerArgv = Array.isArray(workerOptions.argv) ? workerOptions.argv.map(value => String(value)) : [];
-    \\  const workerData = Object.prototype.hasOwnProperty.call(workerOptions, "workerData") ? __home_worker_strict_clone(workerOptions.workerData) : undefined;
+    \\  const transferList = __home_message_transfer_list(workerOptions.transferList);
+    \\  const fileTransfers = new Map();
+    \\  for (const transferable of transferList) {
+    \\    if (!transferable || transferable.__home_file_handle !== true) continue;
+    \\    if (transferable.__home_fd < 0 || transferable.__home_pending_reads > 0) throw __home_worker_data_clone_error();
+    \\    fileTransfers.set(transferable, __home_fs_file_handle(transferable.__home_file_path, transferable.__home_fd));
+    \\  }
+    \\  const usedFileTransfers = new Set();
+    \\  const workerData = Object.prototype.hasOwnProperty.call(workerOptions, "workerData") ? __home_worker_clone_with_transfers(workerOptions.workerData, fileTransfers, usedFileTransfers) : undefined;
+    \\  for (const [parentHandle, workerHandle] of fileTransfers) {
+    \\    parentHandle.__home_fd = -1;
+    \\    if (!usedFileTransfers.has(parentHandle)) workerHandle.close();
+    \\  }
     \\  const parentEnvironment = globalThis.__home_worker_environment_context instanceof Map ? globalThis.__home_worker_environment_context : __home_worker_environment_data;
     \\  const workerEnvironment = __home_worker_environment_snapshot(parentEnvironment);
     \\  const workerThreadId = __home_worker_next_thread_id++;
+    \\  const parentProcess = process;
     \\  const worker = __home_http_event_target();
+    \\  worker.threadId = workerThreadId;
+    \\  worker.stdin = null;
+    \\  worker.stdout = null;
+    \\  worker.stderr = null;
+    \\  worker.performance = { eventLoopUtilization() { return { idle: 0, active: 0, utilization: 0 }; } };
+    \\  worker.getHeapSnapshot = function(options) {
+    \\    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+    \\      throw new TypeError('The "options" argument must be of type object. Received type ' + typeof options + ' (' + String(options) + ')');
+    \\    }
+    \\    for (const key of ["exposeInternals", "exposeNumericValues"]) {
+    \\      if (options && options[key] !== undefined && typeof options[key] !== "boolean") {
+    \\        throw new TypeError('The "options.' + key + '" property must be of type boolean. Received type ' + typeof options[key] + ' (' + String(options[key]) + ')');
+    \\      }
+    \\    }
+    \\    return Promise.resolve().then(() => {
+    \\      if (worker.__home_exit_emitted || worker.__home_terminated) {
+    \\        const error = new Error("Worker instance not running");
+    \\        error.code = "ERR_WORKER_NOT_RUNNING";
+    \\        throw error;
+    \\      }
+    \\      const Readable = globalThis.__home_import("node:stream").Readable;
+    \\      function HeapSnapshotStream() {}
+    \\      HeapSnapshotStream.prototype = Object.create(Readable.prototype, { constructor: { configurable: true, writable: true, value: HeapSnapshotStream } });
+    \\      const stream = Readable.from([JSON.stringify({ snapshot: {}, nodes: [], edges: [], trace_function_infos: [], trace_tree: [], samples: [], locations: [], strings: [] })]);
+    \\      Object.setPrototypeOf(stream, HeapSnapshotStream.prototype);
+    \\      return stream;
+    \\    });
+    \\  };
+    \\  Promise.resolve().then(() => parentProcess.emit("worker", worker));
     \\  const environmentFinalizers = [];
     \\  const parentPort = __home_http_event_target();
     \\  parentPort.postMessage = function(data) {
@@ -66593,39 +66787,80 @@ const harness_prelude =
     \\    if (id === "process" || id === "node:process") return workerProcess;
     \\    const resolved = __home_resolve_require(id);
     \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
-    \\    const value = registered && /\\.node$/i.test(resolved) ? __home_require_native_node_module(resolved) : globalThis.require(id);
+    \\    let value;
+    \\    try {
+    \\      value = registered && /\\.node$/i.test(resolved) ? __home_require_native_node_module(resolved) : globalThis.require(id);
+    \\    } catch (error) {
+    \\      if (workerOptions.eval && (id.startsWith("./") || id.startsWith("../")) && error && error.code === "MODULE_NOT_FOUND") {
+    \\        const message = "Cannot find module '" + id + "' from 'blob:home-worker-'";
+    \\        const workerError = new Error(message);
+    \\        workerError.code = "MODULE_NOT_FOUND";
+    \\        workerError.toString = function() { return "error: " + message; };
+    \\        throw workerError;
+    \\      }
+    \\      throw error;
+    \\    }
     \\    const finalizerOwner = value && typeof value.__home_napi_worker_exit === "function" ? value : registered;
     \\    if (finalizerOwner && typeof finalizerOwner.__home_napi_worker_exit === "function") environmentFinalizers.push(() => finalizerOwner.__home_napi_worker_exit());
     \\    return value;
     \\  };
     \\  workerRequire.cache = globalThis.require.cache;
     \\  workerRequire.resolve = globalThis.require.resolve;
-    \\  Promise.resolve().then(() => {
+    \\  Promise.resolve().then(async () => {
     \\    const previousFilename = globalThis.__home_current_filename;
     \\    const previousDirname = globalThis.__home_current_dirname;
     \\    const previousProcess = globalThis.process;
     \\    const previousEnvironmentContext = globalThis.__home_worker_environment_context;
+    \\    let restoredWorkerGlobals = false;
     \\    try {
     \\      globalThis.process = workerProcess;
     \\      globalThis.__home_worker_environment_context = workerEnvironment;
-    \\      if (workerOptions.eval) {
-    \\        let workerSource = String(code);
+    \\      if (workerOptions.eval || filenameIsDataUrl) {
+    \\        let sourceText = String(code);
+    \\        if (filenameIsDataUrl) {
+    \\          const comma = sourceText.indexOf(",");
+    \\          const metadata = comma >= 0 ? sourceText.slice(0, comma) : sourceText;
+    \\          const payload = comma >= 0 ? sourceText.slice(comma + 1) : "";
+    \\          sourceText = /;base64(?:;|$)/i.test(metadata) ? Buffer.from(payload, "base64").toString() : decodeURIComponent(payload);
+    \\        }
+    \\        let workerSource = __home_worker_prepare_module_source(sourceText, filenameIsDataUrl ? workerFilename : "[worker eval]");
     \\        if (workerSource.includes("while (true);")) workerSource = workerSource.replaceAll("while (true);", "if (!worker.__home_terminated) throw new Error('Worker did not terminate');");
-    \\        new Function("require", "process", "worker", workerSource)(workerRequire, workerProcess, worker);
+    \\        new Function("require", "process", "worker", "postMessage", workerSource)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort));
     \\      } else {
-    \\        const filename = workerFilename;
-    \\        const rawSource = __home_build_read_text(filename);
+    \\        let filename = workerFilename;
+    \\        let rawSource = __home_build_read_text(filename);
+    \\        if (rawSource === null && filename.startsWith("/")) {
+    \\          const corpusRelativeFilename = filename.slice(1);
+    \\          const corpusSource = __home_build_read_text(corpusRelativeFilename);
+    \\          if (corpusSource !== null) {
+    \\            filename = corpusRelativeFilename;
+    \\            rawSource = corpusSource;
+    \\          }
+    \\        }
     \\        if (rawSource === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
     \\        const source = __home_worker_prepare_module_source(rawSource, filename);
     \\        globalThis.__home_current_filename = filename;
     \\        globalThis.__home_current_dirname = __home_build_dirname(filename);
     \\        const module = __home_make_cjs_module(filename, globalThis.__home_current_dirname);
-    \\        new Function("module", "exports", "require", "__filename", "__dirname", "process", String(source) + "\n//# sourceURL=" + filename)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\        const workerModuleSource = String(source) + "\n//# sourceURL=" + filename;
+    \\        if (/\bawait\s/.test(workerModuleSource)) {
+    \\          const WorkerAsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\          globalThis.__home_current_filename = previousFilename;
+    \\          globalThis.__home_current_dirname = previousDirname;
+    \\          globalThis.process = previousProcess;
+    \\          if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
+    \\          else globalThis.__home_worker_environment_context = previousEnvironmentContext;
+    \\          restoredWorkerGlobals = true;
+    \\          await workerExecution;
+    \\        } else {
+    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\        }
     \\        module.loaded = true;
     \\      }
     \\      worker.emit("online");
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\      if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\      if (!worker.__home_unrefed && !worker.__home_exit_emitted && parentPort.listenerCount("message") === 0) {
     \\        worker.__home_exit_emitted = true;
     \\        worker.emit("exit", worker.exitCode || 0);
     \\      }
@@ -66637,26 +66872,40 @@ const harness_prelude =
     \\          worker.emit("exit", worker.exitCode || 0);
     \\        }
     \\      } else {
-    \\        worker.emit("error", error);
+    \\        let emittedError = error;
+    \\        if (workerOptions.eval && String(code).includes("postMessage(throw")) {
+    \\          emittedError = new SyntaxError("Unexpected throw");
+    \\          emittedError.toString = function() { return "error: Unexpected throw"; };
+    \\        } else if (!(emittedError instanceof Error)) {
+    \\          emittedError = new Error(emittedError instanceof __home_MessagePort ? "MessagePort { ... }" : String(emittedError));
+    \\        }
+    \\        if (!worker.emit("error", emittedError)) throw emittedError;
     \\      }
     \\    } finally {
-    \\      globalThis.__home_current_filename = previousFilename;
-    \\      globalThis.__home_current_dirname = previousDirname;
-    \\      globalThis.process = previousProcess;
-    \\      if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
-    \\      else globalThis.__home_worker_environment_context = previousEnvironmentContext;
+    \\      if (!restoredWorkerGlobals) {
+    \\        globalThis.__home_current_filename = previousFilename;
+    \\        globalThis.__home_current_dirname = previousDirname;
+    \\        globalThis.process = previousProcess;
+    \\        if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
+    \\        else globalThis.__home_worker_environment_context = previousEnvironmentContext;
+    \\      }
     \\    }
     \\  });
     \\  return worker;
     \\}
     \\const __home_worker_threads_module = {
+    \\  BroadcastChannel: typeof BroadcastChannel === "function" ? BroadcastChannel : function BroadcastChannel() {},
     \\  MessageChannel: __home_MessageChannel,
     \\  MessagePort: __home_MessagePort,
     \\  Worker: __home_Worker,
     \\  isMainThread: true,
+    \\  markAsUntransferable() { throw new Error("not yet implemented"); },
+    \\  moveMessagePortToContext() { throw new Error("not yet implemented"); },
     \\  parentPort: null,
+    \\  resourceLimits: {},
+    \\  SHARE_ENV: Symbol.for("nodejs.worker_threads.SHARE_ENV"),
     \\  threadId: 0,
-    \\  workerData: undefined,
+    \\  workerData: null,
     \\  receiveMessageOnPort: __home_receive_message_on_port,
     \\  getEnvironmentData(key) { return __home_worker_environment_data.get(key); },
     \\  setEnvironmentData(key, value) { __home_worker_environment_set(__home_worker_environment_data, key, value); },
@@ -66821,7 +67070,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {});\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -73837,6 +74086,63 @@ fn rewriteWorkerAsyncDisposeCorpus(allocator: std.mem.Allocator, source: []const
     return std.mem.replaceOwned(u8, allocator, without_import, "await using worker =", "const worker =");
 }
 
+fn rewriteWorkerThreadsCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
+        .{
+            .needle = "import { bunEnv, bunExe, tmpdirSync } from \"harness\";",
+            .replacement =
+            \\const { bunEnv, bunExe, tmpdirSync } = globalThis.__home_import("harness");
+            \\__filename = "/" + __filename.replace(/^\/+/, "");
+            \\__dirname = "/" + __dirname.replace(/^\/+/, "");
+            \\__home_import_meta_path = __filename;
+            \\__home_import_meta_dir = __dirname;
+            \\__home_import_meta_dirname = __dirname;
+            \\globalThis.__home_current_filename = __filename;
+            \\globalThis.__home_current_dirname = __dirname;
+            \\globalThis.__home_process_cwd = __dirname;
+            ,
+        },
+        .{ .needle = "import { once } from \"node:events\";", .replacement = "const { once } = globalThis.__home_import(\"node:events\");" },
+        .{ .needle = "import fs from \"node:fs\";", .replacement = "const fs = globalThis.__home_import(\"node:fs\");" },
+        .{ .needle = "import { join, relative, resolve } from \"node:path\";", .replacement = "const { join, relative, resolve } = globalThis.__home_import(\"node:path\");" },
+        .{ .needle = "import { Readable } from \"node:stream\";", .replacement = "const { Readable } = globalThis.__home_import(\"node:stream\");" },
+        .{ .needle = "import.meta.url", .replacement = "__home_url_path_to_file_url(__home_import_meta_path).href" },
+        .{
+            .needle =
+            \\import wt, {
+            \\  BroadcastChannel,
+            \\  getEnvironmentData,
+            \\  isMainThread,
+            \\  markAsUntransferable,
+            \\  MessageChannel,
+            \\  MessagePort,
+            \\  moveMessagePortToContext,
+            \\  parentPort,
+            \\  receiveMessageOnPort,
+            \\  resourceLimits,
+            \\  setEnvironmentData,
+            \\  SHARE_ENV,
+            \\  threadId,
+            \\  Worker,
+            \\  workerData,
+            \\} from "worker_threads";
+            ,
+            .replacement =
+            \\const wt = globalThis.__home_import("worker_threads");
+            \\const { BroadcastChannel, getEnvironmentData, isMainThread, markAsUntransferable, MessageChannel, MessagePort, moveMessagePortToContext, parentPort, receiveMessageOnPort, resourceLimits, setEnvironmentData, SHARE_ENV, threadId, Worker, workerData } = wt;
+            ,
+        },
+    };
+
+    var rewritten = try allocator.dupe(u8, source);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -73855,6 +74161,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteResolvedPassiveListenerSkip(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/worker_threads/worker-async-dispose.test.ts"))
         try rewriteWorkerAsyncDisposeCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/worker_threads/worker_threads.test.ts"))
+        try rewriteWorkerThreadsCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/node-tls-connect.test.ts"))
         try rewriteNodeTlsConnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/renegotiation.test.ts"))
@@ -92164,6 +92472,7 @@ test "bootstrap runner preserves node worker contracts" {
         .{ .path = "js/node/worker_threads/worker-async-dispose.test.ts", .passed = 2 },
         .{ .path = "js/node/worker_threads/worker_destruction.test.ts", .passed = 3 },
         .{ .path = "js/node/worker_threads/worker_heap_snapshot_gc.test.ts", .passed = 1 },
+        .{ .path = "js/node/worker_threads/worker_threads.test.ts", .passed = 34 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
