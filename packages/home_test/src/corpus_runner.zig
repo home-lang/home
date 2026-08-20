@@ -45751,6 +45751,168 @@ const harness_prelude =
     \\__home_vm_module.default = __home_vm_module;
     \\globalThis.__home_modules["vm"] = __home_vm_module;
     \\globalThis.__home_modules["node:vm"] = __home_vm_module;
+    \\class __home_HappyDOMStorage {
+    \\  constructor() { this._entries = new Map(); }
+    \\  get length() { return this._entries.size; }
+    \\  key(index) {
+    \\    const offset = Number(index);
+    \\    if (!Number.isInteger(offset) || offset < 0 || offset >= this._entries.size) return null;
+    \\    return Array.from(this._entries.keys())[offset];
+    \\  }
+    \\  getItem(key) {
+    \\    const normalized = String(key);
+    \\    return this._entries.has(normalized) ? this._entries.get(normalized) : null;
+    \\  }
+    \\  setItem(key, value) { this._entries.set(String(key), String(value)); }
+    \\  removeItem(key) { this._entries.delete(String(key)); }
+    \\  clear() { this._entries.clear(); }
+    \\}
+    \\function __home_happy_dom_selector_matches(element, selector) {
+    \\  const query = String(selector || "").trim();
+    \\  if (!query) return false;
+    \\  if (query[0] === "#") return element.id === query.slice(1);
+    \\  if (query[0] === ".") return String(element.className || "").split(/\s+/).includes(query.slice(1));
+    \\  const attribute = query.match(/^([A-Za-z][\w-]*)?\[([\w-]+)(?:=["']?([^\]"']+)["']?)?\]$/);
+    \\  if (attribute) {
+    \\    if (attribute[1] && element.localName !== attribute[1].toLowerCase()) return false;
+    \\    if (!element.hasAttribute(attribute[2])) return false;
+    \\    return attribute[3] === undefined || element.getAttribute(attribute[2]) === attribute[3];
+    \\  }
+    \\  return element.localName === query.toLowerCase();
+    \\}
+    \\class __home_HappyDOMElement {
+    \\  constructor(tagName, ownerDocument) {
+    \\    this.localName = String(tagName || "div").toLowerCase();
+    \\    this.tagName = this.localName.toUpperCase();
+    \\    this.nodeName = this.tagName;
+    \\    this.nodeType = 1;
+    \\    this.ownerDocument = ownerDocument || null;
+    \\    this.parentNode = null;
+    \\    this.children = [];
+    \\    this.childNodes = this.children;
+    \\    this.attributes = Object.create(null);
+    \\    this._innerHTML = "";
+    \\  }
+    \\  get id() { return this.getAttribute("id") || ""; }
+    \\  set id(value) { this.setAttribute("id", value); }
+    \\  get className() { return this.getAttribute("class") || ""; }
+    \\  set className(value) { this.setAttribute("class", value); }
+    \\  get innerHTML() { return this._innerHTML; }
+    \\  set innerHTML(value) {
+    \\    this._innerHTML = String(value == null ? "" : value);
+    \\    this.children.length = 0;
+    \\    if (this.ownerDocument) this.ownerDocument._indexHTML(this, this._innerHTML);
+    \\  }
+    \\  get textContent() { return this._innerHTML.replace(/<[^>]*>/g, ""); }
+    \\  set textContent(value) { this.innerHTML = String(value == null ? "" : value); }
+    \\  setAttribute(name, value) { this.attributes[String(name).toLowerCase()] = String(value); }
+    \\  getAttribute(name) {
+    \\    const key = String(name).toLowerCase();
+    \\    return Object.prototype.hasOwnProperty.call(this.attributes, key) ? this.attributes[key] : null;
+    \\  }
+    \\  hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, String(name).toLowerCase()); }
+    \\  removeAttribute(name) { delete this.attributes[String(name).toLowerCase()]; }
+    \\  appendChild(child) {
+    \\    if (!child || typeof child !== "object") throw new TypeError("Failed to execute 'appendChild': node is required");
+    \\    if (child.parentNode && typeof child.parentNode.removeChild === "function") child.parentNode.removeChild(child);
+    \\    child.parentNode = this;
+    \\    if (!child.ownerDocument) child.ownerDocument = this.ownerDocument;
+    \\    this.children.push(child);
+    \\    if (this.ownerDocument) this.ownerDocument._registerElement(child);
+    \\    return child;
+    \\  }
+    \\  removeChild(child) {
+    \\    const index = this.children.indexOf(child);
+    \\    if (index < 0) throw new Error("The node to be removed is not a child of this node");
+    \\    this.children.splice(index, 1);
+    \\    child.parentNode = null;
+    \\    return child;
+    \\  }
+    \\  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    \\  querySelectorAll(selector) {
+    \\    const matches = [];
+    \\    const visit = node => {
+    \\      for (const child of node.children || []) {
+    \\        if (__home_happy_dom_selector_matches(child, selector)) matches.push(child);
+    \\        visit(child);
+    \\      }
+    \\    };
+    \\    visit(this);
+    \\    return matches;
+    \\  }
+    \\}
+    \\class __home_HappyDOMDocument {
+    \\  constructor(window) {
+    \\    this.nodeType = 9;
+    \\    this.nodeName = "#document";
+    \\    this.defaultView = window;
+    \\    this.location = window.location;
+    \\    this._elements = [];
+    \\    this.documentElement = new __home_HappyDOMElement("html", this);
+    \\    this.head = new __home_HappyDOMElement("head", this);
+    \\    this.body = new __home_HappyDOMElement("body", this);
+    \\    this.documentElement.appendChild(this.head);
+    \\    this.documentElement.appendChild(this.body);
+    \\  }
+    \\  _registerElement(element) {
+    \\    if (element && !this._elements.includes(element)) this._elements.push(element);
+    \\  }
+    \\  _indexHTML(parent, html) {
+    \\    this._elements = this._elements.filter(element => element === this.documentElement || element === this.head || element === this.body);
+    \\    const elementPattern = /<([A-Za-z][\w-]*)([^>]*)>/g;
+    \\    let match;
+    \\    while ((match = elementPattern.exec(html)) !== null) {
+    \\      const element = new __home_HappyDOMElement(match[1], this);
+    \\      const attributePattern = /([\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    \\      let attribute;
+    \\      while ((attribute = attributePattern.exec(match[2])) !== null) {
+    \\        element.setAttribute(attribute[1], attribute[2] ?? attribute[3] ?? attribute[4] ?? "");
+    \\      }
+    \\      parent.appendChild(element);
+    \\    }
+    \\  }
+    \\  createElement(tagName) { return new __home_HappyDOMElement(tagName, this); }
+    \\  getElementById(id) { return this._elements.find(element => element.id === String(id)) || null; }
+    \\  getElementsByTagName(tagName) {
+    \\    const normalized = String(tagName).toLowerCase();
+    \\    return this._elements.filter(element => normalized === "*" || element.localName === normalized);
+    \\  }
+    \\  querySelector(selector) {
+    \\    if (__home_happy_dom_selector_matches(this.documentElement, selector)) return this.documentElement;
+    \\    return this._elements.find(element => __home_happy_dom_selector_matches(element, selector)) || null;
+    \\  }
+    \\  querySelectorAll(selector) {
+    \\    return this._elements.filter(element => __home_happy_dom_selector_matches(element, selector));
+    \\  }
+    \\}
+    \\class __home_HappyDOMWindow {
+    \\  constructor(options) {
+    \\    const settings = options && typeof options === "object" ? options : {};
+    \\    this.location = new URL(settings.url || "about:blank");
+    \\    this.localStorage = new __home_HappyDOMStorage();
+    \\    this.sessionStorage = new __home_HappyDOMStorage();
+    \\    this.navigator = { userAgent: "Home happy-dom compatibility", language: "en-US" };
+    \\    this.document = new __home_HappyDOMDocument(this);
+    \\    this.window = this;
+    \\    this.self = this;
+    \\    this.globalThis = this;
+    \\    this.URL = globalThis.URL;
+    \\    this.Response = globalThis.Response;
+    \\    this.Request = globalThis.Request;
+    \\    this.Headers = globalThis.Headers;
+    \\    this.setTimeout = globalThis.setTimeout;
+    \\    this.clearTimeout = globalThis.clearTimeout;
+    \\    this.setInterval = globalThis.setInterval;
+    \\    this.clearInterval = globalThis.clearInterval;
+    \\  }
+    \\  close() {
+    \\    this.localStorage.clear();
+    \\    this.sessionStorage.clear();
+    \\  }
+    \\}
+    \\const __home_happy_dom_module = { Window: __home_HappyDOMWindow };
+    \\__home_happy_dom_module.default = __home_happy_dom_module;
+    \\globalThis.__home_modules["happy-dom"] = __home_happy_dom_module;
     \\globalThis.__home_vm_promise_states = globalThis.__home_vm_promise_states || new WeakMap();
     \\if (typeof Promise === "function" && !Promise.__home_tracks_inspect_state) {
     \\  const __home_native_promise = Promise;
@@ -69906,6 +70068,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const vm = globalThis.__home_import(\"vm\");",
         },
         .{
+            .needle = "import { Window } from \"happy-dom\";",
+            .replacement = "const { Window } = globalThis.__home_import(\"happy-dom\");",
+        },
+        .{
             .needle = "import { MessageChannel } from \"worker_threads\";",
             .replacement = "const { MessageChannel } = globalThis.__home_import(\"worker_threads\");",
         },
@@ -91411,6 +91577,62 @@ test "bootstrap runner preserves node V8 contracts" {
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
+}
+
+test "bootstrap runner preserves happy-dom VM lifecycle contract" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/node/vm/happy-dom-vm-16277.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print("happy-dom VM lifecycle failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+
+    const contract_source =
+        \\import { expect, test } from "bun:test";
+        \\import { Window } from "happy-dom";
+        \\test("happy-dom compatibility", () => {
+        \\  const window = new Window({ url: "https://home-lang.org/docs" });
+        \\  expect(window.location.href).toBe("https://home-lang.org/docs");
+        \\  expect(window.document.defaultView).toBe(window);
+        \\  window.localStorage.setItem("theme", "dark");
+        \\  expect(window.localStorage.length).toBe(1);
+        \\  expect(window.localStorage.key(0)).toBe("theme");
+        \\  expect(window.localStorage.getItem("theme")).toBe("dark");
+        \\  window.document.body.innerHTML = '<main id="app" class="page"><script src="app.js"></script></main>';
+        \\  expect(window.document.getElementById("app").tagName).toBe("MAIN");
+        \\  expect(window.document.querySelector(".page").id).toBe("app");
+        \\  expect(window.document.querySelector("script[src]").getAttribute("src")).toBe("app.js");
+        \\  expect(window.document.body.querySelectorAll("script").length).toBe(1);
+        \\  window.localStorage.clear();
+        \\  expect(window.localStorage.getItem("theme")).toBeNull();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, contract_source, "js/node/vm/happy-dom-contract.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("happy-dom reusable contract failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner accepts Bun.serve static HTML route shape" {
