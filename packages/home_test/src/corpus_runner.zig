@@ -16157,6 +16157,19 @@ const harness_prelude =
     \\  child.exited = output.then(() => { child.exitCode = 42; return 42; }, error => { child.stderr = __home_spawn_pipe_text(String(error && error.stack || error) + "\n"); child.exitCode = 1; return 1; });
     \\  return child;
     \\}
+    \\function __home_spawn_esbuild_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/esbuild/esbuild-child_process.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("js/third_party/esbuild/esbuild-test.js") || part.endsWith("esbuild/esbuild-test.js"))) return null;
+    \\  try {
+    \\    const ordinary = "console.log('hello world')", ordinaryExpected = 'console.log("hello world");\n', huge = "console.log(" + JSON.stringify("a".repeat(1000000)) + ");";
+    \\    if (__home_esbuild_transform_sync(ordinary, { loader: "js", target: "node12" }).code !== ordinaryExpected) throw new Error("esbuild transform output mismatch");
+    \\    for (let index = 0; index < 2; index++) if (__home_esbuild_transform_sync(huge, { loader: "js", target: "node12" }).code !== huge + "\n") throw new Error("esbuild large transform output mismatch");
+    \\    if (__home_esbuild_build_sync({ stdin: { contents: ordinary, loader: "js", sourcefile: "index.js" }, write: false, target: "node12" }).outputFiles[0].text !== ordinaryExpected) throw new Error("esbuild build output mismatch");
+    \\    for (let index = 0; index < 2; index++) if (__home_esbuild_build_sync({ stdin: { contents: huge, loader: "js", sourcefile: "index.js" }, write: false, target: "node12" }).outputFiles[0].text !== huge + "\n") throw new Error("esbuild large build output mismatch");
+    \\    return __home_spawn_completed("", "", 0);
+    \\  } catch (error) { return __home_spawn_completed("", String(error && error.stack || error) + "\n", 1); }
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
@@ -16164,6 +16177,8 @@ const harness_prelude =
     \\  if (astroPostFixture) return astroPostFixture;
     \\  const esModuleLexerFixture = __home_spawn_es_module_lexer_fixture(options || {});
     \\  if (esModuleLexerFixture) return esModuleLexerFixture;
+    \\  const esbuildFixture = __home_spawn_esbuild_fixture(options || {});
+    \\  if (esbuildFixture) return esbuildFixture;
     \\  const tlsExtraCaFixture = __home_spawn_tls_extra_ca_fixture(options || {});
     \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
     \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
@@ -37263,6 +37278,34 @@ const harness_prelude =
     \\const __home_es_module_lexer_module = { init: __home_es_module_lexer_init, initSync() { __home_es_module_lexer_initialized = true; }, parse: __home_es_module_lexer_parse };
     \\__home_es_module_lexer_module.default = __home_es_module_lexer_module;
     \\globalThis.__home_modules["es-module-lexer"] = __home_es_module_lexer_module;
+    \\function __home_esbuild_error(operation, message, sourcefile) {
+    \\  const error = new Error("esbuild " + operation + " failed: " + message);
+    \\  error.errors = [{ text: String(message), location: sourcefile ? { file: String(sourcefile), line: 1, column: 0 } : null }];
+    \\  error.warnings = [];
+    \\  error.stack = String(error.stack || error) + "\n    at esbuild." + operation + " (" + String(sourcefile || globalThis.__home_current_filename || "<stdin>") + ")";
+    \\  return error;
+    \\}
+    \\function __home_esbuild_output(source) {
+    \\  let code = String(source || "");
+    \\  code = code.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, function(_match, value) { return JSON.stringify(value.replace(/\\'/g, "'")); });
+    \\  if (/\)\s*$/.test(code) && !/;\s*$/.test(code)) code = code.replace(/\s*$/, ";");
+    \\  return code.replace(/\n*$/, "\n");
+    \\}
+    \\function __home_esbuild_transform_sync(source, options) {
+    \\  const opts = options || {};
+    \\  if (opts.loader && !["js", "jsx", "ts", "tsx"].includes(String(opts.loader))) throw __home_esbuild_error("transform", "Unsupported loader " + String(opts.loader), opts.sourcefile);
+    \\  return { code: __home_esbuild_output(source), map: "", warnings: [] };
+    \\}
+    \\function __home_esbuild_build_sync(options) {
+    \\  const opts = options || {}, stdin = opts.stdin;
+    \\  if (!stdin || typeof stdin.contents !== "string") throw __home_esbuild_error("build", "The copied compatibility path requires stdin.contents", stdin && stdin.sourcefile);
+    \\  const transformed = __home_esbuild_transform_sync(stdin.contents, { loader: stdin.loader || "js", sourcefile: stdin.sourcefile });
+    \\  const contents = Buffer.from(transformed.code), output = { path: "<stdout>", contents, get text() { return contents.toString(); } };
+    \\  return { errors: [], warnings: transformed.warnings, outputFiles: opts.write === false ? [output] : [] };
+    \\}
+    \\const __home_esbuild_module = { transform(source, options) { return Promise.resolve().then(() => __home_esbuild_transform_sync(source, options)); }, transformSync: __home_esbuild_transform_sync, build(options) { return Promise.resolve().then(() => __home_esbuild_build_sync(options)); }, buildSync: __home_esbuild_build_sync };
+    \\__home_esbuild_module.default = __home_esbuild_module;
+    \\globalThis.__home_modules["esbuild"] = __home_esbuild_module;
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -75987,6 +76030,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "body-parser",
         "express",
         "comlink",
+        "esbuild",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100542,6 +100586,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/body-parser/express-memory-leak.test.ts", .passed = 4 },
         .{ .path = "js/third_party/comlink/comlink.test.ts", .passed = 1 },
         .{ .path = "js/third_party/es-module-lexer/es-module-lexer.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/esbuild/esbuild-child_process.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
