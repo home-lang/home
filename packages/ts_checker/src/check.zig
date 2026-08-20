@@ -36649,7 +36649,11 @@ pub const Checker = struct {
             if (self.expressionContainsThis(c.extends) and
                 self.enclosingConstructorNode(c.extends) == hir_mod.none_node_id)
             {
-                try self.report(c.extends, TsCodes.not_constructor_function_type, "Type 'typeof globalThis' is not a constructor function type.");
+                const message = if (self.rootHasTopLevelExternalModuleMarker(c.extends))
+                    "Type 'undefined' is not a constructor function type."
+                else
+                    "Type 'typeof globalThis' is not a constructor function type.";
+                try self.report(c.extends, TsCodes.not_constructor_function_type, message);
             }
             const parent_t = try self.classExtendsInstanceType(c.extends);
             try self.reportUnresolvedClassExtendsHeritage(c.extends, type_params);
@@ -60577,36 +60581,6 @@ pub const Checker = struct {
             if (k.name == name) return true;
         }
         return false;
-    }
-
-    fn reportObjectLiteralMethodReturnSelfReference(
-        self: *Checker,
-        object_node: NodeId,
-        fn_node: NodeId,
-        name_node: NodeId,
-        name: hir_mod.StringId,
-    ) CheckError!void {
-        const kind = self.hir.kindOf(fn_node);
-        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return;
-        const function = hir_mod.fnDeclOf(self.hir, fn_node);
-        if (function.return_type != hir_mod.none_node_id or function.body == hir_mod.none_node_id) return;
-        if (!self.fnBodyHasReturn(function.body)) return;
-        const return_expr = self.firstReturnExpressionNode(function.body) orelse return;
-        if (self.hir.kindOf(return_expr) != .member_access) return;
-        const member = hir_mod.memberOf(self.hir, return_expr);
-        if (!self.nodeIsThisReference(member.object)) return;
-        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property| {
-            if (self.hir.kindOf(property) != .object_property) continue;
-            const payload = hir_mod.objectPropertyOf(self.hir, property);
-            const property_name = self.propertyNameFromKeyNode(payload.key) orelse continue;
-            if (property_name == member.name) return;
-        }
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.",
-            .{self.string_interner.get(name)},
-        );
-        try self.report(name_node, TsCodes.function_return_self_reference_implicitly_any, msg);
     }
 
     fn objectLiteralHasAccessorForName(self: *Checker, obj_node: NodeId, name: hir_mod.StringId) bool {
@@ -102654,9 +102628,6 @@ pub const Checker = struct {
                         const a = hir_mod.assignmentOf(self.hir, op.value);
                         break :shorthand_init try self.checkExpression(a.value);
                     } else try self.checkExpression(op.value);
-                    if (self.strict_flags.no_implicit_any and op_is_method and !current_is_accessor) {
-                        try self.reportObjectLiteralMethodReturnSelfReference(node, op.value, op.key, k.name);
-                    }
                     if (self.strict_flags.no_implicit_any and
                         (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn))
                     {
@@ -181024,6 +180995,29 @@ test "checker: non-constructor heritage expressions emit TS2507" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
+test "checker: top-level this heritage distinguishes scripts and external modules" {
+    const script = try newSetup("class ScriptBase extends this {}");
+    defer destroySetup(script);
+    try script.checker.checkSourceFile(script.root);
+    try T.expect(checkerHasCodeAndMessage(
+        script,
+        TsCodes.not_constructor_function_type,
+        "Type 'typeof globalThis' is not a constructor function type.",
+    ));
+
+    const module = try newSetup(
+        \\class ModuleBase extends this {}
+        \\export {};
+    );
+    defer destroySetup(module);
+    try module.checker.checkSourceFile(module.root);
+    try T.expect(checkerHasCodeAndMessage(
+        module,
+        TsCodes.not_constructor_function_type,
+        "Type 'undefined' is not a constructor function type.",
+    ));
+}
+
 test "checker: malformed object bases preserve tsgo heritage diagnostics" {
     const s = try newSetup(
         \\interface I {}
@@ -243016,13 +243010,13 @@ test "checker: import-equals JSX namespace aliases report missing target members
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.property_does_not_exist, "Property 'non' does not exist on type 'typeof my'."));
 }
 
-test "checker: object literal method returning a missing this member reports TS7023" {
+test "checker: object literal method returning a missing this member is not recursive" {
     const s = try newSetup("var obj = { f() { return this.spaaace; } };");
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
