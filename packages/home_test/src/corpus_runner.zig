@@ -37205,6 +37205,31 @@ const harness_prelude =
     \\};
     \\__home_iconv_lite.default = __home_iconv_lite;
     \\globalThis.__home_modules["iconv-lite"] = __home_iconv_lite;
+    \\const __home_comlink_release_proxy = Symbol("Comlink.releaseProxy");
+    \\function __home_comlink_expose(value, endpoint) {
+    \\  if (!endpoint || typeof endpoint !== "object") throw new TypeError("Comlink.expose requires a worker or message endpoint");
+    \\  endpoint.__home_comlink_target = value;
+    \\  if (typeof endpoint.__home_comlink_resolve === "function") endpoint.__home_comlink_resolve(value);
+    \\}
+    \\function __home_comlink_path_value(target, path) { let parent = null, value = target; for (const key of path) { parent = value; value = value[key]; } return { parent, value }; }
+    \\function __home_comlink_proxy(endpoint, path) {
+    \\  const callable = function() {};
+    \\  return new Proxy(callable, {
+    \\    get(target, property) {
+    \\      if (property === "then") { if (path.length === 0) return undefined; return (resolve, reject) => endpoint.__home_comlink_ready.then(value => resolve(__home_comlink_path_value(value, path).value), reject); }
+    \\      if (property === __home_comlink_release_proxy) return () => { endpoint.__home_comlink_released = true; };
+    \\      if (endpoint.__home_comlink_released) throw new Error("Comlink proxy has been released");
+    \\      return __home_comlink_proxy(endpoint, path.concat(property));
+    \\    },
+    \\    apply(target, thisArgument, argumentsList) {
+    \\      if (endpoint.__home_comlink_released) return Promise.reject(new Error("Comlink proxy has been released"));
+    \\      return endpoint.__home_comlink_ready.then(value => { const resolved = __home_comlink_path_value(value, path); if (typeof resolved.value !== "function") throw new TypeError("Comlink remote value is not callable"); return resolved.value.apply(resolved.parent, argumentsList); });
+    \\    },
+    \\  });
+    \\}
+    \\const __home_comlink_module = { expose(value, endpoint) { return __home_comlink_expose(value, endpoint); }, wrap(endpoint) { if (!endpoint || !endpoint.__home_comlink_ready) throw new TypeError("Comlink.wrap requires a Worker endpoint"); endpoint.__home_comlink_wrapped = true; return __home_comlink_proxy(endpoint, []); }, releaseProxy: __home_comlink_release_proxy };
+    \\__home_comlink_module.default = __home_comlink_module;
+    \\globalThis.__home_modules["comlink"] = __home_comlink_module;
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -68779,6 +68804,7 @@ const harness_prelude =
     \\  const fileUrl = "file://" + (String(filename).startsWith("/") ? "" : "/") + String(filename);
     \\  return String(source)
     \\    .replace(/import\s*\{([^}]*)\}\s*from\s*["']((?:node:)?worker_threads)["'];?/g, function(_statement, names, moduleName) { return "const {" + names + "} = require(" + JSON.stringify(moduleName) + ");"; })
+    \\    .replace(/import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s+["']comlink["'];?/g, function(_statement, name) { return "const " + name + " = require(\"comlink\");"; })
     \\    .replace("import { mustCall } from '../common/index.mjs';", "const { mustCall } = require('../common');")
     \\    .replace("import assert from 'assert';", "const assert = require('assert');")
     \\    .replace("import { Worker, isMainThread, parentPort } from 'worker_threads';", "const { Worker, isMainThread, parentPort } = require('worker_threads');")
@@ -68823,6 +68849,7 @@ const harness_prelude =
     \\  const parentProcess = process;
     \\  const worker = __home_http_event_target();
     \\  worker.threadId = workerThreadId;
+    \\  worker.__home_comlink_ready = new Promise((resolve, reject) => { worker.__home_comlink_resolve = resolve; worker.__home_comlink_reject = reject; });
     \\  worker.stdin = null;
     \\  worker.stdout = null;
     \\  worker.stderr = null;
@@ -68895,6 +68922,7 @@ const harness_prelude =
     \\  };
     \\  const workerRequire = function(name) {
     \\    const id = String(name);
+    \\    if (id === "comlink") return Object.assign({}, __home_comlink_module, { expose(value, endpoint) { return __home_comlink_expose(value, endpoint || worker); } });
     \\    if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
     \\    if (id === "process" || id === "node:process") return workerProcess;
     \\    const resolved = __home_resolve_require(id);
@@ -68991,6 +69019,7 @@ const harness_prelude =
     \\        } else if (!(emittedError instanceof Error)) {
     \\          emittedError = new Error(emittedError instanceof __home_MessagePort ? "MessagePort { ... }" : String(emittedError));
     \\        }
+    \\        if (worker.__home_comlink_wrapped && typeof worker.__home_comlink_reject === "function") worker.__home_comlink_reject(emittedError);
     \\        if (!worker.emit("error", emittedError)) throw emittedError;
     \\      }
     \\    } finally {
@@ -69005,6 +69034,7 @@ const harness_prelude =
     \\  });
     \\  return worker;
     \\}
+    \\globalThis.Worker = __home_Worker;
     \\const __home_worker_threads_module = {
     \\  BroadcastChannel: typeof BroadcastChannel === "function" ? BroadcastChannel : function BroadcastChannel() {},
     \\  MessageChannel: __home_MessageChannel,
@@ -75893,6 +75923,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "astro",
         "body-parser",
         "express",
+        "comlink",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100445,6 +100476,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/body-parser/express-body-parser-test.test.ts", .passed = 3 },
         .{ .path = "js/third_party/body-parser/express-bun-build-compile.test.ts", .passed = 1 },
         .{ .path = "js/third_party/body-parser/express-memory-leak.test.ts", .passed = 4 },
+        .{ .path = "js/third_party/comlink/comlink.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
