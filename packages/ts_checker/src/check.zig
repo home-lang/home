@@ -159206,6 +159206,10 @@ pub const Checker = struct {
         const resolved_target = self.tupleTypeFromMaybeOptional(target_t) orelse return false;
         if (!self.isFixedNoRestTuple(resolved_target)) return false;
         const elems = hir_mod.arrayLiteralElements(self.hir, init_node);
+        const source_count = (try self.fixedArrayLiteralTupleLength(init_node)) orelse return false;
+        const target_min = self.tupleRestMinRequiredCount(resolved_target);
+        const target_max = self.restTupleMaxCount(resolved_target) orelse return false;
+        if (source_count < target_min or source_count > target_max) return false;
         var emitted = false;
         var i: usize = 0;
         while (i < elems.len) : (i += 1) {
@@ -235764,6 +235768,23 @@ test "checker: TS2618/TS2619 elaborate array literal tuple width mismatches" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.source_tuple_too_short));
     try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.source_tuple_too_long));
+}
+
+test "checker: overlong tuple property assignment reports one aggregate mismatch" {
+    const s = try newSetup(
+        \\interface I { tuple: [string, number]; }
+        \\declare let value: I;
+        \\value.tuple = ["ok", 1, false, true];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '[string, number, boolean, boolean]' is not assignable to type '[string, number]'.",
+    ));
 }
 
 test "checker: fixed tuple spreads expand in contextual tuple diagnostics" {
