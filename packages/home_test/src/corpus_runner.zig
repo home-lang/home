@@ -33514,7 +33514,106 @@ const harness_prelude =
     \\  if (/\bSELECT\s+\*\s+FROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) return __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
     \\  return __home_bun_sql_query_result([]);
     \\}
-    \\function __home_bun_sql(url) {
+    \\function __home_bun_sql_normalize_adapter(value) {
+    \\  const adapter = String(value || "").toLowerCase();
+    \\  if (adapter === "postgresql" || adapter === "pg") return "postgres";
+    \\  if (adapter === "mariadb") return "mysql";
+    \\  return adapter;
+    \\}
+    \\function __home_bun_sql_env_url(explicitAdapter) {
+    \\  const groups = {
+    \\    postgres: [["POSTGRES_URL", false], ["PGURL", false], ["PG_URL", false], ["TLS_POSTGRES_DATABASE_URL", true]],
+    \\    mysql: [["MYSQL_URL", false], ["MYSQLURL", false], ["TLS_MYSQL_DATABASE_URL", true], ["MARIADB_URL", false], ["MARIADBURL", false], ["TLS_MARIADB_DATABASE_URL", true]],
+    \\    sqlite: [["SQLITE_URL", false], ["SQLITEURL", false]],
+    \\  };
+    \\  const generic = [["DATABASE_URL", null, false], ["DATABASEURL", null, false], ["TLS_DATABASE_URL", null, true]];
+    \\  const candidates = [];
+    \\  if (explicitAdapter && groups[explicitAdapter]) {
+    \\    for (const [name, tls] of groups[explicitAdapter]) candidates.push([name, explicitAdapter, tls]);
+    \\    for (const entry of generic) candidates.push(entry);
+    \\  } else {
+    \\    for (const entry of generic) candidates.push(entry);
+    \\    for (const adapter of ["postgres", "mysql", "sqlite"]) for (const [name, tls] of groups[adapter]) candidates.push([name, adapter, tls]);
+    \\  }
+    \\  for (const [name, adapter, tls] of candidates) {
+    \\    const value = process.env[name];
+    \\    if (value !== undefined && String(value).length > 0) return { adapter, name, tls: !!tls, url: String(value) };
+    \\  }
+    \\  return { adapter: null, name: null, tls: false, url: "" };
+    \\}
+    \\function __home_bun_sql_adapter_from_url(value) {
+    \\  const match = String(value || "").match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
+    \\  if (!match) return "";
+    \\  const protocol = __home_bun_sql_normalize_adapter(match[1]);
+    \\  if (protocol === "postgres" || protocol === "mysql" || protocol === "sqlite") return protocol;
+    \\  return "";
+    \\}
+    \\function __home_bun_sql_parse_url(value, adapter) {
+    \\  const text = String(value || "");
+    \\  if (!text) return {};
+    \\  const protocol = (text.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//) || [])[1];
+    \\  const normalizedProtocol = __home_bun_sql_normalize_adapter(protocol);
+    \\  if (normalizedProtocol === "sqlite" || adapter === "sqlite") {
+    \\    const filename = normalizedProtocol === "sqlite" ? text.slice(text.indexOf("://") + 3) : text;
+    \\    return { filename: filename.startsWith("/") ? filename : "/" + filename };
+    \\  }
+    \\  if (String(protocol || "").toLowerCase() === "unix") {
+    \\    const path = text.slice(text.indexOf("://") + 3);
+    \\    return { path: path.startsWith("/") ? path : "/" + path };
+    \\  }
+    \\  const parseProtocol = protocol || (adapter === "mysql" ? "mysql" : "postgres");
+    \\  try {
+    \\    const parsed = new URL(protocol ? text : parseProtocol + "://" + text);
+    \\    const result = {};
+    \\    if (parsed.hostname) result.hostname = parsed.hostname;
+    \\    if (parsed.port) result.port = Number(parsed.port);
+    \\    if (parsed.username) result.username = decodeURIComponent(parsed.username);
+    \\    if (parsed.password) result.password = decodeURIComponent(parsed.password);
+    \\    const database = String(parsed.pathname || "").replace(/^\/+/, "");
+    \\    if (database) result.database = decodeURIComponent(database);
+    \\    return result;
+    \\  } catch (error) {
+    \\    return {};
+    \\  }
+    \\}
+    \\function __home_bun_sql_resolve_options(url, explicitOptions) {
+    \\  const firstOptions = url && typeof url === "object" && !Array.isArray(url) ? url : {};
+    \\  const secondOptions = explicitOptions && typeof explicitOptions === "object" ? explicitOptions : {};
+    \\  const explicit = Object.assign({}, firstOptions, secondOptions);
+    \\  const explicitUrl = typeof url === "string" ? url : typeof explicit.url === "string" ? explicit.url : "";
+    \\  const explicitAdapter = __home_bun_sql_normalize_adapter(explicit.adapter);
+    \\  const selected = explicitUrl ? { adapter: null, name: null, tls: false, url: explicitUrl } : __home_bun_sql_env_url(explicitAdapter);
+    \\  const adapter = explicitAdapter || selected.adapter || __home_bun_sql_adapter_from_url(selected.url) || "postgres";
+    \\  const options = { adapter };
+    \\  if (adapter === "postgres") {
+    \\    if (process.env.PGHOST !== undefined) options.hostname = String(process.env.PGHOST);
+    \\    if (process.env.PGPORT !== undefined && String(process.env.PGPORT) !== "") options.port = Number(process.env.PGPORT);
+    \\    if (process.env.PGUSER !== undefined) options.username = String(process.env.PGUSER);
+    \\    if (process.env.PGPASSWORD !== undefined) options.password = String(process.env.PGPASSWORD);
+    \\    if (process.env.PGDATABASE !== undefined) options.database = String(process.env.PGDATABASE);
+    \\  } else if (adapter === "mysql") {
+    \\    if (process.env.MYSQL_HOST !== undefined) options.hostname = String(process.env.MYSQL_HOST);
+    \\    if (process.env.MYSQL_PORT !== undefined && String(process.env.MYSQL_PORT) !== "") options.port = Number(process.env.MYSQL_PORT);
+    \\    if (process.env.MYSQL_USER !== undefined) options.username = String(process.env.MYSQL_USER);
+    \\    if (process.env.MYSQL_PASSWORD !== undefined) options.password = String(process.env.MYSQL_PASSWORD);
+    \\    if (process.env.MYSQL_DATABASE !== undefined) options.database = String(process.env.MYSQL_DATABASE);
+    \\  }
+    \\  Object.assign(options, __home_bun_sql_parse_url(selected.url, adapter));
+    \\  if (selected.tls) options.sslMode = 2;
+    \\  const aliases = { host: "hostname", user: "username", pass: "password", db: "database" };
+    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode"]) {
+    \\    if (explicit[key] !== undefined) options[key] = explicit[key];
+    \\  }
+    \\  for (const key of Object.keys(aliases)) if (explicit[key] !== undefined) options[aliases[key]] = explicit[key];
+    \\  if (options.username === undefined && process.env.USER !== undefined) options.username = String(process.env.USER);
+    \\  if (options.port === undefined && adapter === "mysql") options.port = 3306;
+    \\  if (options.port === undefined && adapter === "postgres") options.port = 5432;
+    \\  if (options.database === undefined && adapter === "mysql") options.database = "mysql";
+    \\  if (options.database === undefined && adapter === "postgres" && options.username !== undefined) options.database = options.username;
+    \\  return { options, url: selected.url };
+    \\}
+    \\function __home_bun_sql(url, explicitOptions) {
+    \\  const resolved = __home_bun_sql_resolve_options(url, explicitOptions);
     \\  const sql = function(strings, ...values) {
     \\    if (!(Array.isArray(strings) && strings.raw)) {
     \\      if (Array.isArray(strings)) return __home_bun_sql_values(strings);
@@ -33522,8 +33621,9 @@ const harness_prelude =
     \\    }
     \\    return __home_bun_sql_query(sql, strings, values);
     \\  };
-    \\  sql.__home_options = url && typeof url === "object" ? Object.assign({}, url) : null;
-    \\  sql.url = typeof url === "string" ? url : String(url || "");
+    \\  sql.options = resolved.options;
+    \\  sql.__home_options = resolved.options;
+    \\  sql.url = resolved.url;
     \\  sql.__home_last_insert_id = 0;
     \\  sql.__home_row_count = 0;
     \\  sql.__home_tables = Object.create(null);
@@ -67588,6 +67688,7 @@ fn appendImportMetaReplacement(
         .{ .needle = "import.meta.require", .replacement = "globalThis.require" },
         .{ .needle = "import.meta.resolveSync", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.resolve", .replacement = "__home_import_meta_resolve" },
+        .{ .needle = "import.meta.env", .replacement = "process.env" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.filename", .replacement = "__filename" },
@@ -68383,6 +68484,69 @@ fn skipBootstrapTypeAlias(source: []const u8, idx: usize) ?usize {
     return null;
 }
 
+fn skipBootstrapDeclareModule(source: []const u8, idx: usize) ?usize {
+    if (!isBootstrapLineStatementStart(source, idx) or !std.mem.startsWith(u8, source[idx..], "declare module ")) return null;
+
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var depth: usize = 0;
+    var cursor = idx + "declare module ".len;
+    var saw_body = false;
+    while (cursor < source.len) : (cursor += 1) {
+        const byte = source[cursor];
+        switch (mode) {
+            .code => {
+                if (byte == '\'') {
+                    mode = .single_quote;
+                } else if (byte == '"') {
+                    mode = .double_quote;
+                } else if (byte == '`') {
+                    mode = .template;
+                } else if (byte == '/' and cursor + 1 < source.len and source[cursor + 1] == '/') {
+                    mode = .line_comment;
+                    cursor += 1;
+                } else if (byte == '/' and cursor + 1 < source.len and source[cursor + 1] == '*') {
+                    mode = .block_comment;
+                    cursor += 1;
+                } else if (byte == '{') {
+                    saw_body = true;
+                    depth += 1;
+                } else if (byte == '}' and saw_body) {
+                    if (depth == 0) return null;
+                    depth -= 1;
+                    if (depth == 0) {
+                        cursor += 1;
+                        if (cursor < source.len and source[cursor] == ';') cursor += 1;
+                        while (cursor < source.len and (source[cursor] == '\n' or source[cursor] == '\r')) cursor += 1;
+                        return cursor;
+                    }
+                }
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and cursor + 1 < source.len) {
+                    cursor += 1;
+                } else if (byte == terminator) {
+                    mode = .code;
+                }
+            },
+            .line_comment => if (byte == '\n') {
+                mode = .code;
+            },
+            .block_comment => if (byte == '*' and cursor + 1 < source.len and source[cursor + 1] == '/') {
+                mode = .code;
+                cursor += 1;
+            },
+        }
+    }
+    return null;
+}
+
 fn bootstrapReplacementWouldEraseTernaryFalseBranch(source: []const u8, idx: usize, needle: []const u8) bool {
     if (!std.mem.startsWith(u8, needle, ": ")) return false;
     const can_erase_expression =
@@ -68594,6 +68758,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
                     continue;
                 }
                 if (skipBootstrapTypeAlias(source, i)) |next| {
+                    i = next;
+                    continue;
+                }
+                if (skipBootstrapDeclareModule(source, i)) |next| {
                     i = next;
                     continue;
                 }
@@ -73748,6 +73916,12 @@ fn relativeHarnessImportTargetsCorpusRoot(relative_path: []const u8, module_name
 }
 
 fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: []const u8) ?struct { name: []const u8, end: usize } {
+    const fs_export_star = "js/node/fs/export-star-from";
+    if (std.mem.startsWith(u8, source[start..], fs_export_star)) {
+        const end = start + fs_export_star.len;
+        if (end == source.len or source[end] == '"' or source[end] == '\'') return .{ .name = "node:fs", .end = end };
+    }
+
     const relative_harnesses = [_][]const u8{
         "../../harness",
         "../../../harness",
@@ -92743,6 +92917,32 @@ test "bootstrap runner preserves node zlib contracts" {
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("node zlib contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves SQL adapter contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+        .{ .path = "js/sql/adapter-env-var-precedence.test.ts", .passed = 38 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("SQL adapter contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
