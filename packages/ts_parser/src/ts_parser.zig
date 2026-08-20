@@ -912,7 +912,7 @@ pub const Parser = struct {
     }
 
     fn reportAwaitBindingIfReserved(self: *Parser, tok: Token) ParseError!void {
-        if (tok.kind != .kw_await) return;
+        if (tok.kind != .kw_await or tok.flags.has_escape) return;
         const is_top_level_module_binding = self.top_level_external_module_indicator and
             self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
         if (!self.in_top_level_module_binding_decl and !is_top_level_module_binding) return;
@@ -933,7 +933,7 @@ pub const Parser = struct {
     /// token, even when the outer source is a script rather than a
     /// module).
     fn reportAwaitReservedInAsyncContext(self: *Parser, tok: Token) ParseError!void {
-        if (tok.kind != .kw_await) return;
+        if (tok.kind != .kw_await or tok.flags.has_escape) return;
         if (self.async_function_depth == 0) return;
         try self.reportCodeAt(
             tok.span.start,
@@ -2881,7 +2881,10 @@ pub const Parser = struct {
                 // upstream TS2457 ("Type alias name cannot be '...'.").
                 // Mirrors `reservedNamesInAliases.ts`.
                 const next = self.peekAt(1);
-                if ((next.kind == .identifier or next.kind == .equal or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
+                if ((next.kind == .identifier or
+                    next.kind == .equal or
+                    (next.kind.isKeyword() and next.flags.has_escape) or
+                    self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
                     (!next.flags.preceded_by_newline or self.ambient_depth > 0))
                 {
                     break :blk try self.parseTypeAlias();
@@ -8173,7 +8176,10 @@ pub const Parser = struct {
                 try self.reportCodeAt(equal.span.start, equal.line, 1439, "Type alias must be given a name.");
                 break :name_blk try self.missingIdentifierAt(equal.span.start);
             }
-            const name_tok = if (peek_kind == .identifier or self.tokenLexemeIsReservedTypeAliasName())
+            const name_tok = if (peek_kind == .identifier or
+                (peek_kind.isKeyword() and self.peek().flags.has_escape))
+                try self.expectIdentifierLike()
+            else if (self.tokenLexemeIsReservedTypeAliasName())
                 self.advance()
             else
                 try self.expect(.identifier, "type alias name");
@@ -17730,10 +17736,20 @@ pub const Parser = struct {
         return try self.parseBinaryExpressionWithIn(min_prec, true);
     }
 
+    fn skipInvalidNullTokens(self: *Parser) void {
+        while (true) {
+            const tok = self.peek();
+            if (tok.kind != .invalid or tok.span.start >= self.source.len or self.source[tok.span.start] != 0) return;
+            _ = self.advance();
+        }
+    }
+
     fn parseBinaryExpressionWithIn(self: *Parser, min_prec: prec_mod.Prec, allow_in: bool) ParseError!NodeId {
+        self.skipInvalidNullTokens();
         var left = try self.parseUnaryExpression();
         var last_binary_prec: ?prec_mod.Prec = null;
         while (true) {
+            self.skipInvalidNullTokens();
             const t = self.peek();
             if (!allow_in and t.kind == .kw_in) break;
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
@@ -20916,7 +20932,10 @@ pub const Parser = struct {
                         props.items,
                     );
                 }
-                const key_tok = self.advance();
+                const key_tok = if (self.peek().kind.isKeyword() and self.peek().flags.has_escape)
+                    try self.expectIdentifierLike()
+                else
+                    self.advance();
                 accessibility_shorthand_before_computed = isAccessibilityModifier(key_tok.kind) and
                     self.peek().kind == .open_bracket;
                 can_be_shorthand_property = isExpressionIdentifierToken(key_tok.kind) or
@@ -21239,7 +21258,16 @@ pub const Parser = struct {
     fn expectIdentifierLike(self: *Parser) ParseError!Token {
         const t = self.peek();
         if (t.kind == .identifier or t.kind == .private_identifier or t.kind.isKeyword()) {
-            return self.advance();
+            const diagnostic_count = self.diagnostics.items.len;
+            const consumed = self.advance();
+            if (consumed.flags.has_escape and
+                self.diagnostics.items.len == diagnostic_count + 1 and
+                self.diagnostics.items[diagnostic_count].code == 1260 and
+                self.diagnostics.items[diagnostic_count].pos == consumed.span.start)
+            {
+                self.diagnostics.items.len = diagnostic_count;
+            }
+            return consumed;
         }
         if (t.kind == .invalid) {
             _ = self.advance();
@@ -25675,6 +25703,29 @@ test "parser: escaped keywords report TS1260" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1260), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Keywords cannot contain escape characters.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: escaped keyword bindings stay identifiers while keyword uses report TS1260" {
+    var s = try newTestSetup(
+        \\var \u0061wait = 12;
+        \\async function main() {
+        \\    \u0061wait 12;
+        \\}
+        \\type typ\u0065 = 12;
+        \\typ\u0065 notok = 0;
+        \\const obj = {def\u0061ult: 12};
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var escaped_keyword_count: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1260) escaped_keyword_count += 1;
+        try T.expect(diagnostic.code != 1262);
+        try T.expect(diagnostic.code != 1005);
+    }
+    try T.expectEqual(@as(usize, 2), escaped_keyword_count);
 }
 
 test "parser: ambient external module permits export assignment" {
@@ -31749,6 +31800,21 @@ test "parser: invalid token in expression position reports invalid character" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Invalid character.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: null invalid tokens preserve the surrounding binary expression" {
+    var s = try newTestSetup("foo\x00+\x00bar;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(stmts[0]));
+    const binary = hir_mod.binopOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.BinOp.add, binary.op);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(binary.lhs));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(binary.rhs));
 }
 
 test "parser: invalid generic-call type args fall back to expression recovery" {
