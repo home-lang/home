@@ -33984,6 +33984,22 @@ const harness_prelude =
     \\    }
     \\    return __home_bun_sql_query_result([]);
     \\  }
+    \\  if (sql.options.tls) {
+    \\    chunks.length = 0;
+    \\    socket.emit("data", __home_sql_pg_ssl_request());
+    \\    const tlsAnswer = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
+    \\    if (tlsAnswer.length !== 1 || (tlsAnswer[0] !== 0x53 && tlsAnswer[0] !== 0x4e)) {
+    \\      const error = new Error("Unexpected PostgreSQL message while waiting for the SSLRequest answer");
+    \\      error.code = "ERR_POSTGRES_UNEXPECTED_MESSAGE";
+    \\      return __home_bun_sql_query_error(error);
+    \\    }
+    \\    if (tlsAnswer[0] === 0x4e) {
+    \\      const error = new Error("PostgreSQL server does not support TLS");
+    \\      error.code = "ERR_POSTGRES_TLS_NOT_AVAILABLE";
+    \\      return __home_bun_sql_query_error(error);
+    \\    }
+    \\    chunks.length = 0;
+    \\  }
     \\  socket.emit("data", Buffer.from("home-postgres-startup"));
     \\  const serverError = __home_bun_sql_server_error(chunks);
     \\  if (serverError) return __home_bun_sql_query_error(serverError);
@@ -94368,6 +94384,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql.test.ts", .passed = 10 },
         .{ .path = "js/sql/sqlite-sql.test.ts", .passed = 231 },
         .{ .path = "js/sql/sqlite-url-parsing.test.ts", .passed = 176 },
+        .{ .path = "js/sql/tls-sql.test.ts", .passed = 2, .todo = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
