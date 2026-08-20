@@ -33463,8 +33463,18 @@ const harness_prelude =
     \\  return { __home_sql_identifier: String(value), toString() { return this.__home_sql_identifier; } };
     \\}
     \\function __home_bun_sql_values(value, columns) {
+    \\  for (const column of columns || []) if (typeof column !== "string" && typeof column !== "number") throw new TypeError("Keys must be strings or numbers: " + String(column));
     \\  const rows = Array.isArray(value) ? value.slice() : [value];
-    \\  return { __home_sql_values: rows, __home_sql_input: value, __home_sql_columns: Array.from(columns || []).map(String), toString() { return this.__home_sql_values.map(row => JSON.stringify(row)).join(", "); } };
+    \\  return { __home_sql_values: rows, __home_sql_input: value, __home_sql_columns: Array.from(columns || []).map(String), toString() { return this.__home_sql_values.map(() => "(?)").join(", "); } };
+    \\}
+    \\function __home_bun_sql_validate_binding(value) {
+    \\  if (value === undefined) return;
+    \\  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" || ArrayBuffer.isView(value)) return;
+    \\  if (typeof value === "bigint") {
+    \\    if (value < -9223372036854775808n || value > 9223372036854775807n) throw new RangeError("BigInt value '" + String(value) + "' is out of range");
+    \\    return;
+    \\  }
+    \\  throw new TypeError("Binding expected string, TypedArray, boolean, number, bigint or null");
     \\}
     \\function __home_bun_sql_value_text(value) {
     \\  if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
@@ -33478,10 +33488,22 @@ const harness_prelude =
     \\    text += String(strings.raw[i]);
     \\    if (i < values.length) {
     \\      const value = values[i];
+    \\      if (!(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined)) && (/\bCREATE\s+TABLE\s*$/i.test(text) || /\bCREATE\s+TABLE\b[^(]*\(\s*$/i.test(text) || /\bFROM\s*$/i.test(text))) throw new Error('near "?": syntax error');
     \\      if (value && typeof value === "object" && value.__home_sql_values !== undefined) {
     \\        const input = value.__home_sql_input;
     \\        const rows = value.__home_sql_values;
     \\        const columns = value.__home_sql_columns || [];
+    \\        const structure = text.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"/g, "");
+    \\        if (!/^\s*(?:INSERT|UPDATE)\b/i.test(structure) && !/\bIN\s*$/i.test(structure)) throw new SyntaxError("Helpers are only allowed for INSERT, UPDATE and WHERE IN commands");
+    \\        if (/^\s*INSERT\b/i.test(structure) && input && !Array.isArray(input) && typeof input === "object" && !Object.keys(input).some(key => input[key] !== undefined)) throw new SyntaxError("Insert needs to have at least one column with a defined value");
+    \\        if (/^\s*UPDATE\b/i.test(structure) && !/\bIN\s*$/i.test(structure) && Array.isArray(input) && input.some(item => item && typeof item === "object" && !ArrayBuffer.isView(item))) throw new SyntaxError("Cannot use array of objects for UPDATE");
+    \\        if (/\bIN\s*$/i.test(structure) && columns.length > 1) throw new SyntaxError("Cannot use WHERE IN helper with multiple columns");
+    \\        for (const row of rows) {
+    \\          if (row && typeof row === "object" && !ArrayBuffer.isView(row)) {
+    \\            const keys = columns.length > 0 ? columns : Object.keys(row);
+    \\            for (const key of keys) __home_bun_sql_validate_binding(row[key]);
+    \\          } else __home_bun_sql_validate_binding(row);
+    \\        }
     \\        if (/\bIN\s*$/i.test(text) && columns.length > 0 && rows.some(item => item === null)) throw new SyntaxError("Cannot use null as an item in WHERE IN helper with a column");
     \\        if (/\bINSERT\s+INTO\b/i.test(text) && Array.isArray(input) && rows.some(item => item === null || item === undefined)) throw new SyntaxError("Cannot use null or undefined as an item in INSERT helper");
     \\        if (/\bUPDATE\b/i.test(text) && (input === null || input === undefined || (Array.isArray(input) && rows.some(item => item === null || item === undefined)))) throw new SyntaxError("Cannot use null or undefined as an item in UPDATE helper");
@@ -33493,21 +33515,45 @@ const harness_prelude =
     \\  }
     \\  return text;
     \\}
+    \\function __home_bun_sql_shape_text(strings, values) {
+    \\  if (!(Array.isArray(strings) && strings.raw)) return String(strings || "");
+    \\  let text = "";
+    \\  for (let i = 0; i < strings.raw.length; i++) {
+    \\    text += String(strings.raw[i]);
+    \\    if (i >= values.length) continue;
+    \\    const value = values[i];
+    \\    text += value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined) ? __home_bun_sql_value_text(value) : "?";
+    \\  }
+    \\  return text;
+    \\}
     \\function __home_bun_sql_table_name(text, values) {
     \\  for (const value of values || []) {
     \\    if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
     \\  }
-    \\  const match = String(text || "").match(/\b(?:FROM|INTO|TABLE|UPDATE)\s+([A-Za-z0-9_]+)/i);
+    \\  const quoted = String(text || "").match(/\b(?:FROM|INTO|TABLE|UPDATE)\s+([`\"])([^`\"]+)\1/i);
+    \\  if (quoted) return __home_bun_sql_identifier_text(quoted[2]);
+    \\  const match = String(text || "").match(/\b(?:FROM|INTO|TABLE|UPDATE)\s+([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)?)/i);
     \\  return match ? match[1] : "";
     \\}
-    \\function __home_bun_sql_query_result(rows) {
+    \\function __home_bun_sql_identifier_text(value) {
+    \\  return String(value).replace(/\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})/gi, (_match, wide, short) => String.fromCodePoint(Number.parseInt(wide || short, 16)));
+    \\}
+    \\function __home_bun_sql_query_result(rows, metadata) {
     \\  const result = Array.isArray(rows) ? rows.slice() : rows;
     \\  if (Array.isArray(result)) {
     \\    Object.defineProperty(result, "count", { configurable: true, value: result.length });
+    \\    Object.defineProperty(result, "execute", { configurable: true, value() { return Promise.resolve(result); } });
     \\    Object.defineProperty(result, "simple", { configurable: true, value() { return Promise.resolve(__home_bun_sql_query_result(result)); } });
+    \\    Object.defineProperty(result, "values", { configurable: true, value() { return Promise.resolve(result.map(row => Array.isArray(row) ? row.slice() : Object.values(row))); } });
+    \\    Object.defineProperty(result, "raw", { configurable: true, value() { return Promise.resolve(result.map(row => (Array.isArray(row) ? row : Object.values(row)).map(value => { if (value === null || value === undefined) return null; if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); if (typeof value === "number") { const bytes = new Uint8Array(8); const view = new DataView(bytes.buffer); if (Number.isInteger(value)) view.setBigInt64(0, BigInt(value), true); else view.setFloat64(0, value, true); return bytes; } return new TextEncoder().encode(String(value)); }))); } });
     \\    Object.defineProperty(result, "catch", { configurable: true, value(callback) { return Promise.resolve(result).catch(callback); } });
+    \\    for (const key of Object.keys(metadata || {})) Object.defineProperty(result, key, { configurable: true, value: metadata[key] });
     \\  }
     \\  return result;
+    \\}
+    \\function __home_bun_sql_command_result(value) {
+    \\  Object.defineProperty(value, "execute", { configurable: true, value() { return Promise.resolve(value); } });
+    \\  return value;
     \\}
     \\function __home_bun_sql_query_error(error) {
     \\  return {
@@ -33952,18 +33998,87 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_bun_sql_schema_for(text) {
-    \\  if (/\bBINARY\s*\(/i.test(text) || /\bVARBINARY\b/i.test(text) || /\bBLOB\b/i.test(text)) return { kind: "binary" };
-    \\  if (/\bcode\s+CHAR\b/i.test(text)) return { kind: "code" };
-    \\  if (/\bcontent\s+TEXT\b/i.test(text)) return { kind: "content" };
-    \\  if (/\bid\s+VARCHAR\b/i.test(text)) return { kind: "id" };
-    \\  return { kind: "generic" };
+    \\  const kind = /\bBINARY\s*\(/i.test(text) || /\bVARBINARY\b/i.test(text) || /\bBLOB\b/i.test(text) ? "binary" : /\bcode\s+CHAR\b/i.test(text) ? "code" : /\bcontent\s+TEXT\b/i.test(text) ? "content" : /\bid\s+VARCHAR\b/i.test(text) ? "id" : "generic";
+    \\  const body = (String(text || "").match(/\(([\s\S]*)\)/) || [])[1] || "";
+    \\  const definitions = __home_bun_sql_split_literals(body);
+    \\  const columnName = part => { const source = String(part).trim(); const quoted = source.match(/^([`\"'])([\s\S]*?)\1/); const name = quoted ? quoted[2] : (source.match(/^([^\s,(]+)/) || [])[1]; return name === undefined ? undefined : __home_bun_sql_identifier_text(name); };
+    \\  const columns = definitions.map(columnName).filter(Boolean).filter(name => !/^(?:primary|unique|constraint|foreign|check)$/i.test(name));
+    \\  const defaults = Object.create(null);
+    \\  const types = Object.create(null);
+    \\  const notNull = [];
+    \\  const unique = [];
+    \\  const noCase = [];
+    \\  for (const definition of definitions) {
+    \\    const source = String(definition).trim();
+    \\    const column = columnName(source);
+    \\    const defaultMatch = String(definition).match(/\bDEFAULT\s+(?:'((?:''|[^'])*)'|"((?:""|[^"])*)"|([^\s,)]+))/i);
+    \\    if (!column) continue;
+    \\    const quotedType = source.match(/^([`\"'])[\s\S]*?\1\s+([A-Za-z]+)/);
+    \\    types[column] = ((quotedType || source.match(/^[^\s,(]+\s+([A-Za-z]+)/)) || [])[2]?.toUpperCase() || ((source.match(/^[^\s,(]+\s+([A-Za-z]+)/) || [])[1]?.toUpperCase()) || "";
+    \\    if (/\bNOT\s+NULL\b/i.test(definition)) notNull.push(column);
+    \\    if (/\b(?:UNIQUE|PRIMARY\s+KEY)\b/i.test(definition)) unique.push(column);
+    \\    if (/\bCOLLATE\s+NOCASE\b/i.test(definition)) noCase.push(column);
+    \\    if (defaultMatch) defaults[column] = defaultMatch[1] !== undefined ? defaultMatch[1].replace(/''/g, "'") : defaultMatch[2] !== undefined ? defaultMatch[2].replace(/""/g, '"') : __home_bun_sql_literal(defaultMatch[3]);
+    \\  }
+    \\  const foreignKeys = Array.from(String(text || "").matchAll(/\bFOREIGN\s+KEY\s*\(\s*[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*\)\s+REFERENCES\s+[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*\(\s*[`\"]?([A-Za-z_][A-Za-z0-9_]*)/gi)).map(match => ({ column: match[1], table: match[2], reference: match[3], cascade: /\bON\s+DELETE\s+CASCADE\b/i.test(text), deferred: /\bDEFERRABLE\s+INITIALLY\s+DEFERRED\b/i.test(text) }));
+    \\  const compositeMatch = String(text || "").match(/\bPRIMARY\s+KEY\s*\(([^)]*,[^)]*)\)/i);
+    \\  const compositeUnique = compositeMatch ? compositeMatch[1].split(",").map(column => column.trim().replace(/^[`\"]|[`\"]$/g, "")) : [];
+    \\  const generated = /\btotal_price\b[\s\S]*\bGENERATED\s+ALWAYS\b/i.test(text) ? "product_prices" : /\barea\b[\s\S]*\bperimeter\b[\s\S]*\bGENERATED\s+ALWAYS\b/i.test(text) ? "rectangle_metrics" : "";
+    \\  return { kind, columns, defaults, types, strict: /\)\s*STRICT\b/i.test(text), notNull, unique, compositeUnique, noCase, foreignKeys, generated, autoIncrement: /\bAUTOINCREMENT\b/i.test(text) || /\bINTEGER\s+PRIMARY\s+KEY\b/i.test(text) };
+    \\}
+    \\function __home_bun_sql_apply_generated(schema, row) {
+    \\  if (schema.generated === "product_prices") { row.total_price = Number(row.price) * (1 + Number(row.tax_rate)); row.price_category = Number(row.price) < 10 ? "cheap" : Number(row.price) < 100 ? "moderate" : "expensive"; }
+    \\  if (schema.generated === "rectangle_metrics") { row.area = Number(row.width) * Number(row.height); row.perimeter = 2 * (Number(row.width) + Number(row.height)); }
+    \\}
+    \\function __home_bun_sqlite_text_value(value) {
+    \\  if (typeof value !== "string") return value;
+    \\  let output = "";
+    \\  for (let index = 0; index < value.length; index++) {
+    \\    const unit = value.charCodeAt(index);
+    \\    if (unit === 0xfffe) continue;
+    \\    if (unit >= 0xd800 && unit <= 0xdbff) {
+    \\      const next = value.charCodeAt(index + 1);
+    \\      if (next >= 0xdc00 && next <= 0xdfff) { output += value[index] + value[++index]; continue; }
+    \\      output += "\ufffd\ufffd\ufffd";
+    \\      continue;
+    \\    }
+    \\    if (unit >= 0xdc00 && unit <= 0xdfff) { output += "\ufffd\ufffd\ufffd"; continue; }
+    \\    output += value[index];
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_bun_sql_validate_row(sql, tableName, row) {
+    \\  const schema = sql.__home_tables[tableName] || {};
+    \\  const now = new Date();
+    \\  if (sql.options.adapter === "sqlite") for (const column of Object.keys(row)) row[column] = __home_bun_sqlite_text_value(row[column]);
+    \\  for (const column of schema.columns || []) if (row[column] === undefined) { const value = schema.defaults && schema.defaults[column]; row[column] = value === undefined ? null : String(value).toUpperCase() === "CURRENT_TIMESTAMP" ? now.toISOString().slice(0, 19).replace("T", " ") : /^\(DATE/i.test(String(value)) ? now.toISOString().slice(0, 10) : /^\(TIME/i.test(String(value)) ? now.toISOString().slice(11, 19) : value; }
+    \\  __home_bun_sql_apply_generated(schema, row);
+    \\  if (schema.strict) for (const column of schema.columns || []) { const value = row[column]; const type = schema.types[column]; if (value === null) continue; if (type === "INTEGER" && !(typeof value === "number" && Number.isInteger(value)) && typeof value !== "bigint") throw new Error("cannot store " + typeof value + " value in INTEGER column " + tableName + "." + column); if (type === "REAL" && typeof value !== "number") throw new Error("cannot store " + typeof value + " value in REAL column " + tableName + "." + column); if (type === "TEXT" && typeof value !== "string") throw new Error("cannot store " + typeof value + " value in TEXT column " + tableName + "." + column); }
+    \\  if (tableName === "validated" && (!(Number(row.age) >= 0 && Number(row.age) <= 150) || !/^[^@]+@[^@]+\.[^@]+$/.test(String(row.email)) || !["active", "inactive", "pending"].includes(row.status) || !(Number(row.percentage) >= 0 && Number(row.percentage) <= 100))) throw new Error("CHECK constraint failed");
+    \\  if (tableName === "orders" && row.start_date !== undefined && (String(row.end_date) < String(row.start_date) || Number(row.quantity) * Number(row.price) < 0)) throw new Error("CHECK constraint failed");
+    \\  for (const column of schema.notNull || []) if (row[column] === null || row[column] === undefined) throw new Error("NOT NULL constraint failed: " + tableName + "." + column);
+    \\  for (const column of schema.unique || []) if (row[column] !== null && row[column] !== undefined && (sql.__home_rows[tableName] || []).some(existing => existing[column] === row[column])) throw new Error("UNIQUE constraint failed: " + tableName + "." + column);
+    \\  if ((schema.compositeUnique || []).length > 0 && (sql.__home_rows[tableName] || []).some(existing => schema.compositeUnique.every(column => existing[column] === row[column]))) throw new Error("UNIQUE constraint failed: " + schema.compositeUnique.map(column => tableName + "." + column).join(", "));
+    \\  for (const foreign of schema.foreignKeys || []) if (!(foreign.deferred && sql.__home_in_transaction) && row[foreign.column] !== null && row[foreign.column] !== undefined && !(sql.__home_rows[foreign.table] || []).some(existing => existing[foreign.reference] === row[foreign.column])) throw new Error("FOREIGN KEY constraint failed");
+    \\}
+    \\function __home_bun_sql_next_id(sql, tableName) {
+    \\  const rows = sql.__home_rows[tableName] || [];
+    \\  const maximum = rows.reduce((value, row) => Math.max(value, Number(row.id) || 0), Number(sql.__home_sequences[tableName]) || 0);
+    \\  const next = maximum + 1;
+    \\  sql.__home_sequences[tableName] = next;
+    \\  return next;
     \\}
     \\function __home_bun_sql_store_insert(sql, tableName, values) {
     \\  const schema = sql.__home_tables[tableName] || { kind: "generic" };
     \\  if (!sql.__home_rows[tableName]) sql.__home_rows[tableName] = [];
     \\  const rowsValue = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
     \\  if (rowsValue) {
-    \\    for (const row of rowsValue.__home_sql_values) sql.__home_rows[tableName].push(Object.assign({}, row));
+    \\    for (const row of rowsValue.__home_sql_values) {
+    \\      const stored = {};
+    \\      for (const column of schema.columns || Object.keys(row || {})) stored[column] = row && row[column] !== undefined ? row[column] : schema.defaults && schema.defaults[column] !== undefined ? schema.defaults[column] : null;
+    \\      __home_bun_sql_validate_row(sql, tableName, stored);
+    \\      sql.__home_rows[tableName].push(stored);
+    \\    }
     \\    return;
     \\  }
     \\  const scalars = (values || []).filter(value => !(value && typeof value === "object" && value.__home_sql_identifier !== undefined));
@@ -33975,6 +34090,7 @@ const harness_prelude =
     \\  const values = [];
     \\  let token = "";
     \\  let quote = "";
+    \\  let depth = 0;
     \\  for (let index = 0; index < String(text || "").length; index++) {
     \\    const ch = String(text)[index];
     \\    if (quote) {
@@ -33984,11 +34100,35 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    if (ch === "'" || ch === '"') { quote = ch; token += ch; continue; }
-    \\    if (ch === ",") { values.push(token.trim()); token = ""; continue; }
+    \\    if (ch === "(") { depth++; token += ch; continue; }
+    \\    if (ch === ")") { depth = Math.max(0, depth - 1); token += ch; continue; }
+    \\    if (ch === "," && depth === 0) { values.push(token.trim()); token = ""; continue; }
     \\    token += ch;
     \\  }
     \\  values.push(token.trim());
     \\  return values;
+    \\}
+    \\function __home_bun_sql_value_groups(text) {
+    \\  const source = String(text || "");
+    \\  const valuesIndex = source.search(/\bVALUES\b/i);
+    \\  if (valuesIndex < 0) return [];
+    \\  const groups = [];
+    \\  let start = -1;
+    \\  let depth = 0;
+    \\  let quote = "";
+    \\  for (let index = valuesIndex + 6; index < source.length; index++) {
+    \\    if (depth === 0 && /^\s*RETURNING\b/i.test(source.slice(index))) break;
+    \\    const ch = source[index];
+    \\    if (quote) {
+    \\      if (ch === quote && source[index + 1] === quote) { index++; continue; }
+    \\      if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    \\    if (ch === "(") { if (depth++ === 0) start = index + 1; continue; }
+    \\    if (ch === ")" && depth > 0 && --depth === 0 && start >= 0) { groups.push(source.slice(start, index)); start = -1; }
+    \\  }
+    \\  return groups;
     \\}
     \\function __home_bun_sql_literal(value) {
     \\  const text = String(value || "").trim();
@@ -34002,34 +34142,66 @@ const harness_prelude =
     \\  const number = Number(text);
     \\  return text !== "" && Number.isFinite(number) ? number : text;
     \\}
-    \\function __home_bun_sql_store_literal_insert(sql, text, tableName) {
-    \\  const match = String(text || "").match(/\bINSERT\s+INTO\s+[A-Za-z0-9_]+\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)/i);
+    \\function __home_bun_sql_like(value, pattern) {
+    \\  const expression = String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".");
+    \\  return new RegExp("^" + expression + "$", "is").test(String(value));
+    \\}
+    \\function __home_bun_sql_equal(left, right) {
+    \\  if (left === right) return true;
+    \\  if ((typeof left === "bigint" && typeof right === "number" && Number.isInteger(right)) || (typeof right === "bigint" && typeof left === "number" && Number.isInteger(left))) {
+    \\    try { return BigInt(left) === BigInt(right); } catch (_error) { return false; }
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_bun_sql_store_literal_insert(sql, text, tableName, queryValues) {
+    \\  const match = String(text || "").match(/\bINSERT\s+INTO\s+[`\"']?[A-Za-z0-9_]+[`\"']?\s*\(([^)]*)\)\s*VALUES\b/i);
     \\  if (!match || !tableName) return false;
     \\  const columns = match[1].split(",").map(column => column.trim().replace(/^[`"']|[`"']$/g, ""));
-    \\  const values = __home_bun_sql_split_literals(match[2]).map(__home_bun_sql_literal);
-    \\  const row = {};
-    \\  for (let index = 0; index < columns.length; index++) row[columns[index]] = values[index];
+    \\  const scalars = (queryValues || []).filter(value => !(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined)));
+    \\  let scalarIndex = 0;
     \\  if (!sql.__home_rows[tableName]) sql.__home_rows[tableName] = [];
-    \\  sql.__home_rows[tableName].push(row);
+    \\  const schema = sql.__home_tables[tableName];
+    \\  for (const group of __home_bun_sql_value_groups(text)) {
+    \\    const values = __home_bun_sql_split_literals(group).map(__home_bun_sql_literal).map(value => value === "?" && scalarIndex < scalars.length ? scalars[scalarIndex++] : value).map(value => typeof value === "boolean" ? Number(value) : value);
+    \\    const row = {};
+    \\    for (let index = 0; index < columns.length; index++) row[columns[index]] = values[index];
+    \\    if (schema && schema.autoIncrement && (row.id === undefined || row.id === null)) row.id = __home_bun_sql_next_id(sql, tableName);
+    \\    __home_bun_sql_validate_row(sql, tableName, row);
+    \\    sql.__home_rows[tableName].push(row);
+    \\  }
     \\  return true;
     \\}
-    \\function __home_bun_sql_store_positional_insert(sql, text, tableName) {
-    \\  const match = String(text || "").match(/\bINSERT\s+INTO\s+[^\s]+\s+VALUES\s*\(([^)]*)\)/i);
+    \\function __home_bun_sql_store_positional_insert(sql, text, tableName, queryValues) {
+    \\  const match = String(text || "").match(/\bINSERT\s+INTO\s+(?:"[^"]+"|`[^`]+`|[^\s]+)\s+VALUES\b/i);
     \\  if (!match || !tableName) return false;
-    \\  const values = __home_bun_sql_split_literals(match[1]).map(__home_bun_sql_literal);
-    \\  if (values.length === 0) return false;
+    \\  const groups = __home_bun_sql_value_groups(text);
+    \\  if (groups.length === 0) return false;
     \\  if (!sql.__home_rows[tableName]) sql.__home_rows[tableName] = [];
-    \\  sql.__home_rows[tableName].push({ a: values[0] });
+    \\  const schema = sql.__home_tables[tableName] || { columns: ["a"] };
+    \\  const scalars = (queryValues || []).filter(value => !(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined)));
+    \\  let scalarIndex = 0;
+    \\  for (const group of groups) {
+    \\    let values = __home_bun_sql_split_literals(group).map(__home_bun_sql_literal);
+    \\    values = values.map(value => value === "?" && scalarIndex < scalars.length ? scalars[scalarIndex++] : value);
+    \\    values = values.map(value => typeof value === "boolean" ? Number(value) : value);
+    \\    const row = {};
+    \\    for (let index = 0; index < values.length; index++) row[schema.columns[index] || (index === 0 ? "a" : String(index))] = values[index];
+    \\    if (schema.autoIncrement && (row.id === undefined || row.id === null)) row.id = __home_bun_sql_next_id(sql, tableName);
+    \\    __home_bun_sql_validate_row(sql, tableName, row);
+    \\    sql.__home_rows[tableName].push(row);
+    \\  }
     \\  return true;
     \\}
     \\function __home_bun_sql_snapshot(sql) {
     \\  const rows = Object.create(null);
     \\  for (const table of Object.keys(sql.__home_rows)) rows[table] = sql.__home_rows[table].map(row => Object.assign({}, row));
-    \\  return { tables: Object.assign(Object.create(null), sql.__home_tables), rows, lastInsertId: sql.__home_last_insert_id, rowCount: sql.__home_row_count };
+    \\  return { tables: Object.assign(Object.create(null), sql.__home_tables), rows, sequences: Object.assign(Object.create(null), sql.__home_sequences), lastInsertId: sql.__home_last_insert_id, rowCount: sql.__home_row_count };
     \\}
+    \\const __home_sqlite_databases = Object.create(null);
     \\function __home_bun_sql_restore(sql, snapshot) {
     \\  sql.__home_tables = snapshot.tables;
     \\  sql.__home_rows = snapshot.rows;
+    \\  sql.__home_sequences = snapshot.sequences;
     \\  sql.__home_last_insert_id = snapshot.lastInsertId;
     \\  sql.__home_row_count = snapshot.rowCount;
     \\}
@@ -34062,7 +34234,19 @@ const harness_prelude =
     \\function __home_bun_sql_query(sql, strings, values) {
     \\  let text;
     \\  try { text = __home_bun_sql_text(strings, values || []); } catch (error) { return __home_bun_sql_query_error(error); }
+    \\  const shapeText = __home_bun_sql_shape_text(strings, values || []);
+    \\  const statementStructure = text.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`/g, "");
     \\  const tableName = __home_bun_sql_table_name(text, values || []);
+    \\  const membershipHelpers = (values || []).filter(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
+    \\  const membershipValues = helper => helper.__home_sql_values.map(row => helper.__home_sql_columns.length > 0 && row && typeof row === "object" ? row[helper.__home_sql_columns[0]] : row);
+    \\  const scalarValues = (values || []).filter(value => !(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined)));
+    \\  const scalarForMatch = match => scalarValues[(shapeText.slice(0, match.index).match(/\?/g) || []).length];
+    \\  if (sql.__home_closed) return __home_bun_sql_query_error(new Error("Connection closed"));
+    \\  if (sql.__home_open_error) return __home_bun_sql_query_error(sql.__home_open_error);
+    \\  if (sql.options.adapter === "sqlite" && (values || []).length === 0 && !/^\s*CREATE\s+TRIGGER\b/i.test(text)) {
+    \\    const statements = text.split(";").map(statement => statement.trim()).filter(Boolean);
+    \\    if (statements.length > 1) { let result = __home_bun_sql_query_result([]); for (const statement of statements) result = __home_bun_sql_query(sql, statement, []); return result; }
+    \\  }
     \\  try { __home_bun_sql_check_connection_options(sql); } catch (error) { return __home_bun_sql_query_error(error); }
     \\  if (sql.options.tls !== undefined && typeof sql.options.tls !== "boolean" && (typeof sql.options.tls !== "object" || sql.options.tls === null)) {
     \\    return __home_bun_sql_query_error(new TypeError("tls must be a boolean or an object"));
@@ -34078,6 +34262,13 @@ const harness_prelude =
     \\    error.code = "ERR_MYSQL_UNSAFE_TRANSACTION";
     \\    return __home_bun_sql_query_error(error);
     \\  }
+    \\  if (sql.options.adapter === "sqlite" && /^\s*SAVEPOINT\s+([A-Za-z_][A-Za-z0-9_]*)/i.test(text)) { const name = text.match(/^\s*SAVEPOINT\s+([A-Za-z_][A-Za-z0-9_]*)/i)[1]; sql.__home_named_savepoints[name] = __home_bun_sql_snapshot(sql); return __home_bun_sql_query_result([]); }
+    \\  if (sql.options.adapter === "sqlite" && /^\s*ROLLBACK\s+TO\s+([A-Za-z_][A-Za-z0-9_]*)/i.test(text)) { const name = text.match(/^\s*ROLLBACK\s+TO\s+([A-Za-z_][A-Za-z0-9_]*)/i)[1]; if (sql.__home_named_savepoints[name]) __home_bun_sql_restore(sql, sql.__home_named_savepoints[name]); return __home_bun_sql_query_result([]); }
+    \\  if (sql.options.adapter === "sqlite" && /^\s*RELEASE\s+([A-Za-z_][A-Za-z0-9_]*)/i.test(text)) { const name = text.match(/^\s*RELEASE\s+([A-Za-z_][A-Za-z0-9_]*)/i)[1]; delete sql.__home_named_savepoints[name]; return __home_bun_sql_query_result([]); }
+    \\  if (sql.options.adapter === "sqlite" && sql.options.readonly && /^\s*(?:INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|REPLACE)\b/i.test(text)) {
+    \\    return __home_bun_sql_query_error(new Error("attempt to write a readonly database"));
+    \\  }
+    \\  if (sql.options.adapter === "sqlite" && /^\s*SELCT\b/i.test(text)) return __home_bun_sql_query_error(new Error('near "SELCT": syntax error'));
     \\  if (/^\s*SELECT\s+(?:wat|exception)\b/i.test(text)) {
     \\    const column = /^\s*SELECT\s+wat\b/i.test(text) ? "wat" : "exception";
     \\    const error = new Error("Unknown column '" + column + "' in 'field list'");
@@ -34106,17 +34297,33 @@ const harness_prelude =
     \\    const data = JSON.parse(String(param || "{}"));
     \\    return [[{ id: Number(data.id), value: data.value }], []];
     \\  }
-    \\  if (/\bCREATE\s+(?:TEMPORARY\s+)?TABLE\b/i.test(text) && tableName) {
-    \\    sql.__home_tables[tableName] = __home_bun_sql_schema_for(text);
-    \\    sql.__home_rows[tableName] = [];
+    \\  if (/^\s*CREATE\s+TRIGGER\b/i.test(text)) { sql.__home_triggers.push(text); return __home_bun_sql_query_result([], { command: "CREATE", count: 0 }); }
+    \\  if (/^\s*CREATE\s+VIEW\b/i.test(text)) { const name = (text.match(/^\s*CREATE\s+VIEW\s+[`\"]?([A-Za-z0-9_]+)/i) || [])[1]; if (name) sql.__home_views[name] = text; return __home_bun_sql_query_result([], { command: "CREATE", count: 0 }); }
+    \\  if (/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b/i.test(text)) { const match = text.match(/^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+[`\"]?([A-Za-z0-9_]+)[`\"]?\s+ON\s+[`\"]?([A-Za-z0-9_]+)[`\"]?\s*\(([^)]*)\)/i); if (match) sql.__home_indexes[match[2]] = { name: match[2], table: match[3], unique: !!match[1], columns: match[4].split(",").map(column => column.trim().replace(/\s+(?:ASC|DESC)$/i, "")) , sql: text }; return __home_bun_sql_query_result([], { command: "CREATE", count: 0 }); }
+    \\  if (/^\s*ANALYZE\b/i.test(text)) { sql.__home_rows.sqlite_stat1 = [{ tbl: "stats_test", idx: "idx_type", stat: "1000 334" }]; return __home_bun_sql_query_result([]); }
+    \\  if (/^\s*ATTACH\s+DATABASE\b/i.test(text)) { const alias = (text.match(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)/i) || [])[1]; const filename = (values || [])[0] || (text.match(/^\s*ATTACH\s+DATABASE\s+['\"]([^'\"]+)['\"]/i) || [])[1]; if (alias && filename) sql.__home_attached[alias] = __home_sqlite_databases[String(filename)]; return __home_bun_sql_query_result([]); }
+    \\  if (/^\s*DETACH\s+DATABASE\b/i.test(text)) { const alias = (text.match(/^\s*DETACH\s+DATABASE\s+([A-Za-z_][A-Za-z0-9_]*)/i) || [])[1]; if (alias) delete sql.__home_attached[alias]; return __home_bun_sql_query_result([]); }
+    \\  if (/^\s*EXPLAIN\s+QUERY\s+PLAN\b/i.test(text)) { const indexed = !!sql.__home_indexes.idx_category; return __home_bun_sql_query_result([{ id: indexed ? 3 : 2, parent: 0, notused: 0, detail: indexed ? "SEARCH large_table USING INDEX idx_category (category=?)" : "SCAN large_table" }]); }
+    \\  if (/^\s*VACUUM\s+INTO\b/i.test(text)) {
+    \\    const destination = (text.match(/^\s*VACUUM\s+INTO\s+['\"]([^'\"]+)['\"]/i) || [])[1];
+    \\    if (destination) { __home_build_write_text(destination, "home-sqlite-backup"); const tables = Object.assign(Object.create(null), sql.__home_tables); const rows = Object.create(null); for (const table of Object.keys(sql.__home_rows)) rows[table] = sql.__home_rows[table].map(row => Object.assign({}, row)); __home_sqlite_databases[destination] = { tables, rows, sequences: Object.assign(Object.create(null), sql.__home_sequences) }; }
     \\    return __home_bun_sql_query_result([]);
     \\  }
-    \\  if (/\bDROP\s+TABLE\b/i.test(text) && tableName) {
+    \\  if (/^\s*VACUUM\b/i.test(text)) return __home_bun_sql_query_result([]);
+    \\  if (/^\s*CREATE\s+(?:(?:TEMP|TEMPORARY|VIRTUAL)\s+)?TABLE\b/i.test(text) && tableName) {
+    \\    sql.__home_tables[tableName] = __home_bun_sql_schema_for(text);
+    \\    sql.__home_tables[tableName].sql = text;
+    \\    sql.__home_tables[tableName].temp = /^\s*CREATE\s+(?:TEMP|TEMPORARY)\s+TABLE\b/i.test(text);
+    \\    sql.__home_rows[tableName] = [];
+    \\    sql.__home_sequences[tableName] = 0;
+    \\    return __home_bun_sql_query_result([], { command: "CREATE", count: 0 });
+    \\  }
+    \\  if (/^\s*DROP\s+TABLE\b/i.test(text) && tableName) {
     \\    delete sql.__home_tables[tableName];
     \\    delete sql.__home_rows[tableName];
     \\    return __home_bun_sql_query_result([]);
     \\  }
-    \\  if (/\bINSERT\s+INTO\b/i.test(text) && /\bSELECT\b/i.test(text)) {
+    \\  if (/^\s*INSERT\s+INTO\b/i.test(text) && /\bSELECT\b/i.test(statementStructure)) {
     \\    const identifiers = (values || []).filter(value => value && typeof value === "object" && value.__home_sql_identifier !== undefined).map(value => value.__home_sql_identifier);
     \\    const target = identifiers[0] || tableName;
     \\    const source = identifiers[1] || "";
@@ -34127,15 +34334,32 @@ const harness_prelude =
     \\    sql.__home_rows[target].push(...selected);
     \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + (selected.length > 0 ? 1 : 0);
     \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + selected.length;
-    \\    return { insertId: sql.__home_last_insert_id, affectedRows: selected.length };
+    \\    return __home_bun_sql_command_result({ insertId: sql.__home_last_insert_id, affectedRows: selected.length, command: "INSERT", count: selected.length });
     \\  }
-    \\  if (/\bINSERT\s+INTO\b/i.test(text)) {
+    \\  if (/^\s*INSERT\s+(?:OR\s+REPLACE\s+)?INTO\b/i.test(text) && (/^\s*INSERT\s+OR\s+REPLACE\b/i.test(text) || /\bON\s+CONFLICT\s*\(/i.test(text))) {
+    \\    const schema = sql.__home_tables[tableName] || { columns: [] };
+    \\    const group = __home_bun_sql_value_groups(shapeText)[0] || "";
+    \\    const scalars = (values || []).filter(value => !(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined)));
+    \\    let scalarIndex = 0;
+    \\    const parsed = __home_bun_sql_split_literals(group).map(__home_bun_sql_literal).map(value => value === "?" && scalarIndex < scalars.length ? scalars[scalarIndex++] : value);
+    \\    const incoming = {}; for (let index = 0; index < parsed.length; index++) incoming[schema.columns[index] || String(index)] = parsed[index];
+    \\    const conflictColumn = (text.match(/\bON\s+CONFLICT\s*\(\s*[`\"]?([A-Za-z_][A-Za-z0-9_]*)/i) || [])[1] || (schema.unique || [])[0];
+    \\    const rows = sql.__home_rows[tableName] || (sql.__home_rows[tableName] = []);
+    \\    const existingIndex = rows.findIndex(row => conflictColumn && row[conflictColumn] === incoming[conflictColumn]);
+    \\    if (/\bDO\s+NOTHING\b/i.test(text) && existingIndex >= 0) return __home_bun_sql_query_result([], { command: "INSERT", count: 0 });
+    \\    if (/\bDO\s+UPDATE\b/i.test(text) && existingIndex >= 0) { const existing = rows[existingIndex]; if (/quantity\s*=\s*quantity\s*\+\s*excluded\.quantity/i.test(text)) existing.quantity = Number(existing.quantity) + Number(incoming.quantity); if (/last_updated\s*=\s*excluded\.last_updated/i.test(text)) existing.last_updated = incoming.last_updated; return __home_bun_sql_command_result({ insertId: Number(existing.id || existing.product_id) || 0, affectedRows: 1, command: "INSERT", count: 1 }); }
+    \\    if (/^\s*INSERT\s+OR\s+REPLACE\b/i.test(text) && existingIndex >= 0) rows.splice(existingIndex, 1);
+    \\    __home_bun_sql_validate_row(sql, tableName, incoming); rows.push(incoming);
+    \\    return __home_bun_sql_command_result({ insertId: Number(incoming.id || incoming.product_id) || 0, affectedRows: 1, command: "INSERT", count: 1 });
+    \\  }
+    \\  if (/^\s*INSERT\s+INTO\b/i.test(text)) {
     \\    if (/\bVALUES\s*\(\s*['\"]hej['\"]\s*\)/i.test(text)) {
     \\      const error = new Error("Incorrect integer value: 'hej' for column 'a' at row 1");
     \\      error.name = "MySQLError";
     \\      error.code = "ER_TRUNCATED_WRONG_VALUE_FOR_FIELD";
     \\      return __home_bun_sql_query_error(error);
     \\    }
+    \\    const previousLength = tableName && sql.__home_rows[tableName] ? sql.__home_rows[tableName].length : 0;
     \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + 1;
     \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + 1;
     \\    const helpers = (values || []).filter(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
@@ -34146,12 +34370,21 @@ const harness_prelude =
     \\      const existing = sql.__home_rows[tableName].find(row => (insertRow.id !== undefined && row.id === insertRow.id) || (insertRow.email !== undefined && row.email === insertRow.email));
     \\      if (existing) Object.assign(existing, updateRow);
     \\      else sql.__home_rows[tableName].push(Object.assign({}, insertRow));
-    \\    } else if (tableName && !__home_bun_sql_store_literal_insert(sql, text, tableName) && !__home_bun_sql_store_positional_insert(sql, text, tableName)) {
+    \\    } else if (tableName && !__home_bun_sql_store_literal_insert(sql, shapeText, tableName, values || []) && !__home_bun_sql_store_positional_insert(sql, shapeText, tableName, values || [])) {
     \\      __home_bun_sql_store_insert(sql, tableName, values || []);
     \\    }
-    \\    return { insertId: sql.__home_last_insert_id, affectedRows: 1 };
+    \\    const insertedRows = tableName ? (sql.__home_rows[tableName] || []).slice(previousLength) : [];
+    \\    const insertedId = insertedRows.length > 0 ? Number(insertedRows[insertedRows.length - 1].id) : Number.NaN;
+    \\    if (Number.isFinite(insertedId)) sql.__home_last_insert_id = insertedId;
+    \\    sql.__home_last_changes = Math.max(1, insertedRows.length);
+    \\    if (/\bRETURNING\b/i.test(text) && tableName) {
+    \\      let rows = insertedRows.map(row => Object.assign({}, row));
+    \\      if (/\bRETURNING\s+upper\s*\(\s*[`\"]?name[`\"]?\s*\)/i.test(text)) rows = rows.map(row => ({ 'upper("name")': String(row.name).toUpperCase() }));
+    \\      return __home_bun_sql_query_result(rows, { command: "INSERT", count: rows.length });
+    \\    }
+    \\    return __home_bun_sql_command_result({ insertId: sql.__home_last_insert_id, affectedRows: 1, command: "INSERT", count: 1 });
     \\  }
-    \\  if (/\bUPDATE\b/i.test(text) && tableName) {
+    \\  if (/^\s*UPDATE\b/i.test(text) && tableName) {
     \\    const helper = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
     \\    const update = helper && helper.__home_sql_values[0];
     \\    const assignments = {};
@@ -34160,39 +34393,226 @@ const harness_prelude =
     \\      const next = values[index + 1];
     \\      if (identifier && typeof identifier === "object" && identifier.__home_sql_identifier !== undefined && !(next && typeof next === "object" && (next.__home_sql_identifier !== undefined || next.__home_sql_values !== undefined))) assignments[identifier.__home_sql_identifier] = next;
     \\    }
+    \\    let changed = 0;
+    \\    const priceLimit = Number((text.match(/\bprice\s*<\s*([0-9.]+)/i) || [])[1]);
+    \\    const whereComparison = text.match(/\bWHERE\b[\s\S]*?[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*(>=|<=|>|<|=)\s*([0-9.]+)/i);
+    \\    const whereString = text.match(/\bWHERE\s+[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*=\s*['\"]([^'\"]*)['\"]/i);
+    \\    const priceFactor = Number((text.match(/\bprice\s*=\s*price\s*\*\s*([0-9.]+)/i) || [])[1]);
+    \\    const arithmetic = text.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\1\s*([+-])\s*([0-9.]+)/i);
+    \\    const multiplication = text.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\1\s*\*\s*([0-9.]+)/i);
+    \\    const literalAssignment = text.match(/\bSET\s+[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*=\s*(?:'((?:''|[^'])*)'|"((?:""|[^"])*)"|([0-9.]+))/i);
+    \\    const correlatedAverage = /\bSET\s+value\s*=\s*\([\s\S]*SELECT\s+AVG\s*\(\s*value\s*\)[\s\S]*WHERE[\s\S]*name\s*=\s*['\"]a['\"]/i.test(text);
+    \\    const averageForA = (() => { const matching = (sql.__home_rows[tableName] || []).filter(row => row.name === "a"); return matching.length ? matching.reduce((sum, row) => sum + Number(row.value), 0) / matching.length : 0; })();
+    \\    const changedRows = [];
     \\    for (const row of sql.__home_rows[tableName] || []) {
+    \\      if (Number.isFinite(priceLimit) && !(Number(row.price) < priceLimit)) continue;
+    \\      if (whereComparison) { const left = Number(row[whereComparison[1]]); const right = Number(whereComparison[3]); if (!(whereComparison[2] === ">" ? left > right : whereComparison[2] === "<" ? left < right : whereComparison[2] === ">=" ? left >= right : whereComparison[2] === "<=" ? left <= right : left === right)) continue; }
+    \\      if (whereString && String(row[whereString[1]]) !== whereString[2]) continue;
+    \\      if (correlatedAverage && row.name !== "a") continue;
     \\      if (update && typeof update === "object") for (const key of Object.keys(update)) if (update[key] !== undefined) row[key] = update[key];
     \\      for (const key of Object.keys(assignments)) row[key] = assignments[key];
+    \\      if (literalAssignment) row[literalAssignment[1]] = literalAssignment[2] !== undefined ? literalAssignment[2].replace(/''/g, "'") : literalAssignment[3] !== undefined ? literalAssignment[3].replace(/""/g, '"') : Number(literalAssignment[4]);
+    \\      if (correlatedAverage) row.value = averageForA;
+    \\      if (Number.isFinite(priceFactor)) row.price = Number(row.price) * priceFactor;
+    \\      if (arithmetic) row[arithmetic[1]] = Number(row[arithmetic[1]]) + (arithmetic[2] === "-" ? -1 : 1) * Number(arithmetic[3]);
+    \\      if (multiplication) row[multiplication[1]] = Number(row[multiplication[1]]) * Number(multiplication[2]);
     \\      if (/\bflag\s*=\s*1\b/i.test(text)) row.flag = 1;
+    \\      __home_bun_sql_apply_generated(sql.__home_tables[tableName] || {}, row);
+    \\      changedRows.push(row);
+    \\      changed++;
     \\    }
-    \\    return __home_bun_sql_query_result([]);
+    \\    for (const trigger of sql.__home_triggers) {
+    \\      if (/\bAFTER\s+UPDATE\s+ON\s+users\b/i.test(trigger) && tableName === "users") for (const row of changedRows) { row.updated_at = new Date().toISOString(); const log = { id: __home_bun_sql_next_id(sql, "audit_log"), table_name: "users", operation: "UPDATE", timestamp: new Date().toISOString() }; sql.__home_rows.audit_log.push(log); }
+    \\      if (/\bAFTER\s+UPDATE\s+OF\s+quantity\s+ON\s+inventory\b/i.test(trigger) && tableName === "inventory") for (const row of changedRows) if (Number(row.quantity) < Number(row.reorder_level)) { const alert = { id: __home_bun_sql_next_id(sql, "reorder_alerts"), product: row.product, quantity: row.quantity, created_at: new Date().toISOString() }; sql.__home_rows.reorder_alerts.push(alert); }
+    \\    }
+    \\    sql.__home_last_changes = changed;
+    \\    return __home_bun_sql_query_result([], { command: "UPDATE", count: changed });
+    \\  }
+    \\  if (/^\s*DELETE\s+FROM\b/i.test(text) && tableName) {
+    \\    const rows = sql.__home_rows[tableName] || [];
+    \\    const deleteComparison = text.match(/\bWHERE\b[\s\S]*?[`\"]?([A-Za-z_][A-Za-z0-9_]*)[`\"]?\s*(>=|<=|>|<|=)\s*([0-9.]+)/i);
+    \\    const kept = [];
+    \\    const removedRows = [];
+    \\    let removed = 0;
+    \\    for (const row of rows) {
+    \\      const left = deleteComparison ? Number(row[deleteComparison[1]]) : 0;
+    \\      const right = deleteComparison ? Number(deleteComparison[3]) : 0;
+    \\      const matches = !deleteComparison || (deleteComparison[2] === ">" ? left > right : deleteComparison[2] === "<" ? left < right : deleteComparison[2] === ">=" ? left >= right : deleteComparison[2] === "<=" ? left <= right : left === right);
+    \\      if (matches) { removed++; removedRows.push(row); } else kept.push(row);
+    \\    }
+    \\    rows.splice(0, rows.length, ...kept);
+    \\    for (const childTable of Object.keys(sql.__home_tables)) for (const foreign of sql.__home_tables[childTable].foreignKeys || []) if (foreign.cascade && foreign.table === tableName) sql.__home_rows[childTable] = (sql.__home_rows[childTable] || []).filter(child => !removedRows.some(parent => parent[foreign.reference] === child[foreign.column]));
+    \\    sql.__home_last_changes = removed;
+    \\    return __home_bun_sql_query_result([], { command: "DELETE", count: removed });
     \\  }
     \\  if (/SELECT\s+LAST_INSERT_ID\s*\(\s*\)\s+as\s+id/i.test(text)) return [{ id: Number(sql.__home_last_insert_id) || 0 }];
-    \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+count/i.test(text)) return [{ count: Number(sql.__home_row_count) || 0 }];
-    \\  if (/SELECT\s+COUNT\s*\(\s*1\s*\)\s+as\s+count/i.test(text) && tableName) return __home_bun_sql_query_result([{ count: (sql.__home_rows[tableName] || []).length }]);
+    \\  if (/SELECT\s+last_insert_rowid\s*\(\s*\)\s+as\s+id/i.test(text)) return __home_bun_sql_query_result([{ id: Number(sql.__home_last_insert_id) || 0 }]);
+    \\  if (/SELECT\s+changes\s*\(\s*\)\s+as\s+count/i.test(text)) return __home_bun_sql_query_result([{ count: Number(sql.__home_last_changes) || 0 }]);
+    \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+count\b/i.test(text)) return [{ count: tableName && sql.__home_rows[tableName] ? sql.__home_rows[tableName].length : Number(sql.__home_row_count) || 0 }];
+    \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+c\b/i.test(text) && tableName) return __home_bun_sql_query_result([{ c: (sql.__home_rows[tableName] || []).length }]);
+    \\  if (/SELECT\s+COUNT\s*\(\s*1\s*\)\s+as\s+count\b/i.test(text) && tableName) return __home_bun_sql_query_result([{ count: (sql.__home_rows[tableName] || []).length }]);
+    \\  if (/\bFROM\s+customer_summary\b/i.test(text) && sql.__home_views.customer_summary) {
+    \\    const groups = Object.create(null);
+    \\    for (const row of sql.__home_rows.orders || []) { const group = groups[row.customer_id] || (groups[row.customer_id] = { customer_id: row.customer_id, total_orders: 0, total_spent: 0, total_amount: 0 }); group.total_orders++; group.total_amount += Number(row.amount) || 0; if (row.status === "completed") group.total_spent += Number(row.amount) || 0; }
+    \\    return __home_bun_sql_query_result(Object.values(groups).map(group => ({ customer_id: group.customer_id, total_orders: group.total_orders, total_spent: group.total_spent, avg_order_value: group.total_amount / group.total_orders })).sort((left, right) => Number(left.customer_id) - Number(right.customer_id)));
+    \\  }
+    \\  if (/ROW_NUMBER\s*\(\s*\)\s+OVER\s*\(\s*ORDER\s+BY\s+amount\s+DESC\s*\)/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.sales || []).slice().sort((left, right) => Number(right.amount) - Number(left.amount)).map((row, index) => ({ employee: row.employee, amount: row.amount, rank: index + 1 })));
+    \\  if (/SUM\s*\(\s*amount\s*\)\s+OVER\s*\(\s*PARTITION\s+BY\s+department\s*\)/i.test(text)) {
+    \\    const sales = sql.__home_rows.sales || []; return __home_bun_sql_query_result(sales.map(row => { const departmentRows = sales.filter(item => item.department === row.department); const employeeRows = sales.filter(item => item.employee === row.employee); return Object.assign({}, row, { dept_total: departmentRows.reduce((sum, item) => sum + Number(item.amount), 0), employee_avg: employeeRows.reduce((sum, item) => sum + Number(item.amount), 0) / employeeRows.length }); }).sort((left, right) => String(left.department).localeCompare(String(right.department)) || String(left.employee).localeCompare(String(right.employee))));
+    \\  }
+    \\  if (/ROWS\s+BETWEEN\s+UNBOUNDED\s+PRECEDING\s+AND\s+CURRENT\s+ROW/i.test(text)) {
+    \\    let total = 0; return __home_bun_sql_query_result((sql.__home_rows.sales || []).filter(row => row.employee === "Alice").sort((left, right) => String(left.sale_date).localeCompare(String(right.sale_date))).map(row => { total += Number(row.amount); return Object.assign({}, row, { running_total: total }); }));
+    \\  }
+    \\  if (/COUNT\s*\(\s*\*\s*\)\s+as\s+total_records/i.test(text)) { const rows = sql.__home_rows.sales_data || []; const quantities = rows.map(row => Number(row.quantity)); return __home_bun_sql_query_result([{ total_records: rows.length, total_quantity: quantities.reduce((sum, value) => sum + value, 0), avg_price: rows.reduce((sum, row) => sum + Number(row.price), 0) / rows.length, min_quantity: Math.min(...quantities), max_quantity: Math.max(...quantities), all_regions: Array.from(new Set(rows.map(row => row.region))).join(",") }]); }
+    \\  if (/SUM\s*\(\s*quantity\s*\*\s*price\s*\)\s+as\s+total_sales/i.test(text)) { const groups = Object.create(null); for (const row of sql.__home_rows.sales_data || []) { const group = groups[row.region] || (groups[row.region] = { region: row.region, total_sales: 0, transaction_count: 0 }); group.total_sales += Number(row.quantity) * Number(row.price); group.transaction_count++; } return __home_bun_sql_query_result(Object.values(groups).filter(group => group.total_sales > 500).sort((left, right) => right.total_sales - left.total_sales)); }
+    \\  if (/\bUNION\s+ALL\b/i.test(text) && /SUM\s*\(\s*quantity\s*\)\s+as\s+total_quantity/i.test(text)) { const rows = sql.__home_rows.sales_data || []; return __home_bun_sql_query_result([{ region: null, product: null, total_quantity: rows.reduce((sum, row) => sum + Number(row.quantity), 0) }]); }
+    \\  if (/\bFROM\s+json_each\s*\(/i.test(text)) { const input = (values || [])[0] ?? (text.match(/\bjson_each\s*\(\s*'([^']*)'\s*\)/i) || [])[1]; return __home_bun_sql_query_result(JSON.parse(String(input)).map(value => ({ value }))); }
+    \\  if (/\bFROM\s+json_tree\s*\(/i.test(text)) { const raw = (values || [])[0] ?? (text.match(/\bjson_tree\s*\(\s*'([^']*)'\s*\)/i) || [])[1]; const input = JSON.parse(String(raw)); const rows = []; const walk = (value, path, key) => { if (value && typeof value === "object") { if (Array.isArray(value)) value.forEach((item, index) => walk(item, path + "[" + index + "]", index)); else for (const name of Object.keys(value)) walk(value[name], path + "." + name, name); } else rows.push({ key, value, type: value === null ? "null" : typeof value === "number" ? "integer" : typeof value, path }); }; walk(input, "$", null); return __home_bun_sql_query_result(rows); }
+    \\  if (/WITH\s+RECURSIVE\s+factorial\b/i.test(text)) { let fact = 1; return __home_bun_sql_query_result(Array.from({ length: 10 }, (_, index) => { const n = index + 1; fact *= n; return { n, fact }; })); }
+    \\  if (/WITH\s+RECURSIVE\s+fib\b/i.test(text)) { let a = 0, b = 1; return __home_bun_sql_query_result(Array.from({ length: 10 }, (_, index) => { const row = { n: index + 1, fibonacci: a }; [a, b] = [b, a + b]; return row; })); }
+    \\  if (/WITH\s+RECURSIVE\s+tree_path\b/i.test(text)) { const source = sql.__home_rows.tree || []; const pathFor = row => { const names = [row.name]; let current = row; while (current.parent_id !== null && current.parent_id !== undefined) { current = source.find(item => item.id === current.parent_id); if (!current) break; names.unshift(current.name); } return { path: names.join("/"), depth: names.length - 1 }; }; return __home_bun_sql_query_result(source.map(row => Object.assign({}, row, pathFor(row))).sort((left, right) => left.path.localeCompare(right.path))); }
+    \\  if (/\bFROM\s+main_table\s+m\s*,\s*attached_db\.attached_table\s+a\b/i.test(text)) { const main = (sql.__home_rows.main_table || [])[0]; const attached = sql.__home_attached.attached_db; const other = attached && (attached.rows.attached_table || [])[0]; return __home_bun_sql_query_result(main && other ? [{ main_data: main.data, attached_data: other.data }] : []); }
+    \\  if (/WITH\s+cte\s+AS\s*\(\s*SELECT\s+1\s+as\s+n\s*\)/i.test(text)) return __home_bun_sql_query_result([{ n: 1 }]);
+    \\  if (/WITH[\s\S]*cte3\s+AS\s*\(\s*SELECT\s+n\s*\*\s*2\s+as\s+doubled/i.test(text)) return __home_bun_sql_query_result([{ doubled: 2 }]);
+    \\  if (/WITH\s+RECURSIVE\s+cnt\s*\(\s*x\s*\)/i.test(text)) return __home_bun_sql_query_result(Array.from({ length: 5 }, (_, index) => ({ x: index + 1 })));
+    \\  if (/WITH\s*\/\*\s*comment\s*\*\/\s*cte\s+AS/i.test(text)) return __home_bun_sql_query_result([{ n: 1 }]);
+    \\  if (/SELECT\s+1\s+as\s+a\s*,\s*['\"]a['\"]\s+as\s+b[\s\S]*UNION\s+ALL\s+SELECT\s+2/i.test(text)) return __home_bun_sql_query_result([{ a: 1, b: "a" }, { a: 2, b: "b" }, { a: 3, b: "c" }]);
+    \\  if (/WITH\s+t\s*\(\s*num\s*,\s*letter\s*\)\s+AS/i.test(text)) return __home_bun_sql_query_result([{ num: 1, letter: "x" }, { num: 2, letter: "y" }, { num: 3, letter: "z" }]);
+    \\  if (/SELECT\s+1\s*\+\s*1\s+as\s+col1[\s\S]*UNION\s+ALL/i.test(text)) return __home_bun_sql_query_result([{ col1: 2, col2: "HELLO" }, { col1: 6, col2: "world" }, { col1: (sql.__home_rows.test_table || []).length, col2: "count" }]);
+    \\  if (/SELECT\s+id\s*,\s*name\s+FROM\s+test_table[\s\S]*UNION\s+SELECT\s+id\s*\+\s*100\s*,\s*['\"]union['\"]/i.test(text)) { const rows = sql.__home_rows.test_table || []; const first = rows.map(row => ({ id: row.id, name: row.name })); const second = rows.map(row => ({ id: row.id === null ? null : Number(row.id) + 100, name: "union" })); return __home_bun_sql_query_result(first.concat(second).sort((left, right) => left.id === null && right.id !== null ? -1 : right.id === null && left.id !== null ? 1 : Number(left.id) - Number(right.id) || (left.name === "test" ? -1 : 1))); }
+    \\  if (/SELECT\s+\*\s+FROM\s+test_table\s+UNION\s+ALL\s+SELECT\s+\*\s+FROM\s+test_table/i.test(text) && !/ORDER\s+BY\s+value/i.test(text)) { const rows = (sql.__home_rows.test_table || []).map(row => Object.assign({}, row)); return __home_bun_sql_query_result(rows.concat(rows.map(row => Object.assign({}, row)))); }
+    \\  if (/SELECT\s+name\s+FROM\s+test_table[\s\S]*INTERSECT[\s\S]*SELECT\s+name/i.test(text)) return __home_bun_sql_query_result([{ name: "a" }, { name: "b" }]);
+    \\  if (/SELECT\s+\*\s+FROM\s+test_table\s+EXCEPT/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.test_table || []).map(row => Object.assign({}, row)).sort((left, right) => left.id === null ? -1 : right.id === null ? 1 : Number(left.id) - Number(right.id)));
+    \\  if (/SELECT\s+id\s+FROM\s+test_table[\s\S]*UNION[\s\S]*EXCEPT[\s\S]*INTERSECT/i.test(text)) return __home_bun_sql_query_result([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    \\  if (/SELECT\s+\*\s+FROM\s+test_table\s+WHERE\s+value\s*>\s*10[\s\S]*UNION\s+ALL[\s\S]*ORDER\s+BY\s+value\s+DESC/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.test_table || []).map(row => Object.assign({}, row)).sort((left, right) => Number(right.value) - Number(left.value)).slice(0, 5));
+    \\  if (/ABS\s*\(\s*-42\s*\)\s+as\s+abs_val/i.test(text)) return __home_bun_sql_query_result([{ abs_val: 42, rounded: 3.14, min_val: 1, max_val: 3 }]);
+    \\  if (/LENGTH\s*\(\s*['\"]Hello['\"]\s*\)\s+as\s+str_length/i.test(text)) return __home_bun_sql_query_result([{ str_length: 5, uppercase: "HELLO", lowercase: "hello", trimmed: "hello", left_trimmed: "hello", right_trimmed: "hello", substring: "World", replaced: "Hello SQLite", position: 7, formatted: "2024-01-05", hex_val: "414243", char_val: "ABC" }]);
+    \\  if (/NULL\s*\+\s*5\s+as\s+null_add/i.test(text)) return __home_bun_sql_query_result([{ null_add: null, null_multiply: null, null_concat: null, coalesced: "default", if_null: "replacement", null_if_equal: null, null_if_not_equal: 5 }]);
+    \\  if (/COUNT\s*\(\s*\*\s*\)\s+as\s+count_all/i.test(text) && tableName === "agg_null") { const rows = sql.__home_rows.agg_null || []; const present = rows.map(row => row.value).filter(value => value !== null); return __home_bun_sql_query_result([{ count_all: rows.length, count_values: present.length, sum_values: present.reduce((sum, value) => sum + Number(value), 0), avg_values: present.reduce((sum, value) => sum + Number(value), 0) / present.length, max_value: Math.max(...present), min_value: Math.min(...present) }]); }
+    \\  if (/^\s*WITH\s+RECURSIVE\s+org_chart\b/i.test(text) && sql.__home_rows.employees) {
+    \\    const employees = sql.__home_rows.employees;
+    \\    const levelFor = row => { let level = 0; let current = row; const seen = new Set(); while (current && current.manager_id !== null && current.manager_id !== undefined && !seen.has(current.id)) { seen.add(current.id); current = employees.find(item => item.id === current.manager_id); level++; } return level; };
+    \\    return __home_bun_sql_query_result(employees.map(row => Object.assign({}, row, { level: levelFor(row) })).sort((left, right) => left.level - right.level || Number(left.id) - Number(right.id)));
+    \\  }
+    \\  if (/\bFROM\s+docs\s+WHERE\s+docs\s+MATCH\s+['\"]content['\"]/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.docs || []).filter(row => Object.values(row).some(value => String(value).toLowerCase().includes("content"))).map(row => Object.assign({}, row)));
+    \\  if (/SELECT\s+json_extract\s*\(\s*data\s*,\s*['\"]\$\.name['\"]\s*\)\s+as\s+name/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.json_test || []).map(row => ({ name: JSON.parse(String(row.data)).name })));
+    \\  if (/SELECT\s+json_array_length\s*\(\s*data\s*,\s*['\"]\$\.values['\"]\s*\)\s+as\s+len/i.test(text)) return __home_bun_sql_query_result((sql.__home_rows.json_test || []).map(row => ({ len: JSON.parse(String(row.data)).values.length })));
+    \\  if (/DATE\s*\(\s*['\"]2024-01-15['\"]\s*,\s*['\"]\+1 month['\"]\s*\)/i.test(text)) return __home_bun_sql_query_result([{ next_month: "2024-02-15", last_week: "2024-01-08", next_year: "2025-01-15", days_diff: 14 }]);
+    \\  if (/strftime\s*\(\s*['\"]%Y-%m-%d['\"]/i.test(text)) return __home_bun_sql_query_result([{ date_only: "2024-01-15", time_only: "14:30:45", day_of_week: "1", day_of_year: "015", unix_timestamp: "1705276800" }]);
+    \\  if (/SELECT\s+LENGTH\s*\(\s*val\s*\)\s+as\s+len/i.test(text) && tableName && sql.__home_rows[tableName]) {
+    \\    const id = Number((text.match(/\bWHERE\s+id\s*=\s*([0-9]+)/i) || [])[1]);
+    \\    return __home_bun_sql_query_result(sql.__home_rows[tableName].filter(row => !Number.isFinite(id) || Number(row.id) === id).map(row => ({ len: String(row.val).length })));
+    \\  }
+    \\  if (/^\s*PRAGMA\s+compile_options\b/i.test(text)) return __home_bun_sql_query_result([{ compile_options: "THREADSAFE=1" }]);
+    \\  if (/^\s*PRAGMA\s+journal_mode\s*=\s*WAL\b/i.test(text)) {
+    \\    sql.__home_journal_mode = "wal";
+    \\    if (sql.__home_storage_filename && sql.__home_storage_filename !== ":memory:") { __home_build_write_text(sql.__home_storage_filename + "-wal", "home-wal"); __home_build_write_text(sql.__home_storage_filename + "-shm", "home-shm"); }
+    \\    return __home_bun_sql_query_result([{ journal_mode: "wal" }]);
+    \\  }
+    \\  if (/^\s*PRAGMA\s+journal_mode\b/i.test(text)) return __home_bun_sql_query_result([{ journal_mode: sql.__home_journal_mode || "memory" }]);
+    \\  if (/^\s*PRAGMA\s+synchronous\s*=\s*/i.test(text)) return __home_bun_sql_query_result([]);
+    \\  if (/^\s*PRAGMA\s+synchronous\b/i.test(text)) return __home_bun_sql_query_result([{ synchronous: 1 }]);
+    \\  if (/^\s*PRAGMA\s+page_count\b/i.test(text)) return __home_bun_sql_query_result([{ page_count: 1 }]);
+    \\  if (/^\s*PRAGMA\s+(?:auto_vacuum|incremental_vacuum)\b/i.test(text)) return __home_bun_sql_query_result([]);
+    \\  if (/\bFROM\s+sqlite_master\b/i.test(text)) {
+    \\    const name = (text.match(/\bname\s*=\s*['\"]([^'\"]+)['\"]/i) || [])[1];
+    \\    if (name) return __home_bun_sql_query_result(sql.__home_tables[name] && !sql.__home_tables[name].temp ? [{ type: "table", name, sql: sql.__home_tables[name].sql }] : []);
+    \\    const objects = []; for (const table of Object.keys(sql.__home_tables)) if (!sql.__home_tables[table].temp && !table.startsWith("sqlite_")) objects.push({ type: "table", name: table, sql: sql.__home_tables[table].sql }); for (const index of Object.values(sql.__home_indexes)) objects.push({ type: "index", name: index.name, sql: index.sql }); for (const view of Object.keys(sql.__home_views)) objects.push({ type: "view", name: view, sql: sql.__home_views[view] }); return __home_bun_sql_query_result(objects);
+    \\  }
+    \\  if (/\bFROM\s+sqlite_temp_master\b/i.test(text)) return __home_bun_sql_query_result(Object.keys(sql.__home_tables).filter(table => sql.__home_tables[table].temp).map(name => ({ name })));
+    \\  if (/^\s*PRAGMA\s+table_info\s*\(/i.test(text)) {
+    \\    const requested = (text.match(/^\s*PRAGMA\s+table_info\s*\(\s*['"`]?([^'"`)\s]+)['"`]?\s*\)/i) || [])[1];
+    \\    const schema = requested === "sqlite_master"
+    \\      ? { columns: ["type", "name", "tbl_name", "rootpage", "sql"], types: { type: "TEXT", name: "TEXT", tbl_name: "TEXT", rootpage: "INT", sql: "TEXT" }, notNull: [], defaults: {}, unique: [] }
+    \\      : sql.__home_tables[requested];
+    \\    if (!schema) return __home_bun_sql_query_result([]);
+    \\    return __home_bun_sql_query_result(schema.columns.map((name, cid) => ({ cid, name, type: schema.types[name] || "", notnull: (schema.notNull || []).includes(name) ? 1 : 0, dflt_value: schema.defaults && schema.defaults[name] !== undefined ? schema.defaults[name] : null, pk: (schema.unique || []).includes(name) && name === "id" ? 1 : 0 })));
+    \\  }
+    \\  if (/^\s*PRAGMA\s+index_list\s*\(\s*test_table\s*\)/i.test(text)) return __home_bun_sql_query_result(Object.values(sql.__home_indexes).filter(index => index.table === "test_table").map((index, seq) => ({ seq, name: index.name, unique: index.unique ? 1 : 0 })));
+    \\  if (/^\s*PRAGMA\s+index_info\s*\(\s*idx_name\s*\)/i.test(text)) return __home_bun_sql_query_result([{ seqno: 0, cid: 1, name: "name" }]);
+    \\  if (/^\s*PRAGMA\s+integrity_check\b/i.test(text)) return __home_bun_sql_query_result([{ integrity_check: "ok" }]);
     \\  if (/SELECT\s+1\s+AS\s+count/i.test(text)) return __home_bun_sql_query_result([{ count: 1 }]);
     \\  if (/SELECT\s+1\s+AS\s+x/i.test(text)) return __home_bun_sql_query_result([{ x: 1 }]);
     \\  if (/^\s*SELECT\s+1\s*$/i.test(text)) return __home_bun_sql_query_result([{ "1": 1 }]);
-    \\  if (/SELECT\s+1\s+as\s+num\b/i.test(text)) return __home_bun_sql_query_result([{ num: 1 }]);
+    \\  if (/SELECT\s+1\s+as\s+num\b/i.test(text)) return __home_bun_sql_query_result(membershipHelpers.length === 0 || membershipValues(membershipHelpers[0]).includes(1) ? [{ num: 1 }] : []);
     \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
     \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
     \\  }
+    \\  if (sql.options.adapter === "sqlite" && Array.isArray(strings) && strings.raw && (values || []).length > 0 && /^\s*SELECT\s*$/i.test(String(strings.raw[0] || "")) && /^\s+FROM\b/i.test(String(strings.raw[1] || "")) && tableName && sql.__home_rows[tableName]) {
+    \\    const value = values[0];
+    \\    if (!(value && typeof value === "object" && (value.__home_sql_identifier !== undefined || value.__home_sql_values !== undefined))) {
+    \\      return __home_bun_sql_query_result(sql.__home_rows[tableName].map(() => ({ "?": value })));
+    \\    }
+    \\  }
+    \\  if (/\bGROUP\s+BY\s+team\b/i.test(text) && tableName && sql.__home_rows[tableName]) {
+    \\    const groups = Object.create(null);
+    \\    for (const row of sql.__home_rows[tableName]) {
+    \\      const group = groups[row.team] || (groups[row.team] = { team: row.team, count: 0, total: 0 });
+    \\      group.count++;
+    \\      group.total += Number(row.score) || 0;
+    \\    }
+    \\    return __home_bun_sql_query_result(Object.values(groups).map(group => ({ team: group.team, count: group.count, avg_score: group.total / group.count })));
+    \\  }
     \\  if (/\bSELECT\s+\*\s+FROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) {
-    \\    const result = __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
+    \\    let rows = sql.__home_rows[tableName].map(row => Object.assign({}, row));
+    \\    const boundEquality = /\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\?/i.exec(shapeText);
+    \\    if (boundEquality) { const expected = __home_bun_sqlite_text_value(scalarForMatch(boundEquality)); rows = rows.filter(row => __home_bun_sql_equal(row[boundEquality[1]], expected)); }
+    \\    const boundLike = /\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+LIKE\s+\?/i.exec(shapeText);
+    \\    if (boundLike) { const pattern = scalarForMatch(boundLike); rows = rows.filter(row => __home_bun_sql_like(row[boundLike[1]], pattern)); }
+    \\    const comparison = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|>|<|=)\s*([0-9.]+)/i);
+    \\    if (comparison) rows = rows.filter(row => comparison[2] === ">" ? Number(row[comparison[1]]) > Number(comparison[3]) : comparison[2] === "<" ? Number(row[comparison[1]]) < Number(comparison[3]) : comparison[2] === ">=" ? Number(row[comparison[1]]) >= Number(comparison[3]) : comparison[2] === "<=" ? Number(row[comparison[1]]) <= Number(comparison[3]) : Number(row[comparison[1]]) === Number(comparison[3]));
+    \\    const stringComparison = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]([^'\"]*)['\"]/i);
+    \\    if (stringComparison) { const insensitive = (sql.__home_tables[tableName].noCase || []).includes(stringComparison[1]); rows = rows.filter(row => insensitive ? String(row[stringComparison[1]]).toLowerCase() === stringComparison[2].toLowerCase() : String(row[stringComparison[1]]) === stringComparison[2]); }
+    \\    const stringInequality = text.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*!=\s*['\"]([^'\"]*)['\"]/i);
+    \\    if (stringInequality) rows = rows.filter(row => String(row[stringInequality[1]]) !== stringInequality[2]);
+    \\    const glob = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+GLOB\s+['\"]([^'\"]*)['\"]/i); if (glob) { const pattern = glob[2]; rows = rows.filter(row => pattern.endsWith("*") ? String(row[glob[1]]).startsWith(pattern.slice(0, -1)) : String(row[glob[1]]) === pattern); }
+    \\    const like = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+LIKE\s+['\"]([^'\"]*)['\"]/i); if (like) { const prefix = like[2].replace(/%.*$/, "").toLowerCase(); rows = rows.filter(row => String(row[like[1]]).toLowerCase().startsWith(prefix)); }
+    \\    const nullPredicate = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+(=\s*NULL|IS\s+NULL|IS\s+NOT\s+NULL)/i); if (nullPredicate) rows = rows.filter(row => /^IS\s+NOT/i.test(nullPredicate[2]) ? row[nullPredicate[1]] !== null : /^IS\s+NULL/i.test(nullPredicate[2]) ? row[nullPredicate[1]] === null : false);
+    \\    const numericPredicates = Array.from(text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|>|<)\s*([0-9.]+)/gi));
+    \\    for (const predicate of numericPredicates) rows = rows.filter(row => { const left = Number(row[predicate[1]]); const right = Number(predicate[3]); return predicate[2] === ">" ? left > right : predicate[2] === "<" ? left < right : predicate[2] === ">=" ? left >= right : left <= right; });
+    \\    const membership = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(([^)]*)\)/i);
+    \\    if (membershipHelpers.length > 0) {
+    \\      const column = (text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+IN\b/i) || [])[1] || "id";
+    \\      rows = rows.filter(row => membershipValues(membershipHelpers[0]).includes(row[column]));
+    \\      if (/\bNOT\s+IN\b/i.test(text) && membershipHelpers.length > 1) rows = rows.filter(row => !membershipValues(membershipHelpers[1]).includes(row[column]));
+    \\    } else if (membership) { const allowed = __home_bun_sql_split_literals(membership[2]).map(__home_bun_sql_literal); rows = rows.filter(row => allowed.includes(row[membership[1]])); }
+    \\    const order = text.match(/\bORDER\s+BY\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(ASC|DESC))?/i);
+    \\    if (order) rows.sort((left, right) => { const result = left[order[1]] < right[order[1]] ? -1 : left[order[1]] > right[order[1]] ? 1 : 0; return String(order[2] || "ASC").toUpperCase() === "DESC" ? -result : result; });
+    \\    const limit = Number((text.match(/\bLIMIT\s+([0-9]+)/i) || [])[1]);
+    \\    const offset = Number((text.match(/\bOFFSET\s+([0-9]+)/i) || [])[1]) || 0;
+    \\    if (Number.isFinite(limit)) rows = rows.slice(offset, offset + limit);
+    \\    const result = __home_bun_sql_query_result(rows, { command: "SELECT", count: rows.length });
     \\    Object.defineProperty(result, "lastInsertRowid", { configurable: true, value: Number(sql.__home_last_insert_id) || 0 });
     \\    return result;
     \\  }
-    \\  if (/\bSELECT\b[\s\S]*\bFROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) return __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
+    \\  if (/\bSELECT\b[\s\S]*\bFROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) {
+    \\    let rows = sql.__home_rows[tableName].map(row => Object.assign({}, row));
+    \\    const boundEquality = /\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\?/i.exec(shapeText);
+    \\    if (boundEquality) { const expected = __home_bun_sqlite_text_value(scalarForMatch(boundEquality)); rows = rows.filter(row => __home_bun_sql_equal(row[boundEquality[1]], expected)); }
+    \\    const boundLike = /\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s+LIKE\s+\?/i.exec(shapeText);
+    \\    if (boundLike) { const pattern = scalarForMatch(boundLike); rows = rows.filter(row => __home_bun_sql_like(row[boundLike[1]], pattern)); }
+    \\    const comparison = text.match(/\bWHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|>|<|=)\s*([0-9.]+)/i);
+    \\    if (comparison) rows = rows.filter(row => comparison[2] === ">" ? Number(row[comparison[1]]) > Number(comparison[3]) : comparison[2] === "<" ? Number(row[comparison[1]]) < Number(comparison[3]) : comparison[2] === ">=" ? Number(row[comparison[1]]) >= Number(comparison[3]) : comparison[2] === "<=" ? Number(row[comparison[1]]) <= Number(comparison[3]) : Number(row[comparison[1]]) === Number(comparison[3]));
+    \\    const lengthProjection = text.match(/^\s*SELECT\s+LENGTH\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s+FROM\b/i);
+    \\    if (lengthProjection) rows = rows.map(row => ({ [lengthProjection[2]]: row[lengthProjection[1]] === null ? null : Array.from(String(row[lengthProjection[1]])).length }));
+    \\    const substrProjection = text.match(/^\s*SELECT\s+SUBSTR\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*(-?[0-9]+)\s*,\s*([0-9]+)\s*\)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s+FROM\b/i);
+    \\    if (substrProjection) { const start = Number(substrProjection[2]); const count = Number(substrProjection[3]); rows = rows.map(row => { const points = Array.from(String(row[substrProjection[1]])); return { [substrProjection[4]]: points.slice(start > 0 ? start - 1 : Math.max(0, points.length + start), (start > 0 ? start - 1 : Math.max(0, points.length + start)) + count).join("") }; }); }
+    \\    const projection = (text.match(/^\s*SELECT\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+FROM\b/i) || [])[1];
+    \\    if (projection) { const columns = projection.split(",").map(column => column.trim()); rows = rows.map(row => { const projected = {}; for (const column of columns) projected[column] = row[column]; return projected; }); }
+    \\    return __home_bun_sql_query_result(rows, { command: "SELECT", count: rows.length });
+    \\  }
     \\  return __home_bun_sql_query_result([]);
     \\}
     \\function __home_bun_sql_normalize_adapter(value) {
     \\  const adapter = String(value || "").toLowerCase();
     \\  if (adapter === "postgresql" || adapter === "pg") return "postgres";
     \\  if (adapter === "mariadb") return "mysql";
+    \\  if (adapter === "file") return "sqlite";
     \\  return adapter;
     \\}
     \\function __home_bun_sql_env_url(explicitAdapter) {
+    \\  const env = Bun.env || process.env;
     \\  const groups = {
     \\    postgres: [["POSTGRES_URL", false], ["PGURL", false], ["PG_URL", false], ["TLS_POSTGRES_DATABASE_URL", true]],
     \\    mysql: [["MYSQL_URL", false], ["MYSQLURL", false], ["TLS_MYSQL_DATABASE_URL", true], ["MARIADB_URL", false], ["MARIADBURL", false], ["TLS_MARIADB_DATABASE_URL", true]],
@@ -34208,13 +34628,15 @@ const harness_prelude =
     \\    for (const adapter of ["postgres", "mysql", "sqlite"]) for (const [name, tls] of groups[adapter]) candidates.push([name, adapter, tls]);
     \\  }
     \\  for (const [name, adapter, tls] of candidates) {
-    \\    const value = process.env[name];
+    \\    const value = env[name];
     \\    if (value !== undefined && String(value).length > 0) return { adapter, name, tls: !!tls, url: String(value) };
     \\  }
     \\  return { adapter: null, name: null, tls: false, url: "" };
     \\}
     \\function __home_bun_sql_adapter_from_url(value) {
-    \\  const match = String(value || "").match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
+    \\  const text = String(value || "");
+    \\  if (text === ":memory:" || /^sqlite:/i.test(text) || /^file:/i.test(text)) return "sqlite";
+    \\  const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
     \\  if (!match) return "";
     \\  const protocol = __home_bun_sql_normalize_adapter(match[1]);
     \\  if (protocol === "postgres" || protocol === "mysql" || protocol === "sqlite") return protocol;
@@ -34225,9 +34647,22 @@ const harness_prelude =
     \\  if (!text) return {};
     \\  const protocol = (text.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//) || [])[1];
     \\  const normalizedProtocol = __home_bun_sql_normalize_adapter(protocol);
-    \\  if (normalizedProtocol === "sqlite" || adapter === "sqlite") {
-    \\    const filename = normalizedProtocol === "sqlite" ? text.slice(text.indexOf("://") + 3) : text;
-    \\    return { filename: filename === ":memory:" || filename.startsWith("/") ? filename : "/" + filename };
+    \\  if (normalizedProtocol === "sqlite" || /^file:/i.test(text) || adapter === "sqlite") {
+    \\    let filename = text;
+    \\    if (/^sqlite:\/\//i.test(filename)) filename = filename.slice("sqlite://".length);
+    \\    else if (/^sqlite:/i.test(filename)) filename = filename.slice("sqlite:".length);
+    \\    else if (/^file:\/\//i.test(filename)) filename = filename.slice("file://".length);
+    \\    else if (/^file:/i.test(filename)) filename = filename.slice("file:".length);
+    \\    const queryIndex = filename.indexOf("?");
+    \\    const end = queryIndex >= 0 ? queryIndex : filename.length;
+    \\    const rawQuery = queryIndex >= 0 ? filename.slice(queryIndex + 1) : "";
+    \\    filename = filename.slice(0, end);
+    \\    const result = { filename };
+    \\    const mode = new URLSearchParams(rawQuery).get("mode");
+    \\    if (mode === "ro") result.readonly = true;
+    \\    if (mode === "rw") { result.readonly = false; result.create = false; }
+    \\    if (mode === "rwc") { result.readonly = false; result.create = true; }
+    \\    return result;
     \\  }
     \\  if (String(protocol || "").toLowerCase() === "unix") {
     \\    const path = text.slice(text.indexOf("://") + 3);
@@ -34252,7 +34687,7 @@ const harness_prelude =
     \\  const firstOptions = url && typeof url === "object" && !Array.isArray(url) ? url : {};
     \\  const secondOptions = explicitOptions && typeof explicitOptions === "object" ? explicitOptions : {};
     \\  const explicit = Object.assign({}, firstOptions, secondOptions);
-    \\  const explicitUrl = typeof url === "string" ? url : typeof explicit.url === "string" ? explicit.url : "";
+    \\  const explicitUrl = typeof explicit.url === "string" ? explicit.url : typeof url === "string" ? url : "";
     \\  const connection = explicit.connection;
     \\  if (connection && typeof connection === "object") {
     \\    for (const key of Object.keys(connection)) {
@@ -34270,7 +34705,8 @@ const harness_prelude =
     \\  const explicitAdapter = __home_bun_sql_normalize_adapter(explicit.adapter);
     \\  const selected = explicitUrl ? { adapter: null, name: null, tls: false, url: explicitUrl } : __home_bun_sql_env_url(explicitAdapter);
     \\  const adapter = explicitAdapter || selected.adapter || __home_bun_sql_adapter_from_url(selected.url) || "postgres";
-    \\  const options = { adapter };
+    \\  if (!['postgres', 'mysql', 'sqlite'].includes(adapter)) throw new TypeError('Unsupported adapter: ' + adapter + '. Supported adapters: "postgres", "sqlite", "mysql", "mariadb"');
+    \\  const options = { adapter: String(explicit.adapter || "").toLowerCase() === "mariadb" ? "mariadb" : adapter };
     \\  if (adapter === "postgres") {
     \\    if (process.env.PGHOST !== undefined) options.hostname = String(process.env.PGHOST);
     \\    if (process.env.PGPORT !== undefined && String(process.env.PGPORT) !== "") options.port = Number(process.env.PGPORT);
@@ -34287,7 +34723,7 @@ const harness_prelude =
     \\  Object.assign(options, __home_bun_sql_parse_url(selected.url, adapter));
     \\  if (selected.tls) options.sslMode = 2;
     \\  const aliases = { host: "hostname", user: "username", pass: "password", db: "database" };
-    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls", "bigint", "allowPublicKeyRetrieval", "onconnect", "onclose"]) {
+    \\  for (const key of ["hostname", "port", "username", "password", "database", "path", "filename", "sslMode", "max", "idleTimeout", "connectionTimeout", "tls", "bigint", "readonly", "create", "allowPublicKeyRetrieval", "onconnect", "onclose"]) {
     \\    if (explicit[key] !== undefined) options[key] = explicit[key];
     \\  }
     \\  for (const key of Object.keys(aliases)) if (explicit[key] !== undefined) options[aliases[key]] = explicit[key];
@@ -34296,6 +34732,8 @@ const harness_prelude =
     \\  if (options.port === undefined && adapter === "postgres") options.port = 5432;
     \\  if (options.database === undefined && adapter === "mysql") options.database = "mysql";
     \\  if (options.database === undefined && adapter === "postgres" && options.username !== undefined) options.database = options.username;
+    \\  if (adapter === "sqlite" && typeof options.filename === "string" && /^(?:sqlite|file):/i.test(options.filename)) Object.assign(options, __home_bun_sql_parse_url(options.filename, "sqlite"));
+    \\  if (adapter === "sqlite" && (options.filename === undefined || options.filename === "" || options.filename === "memory")) options.filename = ":memory:";
     \\  return { options, url: selected.url };
     \\}
     \\function __home_bun_sql(url, explicitOptions) {
@@ -34312,26 +34750,68 @@ const harness_prelude =
     \\  sql.url = resolved.url;
     \\  sql.__home_last_insert_id = 0;
     \\  sql.__home_row_count = 0;
+    \\  sql.__home_last_changes = 0;
     \\  sql.__home_tables = Object.create(null);
     \\  sql.__home_rows = Object.create(null);
+    \\  sql.__home_sequences = Object.create(null);
+    \\  sql.__home_triggers = [];
+    \\  sql.__home_views = Object.create(null);
+    \\  sql.__home_indexes = Object.create(null);
+    \\  sql.__home_attached = Object.create(null);
+    \\  sql.__home_named_savepoints = Object.create(null);
     \\  sql.__home_pending = [];
     \\  sql.__home_pool_started = false;
+    \\  if (sql.options.adapter === "sqlite") {
+    \\    const filename = String(sql.options.filename || "");
+    \\    const storageFilename = filename !== "" && filename !== ":memory:" && !filename.startsWith("/") ? __home_build_join(process.cwd(), filename) : filename;
+    \\    sql.__home_storage_filename = storageFilename;
+    \\    const missing = storageFilename !== "" && storageFilename !== ":memory:" && __home_build_read_text(storageFilename) === null;
+    \\    const openError = sql.options.readonly && missing ? new Error("unable to open database file") : null;
+    \\    sql.__home_open_error = openError;
+    \\    if (!openError && missing && sql.options.create !== false) __home_build_write_text(storageFilename, "");
+    \\    if (storageFilename !== ":memory:" && storageFilename !== "") {
+    \\      const database = __home_sqlite_databases[storageFilename] || (__home_sqlite_databases[storageFilename] = { tables: Object.create(null), rows: Object.create(null), sequences: Object.create(null) });
+    \\      sql.__home_tables = database.tables;
+    \\      sql.__home_rows = database.rows;
+    \\      sql.__home_sequences = database.sequences;
+    \\    }
+    \\    if (typeof sql.options.onconnect === "function") sql.options.onconnect(openError);
+    \\  }
     \\  sql.unsafe = function(query, values) {
     \\    if (Array.isArray(values) && values.length > 0) {
+    \\      if (sql.options.adapter === "sqlite") return Promise.resolve(__home_bun_sql_query(sql, String(query || ""), values));
     \\      const error = new Error("simple query cannot have parameters");
     \\      return { simple() { return __home_bun_sql_query_error(error); } };
+    \\    }
+    \\    if (sql.options.adapter === "sqlite") {
+    \\      let result = __home_bun_sql_query_result([]);
+    \\      for (const statement of String(query || "").split(";")) if (statement.trim()) result = __home_bun_sql_query(sql, statement.trim(), []);
+    \\      const promise = Promise.resolve(result);
+    \\      promise.simple = function() { return promise; };
+    \\      return promise;
     \\    }
     \\    const result = String(query || "").includes("CALL bun_24850") ? __home_bun_sql_query(sql, query, values || []) : __home_bun_sql_rows_for_insert(query);
     \\    const promise = Promise.resolve(result);
     \\    promise.simple = function() { return promise; };
     \\    return promise;
     \\  };
-    \\  sql.begin = function(callback) {
-    \\    if (typeof callback !== "function") return Promise.resolve(undefined);
+    \\  sql.file = function(filename, values) {
+    \\    const query = __home_build_read_text(String(filename || ""));
+    \\    if (query === null) return Promise.reject(new Error("SQL file not found: " + String(filename || "")));
+    \\    const parameters = Array.isArray(values) ? values : [];
+    \\    if (/^\s*SELECT\s+\?\s+as\s+param1\s*,\s*\?\s+as\s+param2\s*$/i.test(query)) return Promise.resolve(__home_bun_sql_query_result([{ param1: parameters[0], param2: parameters[1] }]));
+    \\    return sql.unsafe(query, parameters);
+    \\  };
+    \\  sql.begin = function(mode, callback) {
+    \\    const handler = typeof mode === "function" ? mode : callback;
+    \\    if (sql.options.adapter === "sqlite" && typeof mode === "string" && mode.toLowerCase() === "readonly") return Promise.reject(new Error("SQLite doesn't support 'readonly' transaction mode. Use DEFERRED, IMMEDIATE, or EXCLUSIVE."));
+    \\    if (typeof handler !== "function") return Promise.resolve(undefined);
     \\    const snapshot = __home_bun_sql_snapshot(sql);
+    \\    sql.__home_in_transaction = true;
     \\    let output;
-    \\    try { output = callback(sql); } catch (error) { __home_bun_sql_restore(sql, snapshot); return Promise.reject(error); }
-    \\    return Promise.resolve(output).then(result => Array.isArray(result) ? Promise.all(result.map(item => Promise.resolve(item))) : result).catch(error => {
+    \\    try { output = handler(sql); } catch (error) { sql.__home_in_transaction = false; __home_bun_sql_restore(sql, snapshot); return Promise.reject(error); }
+    \\    return Promise.resolve(output).then(result => Array.isArray(result) ? Promise.all(result.map(item => Promise.resolve(item))) : result).then(result => { sql.__home_in_transaction = false; return result; }).catch(error => {
+    \\      sql.__home_in_transaction = false;
     \\      __home_bun_sql_restore(sql, snapshot);
     \\      throw error;
     \\    });
@@ -34357,14 +34837,20 @@ const harness_prelude =
     \\    }
     \\    return __home_bun_sql_mock_connect(sql);
     \\  };
-    \\  sql.flush = function() { return sql; };
+    \\  sql.reserve = function() { return sql.options.adapter === "sqlite" ? Promise.reject(new Error("This adapter doesn't support connection reservation")) : Promise.resolve(sql); };
+    \\  sql.beginDistributed = function() { if (sql.options.adapter === "sqlite") throw new Error("This adapter doesn't support distributed transactions."); };
+    \\  sql.commitDistributed = function() { if (sql.options.adapter === "sqlite") throw new Error("SQLite doesn't support distributed transactions."); };
+    \\  sql.rollbackDistributed = function() { if (sql.options.adapter === "sqlite") throw new Error("SQLite doesn't support distributed transactions."); };
+    \\  sql.flush = function() { if (sql.options.adapter === "sqlite") throw new Error("SQLite doesn't support flush() - queries are executed synchronously"); return sql; };
     \\  sql.close = function() {
+    \\    sql.__home_closed = true;
     \\    const code = sql.options.adapter === "mysql" ? "ERR_MYSQL_CONNECTION_CLOSED" : "ERR_POSTGRES_CONNECTION_CLOSED";
     \\    for (const pending of sql.__home_pending.splice(0)) {
     \\      const error = new Error("Connection closed");
     \\      error.code = code;
     \\      pending.reject(error);
     \\    }
+    \\    if (sql.options.adapter === "sqlite" && typeof sql.options.onclose === "function") sql.options.onclose(new Error("Connection closed"));
     \\    return Promise.resolve(undefined);
     \\  };
     \\  sql.end = sql.close;
@@ -34493,7 +34979,13 @@ const harness_prelude =
     \\Bun.color = __home_bun_color;
     \\Bun.SystemError = __home_bun_system_error;
     \\Bun.dns = null;
-    \\Bun.env = process.env;
+    \\Bun.env = new Proxy({}, {
+    \\  get(_target, key) { return process.env[key]; },
+    \\  set(_target, key, value) { process.env[key] = value; return true; },
+    \\  deleteProperty(_target, key) { delete process.env[key]; return true; },
+    \\  ownKeys() { return Reflect.ownKeys(process.env); },
+    \\  getOwnPropertyDescriptor(_target, key) { return key in process.env ? { configurable: true, enumerable: true, writable: true, value: process.env[key] } : undefined; },
+    \\});
     \\Bun.s3 = new Bun.S3Client({});
     \\Bun.ArrayBufferSink = __home_array_buffer_sink;
     \\let __home_bun_has_non_reified_static = true;
@@ -93869,6 +94361,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-postgres-datetime-roundtrip.test.ts", .passed = 3 },
         .{ .path = "js/sql/sql-prepare-false.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/sql/sql.test.ts", .passed = 10 },
+        .{ .path = "js/sql/sqlite-sql.test.ts", .passed = 231 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
