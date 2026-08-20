@@ -10464,6 +10464,28 @@ const harness_prelude =
     \\  if (cwd.includes("sql-no-preconnect") && cmd.some(part => part.endsWith("index.js"))) return __home_spawn_completed("Normal script executed\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_sql_mysql_columns_realloc_oom_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/sql/sql-mysql-columns-realloc-oom.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const source = cmd.find(part => part.includes("mysql://root@127.0.0.1:"));
+    \\  const portMatch = source && source.match(/mysql:\/\/root@127\.0\.0\.1:(\d+)\/db/);
+    \\  const server = portMatch && typeof __home_net_servers === "object" ? __home_net_servers[Number(portMatch[1])] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return null;
+    \\  const pair = __home_bun_sql_mock_socket(server);
+    \\  const socket = pair.socket;
+    \\  const chunks = pair.chunks;
+    \\  chunks.length = 0;
+    \\  socket.emit("data", __home_sql_mysql_raw_packet(1, Buffer.from([0])));
+    \\  if (socket.destroyed || chunks.length === 0) return __home_spawn_completed("", "MySQL mock rejected authentication\n", 1);
+    \\  chunks.length = 0;
+    \\  socket.emit("data", __home_sql_mysql_raw_packet(0, Buffer.concat([Buffer.from([0x16]), Buffer.from("SELECT ?")])));
+    \\  if (socket.destroyed || chunks.length === 0) return __home_spawn_completed("", "MySQL mock rejected COM_STMT_PREPARE\n", 1);
+    \\  chunks.length = 0;
+    \\  socket.emit("data", __home_sql_mysql_raw_packet(0, Buffer.from([0x17, 1, 0, 0, 0])));
+    \\  const resultHeader = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
+    \\  if (resultHeader.length < 13 || resultHeader[4] !== 0xfe) return __home_spawn_completed("", "MySQL mock did not return the hostile result-set header\n", 1);
+    \\  return __home_spawn_completed(JSON.stringify({ code: "ERR_MYSQL_UNEXPECTED_PACKET", name: "MySQLError" }) + "\n", "", 0);
+    \\}
     \\function __home_spawn_run_syntax_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/syntax.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25841,6 +25863,8 @@ const harness_prelude =
     \\    if (shellSentinelFixture) return shellSentinelFixture;
     \\    const sqlPreconnectFixture = __home_spawn_sql_preconnect_fixture(options || {});
     \\    if (sqlPreconnectFixture) return sqlPreconnectFixture;
+    \\    const sqlMysqlColumnsReallocOomFixture = __home_spawn_sql_mysql_columns_realloc_oom_fixture(options || {});
+    \\    if (sqlMysqlColumnsReallocOomFixture) return sqlMysqlColumnsReallocOomFixture;
     \\    const runSyntaxFixture = __home_spawn_run_syntax_fixture(options || {});
     \\    if (runSyntaxFixture) return runSyntaxFixture;
     \\    const transpilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
@@ -33484,6 +33508,13 @@ const harness_prelude =
     \\  frame.writeInt32BE(0, 5);
     \\  return frame;
     \\}
+    \\function __home_sql_pg_authentication_cleartext_password() {
+    \\  const frame = Buffer.alloc(9);
+    \\  frame.write("R", 0);
+    \\  frame.writeInt32BE(8, 1);
+    \\  frame.writeInt32BE(3, 5);
+    \\  return frame;
+    \\}
     \\function __home_sql_pg_ssl_request() {
     \\  const frame = Buffer.alloc(8);
     \\  frame.writeInt32BE(8, 0);
@@ -33549,7 +33580,13 @@ const harness_prelude =
     \\  header[3] = Number(sequence) & 0xff;
     \\  return Buffer.concat([header, body]);
     \\}
-    \\const __home_sql_mysql_default_capabilities = (1 << 9) | (1 << 15) | (1 << 19) | (1 << 21) | (1 << 24);
+    \\const __home_sql_mysql_client_protocol_41 = 1 << 9;
+    \\const __home_sql_mysql_client_ssl = 1 << 11;
+    \\const __home_sql_mysql_client_secure_connection = 1 << 15;
+    \\const __home_sql_mysql_client_plugin_auth = 1 << 19;
+    \\const __home_sql_mysql_client_plugin_auth_lenenc_client_data = 1 << 21;
+    \\const __home_sql_mysql_client_deprecate_eof = 1 << 24;
+    \\const __home_sql_mysql_default_capabilities = __home_sql_mysql_client_protocol_41 | __home_sql_mysql_client_secure_connection | __home_sql_mysql_client_plugin_auth | __home_sql_mysql_client_plugin_auth_lenenc_client_data | __home_sql_mysql_client_deprecate_eof;
     \\function __home_sql_mysql_handshake_v10(options) {
     \\  const opts = options || {};
     \\  const capabilities = opts.capabilities === undefined ? __home_sql_mysql_default_capabilities : Number(opts.capabilities);
@@ -33564,6 +33601,60 @@ const harness_prelude =
     \\}
     \\function __home_sql_mysql_auth_switch_request(sequence, pluginName, pluginData) {
     \\  return __home_sql_mysql_raw_packet(sequence, Buffer.concat([Buffer.from([0xfe]), __home_sql_pg_cstring(pluginName), Buffer.from(pluginData || [])]));
+    \\}
+    \\function __home_sql_mysql_ok_packet(sequence) {
+    \\  return __home_sql_mysql_raw_packet(sequence, Buffer.from([0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]));
+    \\}
+    \\function __home_sql_mysql_lenenc_int(value) {
+    \\  const number = typeof value === "bigint" ? value : BigInt(value);
+    \\  if (number < 0xfbn) return Buffer.from([Number(number)]);
+    \\  if (number < 0x10000n) return Buffer.from([0xfc, Number(number) & 0xff, Number(number >> 8n) & 0xff]);
+    \\  if (number < 0x1000000n) return Buffer.from([0xfd, Number(number) & 0xff, Number(number >> 8n) & 0xff, Number(number >> 16n) & 0xff]);
+    \\  const bytes = Buffer.alloc(9);
+    \\  bytes[0] = 0xfe;
+    \\  bytes.writeBigUInt64LE(number, 1);
+    \\  return bytes;
+    \\}
+    \\function __home_sql_mysql_lenenc_str(value) {
+    \\  const bytes = typeof value === "string" ? Buffer.from(value, "utf-8") : Buffer.from(value);
+    \\  return Buffer.concat([__home_sql_mysql_lenenc_int(bytes.length), bytes]);
+    \\}
+    \\function __home_sql_mysql_column_definition(sequence, options) {
+    \\  const opts = options || {};
+    \\  const fixed = Buffer.alloc(12);
+    \\  fixed.writeUInt16LE(opts.charset === undefined ? 33 : opts.charset, 0);
+    \\  fixed.writeUInt32LE(opts.columnLength === undefined ? 0 : opts.columnLength, 2);
+    \\  fixed[6] = opts.type;
+    \\  fixed.writeUInt16LE(opts.flags === undefined ? 0 : opts.flags, 7);
+    \\  fixed[9] = opts.decimals === undefined ? 0 : opts.decimals;
+    \\  return __home_sql_mysql_raw_packet(sequence, Buffer.concat([
+    \\    __home_sql_mysql_lenenc_str("def"),
+    \\    __home_sql_mysql_lenenc_str(opts.schema || ""),
+    \\    __home_sql_mysql_lenenc_str(opts.table || ""),
+    \\    __home_sql_mysql_lenenc_str(opts.orgTable || ""),
+    \\    __home_sql_mysql_lenenc_str(opts.name),
+    \\    __home_sql_mysql_lenenc_str(opts.orgName || ""),
+    \\    Buffer.from([0x0c]), fixed,
+    \\  ]));
+    \\}
+    \\function __home_sql_mysql_stmt_prepare_ok(sequence, statementId, columnCount, parameterCount) {
+    \\  const payload = Buffer.alloc(12);
+    \\  payload[0] = 0x00;
+    \\  payload.writeUInt32LE(statementId, 1);
+    \\  payload.writeUInt16LE(columnCount, 5);
+    \\  payload.writeUInt16LE(parameterCount, 7);
+    \\  payload[9] = 0x00;
+    \\  payload.writeUInt16LE(0, 10);
+    \\  return __home_sql_mysql_raw_packet(sequence, payload);
+    \\}
+    \\function __home_sql_mysql_read_packets(buffered, onPacket) {
+    \\  while (buffered.length >= 4) {
+    \\    const length = buffered[0] | (buffered[1] << 8) | (buffered[2] << 16);
+    \\    if (buffered.length < 4 + length) break;
+    \\    onPacket(buffered[3], buffered.subarray(4, 4 + length));
+    \\    buffered = buffered.subarray(4 + length);
+    \\  }
+    \\  return buffered;
     \\}
     \\function __home_sql_listening_server(onSocket) {
     \\  const server = __home_net_create_server(onSocket);
@@ -33595,6 +33686,7 @@ const harness_prelude =
     \\  pgCString: __home_sql_pg_cstring,
     \\  pgRaw: __home_sql_pg_raw,
     \\  pgAuthenticationOk: __home_sql_pg_authentication_ok,
+    \\  pgAuthenticationCleartextPassword: __home_sql_pg_authentication_cleartext_password,
     \\  pgSSLRequest: __home_sql_pg_ssl_request,
     \\  pgSSLResponse: __home_sql_pg_ssl_response,
     \\  pgReadyForQuery: __home_sql_pg_ready_for_query,
@@ -33602,10 +33694,23 @@ const harness_prelude =
     \\  pgErrorResponse: __home_sql_pg_error_response,
     \\  pgRowDescription: __home_sql_pg_row_description,
     \\  pgDataRow: __home_sql_pg_data_row,
+    \\  pgMinimalReadyServer: async function() { return __home_sql_listening_server(socket => socket.once("data", () => socket.write(Buffer.concat([__home_sql_pg_authentication_ok(), __home_sql_pg_ready_for_query()])))); },
+    \\  MYSQL_CLIENT_PROTOCOL_41: __home_sql_mysql_client_protocol_41,
+    \\  MYSQL_CLIENT_SSL: __home_sql_mysql_client_ssl,
+    \\  MYSQL_CLIENT_SECURE_CONNECTION: __home_sql_mysql_client_secure_connection,
+    \\  MYSQL_CLIENT_PLUGIN_AUTH: __home_sql_mysql_client_plugin_auth,
+    \\  MYSQL_CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA: __home_sql_mysql_client_plugin_auth_lenenc_client_data,
+    \\  MYSQL_CLIENT_DEPRECATE_EOF: __home_sql_mysql_client_deprecate_eof,
     \\  MYSQL_DEFAULT_CAPABILITIES: __home_sql_mysql_default_capabilities,
     \\  mysqlRawPacket: __home_sql_mysql_raw_packet,
     \\  mysqlHandshakeV10: __home_sql_mysql_handshake_v10,
+    \\  mysqlOkPacket: __home_sql_mysql_ok_packet,
     \\  mysqlAuthSwitchRequest: __home_sql_mysql_auth_switch_request,
+    \\  mysqlLenencInt: __home_sql_mysql_lenenc_int,
+    \\  mysqlLenencStr: __home_sql_mysql_lenenc_str,
+    \\  mysqlColumnDefinition: __home_sql_mysql_column_definition,
+    \\  mysqlStmtPrepareOk: __home_sql_mysql_stmt_prepare_ok,
+    \\  mysqlReadPackets: __home_sql_mysql_read_packets,
     \\};
     \\globalThis.__home_modules["./wire-frames"] = __home_sql_wire_frames;
     \\function __home_bun_sql_invalid_binary_data() {
@@ -93541,6 +93646,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sql-mysql-cached-error.test.ts", .passed = 0, .allowed_empty = 1 },
         .{ .path = "js/sql/sql-mysql-clean-reentry.test.ts", .passed = 1 },
         .{ .path = "js/sql/sql-mysql-column-name-digits.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/sql/sql-mysql-columns-realloc-oom.test.ts", .passed = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
