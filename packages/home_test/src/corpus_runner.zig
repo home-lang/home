@@ -19735,7 +19735,7 @@ const harness_prelude =
     \\}
     \\function __home_gunzip_sync(value) {
     \\  const bytes = __home_body_bytes_sync(value);
-    \\  if (typeof __home_zlib_module === "object" && Number(__home_zlib_module.__home_max_output_length) <= 64) {
+    \\  if (typeof __home_zlib_module === "object" && __home_zlib_module.__home_max_output_length != null && Number(__home_zlib_module.__home_max_output_length) <= 64) {
     \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
     \\  }
     \\  const decoded = [];
@@ -19913,7 +19913,7 @@ const harness_prelude =
     \\  return decoded;
     \\}
     \\function __home_zstd_decompress_sync(value) {
-    \\  if (typeof __home_zlib_module === "object" && Number(__home_zlib_module.__home_max_output_length) <= 64) {
+    \\  if (typeof __home_zlib_module === "object" && __home_zlib_module.__home_max_output_length != null && Number(__home_zlib_module.__home_max_output_length) <= 64) {
     \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
     \\  }
     \\  const decoded = __home_zstd_unframe_bytes(__home_body_bytes_sync(value));
@@ -50536,19 +50536,6 @@ const harness_prelude =
     \\  stream.flush = function(kindOrCallback, callback) {
     \\    if (typeof kindOrCallback === "function") callback = kindOrCallback;
     \\    const shouldDrain = writableState.needDrain;
-    \\    if (normalizedKind === "brotli-compress") {
-    \\      const joined = Buffer.concat(input);
-    \\      if (joined.length > 0) {
-    \\        const chunk = joined.length === 16 && joined[0] === 0xff && joined[1] === 0xd8
-    \\          ? Buffer.from("iweA/9j/4AAQSkZJRgABAQEASA==", "base64")
-    \\          : __home_brotli_compress_sync(joined, opts);
-    \\        this.__home_emit_output(chunk);
-    \\      }
-    \\    } else if (normalizedKind === "deflate") {
-    \\      this.__home_emit_output(__home_deflate_sync(Buffer.concat(input)));
-    \\    } else if (normalizedKind === "deflate-raw") {
-    \\      this.__home_emit_output(__home_deflate_raw_sync(Buffer.concat(input)));
-    \\    }
     \\    writableState.length = 0;
     \\    writableState.needDrain = false;
     \\    if (typeof callback === "function") callback();
@@ -50561,21 +50548,33 @@ const harness_prelude =
     \\    if (chunk !== undefined) this.write(chunk, encoding);
     \\    if (!state.closed) {
     \\      const joined = Buffer.concat(input);
+    \\      let brotliDecoded = null;
     \\      if (normalizedKind === "inflate") {
     \\        const marker = __home_zlib_marker_index(joined, [0xde, 0xad, 0xbe, 0xef], 2);
     \\        if (marker >= 0) this.bytesWritten = marker + 4;
     \\      } else if (normalizedKind === "inflate-raw") {
     \\        const marker = __home_zlib_marker_index(joined, [0x00], 1);
     \\        if (marker >= 0) this.bytesWritten = marker + 1;
-    \\      } else if (normalizedKind === "brotli-decompress") {
-    \\        const trailing = __home_zlib_marker_index(joined, Buffer.from("not valid compressed data"), 0);
-    \\        if (trailing >= 0) this.bytesWritten = trailing;
+    \\      } else if (normalizedKind === "brotli-decompress" && (this.__home_has_data_listener || this.__home_pipe_destination)) {
+    \\        let lower = 1;
+    \\        let upper = joined.length;
+    \\        while (lower <= upper) {
+    \\          const consumed = lower + Math.floor((upper - lower) / 2);
+    \\          try {
+    \\            const decoded = __home_brotli_decompress_sync(joined.slice(0, consumed), opts);
+    \\            brotliDecoded = decoded;
+    \\            this.bytesWritten = consumed;
+    \\            upper = consumed - 1;
+    \\          } catch (error) {
+    \\            lower = consumed + 1;
+    \\          }
+    \\        }
     \\      }
     \\      try {
     \\        if (normalizedKind === "brotli-compress") this.__home_emit_output(__home_brotli_compress_sync(joined, opts));
     \\        else if (normalizedKind === "brotli-decompress") {
     \\          if (!this.__home_has_data_listener && !this.__home_pipe_destination) output.push(Buffer.alloc(0));
-    \\          else this.__home_emit_output(__home_brotli_decompress_sync(joined, opts));
+    \\          else this.__home_emit_output(brotliDecoded || __home_brotli_decompress_sync(joined, opts));
     \\        }
     \\        else if (normalizedKind === "gzip") this.__home_emit_output(__home_gzip_sync(joined));
     \\        else if (normalizedKind === "gunzip") this.__home_emit_output(__home_gunzip_sync(joined));
@@ -92484,6 +92483,34 @@ test "bootstrap runner preserves node worker contracts" {
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("node worker contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves node zlib contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/node/zlib/bytesWritten.test.ts", .passed = 5 },
+        .{ .path = "js/node/zlib/deflate-streaming.test.ts", .passed = 1 },
+        .{ .path = "js/node/zlib/leak.test.ts", .passed = 8 },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (cases) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("node zlib contract failure in {s}: {s}\n", .{ case.path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
