@@ -37155,15 +37155,95 @@ const harness_prelude =
     \\  return { port: server.port, host: server.hostname, async stop() { server.stop(); } };
     \\}
     \\globalThis.__home_modules["astro"] = { build: __home_astro_build, preview: __home_astro_preview };
-    \\function __home_express_json() {
+    \\function __home_express_header(request, name) {
+    \\  const headers = request && request.headers, key = String(name).toLowerCase();
+    \\  if (!headers) return undefined;
+    \\  if (typeof headers.get === "function") return headers.get(key) ?? undefined;
+    \\  if (headers[key] !== undefined) return headers[key];
+    \\  const found = Object.keys(headers).find(header => header.toLowerCase() === key);
+    \\  return found === undefined ? undefined : headers[found];
+    \\}
+    \\function __home_express_body_error(status, type, message, properties, cause) {
+    \\  const error = new Error(String(message));
+    \\  error.status = error.statusCode = Number(status);
+    \\  error.type = String(type);
+    \\  if (cause !== undefined) error.cause = cause;
+    \\  if (properties) Object.assign(error, properties);
+    \\  return error;
+    \\}
+    \\function __home_express_limit(value) {
+    \\  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.floor(value));
+    \\  const match = /^([0-9]+(?:[.][0-9]+)?)[ ]*(b|kb|mb|gb)?$/i.exec(String(value === undefined ? "100kb" : value));
+    \\  if (!match) return 100 * 1024;
+    \\  const scale = ({ b: 1, kb: 1024, mb: 1024 * 1024, gb: 1024 * 1024 * 1024 })[String(match[2] || "b").toLowerCase()];
+    \\  return Math.floor(Number(match[1]) * scale);
+    \\}
+    \\function __home_express_decode_body(bytes, charset) {
+    \\  const normalized = String(charset || "utf-8").toLowerCase();
+    \\  if (["utf-8", "utf8"].includes(normalized)) return Buffer.from(bytes).toString("utf8");
+    \\  if (["utf-16", "utf-16le", "utf16", "utf16le"].includes(normalized)) {
+    \\    const source = Buffer.from(bytes), bigEndian = source.length >= 2 && source[0] === 0xfe && source[1] === 0xff, start = source.length >= 2 && ((source[0] === 0xfe && source[1] === 0xff) || (source[0] === 0xff && source[1] === 0xfe)) ? 2 : 0;
+    \\    const decoded = Buffer.from(source.slice(start));
+    \\    if (bigEndian) for (let index = 0; index + 1 < decoded.length; index += 2) { const first = decoded[index]; decoded[index] = decoded[index + 1]; decoded[index + 1] = first; }
+    \\    return decoded.toString("utf16le");
+    \\  }
+    \\  throw __home_express_body_error(415, "charset.unsupported", "unsupported charset \"" + normalized.toUpperCase() + "\"");
+    \\}
+    \\function __home_express_inflate_body(bytes, encoding) {
+    \\  if (encoding === "deflate") return Buffer.from(__home_png_inflate(bytes));
+    \\  if (encoding !== "gzip" || bytes.length < 18 || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[2] !== 8) return Buffer.from(__home_gunzip_sync(bytes));
+    \\  const flags = bytes[3]; let offset = 10;
+    \\  if (flags & 4) { if (offset + 2 > bytes.length) throw new Error("invalid gzip extra field"); const length = bytes[offset] | bytes[offset + 1] << 8; offset += 2 + length; }
+    \\  if (flags & 8) while (offset < bytes.length && bytes[offset++] !== 0) {}
+    \\  if (flags & 16) while (offset < bytes.length && bytes[offset++] !== 0) {}
+    \\  if (flags & 2) offset += 2;
+    \\  if (offset > bytes.length - 8) throw new Error("invalid gzip body");
+    \\  return Buffer.from(__home_png_inflate(Buffer.concat([Buffer.from([0x78, 0x9c]), Buffer.from(bytes.slice(offset, -8))])));
+    \\}
+    \\function __home_express_json(options) {
+    \\  options = Object.assign({}, options || {});
+    \\  if (options.verify !== undefined && typeof options.verify !== "function") throw new TypeError("option verify must be function");
+    \\  const limit = __home_express_limit(options.limit), inflate = options.inflate !== false, strict = options.strict !== false, acceptedType = options.type === undefined ? "application/json" : options.type;
     \\  return async function homeExpressJson(request, response, next) {
+    \\    if (request.__home_json_parsed) return next();
     \\    try {
-    \\      const contentType = String(request.headers && (typeof request.headers.get === "function" ? request.headers.get("content-type") : request.headers["content-type"]) || "").toLowerCase();
-    \\      if (contentType.includes("application/json")) {
-    \\        let text = request.__home_raw_body;
-    \\        if (text === undefined && request.__home_web_request && typeof request.__home_web_request.text === "function") text = await request.__home_web_request.text();
-    \\        request.body = String(text || "").length ? JSON.parse(String(text)) : {};
+    \\      let raw = request.__home_raw_body;
+    \\      if (raw === undefined && request.__home_web_request && typeof request.__home_web_request.arrayBuffer === "function") raw = Buffer.from(await request.__home_web_request.arrayBuffer());
+    \\      const bytes = raw === undefined || raw === null ? Buffer.alloc(0) : raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(typeof raw === "string" ? raw : String(raw));
+    \\      const contentLengthValue = __home_express_header(request, "content-length"), transferEncoding = __home_express_header(request, "transfer-encoding");
+    \\      const contentLength = contentLengthValue === undefined ? null : Number(contentLengthValue), hasBody = bytes.length > 0 || (Number.isFinite(contentLength) && contentLength > 0) || transferEncoding !== undefined;
+    \\      if (!hasBody) { request.body = {}; request.__home_json_parsed = true; return next(); }
+    \\      const contentType = String(__home_express_header(request, "content-type") || "").toLowerCase(), mediaType = contentType.split(";", 1)[0].trim();
+    \\      const accepts = typeof acceptedType === "function" ? !!acceptedType(request) : (Array.isArray(acceptedType) ? acceptedType : [acceptedType]).some(value => String(value).toLowerCase() === mediaType);
+    \\      if (!accepts) return next();
+    \\      if (contentLength !== null && Number.isFinite(contentLength) && !transferEncoding && contentLength !== bytes.length) throw __home_express_body_error(400, "request.size.invalid", "request size did not match content length", { expected: contentLength, length: bytes.length });
+    \\      if ((contentLength !== null && Number.isFinite(contentLength) && contentLength > limit) || bytes.length > limit && String(__home_express_header(request, "content-encoding") || "identity").toLowerCase() === "identity") throw __home_express_body_error(413, "entity.too.large", "request entity too large", { limit, length: bytes.length });
+    \\      const encoding = String(__home_express_header(request, "content-encoding") || "identity").toLowerCase();
+    \\      if (!inflate && encoding !== "identity") throw __home_express_body_error(415, "encoding.unsupported", "content encoding unsupported", { encoding });
+    \\      let inflated;
+    \\      try {
+    \\        if (encoding === "identity") inflated = bytes;
+    \\        else if (encoding === "gzip" || encoding === "deflate") inflated = __home_express_inflate_body(bytes, encoding);
+    \\        else throw __home_express_body_error(415, "encoding.unsupported", "unsupported content encoding \"" + encoding + "\"", { encoding });
+    \\      } catch (error) { if (error && error.type === "encoding.unsupported") throw error; throw __home_express_body_error(400, "encoding.invalid", error && error.message || "invalid compressed body", undefined, error); }
+    \\      if (inflated.length > limit) throw __home_express_body_error(413, "entity.too.large", "request entity too large", { limit, length: inflated.length });
+    \\      const charsetPart = contentType.split(";").map(value => value.trim()).find(value => value.toLowerCase().startsWith("charset=")), charset = charsetPart ? charsetPart.slice(charsetPart.indexOf("=") + 1).trim().replace(/^['\"]|['\"]$/g, "") : "utf-8";
+    \\      const text = __home_express_decode_body(inflated, charset);
+    \\      if (options.verify) {
+    \\        try { options.verify(request, response, Buffer.from(inflated), charset); }
+    \\        catch (error) { error.status = error.status || 403; error.statusCode = error.status; error.type = error.type || "entity.verify.failed"; error.body = Buffer.from(inflated); throw error; }
     \\      }
+    \\      try {
+    \\        if (strict) {
+    \\          const first = text.length - text.trimStart().length;
+    \\          if (first < text.length && text[first] !== "{" && text[first] !== "[") {
+    \\            try { JSON.parse(text.slice(0, first) + "#" + text.slice(first + 1)); }
+    \\            catch (strictError) { strictError.message = strictError.message.replace(/#/g, text[first]); if (strictError.stack) strictError.stack = strictError.stack.replace(/#/g, text[first]); throw strictError; }
+    \\          }
+    \\        }
+    \\        request.body = text.length ? JSON.parse(text) : {};
+    \\      } catch (error) { error.status = error.statusCode = 400; error.type = "entity.parse.failed"; error.body = text; throw error; }
+    \\      request.__home_json_parsed = true;
     \\      next();
     \\    } catch (error) { next(error); }
     \\  };
@@ -37242,7 +37322,7 @@ const harness_prelude =
     \\    const next = value => {
     \\      if (value === "route") return finish({ kind: "route" });
     \\      if (value === "router") return finish({ kind: "router" });
-    \\      if (value !== undefined && value !== null) return finish({ kind: "next", error: value instanceof Error ? value : new Error(String(value)) });
+    \\      if (value !== undefined && value !== null) { const forwarded = value instanceof Error ? value : new Error(String(value)); if (forwarded.stack && forwarded.message && !String(forwarded.stack).includes(String(forwarded.message))) forwarded.stack = String(forwarded) + "\\n" + forwarded.stack; return finish({ kind: "next", error: forwarded }); }
     \\      finish({ kind: "next" });
     \\    };
     \\    try {
@@ -37364,9 +37444,9 @@ const harness_prelude =
     \\    const dispatched = __home_express_dispatch(application, request, response);
     \\    dispatched.then(result => {
     \\      if (result.kind === "end" || response.finished || response.writableEnded) return;
-    \\      if (result.error) { response.__home_express_error = result.error; application.emit("error", result.error); response.status(result.error.status || result.error.statusCode || 500).send("Internal Server Error"); }
+    \\      if (result.error) { response.__home_express_error = result.error; application.emit("error", result.error); response.status(result.error.status || result.error.statusCode || 500).send(String(result.error) + (result.error.stack ? "\\n" + result.error.stack : "")); }
     \\      else response.status(404).send("Not Found");
-    \\    }, error => { response.__home_express_error = error; application.emit("error", error); if (!response.finished) response.status(500).send("Internal Server Error"); });
+    \\    }, error => { response.__home_express_error = error; application.emit("error", error); if (!response.finished) response.status(500).send(error ? String(error) + (error.stack ? "\\n" + error.stack : "") : "Internal Server Error"); });
     \\    return dispatched;
     \\  };
     \\  Object.assign(application, app);
@@ -37385,11 +37465,13 @@ const harness_prelude =
     \\}
     \\function __home_supertest(app) {
     \\  const makeRequest = (method, path) => {
-    \\    const expectations = [], requestHeaders = {};
+    \\    const expectations = [], requestHeaders = {}, written = [];
     \\    let body;
     \\    const chain = {
-    \\      set(name, value) { if (name && typeof name === "object") Object.assign(requestHeaders, name); else requestHeaders[String(name).toLowerCase()] = value; return chain; },
-    \\      send(value) { body = value; return chain; },
+    \\      set(name, value) { if (name && typeof name === "object") { for (const key of Object.keys(name)) requestHeaders[key.toLowerCase()] = name[key]; } else requestHeaders[String(name).toLowerCase()] = value; return chain; },
+    \\      unset(name) { const key = String(name).toLowerCase(); for (const current of Object.keys(requestHeaders)) if (current.toLowerCase() === key) delete requestHeaders[current]; return chain; },
+    \\      send(value) { body = value; if (value && typeof value === "object" && !(value instanceof Uint8Array) && requestHeaders["content-type"] === undefined) requestHeaders["content-type"] = "application/json"; return chain; },
+    \\      write(value) { written.push(value); return chain; },
     \\      expect() {
     \\        const args = Array.from(arguments), callback = args.length > 1 && typeof args[args.length - 1] === "function" ? args.pop() : null;
     \\        if (typeof args[0] === "function") expectations.push({ kind: "callback", value: args[0] });
@@ -37402,7 +37484,7 @@ const harness_prelude =
     \\      end(callback) {
     \\        let delivered = false;
     \\        const done = (error, response) => { if (delivered) return; delivered = true; callback(error || null, response); };
-    \\        __home_supertest_execute(app, method, path, requestHeaders, body).then(response => {
+    \\        __home_supertest_execute(app, method, path, requestHeaders, body, written).then(response => {
     \\          try {
     \\            for (const expected of expectations) {
     \\              if (expected.kind === "callback") expected.value(response);
@@ -37415,7 +37497,7 @@ const harness_prelude =
     \\        }, error => done(error));
     \\        return chain;
     \\      },
-    \\      then(resolve, reject) { return __home_supertest_execute(app, method, path, requestHeaders, body).then(resolve, reject); },
+    \\      then(resolve, reject) { return __home_supertest_execute(app, method, path, requestHeaders, body, written).then(resolve, reject); },
     \\    };
     \\    return chain;
     \\  };
@@ -37423,9 +37505,10 @@ const harness_prelude =
     \\  for (const method of __home_http_methods) agent[method.toLowerCase()] = path => makeRequest(method, path);
     \\  return agent;
     \\}
-    \\function __home_supertest_execute(app, method, path, headers, body) {
+    \\function __home_supertest_execute(app, method, path, headers, body, written) {
     \\  return new Promise((resolve, reject) => {
-    \\    const request = Object.assign(__home_http_event_target(), { method, url: String(path || "/"), headers: Object.assign({}, headers), __home_raw_body: body === undefined ? undefined : (typeof body === "string" ? body : JSON.stringify(body)), get(name) { return this.headers[String(name).toLowerCase()]; }, resume() { return this; } });
+    \\    const parts = written && written.length ? written : body === undefined ? [] : [body], buffers = parts.map(part => part instanceof Uint8Array ? Buffer.from(part) : Buffer.from(typeof part === "string" ? part : JSON.stringify(part))), rawBody = buffers.length ? Buffer.concat(buffers) : undefined;
+    \\    const request = Object.assign(__home_http_event_target(), { method, url: String(path || "/"), headers: Object.assign({}, headers), __home_raw_body: rawBody, get(name) { return this.headers[String(name).toLowerCase()]; }, resume() { return this; } });
     \\    const chunks = [], response = Object.assign(__home_http_event_target(), {
     \\      statusCode: 200, headers: {},
     \\      setHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value); return this; },
@@ -100817,6 +100900,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/es-module-lexer/es-module-lexer.test.ts", .passed = 1 },
         .{ .path = "js/third_party/esbuild/esbuild-child_process.test.ts", .passed = 1 },
         .{ .path = "js/third_party/express/app.router.test.ts", .passed = 77, .todo = 45 },
+        .{ .path = "js/third_party/express/express.json.test.ts", .passed = 47, .todo = 7 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
