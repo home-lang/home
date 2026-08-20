@@ -91292,7 +91292,7 @@ pub const Checker = struct {
                     if (qualified_private_text_mismatch) |texts| annotation_text_mismatch = texts;
                     break :blk false;
                 }
-                if (prior_explicit and has_annotation and !different_private_origins) {
+                if (!different_private_origins) {
                     const prior_text = try self.subsequentVarTypeText(prior);
                     const current_text = try self.subsequentVarTypeText(final_type);
                     if (prior_text != null and current_text != null and
@@ -138718,11 +138718,6 @@ pub const Checker = struct {
                             try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                         }
                     },
-                    .literal_number => {
-                        if (hir_mod.literalNumberOf(self.hir, u.operand) != 0) {
-                            try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
-                        }
-                    },
                     // `!null` / `!undefined` ÃÂ¢ÃÂÃÂ both operands are the
                     // canonical falsy literals. tsc emits TS2873 at
                     // the operand. Mirrors fixture
@@ -178069,6 +178064,13 @@ test "checker: negated regex literal reports always truthy" {
         if (d.code == TsCodes.expression_always_truthy) saw = true;
     }
     try T.expect(saw);
+}
+
+test "checker: negated numeric literal does not report always truthy" {
+    const s = try newSetup("const value = !1;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_always_truthy));
 }
 
 test "checker: unreachable JS reports TS7027 per unreachable run" {
@@ -232398,6 +232400,19 @@ test "checker: TS2403 not emitted for redeclared var with same union type (this-
         \\    var r = true ? t : u;
         \\    var r = true ? u : t;
         \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: inferred and annotated identical arrays do not report TS2403" {
+    const s = try newSetup(
+        \\function choose<A extends Date, B extends A, C extends B>(a: A, b: B, c: C) {
+        \\  return [a, b, c];
+        \\}
+        \\var dates = choose(new Date(), new Date(), new Date());
+        \\var dates: Date[];
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
