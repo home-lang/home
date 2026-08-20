@@ -231260,6 +231260,18 @@ test "checker: Array.prototype precision batch — fromIndex/optional/concat sha
     }
 }
 
+test "checker: Array.concat rejects incompatible arrays through overload set" {
+    const s = try newSetup(
+        \\const numbers: number[] = [1, 2];
+        \\const symbols: symbol[] = [];
+        \\numbers.concat(symbols);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: Array.prototype.sort comparator contextually types both elements" {
     const s = try newSetup(
         \\interface IOptions {

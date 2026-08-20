@@ -530,11 +530,13 @@ pub fn arrayProto(
     const optional_string_t = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
     const sig_join = try ti.internSignature(&[_]TypeId{optional_string_t}, string_t, false);
     const sig_find = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
-    // `concat(...items: (T | T[])[]): T[]` — accepts both individual
-    // values and arrays of values as varargs. Upstream uses
-    // `ConcatArray<T>` for array-like sources; `T | T[]` covers the
-    // common patterns. The trailing union-arr param is registered in
-    // `rest_set` so call sites expand to 0+ `T | T[]` arguments.
+    // Preserve lib.d.ts's two concat overloads so failed calls report
+    // against an overload set instead of collapsing to a single TS2345.
+    const concat_array_rest = try ti.internArrayType(sint, arr_t);
+    const sig_concat_arrays = try ti.internSignature(&[_]TypeId{concat_array_rest}, arr_t, false);
+    try rest_set.put(gpa, sig_concat_arrays, {});
+    // `concat(...items: (T | T[])[]): T[]` accepts both individual
+    // values and arrays of values as varargs.
     const t_or_arr_t = try ti.internUnion(&[_]TypeId{ elem, arr_t });
     const concat_rest_arr = try ti.internArrayType(sint, t_or_arr_t);
     const sig_concat = try ti.internSignature(&[_]TypeId{concat_rest_arr}, arr_t, false);
@@ -629,6 +631,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("join"), .type = sig_join, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("find"), .type = sig_find, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("concat"), .type = sig_concat_arrays, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("concat"), .type = sig_concat, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reverse"), .type = sig_reverse, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("sort"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
