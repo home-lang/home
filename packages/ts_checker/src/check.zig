@@ -7766,8 +7766,12 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
                     }
                 } else if (self.current_function_return_t) |declared| {
-                    var emitted_nullish_return_mismatch = r.value != hir_mod.none_node_id and
-                        try self.tryReportRecursiveIndexedAliasReturnMismatch(node, r.value, declared);
+                    const contextual_function_return_assignable = r.value != hir_mod.none_node_id and
+                        self.isContextualFunctionExpressionLike(r.value) and
+                        try self.functionExpressionAssignableToSignatureTarget(r.value, ret_t, declared);
+                    var emitted_nullish_return_mismatch = contextual_function_return_assignable or
+                        (r.value != hir_mod.none_node_id and
+                            try self.tryReportRecursiveIndexedAliasReturnMismatch(node, r.value, declared));
                     if (self.strict_flags.strict_null_checks and
                         r.value == hir_mod.none_node_id and
                         self.declaredReturnRejectsNullish(declared, types.Primitive.undefined_t))
@@ -17425,7 +17429,14 @@ pub const Checker = struct {
                     declared_from_paired_setter = true;
                     break :blk setter_t;
                 }
-                const candidate_sig = self.contextualReturnSignatureForFunction(node);
+                // Call arguments receive contextual parameter types while
+                // return incompatibilities are owned by overload resolution
+                // (TS2345 at the argument), not by an eager TS2322 inside the
+                // callback body.
+                const candidate_sig = if (self.functionContextComesFromCallArgument(node))
+                    null
+                else
+                    self.contextualReturnSignatureForFunction(node);
                 contextual_sig = if (candidate_sig) |sig|
                     if (!f.flags.is_async or self.typeContainsPromisePayload(self.interner.signatureReturn(sig) orelse types.Primitive.none))
                         sig
@@ -27064,6 +27075,12 @@ pub const Checker = struct {
                 if (conditional.then_branch != fn_node and conditional.else_branch != fn_node) return null;
                 return self.contextualTargetTypeForExpression(parent);
             },
+            .return_stmt => {
+                const ret = hir_mod.returnOf(self.hir, parent);
+                if (ret.value != fn_node) return null;
+                const outer = self.enclosingFunctionLike(parent) orelse return null;
+                return self.declaredOrContextualReturnTypeForFunction(outer);
+            },
             .array_literal => return self.contextualArrayLiteralFunctionElementTarget(fn_node, parent) catch null,
             .var_decl, .let_decl, .const_decl => {
                 const v = hir_mod.varDeclOf(self.hir, parent);
@@ -27111,6 +27128,33 @@ pub const Checker = struct {
         return target_t;
     }
 
+    fn functionContextComesFromCallArgument(self: *Checker, fn_node: NodeId) bool {
+        var child = fn_node;
+        var parent = self.hir.parentOf(child);
+        while (parent != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(parent)) {
+                .conditional => {
+                    const conditional = hir_mod.conditionalOf(self.hir, parent);
+                    if (conditional.then_branch != child and conditional.else_branch != child) return false;
+                },
+                .binary_op => {
+                    const binary = hir_mod.binopOf(self.hir, parent);
+                    if (binary.op != .comma or binary.rhs != child) return false;
+                },
+                .call_expr, .new_expr => {
+                    for (hir_mod.callArgs(self.hir, parent)) |argument| {
+                        if (argument == child) return true;
+                    }
+                    return false;
+                },
+                else => return false,
+            }
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }
+        return false;
+    }
+
     fn contextualTargetTypeForExpression(self: *Checker, expr_node: NodeId) ?TypeId {
         const parent = self.hir.parentOf(expr_node);
         if (parent == hir_mod.none_node_id) return null;
@@ -27132,6 +27176,17 @@ pub const Checker = struct {
                 const b = hir_mod.binopOf(self.hir, parent);
                 if (b.op != .comma or b.rhs != expr_node) return null;
                 return self.contextualTargetTypeForExpression(parent);
+            },
+            .return_stmt => {
+                const ret = hir_mod.returnOf(self.hir, parent);
+                if (ret.value != expr_node) return null;
+                const outer = self.enclosingFunctionLike(parent) orelse return null;
+                return self.declaredOrContextualReturnTypeForFunction(outer);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const function = hir_mod.fnDeclOf(self.hir, parent);
+                if (function.body != expr_node) return null;
+                return self.declaredOrContextualReturnTypeForFunction(parent);
             },
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, parent);
@@ -27175,6 +27230,14 @@ pub const Checker = struct {
         arg_index: usize,
     ) CheckError!?TypeId {
         const params = self.interner.signatureParams(sig);
+        if (arg_index > 0 and self.callCalleeHasOverloadSet(callee_node)) {
+            const prior_count = @min(arg_index, params.len);
+            for (args[0..prior_count], params[0..prior_count]) |prior_arg, prior_param_t| {
+                var prior_t = self.hir.typeOf(prior_arg);
+                if (prior_t == types.Primitive.none) prior_t = try self.checkExpression(prior_arg);
+                if (!(self.isArgumentAssignableToParam(prior_arg, prior_t, prior_param_t) catch return null)) return null;
+            }
+        }
         if (!self.rest_signatures.contains(sig)) {
             return if (arg_index < params.len) params[arg_index] else null;
         }
@@ -27207,32 +27270,68 @@ pub const Checker = struct {
         return self.contextualRestTupleElementType(rest_tuple_t, rest_index);
     }
 
+    fn callCalleeHasOverloadSet(self: *Checker, callee_node: NodeId) bool {
+        if (self.hir.kindOf(callee_node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, callee_node).name;
+        const overload_list = self.overloads.get(name) orelse return false;
+        const has_impl = self.overload_has_implementation.contains(name);
+        return overload_list.items.len - @intFromBool(has_impl) > 1;
+    }
+
     fn contextualSignatureForCall(
         self: *Checker,
         call_node: NodeId,
         callee_t: TypeId,
         args: []const NodeId,
     ) ?TypeId {
-        if (self.callExprIsTaggedTemplate(call_node)) {
-            const call = hir_mod.callOf(self.hir, call_node);
-            if (self.hir.kindOf(call.callee) == .identifier) {
-                const name = hir_mod.identifierOf(self.hir, call.callee).name;
-                if (self.overloads.get(name)) |overload_list| {
-                    const has_impl = self.overload_has_implementation.contains(name);
-                    const visible_len = overload_list.items.len - @intFromBool(has_impl);
-                    var selected: TypeId = types.Primitive.none;
-                    for (overload_list.items[0..visible_len]) |sig| {
-                        if (!self.callArityFitsSignature(call_node, sig, args)) continue;
-                        if (selected != types.Primitive.none) {
-                            return self.firstSignatureType(callee_t);
-                        }
-                        selected = sig;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, call.callee).name;
+            if (std.mem.eql(u8, self.string_interner.get(name), "super")) {
+                if (self.firstConstructSignatureType(callee_t)) |signature| return signature;
+            }
+            if (self.overloads.get(name)) |overload_list| {
+                const has_impl = self.overload_has_implementation.contains(name);
+                const visible_len = overload_list.items.len - @intFromBool(has_impl);
+                var selected: TypeId = types.Primitive.none;
+                for (overload_list.items[0..visible_len]) |sig| {
+                    if (!self.callArityFitsSignature(call_node, sig, args)) continue;
+                    if (selected != types.Primitive.none) {
+                        return self.firstSignatureType(callee_t);
                     }
-                    if (selected != types.Primitive.none) return selected;
+                    selected = sig;
                 }
+                if (selected != types.Primitive.none) return selected;
             }
         }
         return self.firstSignatureType(callee_t);
+    }
+
+    fn firstConstructSignatureType(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature and self.signatureIsConstruct(t)) return t;
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| {
+                if (self.interner.isSignature(member.type) and self.signatureIsConstruct(member.type)) return member.type;
+            }
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.firstConstructSignatureType(member)) |signature| return signature;
+            }
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.firstConstructSignatureType(member)) |signature| return signature;
+            }
+        }
+        if (flags.is_type_parameter) {
+            if (self.typeParameterConstraint(t)) |constraint| {
+                if (constraint != t) return self.firstConstructSignatureType(constraint);
+            }
+        }
+        return null;
     }
 
     fn contextualSymbolicTupleElementTypeAt(
@@ -27667,6 +27766,17 @@ pub const Checker = struct {
         const return_t = self.contextualReturnTypeForFunction(fn_node) orelse return null;
         if (!is_async or self.typeContainsPromisePayload(return_t)) return return_t;
         return null;
+    }
+
+    fn declaredOrContextualReturnTypeForFunction(self: *Checker, fn_node: NodeId) ?TypeId {
+        const kind = self.hir.kindOf(fn_node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.return_type != hir_mod.none_node_id) {
+            const declared = self.lowerReturnTypeAnnotationWithCircularityGuard(fn_node, function.return_type) catch return null;
+            return if (function.flags.is_async) self.evalAwaited(declared) else declared;
+        }
+        return self.contextualReturnTypeForFunctionKind(fn_node, function.flags.is_async);
     }
 
     fn typeContainsPromisePayload(self: *Checker, t: TypeId) bool {
@@ -32321,7 +32431,7 @@ pub const Checker = struct {
                 var object_member_target: ?TypeId = null;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
-                    .call_expr => if (!self.callExprIsTaggedTemplate(parent)) break :blk null,
+                    .call_expr, .new_expr, .conditional, .binary_op => {},
                     .object_property => {
                         const property = hir_mod.objectPropertyOf(self.hir, parent);
                         if (property.value != node) break :blk null;
@@ -80969,6 +81079,7 @@ pub const Checker = struct {
 
         // Type the initializer.
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
+        var contextual_object_return_diag_emitted = false;
         if (!v.is_ambient and
             v.init == hir_mod.none_node_id and
             v.type_annotation == hir_mod.none_node_id and
@@ -81060,6 +81171,11 @@ pub const Checker = struct {
             if (declared_type != types.Primitive.none) {
                 if (try self.contextualGenericCallResult(v.init, init_type, declared_type)) |contextual_t| {
                     init_type = contextual_t;
+                }
+                if (self.hir.kindOf(v.init) == .object_literal) {
+                    const contextual_diag_start = self.diagnostics.items.len;
+                    try self.checkObjectLiteralMethodsWithContextualTypeMode(v.init, declared_type, true);
+                    contextual_object_return_diag_emitted = self.diagnostics.items.len > contextual_diag_start;
                 }
                 self.clearContextualAnyObjectLiteralNullishImplicitAnyDiagnostics(v.init, declared_type, init_diag_start);
                 if (self.objectLiteralUnionMismatchReportsAtDeclaration(v.init, declared_type)) {
@@ -81404,6 +81520,8 @@ pub const Checker = struct {
                     // The declared destructuring source itself is invalid
                     // (for example `{ }: undefined`), so tsc reports the
                     // pattern diagnostic and skips the outer assignment prose.
+                } else if (contextual_object_return_diag_emitted) {
+                    // The callback body owns the contextual return mismatch.
                 } else if (self.diagnostics.items.len > assignability_diag_count) {
                     // A more precise element-level tuple diagnostic was emitted.
                 } else if (self.hir.kindOf(v.init) == .object_literal and
@@ -93076,6 +93194,27 @@ pub const Checker = struct {
             try out.append(arena, ')');
         }
         return out.items;
+    }
+
+    fn formatConditionalFunctionArgumentNotAssignable(
+        self: *Checker,
+        arg_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!?[]const u8 {
+        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .conditional) return null;
+        const conditional = hir_mod.conditionalOf(self.hir, arg_node);
+        const then_t = self.hir.typeOf(conditional.then_branch);
+        const else_t = self.hir.typeOf(conditional.else_branch);
+        if (then_t == types.Primitive.none or else_t == types.Primitive.none) return null;
+        const source_name = (try self.allocConditionalFunctionUnionDisplayName(conditional, then_t, else_t)) orelse return null;
+        const target_name = self.alias_display_names.get(target_t) orelse
+            (try self.simpleDiagnosticTypeName(target_t)) orelse return null;
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+            .{ source_name, target_name },
+        );
+        return message;
     }
 
     fn unnarrowedAnnotatedUnionType(self: *Checker, node: NodeId) ?TypeId {
@@ -107046,8 +107185,15 @@ pub const Checker = struct {
                     "Type '{s}' is not assignable to type '{s}'.",
                     .{ src_text, target_text },
                 );
+                const object_arrow = self.hir.kindOf(fn_node) == .arrow_fn and
+                    self.hir.kindOf(self.hir.parentOf(fn_node)) == .object_property;
+                const diagnostic_pos = if (object_arrow)
+                    self.hir.spanOf(f.body).start -| 1
+                else
+                    null;
                 try self.diagnostics.append(self.gpa, .{
                     .node = f.body,
+                    .pos = diagnostic_pos,
                     .code = TsCodes.type_not_assignable,
                     .message = msg,
                 });
@@ -131637,6 +131783,15 @@ pub const Checker = struct {
     }
 
     fn checkObjectLiteralMethodsWithContextualType(self: *Checker, node: NodeId, target_t: TypeId) CheckError!void {
+        try self.checkObjectLiteralMethodsWithContextualTypeMode(node, target_t, false);
+    }
+
+    fn checkObjectLiteralMethodsWithContextualTypeMode(
+        self: *Checker,
+        node: NodeId,
+        target_t: TypeId,
+        check_return_assignability: bool,
+    ) CheckError!void {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return;
         for (hir_mod.objectLiteralProps(self.hir, node)) |property_node| {
             if (self.hir.kindOf(property_node) != .object_property) continue;
@@ -131647,7 +131802,7 @@ pub const Checker = struct {
             const name = self.propertyNameFromKeyNode(property.key) orelse continue;
             const member_t = (try self.contextualObjectLiteralMemberTarget(target_t, name)) orelse continue;
             const signature = self.firstSignatureType(member_t) orelse continue;
-            try self.checkFunctionWithContextualSignatureMode(property.value, signature, false, null);
+            try self.checkFunctionWithContextualSignatureMode(property.value, signature, check_return_assignability, null);
         }
     }
 
@@ -133869,6 +134024,15 @@ pub const Checker = struct {
         while (i > 0 and src[i - 1] == '(') : (i -= 1) {}
         if (i == span.start) return null;
         return @intCast(i);
+    }
+
+    fn truthinessOperandAnchorPos(self: *Checker, node: NodeId) ?u32 {
+        const kind = self.hir.kindOf(node);
+        if (kind == .fn_decl or kind == .fn_expr) {
+            const function = hir_mod.fnDeclOf(self.hir, node);
+            if (function.name != hir_mod.none_node_id) return self.hir.spanOf(function.name).start;
+        }
+        return self.symbolOperandAnchorPos(node);
     }
 
     /// True when `node` is the direct cond of an `if`/`while`/`do-while`
@@ -138333,7 +138497,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(l.lhs) == .literal_string) {
                 try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             } else {
-                const lhs_pos = self.symbolOperandAnchorPos(l.lhs);
+                const lhs_pos = self.truthinessOperandAnchorPos(l.lhs);
                 try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             }
         }
@@ -138341,12 +138505,12 @@ pub const Checker = struct {
             if (self.hir.kindOf(l.lhs) == .literal_string) {
                 try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             } else {
-                try self.reportAt(l.lhs, self.symbolOperandAnchorPos(l.lhs), TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                try self.reportAt(l.lhs, self.truthinessOperandAnchorPos(l.lhs), TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             }
             try self.reportLogicalTruthyFunctionImplicitAnyParams(l.lhs);
         }
         if (report_syntactic_truthiness and l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
-            try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+            try self.reportAt(l.lhs, self.symbolOperandAnchorPos(l.lhs), TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
         }
         // tsc also fires TS2873 on the LHS of `&&` when it is a
         // literal `null` / `undefined` / empty string (the always-falsy
@@ -144482,6 +144646,7 @@ pub const Checker = struct {
                         try self.formatInferredInstantiationBoundaryCallbackArgument(args[i], display_param_t, i)
                     else
                         null;
+                    const conditional_function_msg = try self.formatConditionalFunctionArgumentNotAssignable(args[i], param_t);
                     const msg = if (generic_keyof_msg) |m|
                         m
                     else if (predicate_msg) |m|
@@ -144489,6 +144654,8 @@ pub const Checker = struct {
                     else if (generator_msg) |m|
                         m
                     else if (exact_optional_msg) |m|
+                        m
+                    else if (conditional_function_msg) |m|
                         m
                     else if (try self.formatNullishLiteralArgumentNotAssignable(
                         args[i],
@@ -152340,6 +152507,9 @@ pub const Checker = struct {
             if (self.containsFreeTypeParameter(param_t)) return true;
             if (try self.arrayLiteralAssignableToTarget(arg_node, param_t)) return true;
         }
+        if (self.hir.kindOf(arg_node) == .conditional) {
+            return try self.conditionalExpressionAssignableToTarget(arg_node, param_t);
+        }
         if (try self.contextualCallReturnAssignableToParam(arg_node, param_t)) return true;
         if (try self.contextualGeneratorFunctionRelationToParam(arg_node, arg_t, param_t)) |generator_ok| return generator_ok;
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
@@ -153516,8 +153686,40 @@ pub const Checker = struct {
         if (!self.containsFreeTypeParameter(target_t)) {
             if (try self.contextualFunctionExpressionReturnAssignable(arg_node, relation_source_t, target_t)) |ok| return ok;
         }
+        if (try self.contextualFunctionBodyAssignableToTargetReturn(arg_node, target_ret)) {
+            return try self.functionExpressionParametersAssignableToTarget(relation_source_t, target_t);
+        }
         if (self.engine.isAssignableTo(relation_source_t, target_t) catch false) return true;
         return self.contextualFunctionSignatureAssignable(relation_source_t, target_t) catch false;
+    }
+
+    fn contextualFunctionBodyAssignableToTargetReturn(
+        self: *Checker,
+        fn_node: NodeId,
+        target_ret: TypeId,
+    ) CheckError!bool {
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(function.body) != .block_stmt) {
+            const body_t = if (self.hir.typeOf(function.body) != types.Primitive.none)
+                self.hir.typeOf(function.body)
+            else
+                try self.checkExpression(function.body);
+            return try self.expressionNodeAssignableToTarget(function.body, body_t, target_ret);
+        }
+
+        var return_expressions: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer return_expressions.deinit(self.gpa);
+        try self.collectReturnExpressions(function.body, &return_expressions);
+        if (return_expressions.items.len == 0) return false;
+        for (return_expressions.items) |expression| {
+            const expression_t = if (self.hir.typeOf(expression) != types.Primitive.none)
+                self.hir.typeOf(expression)
+            else
+                try self.checkExpression(expression);
+            if (!try self.expressionNodeAssignableToTarget(expression, expression_t, target_ret)) return false;
+        }
+        return true;
     }
 
     fn annotatedRestBeginsBeforeTargetFixedPrefix(self: *Checker, fn_node: NodeId, target_t: TypeId) bool {
@@ -170170,7 +170372,10 @@ pub const Checker = struct {
             try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
-        if (source_t == types.Primitive.undefined_t and !self.typeIncludesUndefined(target_t)) {
+        if (source_t == types.Primitive.undefined_t and
+            (self.strict_flags.strict_null_checks or checked_js_null_cast) and
+            !self.typeIncludesUndefined(target_t))
+        {
             try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
@@ -207951,6 +208156,94 @@ test "checker: tagged template overload arity contextually types substitutions" 
     try T.expectEqual(@as(usize, 0), untyped_calls);
     try T.expectEqual(@as(usize, 0), implicit_any_params);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
+}
+
+test "checker: overload arity contextually types parenthesized callback arguments" {
+    const s = try newSetup(
+        \\type FuncType = (x: <T>(p: T) => T) => typeof x;
+        \\function fun<T>(f: FuncType, x: T): T;
+        \\function fun<T>(f: FuncType, g: FuncType, x: T): T;
+        \\function fun<T>(...rest: any[]): T { return undefined; }
+        \\fun((x => { x<number>(undefined); return x; }), 10);
+        \\fun((true ? x => { x<number>(undefined); return x; } : x => undefined), 10);
+        \\fun((true ? x => { x<number>(undefined); return x; } : x => undefined), x => { x<number>(undefined); return x; }, 10);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.untyped_function_type_args));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expect(checkerCountCode(s, TsCodes.argument_type_mismatch) >= 3);
+}
+
+test "checker: super call context instantiates inherited generic constructor callback" {
+    const s = try newSetup(
+        \\class A<T1, T2> { constructor(map: (value: T1) => T2) {} }
+        \\class C extends A<number, string> {
+        \\  constructor() { super(value => String(value<string>())); }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: declared returns contextually type nested function array results" {
+    const s = try newSetup(
+        \\class Base { private base: any; }
+        \\class Left extends Base { private left: any; }
+        \\class Right extends Base { private right: any; }
+        \\declare const left: Left;
+        \\declare const right: Right;
+        \\function arrow(): () => Base[] { return () => [left, right]; }
+        \\function expression(): () => Base[] { return function() { return [left, right]; }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: typed object arrows report contextual comma return mismatches at the body" {
+    const source = "type Obj = { x: (p: number) => string }; var obj: Obj = { x: x => (x, undefined) };";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.comma_left_unused));
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "(x, undefined)") orelse unreachable);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
+    }
+}
+
+test "checker: strict-off undefined assertions stay permissive and truthiness anchors survive wrappers" {
+    const source =
+        \\const a = (<number>undefined) || 1;
+        \\const b = function named() {} || undefined;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_falsy));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_truthy));
+    const falsy_pos: u32 = @intCast(std.mem.indexOf(u8, source, "(<number>") orelse unreachable);
+    const truthy_pos: u32 = @intCast(std.mem.indexOf(u8, source, "named") orelse unreachable);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        const pos = diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start;
+        if (diagnostic.code == TsCodes.expression_always_falsy) try T.expectEqual(falsy_pos, pos);
+        if (diagnostic.code == TsCodes.expression_always_truthy) try T.expectEqual(truthy_pos, pos);
+    }
 }
 
 test "checker: tagged template callable interface preserves self index type" {
