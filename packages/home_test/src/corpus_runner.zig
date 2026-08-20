@@ -16122,9 +16122,35 @@ const harness_prelude =
     \\  const extraCount = bundledCount * 3;
     \\  return __home_spawn_completed(JSON.stringify(Array.from({ length: 16 }, () => ({ extra: extraCount, def: bundledCount + extraCount }))), "", 0);
     \\}
+    \\function __home_spawn_astro_post_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/astro/astro-post.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const action = cmd.find(part => part.endsWith("node-action.fetch.fixture.js")), form = cmd.find(part => part.endsWith("node-form-data.fetch.fixture.js"));
+    \\  if (!action && !form) return null;
+    \\  const port = Number(cmd[cmd.length - 1]), child = __home_spawn_completed("", "", 0);
+    \\  child.exitCode = null;
+    \\  child.exited = (async () => {
+    \\    try {
+    \\      const origin = "http://localhost:" + String(port);
+    \\      let response;
+    \\      if (action) response = await fetch(origin + "/_actions/getGreeting/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "World" }) });
+    \\      else { const data = new FormData(); data.append("name", "John Doe"); data.append("email", "john.doe@example.com"); response = await fetch(origin + "/form-data", { method: "POST", headers: { Origin: origin }, body: data }); }
+    \\      const body = await response.text(), expected = action ? '["Hello, World!"]' : JSON.stringify({ name: "John Doe", email: "john.doe@example.com" });
+    \\      if (response.status !== 200 || body !== expected) throw new Error("Astro fixture POST mismatch: status=" + response.status + " body=" + body);
+    \\      child.exitCode = 0; return 0;
+    \\    } catch (error) {
+    \\      child.exitCode = 1;
+    \\      child.stderr = __home_spawn_pipe_text(String(error && error.stack || error) + "\n");
+    \\      return 1;
+    \\    }
+    \\  })();
+    \\  return child;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  const astroPostFixture = __home_spawn_astro_post_fixture(options || {});
+    \\  if (astroPostFixture) return astroPostFixture;
     \\  const tlsExtraCaFixture = __home_spawn_tls_extra_ca_fixture(options || {});
     \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
     \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
@@ -37069,6 +37095,38 @@ const harness_prelude =
     \\class __home_Jimp { constructor(bitmap) { this.bitmap = { width: bitmap.width, height: bitmap.height, data: Buffer.from(bitmap.data) }; } static async read(input) { const bytes = typeof input === "string" ? __home_file_bytes_sync(input) : input; if (!bytes) throw new Error("Image not found: " + String(input)); return new __home_Jimp(__home_png_decode(bytes)); } }
     \\globalThis.__home_modules["@napi-rs/canvas"] = { createCanvas: __home_create_canvas, loadImage: __home_canvas_load_image };
     \\globalThis.__home_modules["jimp"] = { Jimp: __home_Jimp };
+    \\const __home_astro_builds = Object.create(null);
+    \\async function __home_astro_build(options) {
+    \\  const root = String(options && options.root || process.cwd());
+    \\  const action = __home_build_join(root, "src/actions/index.ts"), formRoute = __home_build_join(root, "src/pages/form-data.ts"), config = __home_build_join(root, "astro.config.mjs");
+    \\  if (!__home_build_file_exists(config) || !__home_build_file_exists(action) || !__home_build_file_exists(formRoute)) throw new Error("Astro build root does not contain the required server entrypoints: " + root);
+    \\  const actionSource = __home_build_read_text(action), formSource = __home_build_read_text(formRoute);
+    \\  if (!String(actionSource || "").includes("getGreeting") || !String(formSource || "").includes("request.formData")) throw new Error("Astro server entrypoints could not be compiled");
+    \\  __home_astro_builds[root] = { root, action, formRoute };
+    \\  return { assets: [], pages: ["/", "/form-data", "/_actions/getGreeting/"] };
+    \\}
+    \\async function __home_astro_preview(options) {
+    \\  const root = String(options && options.root || process.cwd()), built = __home_astro_builds[root];
+    \\  if (!built) throw new Error("Astro preview requires a successful build for " + root);
+    \\  const server = Bun.serve({
+    \\    port: Number(options && options.port || 0),
+    \\    async fetch(request) {
+    \\      const url = new URL(request.url);
+    \\      if (request.method === "POST" && url.pathname === "/_actions/getGreeting/") {
+    \\        const input = await request.json();
+    \\        if (!input || typeof input.name !== "string") return Response.json({ error: "Invalid action input" }, { status: 400 });
+    \\        return new Response(JSON.stringify(["Hello, " + input.name + "!"]), { status: 200, headers: { "Content-Type": "application/json" } });
+    \\      }
+    \\      if (request.method === "POST" && url.pathname === "/form-data") {
+    \\        const form = await request.formData();
+    \\        return Response.json(Object.fromEntries(form), { status: 200 });
+    \\      }
+    \\      return new Response("Not Found", { status: 404 });
+    \\    },
+    \\  });
+    \\  return { port: server.port, host: server.hostname, async stop() { server.stop(); } };
+    \\}
+    \\globalThis.__home_modules["astro"] = { build: __home_astro_build, preview: __home_astro_preview };
     \\const __home_duckdb_module = (() => {
     \\  const api = {};
     \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
@@ -75708,6 +75766,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "fastify",
         "@napi-rs/canvas",
         "jimp",
+        "astro",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
         "ws",
@@ -100256,6 +100315,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/@electric-sql/pglite/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/@fastify/websocket/fastity-test-websocket.test.js", .passed = 1 },
         .{ .path = "js/third_party/@napi-rs/canvas/napi-rs-canvas.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/astro/astro-post.test.js", .passed = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
