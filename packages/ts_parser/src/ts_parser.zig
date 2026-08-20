@@ -19787,7 +19787,7 @@ pub const Parser = struct {
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
         const diagnostic_start = self.diagnostics.items.len;
-        var node = try self.parseJsxElementOrFragment();
+        var node = try self.parseJsxElementOrFragment(null);
         var recovered_malformed_fragment = false;
         for (self.diagnostics.items[diagnostic_start..]) |diagnostic| {
             if (diagnostic.code == 17014 or diagnostic.code == 17015) {
@@ -19805,7 +19805,7 @@ pub const Parser = struct {
             // and drop the siblings, losing their checker diagnostics
             // entirely (upstream `tsxErrorRecovery2`).
             const first_span = self.hir.spanOf(node);
-            const sib = self.parseJsxElementOrFragment() catch |err| switch (err) {
+            const sib = self.parseJsxElementOrFragment(null) catch |err| switch (err) {
                 error.UnexpectedToken => return node,
                 else => return err,
             };
@@ -19876,7 +19876,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseJsxElementOrFragment(self: *Parser) ParseError!NodeId {
+    fn parseJsxElementOrFragment(self: *Parser, parent_tag: ?NodeId) ParseError!NodeId {
         const open = try self.expect(.less_than, "'<' to start JSX element");
         // Fragment: `<>...</>`
         if (self.peek().kind == .greater_than) {
@@ -19884,7 +19884,7 @@ pub const Parser = struct {
             var children: std.ArrayListUnmanaged(NodeId) = .empty;
             defer children.deinit(self.gpa);
             const content_start = self.tokens[self.cursor - 1].span.end;
-            try self.parseJsxChildren(&children, content_start);
+            try self.parseJsxChildren(&children, content_start, null);
             // Closing `</>`. Recover when the user wrote a NAMED
             // closing tag (`</div>`) instead of the empty `</>` —
             // emit tsc's TS17015 (`Expected corresponding closing tag
@@ -20035,6 +20035,7 @@ pub const Parser = struct {
             // attribute loop so the self-close handler below can
             // unwrap it back into `/` + `>`.
             if (t.kind == .regex_literal and tokenIsJsxSelfCloseRegex(self.source, t)) break;
+            if (isTypeGreaterToken(t.kind)) break;
             switch (t.kind) {
                 .greater_than, .slash, .eof => break,
                 .open_brace => {
@@ -20138,11 +20139,11 @@ pub const Parser = struct {
                 true,
             );
         }
-        const open_close = try self.expect(.greater_than, "'>' to close JSX opening tag");
+        const open_close = try self.consumeTypeGreater("'>' to close JSX opening tag");
 
         var children: std.ArrayListUnmanaged(NodeId) = .empty;
         defer children.deinit(self.gpa);
-        try self.parseJsxChildren(&children, open_close.span.end);
+        try self.parseJsxChildren(&children, open_close.span.end, tag);
 
         if (self.peek().kind == .eof) {
             const tag_text = self.jsxTagText(tag);
@@ -20158,6 +20159,10 @@ pub const Parser = struct {
                 .code = 17008,
                 .message = msg,
             });
+            if (parent_tag == null) {
+                const eof = self.peek();
+                try self.reportCodeAt(eof.span.start, eof.line, 1005, "'</' expected.");
+            }
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = self.peek().span.start },
                 tag,
@@ -20166,6 +20171,38 @@ pub const Parser = struct {
                 children.items,
                 false,
             );
+        }
+
+        if (parent_tag) |parent| {
+            if (self.peekJsxClosingNameSpan()) |close_span| {
+                const open_text = self.jsxTagText(tag);
+                const parent_text = self.jsxTagText(parent);
+                const close_text = self.source[close_span.start..close_span.end];
+                if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text) and
+                    jsxTagNamesEqualIgnoringWhitespace(parent_text, close_text))
+                {
+                    const tag_span = self.hir.spanOf(tag);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "JSX element '{s}' has no corresponding closing tag.",
+                        .{open_text},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .pos = tag_span.start,
+                        .line = self.lineForPos(tag_span.start),
+                        .code = 17008,
+                        .message = msg,
+                    });
+                    return try self.builder.addJsxElement(
+                        .{ .start = open.span.start, .end = self.peek().span.start },
+                        tag,
+                        type_args,
+                        attrs.items,
+                        children.items,
+                        false,
+                    );
+                }
+            }
         }
 
         // Closing tag `</Foo>`.
@@ -20326,7 +20363,25 @@ pub const Parser = struct {
         return try self.builder.addIdentifier(name.span, name.name);
     }
 
-    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32) ParseError!void {
+    fn peekJsxClosingNameSpan(self: *const Parser) ?Span {
+        if (self.peek().kind != .less_than or self.peekAt(1).kind != .slash) return null;
+        const first = self.peekAt(2);
+        if (!isJsxNamePart(first.kind)) return null;
+
+        var name_span = tokenSpan(first);
+        var offset: u32 = 3;
+        while (true) {
+            const separator = self.peekAt(offset).kind;
+            if (separator != .minus and separator != .colon and separator != .dot) break;
+            const part = self.peekAt(offset + 1);
+            if (!isJsxNamePart(part.kind)) break;
+            name_span.end = part.span.end;
+            offset += 2;
+        }
+        return name_span;
+    }
+
+    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32, opening_tag: ?NodeId) ParseError!void {
         var last_child_end = content_start;
         while (true) {
             const t = self.peek();
@@ -20341,7 +20396,7 @@ pub const Parser = struct {
             switch (t.kind) {
                 .less_than => {
                     if (self.peekAt(1).kind == .slash) return; // `</Foo>`
-                    const child = try self.parseJsxElementOrFragment();
+                    const child = try self.parseJsxElementOrFragment(opening_tag);
                     try out.append(self.gpa, child);
                     last_child_end = self.hir.spanOf(child).end;
                 },
@@ -20411,6 +20466,7 @@ pub const Parser = struct {
                     // anchor a 1-char span at each offending character,
                     // matching upstream's `errorAt(…, s.pos, 1)`.
                     try self.reportJsxTextStrayTokens(text_start, t.line, t.span.end);
+                    _ = self.advance();
                     while (self.peek().kind != .less_than and
                         self.peek().kind != .open_brace and
                         self.peek().kind != .eof)
@@ -27567,6 +27623,36 @@ test "parser: TS1381/TS1382 stay clean for well-formed JSX content" {
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1381));
         try T.expectEqual(@as(u32, 0), countDiag(s, 1382));
+    }
+}
+
+test "parser: adjacent greater-than starts JSX child text" {
+    var s = try newTsxTestSetup("let v = <div>></div>;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1382));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1109));
+}
+
+test "parser: child leaves a matching parent closing tag for its parent" {
+    var s = try newTsxTestSetup("let v = <div><span></div>;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 17008));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 17002));
+}
+
+test "parser: unterminated root JSX emits one missing-close diagnostic" {
+    const cases = [_]struct { source: []const u8, unclosed: u32 }{
+        .{ .source = "let v = <div>", .unclosed = 1 },
+        .{ .source = "let v = <div><span>", .unclosed = 2 },
+    };
+    inline for (cases) |case| {
+        var s = try newTsxTestSetup(case.source);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(case.unclosed, countDiag(s, 17008));
+        try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
     }
 }
 
