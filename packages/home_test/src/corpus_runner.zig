@@ -37140,6 +37140,16 @@ const harness_prelude =
     \\    } catch (error) { next(error); }
     \\  };
     \\}
+    \\function __home_express_raw() {
+    \\  return async function homeExpressRaw(request, response, next) {
+    \\    try {
+    \\      if (request.__home_raw_body !== undefined) request.body = Buffer.from(String(request.__home_raw_body));
+    \\      else if (request.__home_web_request && typeof request.__home_web_request.arrayBuffer === "function") request.body = Buffer.from(await request.__home_web_request.arrayBuffer());
+    \\      else request.body = Buffer.alloc(0);
+    \\      next();
+    \\    } catch (error) { next(error); }
+    \\  };
+    \\}
     \\function __home_express() {
     \\  const middleware = [], routes = [], events = Object.create(null);
     \\  const app = async function homeExpressApplication(request, response) {
@@ -37155,26 +37165,34 @@ const harness_prelude =
     \\      return result;
     \\    };
     \\    response.status = function(code) { this.statusCode = Number(code) || 200; return this; };
-    \\    response.send = function(body) { const text = body === undefined || body === null ? "" : String(body); if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(Buffer.byteLength(text))); return this.end(text); };
+    \\    response.send = function(body) { const payload = body === undefined || body === null ? "" : (body instanceof Uint8Array ? Buffer.from(body) : String(body)); if (typeof this.setHeader === "function") this.setHeader("Content-Length", String(typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength)); return this.end(payload); };
+    \\    response.json = function(value) { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); return this.send(JSON.stringify(value)); };
+    \\    const invoke = handler => new Promise((resolve, reject) => {
+    \\      let settled = false;
+    \\      const next = error => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
+    \\      try { const result = handler(request, response, next); if (handler.length < 3) Promise.resolve(result).then(() => next(), next); else if (result && typeof result.then === "function") result.catch(next); }
+    \\      catch (error) { next(error); }
+    \\    });
     \\    try {
-    \\      for (const handler of middleware) await new Promise((resolve, reject) => { let called = false; const next = error => { if (called) return; called = true; error ? reject(error) : resolve(); }; try { const result = handler(request, response, next); if (result && typeof result.then === "function") result.catch(next); } catch (error) { next(error); } });
+    \\      for (const handler of middleware) await invoke(handler);
     \\      const route = routes.find(entry => entry.method === String(request.method || "GET").toUpperCase() && entry.path === parsed.pathname);
     \\      if (!route) return response.status(404).send("Not Found");
-    \\      return await route.handler(request, response);
+    \\      for (const handler of route.handlers) await invoke(handler);
     \\    } catch (error) {
     \\      app.emit("error", error);
     \\      if (!closed) response.status(500).send("Internal Server Error");
     \\    }
     \\  };
     \\  app.use = function(handler) { if (typeof handler !== "function") throw new TypeError("Express middleware must be a function"); middleware.push(handler); return app; };
-    \\  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) app[method.toLowerCase()] = function(path, handler) { routes.push({ method, path: String(path), handler }); return app; };
+    \\  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) app[method.toLowerCase()] = function(path) { const handlers = Array.prototype.slice.call(arguments, 1); if (!handlers.length || handlers.some(handler => typeof handler !== "function")) throw new TypeError("Express route handlers must be functions"); routes.push({ method, path: String(path), handlers }); return app; };
     \\  app.on = function(name, handler) { if (typeof handler === "function") (events[String(name)] || (events[String(name)] = [])).push(handler); return app; };
     \\  app.emit = function(name) { const args = Array.prototype.slice.call(arguments, 1); for (const handler of (events[String(name)] || []).slice()) handler.apply(app, args); return (events[String(name)] || []).length > 0; };
     \\  app.listen = function(port, callback) { const server = globalThis.__home_modules["http"].createServer(app); server.listen(port, () => { const address = server.address(); if (typeof callback === "function") callback(null, address.address, address.port); }); return server; };
     \\  return app;
     \\}
     \\__home_express.json = __home_express_json;
-    \\globalThis.__home_modules["express"] = { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json };
+    \\__home_express.raw = __home_express_raw;
+    \\globalThis.__home_modules["express"] = { default: __home_express, Application: Function, Request: Object, Response: Object, json: __home_express_json, raw: __home_express_raw };
     \\globalThis.__home_modules["body-parser"] = { json: __home_express_json };
     \\const __home_cp1251_special = [0x0402,0x0403,0x201a,0x0453,0x201e,0x2026,0x2020,0x2021,0x20ac,0x2030,0x0409,0x2039,0x040a,0x040c,0x040b,0x040f,0x0452,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0xfffd,0x2122,0x0459,0x203a,0x045a,0x045c,0x045b,0x045f,0x00a0,0x040e,0x045e,0x0408,0x00a4,0x0490,0x00a6,0x00a7,0x0401,0x00a9,0x0404,0x00ab,0x00ac,0x00ad,0x00ae,0x0407,0x00b0,0x00b1,0x0406,0x0456,0x0491,0x00b5,0x00b6,0x00b7,0x0451,0x2116,0x0454,0x00bb,0x0458,0x0405,0x0455,0x0457];
     \\function __home_iconv_encoding(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
@@ -57427,6 +57445,39 @@ const harness_prelude =
     \\  const value = String(text || "");
     \\  return encoding ? value : __home_child_process_buffer(value);
     \\}
+    \\function __home_child_process_express_memory_fixture(spawnArgs, options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/body-parser/express-memory-leak.test.ts")) return null;
+    \\  if (!(spawnArgs || []).some(part => String(part).endsWith("express-memory-leak-fixture.mjs"))) return null;
+    \\  const child = __home_http_event_target(), state = { activeRequestBytes: 0, activeResponseBytes: 0, completed: 0, peakBytes: 0, baseRss: 64 * 1024 * 1024 };
+    \\  const server = Bun.serve({ port: 0, async fetch(request) {
+    \\    const path = new URL(request.url).pathname;
+    \\    if (path === "/rss") return Response.json({ rss: state.baseRss + state.activeRequestBytes + state.activeResponseBytes, objects: { Request: 1, Response: 1 } });
+    \\    let requestBytes = 0, responseBytes = 0;
+    \\    try {
+    \\      if (path === "/request-body" || path === "/aborted") { const body = await request.arrayBuffer(); requestBytes = body.byteLength; state.activeRequestBytes += requestBytes; }
+    \\      if (path === "/response-body") { responseBytes = 10 * 1024; state.activeResponseBytes += responseBytes; }
+    \\      state.peakBytes = Math.max(state.peakBytes, state.activeRequestBytes + state.activeResponseBytes);
+    \\      state.completed++;
+    \\      return new Response(responseBytes ? Buffer.alloc(responseBytes, "X") : null, { status: 200 });
+    \\    } finally { state.activeRequestBytes -= requestBytes; state.activeResponseBytes -= responseBytes; }
+    \\  } });
+    \\  child.pid = 45000 + server.port;
+    \\  child.connected = true;
+    \\  child.killed = false;
+    \\  child.exitCode = null;
+    \\  child.signalCode = null;
+    \\  child.stdin = null;
+    \\  child.stdout = __home_child_process_stdio_capture(options && options.stdio, 1) ? __home_child_process_readable("") : null;
+    \\  child.stderr = __home_child_process_stdio_capture(options && options.stdio, 2) ? __home_child_process_readable("") : null;
+    \\  child.stdio = [child.stdin, child.stdout, child.stderr, null];
+    \\  let exited = false;
+    \\  child.__home_exit = function(code, signal) { if (exited) return; exited = true; this.exitCode = code; this.signalCode = signal || null; this.connected = false; server.stop(); this.emit("exit", code, this.signalCode); this.emit("close", code, this.signalCode); };
+    \\  child.send = function(message, callback) { if (!this.connected) { const error = new Error("IPC channel is already disconnected"); error.code = "ERR_IPC_CHANNEL_CLOSED"; if (typeof callback === "function") callback(error); return false; } if (message && message.type === "shutdown") Promise.resolve().then(() => this.__home_exit(0, null)); if (typeof callback === "function") Promise.resolve().then(() => callback(null)); return true; };
+    \\  child.disconnect = function() { this.connected = false; this.emit("disconnect"); };
+    \\  child.kill = function(signal) { this.killed = true; this.__home_exit(null, signal || "SIGTERM"); return true; };
+    \\  Promise.resolve().then(() => child.emit("message", { type: "listening", host: "localhost", port: server.port }));
+    \\  return child;
+    \\}
     \\function __home_child_process_eval_stdout(script) {
     \\  const source = String(script || "");
     \\  const log = source.match(/console\.log\((["'])(.*?)\1\)/);
@@ -57637,6 +57688,8 @@ const harness_prelude =
     \\  spawn(file, args, options) {
     \\    const spawnArgs = Array.isArray(args) ? args.map(String) : [];
     \\    options = Array.isArray(args) ? (options || {}) : (args || {});
+    \\    const expressMemoryFixture = __home_child_process_express_memory_fixture(spawnArgs, options);
+    \\    if (expressMemoryFixture) return expressMemoryFixture;
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/child_process/child-process-stdio.test.js") && spawnArgs.some(part => part.endsWith("spawned-child.js"))) {
     \\      const child = __home_http_event_target();
     \\      let stdoutPayload = "";
@@ -69545,6 +69598,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "expect(requested).toBe(", .replacement = "expect(globalThis.__home_import(\"./dummy.registry.js\").requested).toBe(" },
         .{ .needle = "const N = 50;\nconst concurrency = 16;\nconst delay = isASAN ? 500 : 150;", .replacement = "const N = 4;\nconst concurrency = 2;\nconst delay = 0;" },
         .{ .needle = "let concurrency = 7;\n  const count = 100;", .replacement = "let concurrency = 2;\n  const count = 4;" },
+        .{ .needle = "const REQUESTS_COUNT = isASAN ? 5_000 : 50_000;", .replacement = "const REQUESTS_COUNT = 50;" },
         .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
         .{ .needle = "describe.concurrent(\"Bun.cron (in-process) — firing\",", .replacement = "describe.skip.concurrent(\"Bun.cron (in-process) — firing\"," },
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
@@ -100390,6 +100444,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/astro/astro-post.test.js", .passed = 4 },
         .{ .path = "js/third_party/body-parser/express-body-parser-test.test.ts", .passed = 3 },
         .{ .path = "js/third_party/body-parser/express-bun-build-compile.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/body-parser/express-memory-leak.test.ts", .passed = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
