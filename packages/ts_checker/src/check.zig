@@ -101796,6 +101796,14 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
                     }
                 }
+                if (self.checking_element_write_target and !self.nodeIsThisReference(e.object)) {
+                    if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
+                        break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
+                    }
+                    if (try self.maybeReportGenericIndexedWrite(node, obj_t, idx_t)) {
+                        break :blk types.Primitive.any;
+                    }
+                }
                 if (try self.unionTupleLiteralIndexAccess(index_receiver_t, union_tuple_idx_t)) |access| {
                     if (!access.found_any) {
                         try self.reportIndexedPropertyDoesNotExistOnType(e.index, access.key, index_receiver_t);
@@ -101837,14 +101845,6 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (self.checking_element_write_target) {
-                    if (!self.nodeIsThisReference(e.object)) {
-                        if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
-                            break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
-                        }
-                        if (try self.maybeReportGenericIndexedWrite(node, obj_t, idx_t)) {
-                            break :blk types.Primitive.any;
-                        }
-                    }
                     const global_this_requires_index_diagnostic = self.strict_flags.no_implicit_any and
                         self.memberAccessObjectIsGlobalThisThis(e.object);
                     const use_fixed_tuple_literal_path = self.fixedTupleLiteralIndexExpression(obj_t, e.index);
@@ -128528,7 +128528,9 @@ pub const Checker = struct {
 
         const idx_app = self.operandApparentType(idx_t);
         const number_idx = self.interner.objectNumberIndex(constraint);
-        if (number_idx != types.Primitive.none and self.typeMaybeNumberIndexLike(idx_app)) return false;
+        if (number_idx != types.Primitive.none and
+            self.typeMaybeNumberIndexLike(idx_app) and
+            !self.typeMaybeStringLike(idx_app)) return false;
 
         var uses_non_number_index = false;
         if (self.interner.objectStringIndex(constraint) != types.Primitive.none and self.typeMaybeStringLike(idx_app)) {
@@ -201823,6 +201825,22 @@ test "checker: TS2862 generic index signature writes are read-only" {
     }
     try T.expect(found);
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: mixed string-number generic index writes report TS2862" {
+    const s = try newSetup(
+        \\function write<T extends { [key: string]: number }>(obj: T, key: string | number) {
+        \\  obj[key] = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generic_indexed_access_readonly));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.generic_indexed_access_readonly,
+        "Type 'T' is generic and can only be indexed for reading.",
+    ));
 }
 
 test "checker: remapped generic indexed init reports TS2322 for declared object target" {
