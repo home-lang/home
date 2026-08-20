@@ -94385,6 +94385,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
         .{ .path = "js/sql/sqlite-sql.test.ts", .passed = 231 },
         .{ .path = "js/sql/sqlite-url-parsing.test.ts", .passed = 176 },
         .{ .path = "js/sql/tls-sql.test.ts", .passed = 2, .todo = 1 },
+        .{ .path = "js/sql/wire-frames.test.ts", .passed = 5 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
