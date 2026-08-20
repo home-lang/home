@@ -137798,7 +137798,11 @@ pub const Checker = struct {
                 if (self.typeMaybeStringLike(lhs_eff) or self.typeMaybeStringLike(rhs_eff)) {
                     break :blk types.Primitive.string_t;
                 }
-                if (lhs_eff == types.Primitive.any and rhs_eff == types.Primitive.any) {
+                // tsgo checks concrete number/string/bigint domains before
+                // falling back to IsTypeAny on either operand. Preserve that
+                // result for `(<any>x) + 1`; otherwise the numeric-like gate
+                // below incorrectly narrows the expression to `number`.
+                if (lhs_eff == types.Primitive.any or rhs_eff == types.Primitive.any) {
                     break :blk types.Primitive.any;
                 }
                 if (self.typeMaybeNumericLike(lhs_eff) and self.typeMaybeNumericLike(rhs_eff)) {
@@ -175521,6 +175525,14 @@ test "checker: addition of string + number is string" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(top));
 }
 
+test "checker: addition with one any operand remains any" {
+    const s = try newSetup("(<any>\"\") + 4;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(top));
+}
+
 fn hasDiagnosticCodeMessage(s: *TestSetup, code: u32, message: []const u8) bool {
     for (s.checker.diagnostics.items) |d| {
         if (d.code == code and std.mem.eql(u8, d.message, message)) return true;
@@ -188370,6 +188382,40 @@ test "checker: assertions across primitive domains still report TS2352" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+}
+
+test "checker: legacy type assertions validate explicit type args and private class overlap" {
+    const s = try newSetup(
+        \\function outer<T>(value: T) {}
+        \\function plain(value: any) {}
+        \\outer(plain<string>(4));
+        \\class Base { private base: any; }
+        \\class Derived extends Base { private derived: any; }
+        \\class Other { private other: any; }
+        \\const base = new Base();
+        \\const derived = new Derived();
+        \\const other = new Other();
+        \\<Base>derived;
+        \\<Base>other;
+        \\<Derived>base;
+        \\<Derived>other;
+        \\<Other>derived;
+        \\<Other>base;
+        \\declare let union: number | string;
+        \\declare let text: string;
+        \\if (<union is string>(union === undefined)) {
+        \\    text = union;
+        \\}
+        \\if ((union === undefined) as union is string) {}
+        \\declare var repeated: any;
+        \\var repeated = <any>\"\" + 4;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: assertion target contextually types arrow before TS2352 overlap" {

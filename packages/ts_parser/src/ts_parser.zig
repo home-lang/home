@@ -11134,6 +11134,19 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        // A recovered `(expr as value is string)` tail leaves its closing
+        // paren after `string` has been preserved as a value expression.
+        // Prefer tsc's declaration-level TS1128 over the generic stray-paren
+        // TS1005 below.
+        if (t.kind == .close_paren and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .kw_string and
+            self.hasDiagnosticAt(1434, self.tokens[self.cursor - 1].span.start))
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
+            _ = self.advance();
+            return;
+        }
         // §6.A parserArrowFunctionExpression3: `a = (() => { } || a)` —
         // the recovery path inside `parsePrimaryExpression`'s
         // `open_paren` arm absorbs the missing-`)` diagnostic and
@@ -11209,6 +11222,19 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             _ = self.advance();
+            return;
+        }
+        // A predicate-like tail after an `as` assertion is not type syntax:
+        // `(expr as value is string)`. After the enclosing paren parser
+        // reports `')' expected` at `is`, preserve both contextual tokens as
+        // recovery expression statements. This lets binding/checking report
+        // the value-space diagnostics for `is` and `string`, while matching
+        // tsc's TS1434/TS1128 parser sequence instead of aborting the file.
+        if (t.kind == .kw_string and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .kw_is)
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1434, "Unexpected keyword or identifier.");
             return;
         }
         // §6.A 2000-3000 ratchet: align the missing-terminator
@@ -24966,6 +24992,19 @@ test "parser: angle-bracket type assertion accepts array type" {
     try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(vd.init));
     const assertion = hir_mod.asExpressionOf(&s.hir, vd.init);
     try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(assertion.type_node));
+}
+
+test "parser: predicate-like as assertion tail recovers without aborting source file" {
+    var s = try newTestSetup("if ((value === undefined) as value is string) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expect(hir_mod.blockStmts(&s.hir, root).len > 0);
+    const expected = [_]u32{ 1005, 1434, 1128 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
 }
 
 test "parser: relational RHS can be angle-bracket type assertion" {
