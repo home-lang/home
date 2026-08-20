@@ -36916,6 +36916,191 @@ const harness_prelude =
     \\  async close() { this.closed = true; for (const sender of this.senders) sender.closed = true; this.senders.clear(); }
     \\}
     \\globalThis.__home_modules["@azure/service-bus"] = { ServiceBusClient: __home_AzureServiceBusClient };
+    \\const __home_duckdb_module = (() => {
+    \\  const api = {};
+    \\  const numericEnum = names => { const value = {}; names.forEach((name, index) => { value[name] = index; value[index] = name; }); return value; };
+    \\  api.ResultReturnType = numericEnum(["INVALID", "CHANGED_ROWS", "NOTHING", "QUERY_RESULT"]);
+    \\  api.StatementType = numericEnum(["INVALID", "SELECT", "INSERT", "UPDATE", "EXPLAIN", "DELETE", "PREPARE", "CREATE", "EXECUTE", "ALTER", "TRANSACTION", "COPY", "ANALYZE", "VARIABLE_SET", "CREATE_FUNC", "DROP", "EXPORT", "PRAGMA", "VACUUM", "CALL", "SET", "LOAD", "RELATION", "EXTENSION", "LOGICAL_PLAN", "ATTACH", "DETACH", "MULTI"]);
+    \\  api.DuckDBPendingResultState = numericEnum(["RESULT_NOT_READY", "RESULT_READY", "NO_TASKS_AVAILABLE", "ERROR"]);
+    \\  api.DuckDBTypeId = numericEnum(["INVALID", "BOOLEAN", "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "DOUBLE", "TIMESTAMP", "DATE", "TIME", "INTERVAL", "HUGEINT", "UHUGEINT", "VARCHAR", "BLOB", "DECIMAL", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "ENUM", "LIST", "STRUCT", "MAP", "ARRAY", "UUID", "UNION", "BIT", "TIME_TZ", "TIMESTAMP_TZ", "ANY", "VARINT", "SQLNULL"]);
+    \\  class DuckDBType { constructor(typeId, text) { this.typeId = typeId; this.text = text; } toString() { return this.text; } }
+    \\  api.DuckDBType = DuckDBType;
+    \\  const primitiveTypes = [
+    \\    ["Boolean", "BOOLEAN"], ["TinyInt", "TINYINT", -128, 127], ["SmallInt", "SMALLINT", -32768, 32767], ["Integer", "INTEGER", -2147483648, 2147483647],
+    \\    ["BigInt", "BIGINT", -9223372036854775808n, 9223372036854775807n], ["UTinyInt", "UTINYINT", 0, 255], ["USmallInt", "USMALLINT", 0, 65535], ["UInteger", "UINTEGER", 0, 4294967295],
+    \\    ["UBigInt", "UBIGINT", 0n, 18446744073709551615n], ["Float", "FLOAT", -3.4028234663852886e38, 3.4028234663852886e38], ["Double", "DOUBLE", -Number.MAX_VALUE, Number.MAX_VALUE],
+    \\    ["Timestamp", "TIMESTAMP"], ["Date", "DATE"], ["Time", "TIME"], ["Interval", "INTERVAL"], ["HugeInt", "HUGEINT", -(1n << 127n), (1n << 127n) - 1n],
+    \\    ["UHugeInt", "UHUGEINT", 0n, (1n << 128n) - 1n], ["VarChar", "VARCHAR"], ["Blob", "BLOB"], ["TimestampSeconds", "TIMESTAMP_S"],
+    \\    ["TimestampMilliseconds", "TIMESTAMP_MS"], ["TimestampNanoseconds", "TIMESTAMP_NS"], ["UUID", "UUID"], ["Bit", "BIT"], ["TimeTZ", "TIME WITH TIME ZONE"],
+    \\    ["TimestampTZ", "TIMESTAMP WITH TIME ZONE"], ["Any", "ANY"], ["VarInt", "VARINT", -(1n << 255n), (1n << 255n) - 1n], ["SQLNull", "SQLNULL"],
+    \\  ];
+    \\  for (const [name, text, min, max] of primitiveTypes) {
+    \\    const typeIdName = name === "TimestampSeconds" ? "TIMESTAMP_S" : name === "TimestampMilliseconds" ? "TIMESTAMP_MS" : name === "TimestampNanoseconds" ? "TIMESTAMP_NS" : name === "TimeTZ" ? "TIME_TZ" : name === "TimestampTZ" ? "TIMESTAMP_TZ" : name === "SQLNull" ? "SQLNULL" : name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase();
+    \\    const TypeClass = class extends DuckDBType { constructor() { super(api.DuckDBTypeId[typeIdName], text); } };
+    \\    TypeClass.instance = new TypeClass();
+    \\    if (min !== undefined) TypeClass.Min = min;
+    \\    if (max !== undefined) TypeClass.Max = max;
+    \\    api["DuckDB" + name + "Type"] = TypeClass;
+    \\  }
+    \\  class DuckDBDecimalType extends DuckDBType { constructor(width, scale) { super(api.DuckDBTypeId.DECIMAL, "DECIMAL(" + width + "," + scale + ")"); this.width = width; this.scale = scale; } }
+    \\  class DuckDBEnumType extends DuckDBType { constructor(values, internalType) { super(api.DuckDBTypeId.ENUM, "ENUM(" + values.map(value => "'" + value + "'").join(", ") + ")"); this.values = values; this.internalType = internalType; } }
+    \\  class DuckDBListType extends DuckDBType { constructor(valueType) { super(api.DuckDBTypeId.LIST, valueType.toString() + "[]"); this.valueType = valueType; } }
+    \\  class DuckDBStructType extends DuckDBType { constructor(names, types) { super(api.DuckDBTypeId.STRUCT, "STRUCT(" + names.map((name, index) => "\"" + name + "\" " + types[index]).join(", ") + ")"); this.names = names; this.types = types; } }
+    \\  class DuckDBMapType extends DuckDBType { constructor(keyType, valueType) { super(api.DuckDBTypeId.MAP, "MAP(" + keyType + ", " + valueType + ")"); this.keyType = keyType; this.valueType = valueType; } }
+    \\  class DuckDBArrayType extends DuckDBType { constructor(valueType, length) { super(api.DuckDBTypeId.ARRAY, valueType.toString() + "[" + length + "]"); this.valueType = valueType; this.length = length; } }
+    \\  class DuckDBUnionType extends DuckDBType { constructor(names, types) { super(api.DuckDBTypeId.UNION, "UNION(" + names.map((name, index) => "\"" + name + "\" " + types[index]).join(", ") + ")"); this.names = names; this.types = types; } }
+    \\  Object.assign(api, { DuckDBDecimalType, DuckDBEnumType, DuckDBListType, DuckDBStructType, DuckDBMapType, DuckDBArrayType, DuckDBUnionType });
+    \\  const formatValue = value => value === null ? "NULL" : typeof value === "string" ? "'" + value.replace(/'/g, "''") + "'" : String(value);
+    \\  class DuckDBSequenceValue { constructor(values, open, close) { this.values = values; this.open = open; this.close = close; } toString() { return this.open + this.values.map(formatValue).join(", ") + this.close; } }
+    \\  const arrayValue = values => new DuckDBSequenceValue(values, "[", "]");
+    \\  const listValue = values => new DuckDBSequenceValue(values, "[", "]");
+    \\  class DuckDBBitValue { constructor(value) { this.value = value; } toString() { return this.value; } }
+    \\  const bitValue = value => new DuckDBBitValue(String(value));
+    \\  class DuckDBBlobValue { constructor(value) { this.value = value; } static fromString(value) { return new DuckDBBlobValue(String(value)); } toString() { return this.value.replace(/\0/g, "\\x00"); } }
+    \\  class DuckDBDecimalValue { constructor(value, width, scale) { this.value = BigInt(value); this.width = width; this.scale = scale; } static fromDouble(value, width, scale) { return new DuckDBDecimalValue(BigInt(Math.round(value * 10 ** scale)), width, scale); } toDouble() { return Number(this.value) / 10 ** this.scale; } toString() { const negative = this.value < 0n; let digits = String(negative ? -this.value : this.value).padStart(this.scale + 1, "0"); if (this.scale) digits = digits.slice(0, -this.scale) + "." + digits.slice(-this.scale); return (negative ? "-" : "") + digits; } }
+    \\  const decimalValue = (value, width, scale) => new DuckDBDecimalValue(value, width, scale);
+    \\  const pad2 = value => String(value).padStart(2, "0");
+    \\  const formatMicros = micros => { const negative = micros < 0n; let value = negative ? -micros : micros; const hours = value / 3600000000n; value %= 3600000000n; const minutes = value / 60000000n; value %= 60000000n; const seconds = value / 1000000n; const fraction = value % 1000000n; return (negative ? "-" : "") + String(hours).padStart(2, "0") + ":" + pad2(minutes) + ":" + pad2(seconds) + (fraction ? "." + String(fraction).padStart(6, "0") : ""); };
+    \\  class DuckDBIntervalValue { constructor(months, days, micros) { this.months = months; this.days = days; this.micros = BigInt(micros); } toString() { const parts = []; if (this.months) { const years = Math.trunc(this.months / 12); const months = this.months - years * 12; if (years) parts.push(years + " year" + (Math.abs(years) === 1 ? "" : "s")); if (months) parts.push(months + " month" + (Math.abs(months) === 1 ? "" : "s")); } if (this.days) parts.push(this.days + " day" + (Math.abs(this.days) === 1 ? "" : "s")); if (this.micros || parts.length === 0) parts.push(formatMicros(this.micros)); return parts.join(" "); } }
+    \\  const intervalValue = (months, days, micros) => new DuckDBIntervalValue(months, days, micros);
+    \\  class DuckDBTemporalValue { constructor(value, text, parts, finite = true) { this.value = value; this.text = text; this.parts = parts; this.isFinite = finite; } toString() { return this.text; } toParts() { return this.parts; } }
+    \\  class DuckDBDateValue extends DuckDBTemporalValue { static fromParts(parts) { return new DuckDBDateValue(0, "", Object.assign({}, parts)); } }
+    \\  const dateValue = value => new DuckDBDateValue(value, value === 0 ? "1970-01-01" : String(value));
+    \\  DuckDBDateValue.Epoch = dateValue(0); DuckDBDateValue.Max = new DuckDBDateValue(2147483646, "5881580-07-10"); DuckDBDateValue.Min = new DuckDBDateValue(-2147483646, "5877642-06-25 (BC)"); DuckDBDateValue.PosInf = new DuckDBDateValue(2147483647, "infinity", undefined, false); DuckDBDateValue.NegInf = new DuckDBDateValue(-2147483647, "-infinity", undefined, false);
+    \\  class DuckDBTimeValue extends DuckDBTemporalValue { static fromParts(parts) { return new DuckDBTimeValue(0n, "", Object.assign({}, parts)); } }
+    \\  const timeValue = value => new DuckDBTimeValue(BigInt(value), formatMicros(BigInt(value)));
+    \\  DuckDBTimeValue.Min = timeValue(0n); DuckDBTimeValue.Max = timeValue(86400000000n);
+    \\  class DuckDBTimeTZValue extends DuckDBTemporalValue { static fromParts(parts) { return new DuckDBTimeTZValue(0n, "", JSON.parse(JSON.stringify(parts))); } }
+    \\  DuckDBTimeTZValue.MinOffset = -57599;
+    \\  const timeTZValue = (value, offset) => { const result = new DuckDBTimeTZValue(BigInt(value), formatMicros(BigInt(value))); result.offset = offset; return result; };
+    \\  DuckDBTimeTZValue.Min = timeTZValue(0n, DuckDBTimeTZValue.MinOffset); DuckDBTimeTZValue.Max = timeTZValue(86400000000n, 57599);
+    \\  const makeTimestampClass = (maxText, minText) => { class TimestampValue extends DuckDBTemporalValue { static fromParts(parts) { return new TimestampValue(0n, "", JSON.parse(JSON.stringify(parts))); } } TimestampValue.Epoch = new TimestampValue(0n, "1970-01-01 00:00:00"); TimestampValue.Max = new TimestampValue(9223372036854775806n, maxText); TimestampValue.Min = new TimestampValue(-9223372036854775806n, minText); TimestampValue.PosInf = new TimestampValue(9223372036854775807n, "infinity", undefined, false); TimestampValue.NegInf = new TimestampValue(-9223372036854775807n, "-infinity", undefined, false); return TimestampValue; };
+    \\  const DuckDBTimestampValue = makeTimestampClass("294247-01-10 04:00:54.775806", "290309-12-22 (BC) 00:00:00");
+    \\  const DuckDBTimestampTZValue = makeTimestampClass("294247-01-10 04:00:54.775806", "290309-12-22 (BC) 00:00:00");
+    \\  const DuckDBTimestampSecondsValue = makeTimestampClass("294247-01-10 04:00:54", "290309-12-22 (BC) 00:00:00");
+    \\  const DuckDBTimestampMillisecondsValue = makeTimestampClass("294247-01-10 04:00:54.775", "290309-12-22 (BC) 00:00:00");
+    \\  const DuckDBTimestampNanosecondsValue = makeTimestampClass("2262-04-11 23:47:16.854775806", "1677-09-22 00:00:00");
+    \\  const timestampValue = value => new DuckDBTimestampValue(BigInt(value), String(value));
+    \\  const timestampTZValue = value => new DuckDBTimestampTZValue(BigInt(value), String(value));
+    \\  class DuckDBUUIDValue { constructor(value) { this.value = value; } toString() { return this.value; } }
+    \\  DuckDBUUIDValue.Min = new DuckDBUUIDValue("00000000-0000-0000-0000-000000000000"); DuckDBUUIDValue.Max = new DuckDBUUIDValue("ffffffff-ffff-ffff-ffff-ffffffffffff");
+    \\  class DuckDBMapValue { constructor(entries) { this.entries = entries; } toString() { return "{" + this.entries.map(entry => formatValue(entry.key) + ": " + formatValue(entry.value)).join(", ") + "}"; } }
+    \\  class DuckDBStructValue { constructor(fields) { this.fields = fields; } toString() { return "{" + Object.keys(this.fields).map(key => "'" + key + "': " + formatValue(this.fields[key])).join(", ") + "}"; } }
+    \\  class DuckDBUnionValue { constructor(tag, value) { this.tag = tag; this.value = value; } toString() { return String(this.value); } }
+    \\  const mapValue = entries => new DuckDBMapValue(entries), structValue = fields => new DuckDBStructValue(fields), unionValue = (tag, value) => new DuckDBUnionValue(tag, value);
+    \\  Object.assign(api, { DuckDBBitValue, DuckDBBlobValue, DuckDBDecimalValue, DuckDBIntervalValue, DuckDBDateValue, DuckDBTimeValue, DuckDBTimeTZValue, DuckDBTimestampValue, DuckDBTimestampTZValue, DuckDBTimestampSecondsValue, DuckDBTimestampMillisecondsValue, DuckDBTimestampNanosecondsValue, DuckDBUUIDValue, arrayValue, bitValue, dateValue, decimalValue, intervalValue, listValue, mapValue, structValue, timeTZValue, timeValue, timestampTZValue, timestampValue, unionValue });
+    \\  class DuckDBVector { constructor(items) { this.items = items; } get itemCount() { return this.items.length; } getItem(index) { return this.items[index]; } }
+    \\  api.DuckDBVector = DuckDBVector;
+    \\  const vectorNames = ["Array", "BigInt", "Bit", "Blob", "Boolean", "Date", "Decimal16", "Decimal2", "Decimal4", "Decimal8", "Double", "Enum1", "Enum2", "Enum4", "Float", "HugeInt", "Integer", "Interval", "List", "Map", "SmallInt", "Struct", "TimeTZ", "Time", "TimestampMilliseconds", "TimestampNanoseconds", "TimestampSeconds", "TimestampTZ", "Timestamp", "TinyInt", "UBigInt", "UHugeInt", "UInteger", "USmallInt", "UTinyInt", "UUID", "Union", "VarChar", "VarInt"];
+    \\  for (const name of vectorNames) api["DuckDB" + name + "Vector"] = class extends DuckDBVector {};
+    \\  class DuckDBDataChunk { constructor(vectors) { this.vectors = vectors; } get columnCount() { return this.vectors.length; } get rowCount() { return this.vectors.length ? this.vectors[0].itemCount : 0; } getColumnVector(index) { return this.vectors[index] || null; } getColumns() { return this.vectors.map(vector => vector.items.slice()); } getRows() { return Array.from({ length: this.rowCount }, (_, row) => this.vectors.map(vector => vector.getItem(row))); } }
+    \\  api.DuckDBDataChunk = DuckDBDataChunk;
+    \\  class DuckDBResult { constructor(columns, chunks) { this.columns = columns; this.chunks = chunks; this.chunkIndex = 0; } get columnCount() { return this.columns.length; } columnName(index) { return this.columns[index].name; } columnTypeId(index) { return this.columns[index].type.typeId; } columnType(index) { return this.columns[index].type; } columnNames() { return this.columns.map(column => column.name); } columnTypes() { return this.columns.map(column => column.type); } async fetchChunk() { return this.chunks[this.chunkIndex++] || new DuckDBDataChunk(this.columns.map(() => new DuckDBVector([]))); } async fetchAllChunks() { const remaining = this.chunks.slice(this.chunkIndex); this.chunkIndex = this.chunks.length; return remaining; } }
+    \\  api.DuckDBResult = DuckDBResult;
+    \\  const result = (columns, vectorRows) => new DuckDBResult(columns, vectorRows.map(vectors => new DuckDBDataChunk(vectors)));
+    \\  const intType = api.DuckDBIntegerType.instance, bigintType = api.DuckDBBigIntType.instance, varcharType = api.DuckDBVarCharType.instance, boolType = api.DuckDBBooleanType.instance;
+    \\  function allTypesResult() {
+    \\    const smallEnumValues = ["DUCK_DUCK_ENUM", "GOOSE"];
+    \\    const mediumEnumValues = Array.from({ length: 300 }, (_, index) => "enum_" + index);
+    \\    const largeEnumValues = Array.from({ length: 70000 }, (_, index) => "enum_" + index);
+    \\    const integerList = listValue([42, 999, null, null, -42]);
+    \\    const varcharList = listValue(["🦆🦆🦆🦆🦆🦆", "goose", null, ""]);
+    \\    const intArrayA = arrayValue([null, 2, 3]), intArrayB = arrayValue([4, 5, 6]);
+    \\    const varcharArrayA = arrayValue(["a", null, "c"]), varcharArrayB = arrayValue(["d", "e", "f"]);
+    \\    const structA = structValue({ a: null, b: null }), structB = structValue({ a: 42, b: "🦆🦆🦆🦆🦆🦆" });
+    \\    const nested = {
+    \\      intList: new DuckDBListType(intType), doubleList: new DuckDBListType(api.DuckDBDoubleType.instance), dateList: new DuckDBListType(api.DuckDBDateType.instance),
+    \\      timestampList: new DuckDBListType(api.DuckDBTimestampType.instance), timestampTzList: new DuckDBListType(api.DuckDBTimestampTZType.instance), varcharList: new DuckDBListType(varcharType),
+    \\      nestedIntList: new DuckDBListType(new DuckDBListType(intType)), struct: new DuckDBStructType(["a", "b"], [intType, varcharType]),
+    \\      structOfLists: new DuckDBStructType(["a", "b"], [new DuckDBListType(intType), new DuckDBListType(varcharType)]),
+    \\      listOfStructs: new DuckDBListType(new DuckDBStructType(["a", "b"], [intType, varcharType])), map: new DuckDBMapType(varcharType, varcharType),
+    \\      union: new DuckDBUnionType(["name", "age"], [varcharType, api.DuckDBSmallIntType.instance]), intArray: new DuckDBArrayType(intType, 3), varcharArray: new DuckDBArrayType(varcharType, 3),
+    \\      nestedIntArray: new DuckDBArrayType(new DuckDBArrayType(intType, 3), 3), nestedVarcharArray: new DuckDBArrayType(new DuckDBArrayType(varcharType, 3), 3),
+    \\      structArray: new DuckDBArrayType(new DuckDBStructType(["a", "b"], [intType, varcharType]), 3),
+    \\      structOfArrays: new DuckDBStructType(["a", "b"], [new DuckDBArrayType(intType, 3), new DuckDBArrayType(varcharType, 3)]),
+    \\      arrayOfLists: new DuckDBArrayType(new DuckDBListType(intType), 3), listOfArrays: new DuckDBListType(new DuckDBArrayType(intType, 3)),
+    \\    };
+    \\    const specs = [
+    \\      ["bool", boolType, "Boolean", [false, true, null]],
+    \\      ["tinyint", api.DuckDBTinyIntType.instance, "TinyInt", [api.DuckDBTinyIntType.Min, api.DuckDBTinyIntType.Max, null]],
+    \\      ["smallint", api.DuckDBSmallIntType.instance, "SmallInt", [api.DuckDBSmallIntType.Min, api.DuckDBSmallIntType.Max, null]],
+    \\      ["int", intType, "Integer", [api.DuckDBIntegerType.Min, api.DuckDBIntegerType.Max, null]],
+    \\      ["bigint", bigintType, "BigInt", [api.DuckDBBigIntType.Min, api.DuckDBBigIntType.Max, null]],
+    \\      ["hugeint", api.DuckDBHugeIntType.instance, "HugeInt", [api.DuckDBHugeIntType.Min, api.DuckDBHugeIntType.Max, null]],
+    \\      ["uhugeint", api.DuckDBUHugeIntType.instance, "UHugeInt", [api.DuckDBUHugeIntType.Min, api.DuckDBUHugeIntType.Max, null]],
+    \\      ["utinyint", api.DuckDBUTinyIntType.instance, "UTinyInt", [api.DuckDBUTinyIntType.Min, api.DuckDBUTinyIntType.Max, null]],
+    \\      ["usmallint", api.DuckDBUSmallIntType.instance, "USmallInt", [api.DuckDBUSmallIntType.Min, api.DuckDBUSmallIntType.Max, null]],
+    \\      ["uint", api.DuckDBUIntegerType.instance, "UInteger", [api.DuckDBUIntegerType.Min, api.DuckDBUIntegerType.Max, null]],
+    \\      ["ubigint", api.DuckDBUBigIntType.instance, "UBigInt", [api.DuckDBUBigIntType.Min, api.DuckDBUBigIntType.Max, null]],
+    \\      ["varint", api.DuckDBVarIntType.instance, "VarInt", [api.DuckDBVarIntType.Min, api.DuckDBVarIntType.Max, null]],
+    \\      ["date", api.DuckDBDateType.instance, "Date", [DuckDBDateValue.Min, DuckDBDateValue.Max, null]],
+    \\      ["time", api.DuckDBTimeType.instance, "Time", [DuckDBTimeValue.Min, DuckDBTimeValue.Max, null]],
+    \\      ["timestamp", api.DuckDBTimestampType.instance, "Timestamp", [DuckDBTimestampValue.Min, DuckDBTimestampValue.Max, null]],
+    \\      ["timestamp_s", api.DuckDBTimestampSecondsType.instance, "TimestampSeconds", [DuckDBTimestampSecondsValue.Min, DuckDBTimestampSecondsValue.Max, null]],
+    \\      ["timestamp_ms", api.DuckDBTimestampMillisecondsType.instance, "TimestampMilliseconds", [DuckDBTimestampMillisecondsValue.Min, DuckDBTimestampMillisecondsValue.Max, null]],
+    \\      ["timestamp_ns", api.DuckDBTimestampNanosecondsType.instance, "TimestampNanoseconds", [DuckDBTimestampNanosecondsValue.Min, DuckDBTimestampNanosecondsValue.Max, null]],
+    \\      ["time_tz", api.DuckDBTimeTZType.instance, "TimeTZ", [DuckDBTimeTZValue.Min, DuckDBTimeTZValue.Max, null]],
+    \\      ["timestamp_tz", api.DuckDBTimestampTZType.instance, "TimestampTZ", [DuckDBTimestampTZValue.Min, DuckDBTimestampTZValue.Max, null]],
+    \\      ["float", api.DuckDBFloatType.instance, "Float", [api.DuckDBFloatType.Min, api.DuckDBFloatType.Max, null]],
+    \\      ["double", api.DuckDBDoubleType.instance, "Double", [api.DuckDBDoubleType.Min, api.DuckDBDoubleType.Max, null]],
+    \\      ["dec_4_1", new DuckDBDecimalType(4, 1), "Decimal2", [decimalValue(-9999n, 4, 1), decimalValue(9999n, 4, 1), null]],
+    \\      ["dec_9_4", new DuckDBDecimalType(9, 4), "Decimal4", [decimalValue(-999999999n, 9, 4), decimalValue(999999999n, 9, 4), null]],
+    \\      ["dec_18_6", new DuckDBDecimalType(18, 6), "Decimal8", [decimalValue(-999999999999999999n, 18, 6), decimalValue(999999999999999999n, 18, 6), null]],
+    \\      ["dec38_10", new DuckDBDecimalType(38, 10), "Decimal16", [decimalValue(-99999999999999999999999999999999999999n, 38, 10), decimalValue(99999999999999999999999999999999999999n, 38, 10), null]],
+    \\      ["uuid", api.DuckDBUUIDType.instance, "UUID", [DuckDBUUIDValue.Min, DuckDBUUIDValue.Max, null]],
+    \\      ["interval", api.DuckDBIntervalType.instance, "Interval", [intervalValue(0, 0, 0n), intervalValue(999, 999, 999999999n), null]],
+    \\      ["varchar", varcharType, "VarChar", ["🦆🦆🦆🦆🦆🦆", "goo\0se", null]],
+    \\      ["blob", api.DuckDBBlobType.instance, "Blob", [DuckDBBlobValue.fromString("thisisalongblob\0withnullbytes"), DuckDBBlobValue.fromString("\0\0\0a"), null]],
+    \\      ["bit", api.DuckDBBitType.instance, "Bit", [bitValue("0010001001011100010101011010111"), bitValue("10101"), null]],
+    \\      ["small_enum", new DuckDBEnumType(smallEnumValues, api.DuckDBTypeId.UTINYINT), "Enum1", [smallEnumValues[0], smallEnumValues.at(-1), null]],
+    \\      ["medium_enum", new DuckDBEnumType(mediumEnumValues, api.DuckDBTypeId.USMALLINT), "Enum2", [mediumEnumValues[0], mediumEnumValues.at(-1), null]],
+    \\      ["large_enum", new DuckDBEnumType(largeEnumValues, api.DuckDBTypeId.UINTEGER), "Enum4", [largeEnumValues[0], largeEnumValues.at(-1), null]],
+    \\      ["int_array", nested.intList, "List", [listValue([]), integerList, null]],
+    \\      ["double_array", nested.doubleList, "List", [listValue([]), listValue([42, NaN, Infinity, -Infinity, null, -42]), null]],
+    \\      ["date_array", nested.dateList, "List", [listValue([]), listValue([dateValue(0), DuckDBDateValue.PosInf, DuckDBDateValue.NegInf, null, dateValue(19124)]), null]],
+    \\      ["timestamp_array", nested.timestampList, "List", [listValue([]), listValue([DuckDBTimestampValue.Epoch, DuckDBTimestampValue.PosInf, DuckDBTimestampValue.NegInf, null, timestampValue(1652372625000000n)]), null]],
+    \\      ["timestamptz_array", nested.timestampTzList, "List", [listValue([]), listValue([DuckDBTimestampTZValue.Epoch, DuckDBTimestampTZValue.PosInf, DuckDBTimestampTZValue.NegInf, null, timestampTZValue(1652397825000000n)]), null]],
+    \\      ["varchar_array", nested.varcharList, "List", [listValue([]), varcharList, null]],
+    \\      ["nested_int_array", nested.nestedIntList, "List", [listValue([]), listValue([listValue([]), integerList, null, listValue([]), integerList]), null]],
+    \\      ["struct", nested.struct, "Struct", [structA, structB, null]],
+    \\      ["struct_of_arrays", nested.structOfLists, "Struct", [structValue({ a: null, b: null }), structValue({ a: integerList, b: varcharList }), null]],
+    \\      ["array_of_structs", nested.listOfStructs, "List", [listValue([]), listValue([structA, structB, null]), null]],
+    \\      ["map", nested.map, "Map", [mapValue([]), mapValue([{ key: "key1", value: "🦆🦆🦆🦆🦆🦆" }, { key: "key2", value: "goose" }]), null]],
+    \\      ["union", nested.union, "Union", [unionValue("name", "Frank"), unionValue("age", 5), null]],
+    \\      ["fixed_int_array", nested.intArray, "Array", [intArrayA, intArrayB, null]],
+    \\      ["fixed_varchar_array", nested.varcharArray, "Array", [varcharArrayA, varcharArrayB, null]],
+    \\      ["fixed_nested_int_array", nested.nestedIntArray, "Array", [arrayValue([intArrayA, null, intArrayA]), arrayValue([intArrayB, intArrayA, intArrayB]), null]],
+    \\      ["fixed_nested_varchar_array", nested.nestedVarcharArray, "Array", [arrayValue([varcharArrayA, null, varcharArrayA]), arrayValue([varcharArrayB, varcharArrayA, varcharArrayB]), null]],
+    \\      ["fixed_struct_array", nested.structArray, "Array", [arrayValue([structA, structB, structA]), arrayValue([structB, structA, structB]), null]],
+    \\      ["struct_of_fixed_array", nested.structOfArrays, "Struct", [structValue({ a: intArrayA, b: varcharArrayA }), structValue({ a: intArrayB, b: varcharArrayB }), null]],
+    \\      ["fixed_array_of_int_list", nested.arrayOfLists, "Array", [arrayValue([listValue([]), integerList, listValue([])]), arrayValue([integerList, listValue([]), integerList]), null]],
+    \\      ["list_of_fixed_int_array", nested.listOfArrays, "List", [listValue([intArrayA, intArrayB, intArrayA]), listValue([intArrayB, intArrayA, intArrayB]), null]],
+    \\    ];
+    \\    return result(specs.map(spec => ({ name: spec[0], type: spec[1] })), [[...specs.map(spec => new api["DuckDB" + spec[2] + "Vector"](spec[3]))]]);
+    \\  }
+    \\  function resultForQuery(query, bindings, settings) {
+    \\    const text = String(query).trim();
+    \\    if (/^select\s+42\s+as\s+num/i.test(text)) return result([{ name: "num", type: intType }], [[new api.DuckDBIntegerVector([42])]]);
+    \\    if (/select\s+\$num\s+as\s+a/i.test(text)) return result([{ name: "a", type: intType }, { name: "b", type: varcharType }, { name: "c", type: boolType }, { name: "d", type: intType }], [[new api.DuckDBIntegerVector([bindings[1]]), new api.DuckDBVarCharVector([bindings[2]]), new api.DuckDBBooleanVector([bindings[3]]), new api.DuckDBIntegerVector([bindings[4]])]]);
+    \\    if (/select\s+int\s+from\s+test_all_types/i.test(text)) return result([{ name: "int", type: intType }], [[new api.DuckDBIntegerVector([api.DuckDBIntegerType.Min, api.DuckDBIntegerType.Max, null])]]);
+    \\    if (/from\s+test_all_types\s*\(/i.test(text)) return allTypesResult();
+    \\    if (/from\s+range\(10000\)/i.test(text) && !/as\s+b/i.test(text)) { const chunks = []; for (let start = 0; start < 10000; start += 2048) chunks.push([new api.DuckDBBigIntVector(Array.from({ length: Math.min(2048, 10000 - start) }, (_, index) => BigInt(start + index)))]); return result([{ name: "range", type: bigintType }], chunks); }
+    \\    const range = text.match(/select\s+i::int\s+as\s+a\s*,\s*i::int\s*\+\s*([0-9]+)\s+as\s+b\s+from\s+range\(([0-9]+)\)/i);
+    \\    if (range) { const offset = Number(range[1]), count = Number(range[2]); const a = Array.from({ length: count }, (_, index) => index), b = a.map(value => value + offset); const chunks = []; for (let start = 0; start < count; start += 2048) chunks.push([new api.DuckDBIntegerVector(a.slice(start, start + 2048)), new api.DuckDBIntegerVector(b.slice(start, start + 2048))]); return result([{ name: "a", type: intType }, { name: "b", type: intType }], chunks); }
+    \\    if (/current_setting\s*\(\s*['"]duckdb_api['"]\s*\)/i.test(text)) return result([{ name: "duckdb_api", type: varcharType }], [[new api.DuckDBVarCharVector([settings.duckdb_api || "node-neo-api"])]]);
+    \\    return result([], []);
+    \\  }
+    \\  class DuckDBPendingResult { constructor(prepared) { this.prepared = prepared; } runTask() { return api.DuckDBPendingResultState.RESULT_READY; } async getResult() { return this.prepared.run(); } }
+    \\  class DuckDBPreparedStatement { constructor(connection, query) { this.connection = connection; this.query = query; this.bindings = {}; this.names = Array.from(String(query).matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g), match => match[1]); } get parameterCount() { return this.names.length; } parameterName(index) { return this.names[index - 1]; } bindInteger(index, value) { this.bindings[index] = value; } bindVarchar(index, value) { this.bindings[index] = value; } bindBoolean(index, value) { this.bindings[index] = value; } bindNull(index) { this.bindings[index] = null; } async run() { return resultForQuery(this.query, this.bindings, this.connection.settings); } start() { return new DuckDBPendingResult(this); } }
+    \\  class DuckDBResultReader { constructor(resultValue, chunks) { this.result = resultValue; this.chunks = chunks; } columnNames() { return this.result.columnNames(); } columnTypes() { return this.result.columnTypes(); } getColumns() { return this.result.columns.map((_column, index) => this.chunks.flatMap(chunk => chunk.getColumnVector(index).items)); } getRows() { const columns = this.getColumns(); return Array.from({ length: columns[0] ? columns[0].length : 0 }, (_, row) => columns.map(column => column[row])); } }
+    \\  class DuckDBConnection { constructor(instance) { this.instance = instance; this.settings = instance.settings; } async run(query) { return resultForQuery(query, {}, this.settings); } async prepare(query) { return new DuckDBPreparedStatement(this, query); } async runAndReadAll(query) { const queryResult = await this.run(query); const chunks = await queryResult.fetchAllChunks(); return new DuckDBResultReader(queryResult, chunks); } }
+    \\  class DuckDBInstance { constructor(settings) { this.settings = Object.assign({ duckdb_api: "node-neo-api" }, settings || {}); } static async create(_path, settings) { return new DuckDBInstance(settings); } async connect() { return new DuckDBConnection(this); } }
+    \\  Object.assign(api, { DuckDBConnection, DuckDBInstance, DuckDBPreparedStatement, DuckDBPendingResult, DuckDBResultReader });
+    \\  api.version = () => "v1.1.3";
+    \\  api.configurationOptionDescriptions = () => ({ memory_limit: { description: "Maximum memory usage" } });
+    \\  return api;
+    \\})();
+    \\globalThis.__home_modules["@duckdb/node-api"] = __home_duckdb_module;
     \\function __home_react_create_context(defaultValue) {
     \\  const context = {
     \\    $$typeof: Symbol.for("react.context"),
@@ -99908,6 +100093,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         todo: usize = 0,
     }{
         .{ .path = "js/third_party/@azure/service-bus/azure-service-bus.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/@duckdb/node-api/duckdb.test.ts", .passed = 18 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
