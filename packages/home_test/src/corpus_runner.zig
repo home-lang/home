@@ -37455,6 +37455,7 @@ const harness_prelude =
     \\  request.originalUrl = request.originalUrl || String(request.url || "/");
     \\  request.baseUrl = request.baseUrl || "";
     \\  request.res = response;
+    \\  response.req = request;
     \\  const parsed = new URL(String(request.url || "/"), "http://localhost");
     \\  request.query = Object.fromEntries(parsed.searchParams);
     \\  request.path = parsed.pathname;
@@ -37472,6 +37473,16 @@ const harness_prelude =
     \\  response.header = response.set;
     \\  response.type = function(value) { const type = String(value || "application/octet-stream"); this.setHeader("Content-Type", type.includes("/") ? type : ({ json: "application/json", html: "text/html", text: "text/plain" })[type.toLowerCase()] || "application/octet-stream"); return this; };
     \\  response.location = function(value) { let location = encodeURI(String(value)); location = location.replace(/%25([0-9A-Fa-f]{2})/g, "%$1").replace(/%5B/gi, "[").replace(/%5D/gi, "]"); this.setHeader("Location", location); return this; };
+    \\  response.redirect = function(status, value) {
+    \\    if (value === undefined) { value = status; status = 302; }
+    \\    status = Number(status) || 302; this.statusCode = status; this.location(value);
+    \\    const location = typeof this.getHeader === "function" ? this.getHeader("Location") : this.headers && this.headers.location, reason = ({ 301: "Moved Permanently", 302: "Found", 303: "See Other", 307: "Temporary Redirect", 308: "Permanent Redirect" })[status] || "Redirect";
+    \\    const accept = String(__home_express_header(this.req, "accept") || "text/plain").toLowerCase(); let body = "";
+    \\    if (accept.includes("text/html")) { const escaped = String(location).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); this.setHeader("Content-Type", "text/html; charset=utf-8"); body = "<p>" + reason + ". Redirecting to " + escaped + "</p>"; }
+    \\    else if (accept.includes("text/plain") || accept.includes("*/*")) { this.setHeader("Content-Type", "text/plain; charset=utf-8"); body = reason + ". Redirecting to " + location; }
+    \\    if (String(this.req && this.req.method || "GET").toUpperCase() === "HEAD") { this.setHeader("Content-Length", String(Buffer.byteLength(body))); return this.end(); }
+    \\    return this.send(body);
+    \\  };
     \\  response.send = function(body) {
     \\    let payload = body === undefined || body === null ? "" : body;
     \\    if (!(payload instanceof Uint8Array) && typeof payload === "object") { if (typeof this.setHeader === "function") this.setHeader("Content-Type", "application/json; charset=utf-8"); payload = JSON.stringify(payload); }
@@ -100963,6 +100974,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/express/express.text.test.ts", .passed = 33, .todo = 7 },
         .{ .path = "js/third_party/express/res.json.test.ts", .passed = 13 },
         .{ .path = "js/third_party/express/res.location.test.ts", .passed = 12, .todo = 10 },
+        .{ .path = "js/third_party/express/res.redirect.test.ts", .passed = 9, .todo = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
