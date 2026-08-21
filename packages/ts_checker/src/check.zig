@@ -27371,6 +27371,22 @@ pub const Checker = struct {
         };
     }
 
+    fn appendCommonJsAssignmentMembers(
+        self: *Checker,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        root: NodeId,
+    ) CheckError!void {
+        var current = root;
+        while (self.hir.kindOf(current) == .assignment) {
+            const assignment = hir_mod.assignmentOf(self.hir, current);
+            if (try self.commonJsExportsAssignmentMember(current)) |member| {
+                try self.upsertObjectMember(members, member);
+            }
+            if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .assignment) break;
+            current = assignment.value;
+        }
+    }
+
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (!self.sourceHasVirtualFilenameSections()) return null;
         const spec = self.string_interner.get(specifier);
@@ -27413,9 +27429,7 @@ pub const Checker = struct {
                 {
                     continue;
                 }
-                if (try self.commonJsExportsAssignmentMember(raw)) |member| {
-                    try self.upsertObjectMember(&members, member);
-                }
+                try self.appendCommonJsAssignmentMembers(&members, raw);
                 continue;
             }
             if (try self.commonJsDefinePropertyExportMember(raw)) |defined| {
@@ -59076,21 +59090,12 @@ pub const Checker = struct {
                 {
                     continue;
                 }
-                if (self.commonJsExportsAssignmentName(raw)) |prop_name| {
-                    if (in_target_section and direct_export_t != types.Primitive.none) continue;
-                    const value_t = if (self.expressionIsVoidValue(a.value))
-                        types.Primitive.any
-                    else
-                        try self.commonJsExportAssignmentValueType(a.value);
-                    try self.appendCommonJsExportEntry(&entries, prop_name, value_t, false, raw, true);
-                    continue;
-                }
-                if (export_alias) |alias_name| {
-                    if (self.commonJsAliasExportPropertyName(a.target, alias_name)) |prop_name| {
-                        const value_t = try self.commonJsExportAssignmentValueType(a.value);
-                        try self.appendCommonJsExportEntry(&entries, prop_name, value_t, false, raw, false);
-                    }
-                }
+                if (in_target_section and direct_export_t != types.Primitive.none) continue;
+                try self.appendCommonJsAssignmentChainEntries(
+                    &entries,
+                    raw,
+                    export_alias,
+                );
                 continue;
             }
             if (try self.commonJsDefinePropertyExportMember(raw)) |defined| {
@@ -59748,6 +59753,49 @@ pub const Checker = struct {
             try entry.alias_nodes.append(self.gpa, node);
         }
         try entries.append(self.gpa, entry);
+    }
+
+    fn appendCommonJsAssignmentChainEntries(
+        self: *Checker,
+        entries: *std.ArrayListUnmanaged(CommonJsExportEntry),
+        root: NodeId,
+        export_alias: ?hir_mod.StringId,
+    ) CheckError!void {
+        var current = root;
+        while (self.hir.kindOf(current) == .assignment) {
+            const assignment = hir_mod.assignmentOf(self.hir, current);
+            if (assignment.op == null and assignment.target != hir_mod.none_node_id and
+                assignment.value != hir_mod.none_node_id)
+            {
+                const value_t = if (self.expressionIsVoidValue(assignment.value))
+                    types.Primitive.any
+                else
+                    try self.commonJsExportAssignmentValueType(assignment.value);
+                if (self.commonJsExportsAssignmentName(current)) |prop_name| {
+                    try self.appendCommonJsExportEntry(
+                        entries,
+                        prop_name,
+                        value_t,
+                        false,
+                        current,
+                        true,
+                    );
+                } else if (export_alias) |alias_name| {
+                    if (self.commonJsAliasExportPropertyName(assignment.target, alias_name)) |prop_name| {
+                        try self.appendCommonJsExportEntry(
+                            entries,
+                            prop_name,
+                            value_t,
+                            false,
+                            current,
+                            false,
+                        );
+                    }
+                }
+            }
+            if (assignment.value == hir_mod.none_node_id or self.hir.kindOf(assignment.value) != .assignment) break;
+            current = assignment.value;
+        }
     }
 
     fn commonJsDeclarationValueUnion(self: *Checker, values: []const TypeId) CheckError!TypeId {
@@ -220548,6 +220596,37 @@ test "checker: current tsgo chained CommonJS constructor values remain non-const
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+}
+
+test "checker: chained CommonJS exports retain every callable alias" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noImplicitAny: true
+        \\// @Filename: types.d.ts
+        \\declare function require(name: string): any;
+        \\declare var exports: any;
+        \\declare var module: { exports: any };
+        \\// @Filename: mod.js
+        \\/// <reference path='./types.d.ts'/>
+        \\/** @param {number} n */
+        \\exports.f = exports.g = function fg(n) { return n + 1; };
+        \\/** @param {string} value */
+        \\module.exports.h = module.exports.i = function hi(value) { return value; };
+        \\// @Filename: use.js
+        \\/// <reference path='./types.d.ts'/>
+        \\var mod = require('./mod');
+        \\mod.f('no');
+        \\mod.g('also no');
+        \\mod.h(0);
+        \\mod.i(1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: current tsgo CommonJS nested object writes keep literal export shape" {
