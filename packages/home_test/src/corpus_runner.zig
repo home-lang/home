@@ -3272,7 +3272,7 @@ const harness_prelude =
     \\function __home_valkey_unterminated_response(endpoint, lineLength) { const length = Number(lineLength) || 0; const maximum = 512 * 1024; const failure = __home_valkey_error("parse", endpoint, new RangeError("RESP scalar line length " + String(length) + " exceeds the " + String(maximum) + " byte limit before a CRLF terminator")); failure.name = "RedisInvalidResponseError"; failure.code = "ERR_REDIS_INVALID_RESPONSE"; failure.responseKind = "scalar-line"; failure.lineLength = length; failure.maxLineLength = maximum; return failure; }
     \\function __home_valkey_tls_error(endpoint, code, error) { const failure = __home_valkey_error("tls", endpoint, error); failure.name = "ValkeyTLSError"; failure.code = String(code || "ERR_VALKEY_TLS"); failure.tlsCode = failure.code; return failure; }
     \\const __home_valkey_test_context = { redis: null, id: 0, generateKey(name) { this.id++; return "home-valkey-" + String(this.id) + "-" + String(name); } };
-    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error, createInvalidResponseError: __home_valkey_invalid_response, createUnterminatedResponseError: __home_valkey_unterminated_response, createTlsError: __home_valkey_tls_error };
+    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", TLS_REDIS_OPTIONS: { tls: false, tlsPaths: {} }, TLS_REDIS_URL: "rediss://localhost:6380", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, awaitableCounter() { return { count: 0, promise: Promise.resolve(), increment() { this.count++; } }; }, randomCoinFlip() { return false; }, setupDockerContainer() { return Promise.resolve(false); }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error, createInvalidResponseError: __home_valkey_invalid_response, createUnterminatedResponseError: __home_valkey_unterminated_response, createTlsError: __home_valkey_tls_error };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -77226,6 +77226,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { DEFAULT_REDIS_OPTIONS, DEFAULT_REDIS_URL, isEnabled } = globalThis.__home_import(\"home:valkey-test-utils\");",
         },
         .{
+            .needle = "import {\n  ctx as _ctx,\n  awaitableCounter,\n  ConnectionType,\n  createClient,\n  DEFAULT_REDIS_URL,\n  expectType,\n  isEnabled,\n  randomCoinFlip,\n  setupDockerContainer,\n  TLS_REDIS_OPTIONS,\n  TLS_REDIS_URL,\n} from \"./test-utils\";",
+            .replacement = "const { ctx: _ctx, awaitableCounter, ConnectionType, createClient, DEFAULT_REDIS_URL, expectType, isEnabled, randomCoinFlip, setupDockerContainer, TLS_REDIS_OPTIONS, TLS_REDIS_URL } = globalThis.__home_import(\"home:valkey-test-utils\");",
+        },
+        .{
+            .needle = "import type { RedisTestStartMessage } from \"./valkey.failing-subscriber\";",
+            .replacement = "",
+        },
+        .{
+            .needle = "import type { Message } from \"./valkey.failing-subscriber-no-ipc\";",
+            .replacement = "",
+        },
+        .{
             .needle = "import { serve } from \"bun\";",
             .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
         },
@@ -104696,6 +104708,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/valkey/valkey-gc.test.ts", .passed = 5 },
         .{ .path = "js/valkey/valkey-incremental-scan.test.ts", .passed = 1 },
         .{ .path = "js/valkey/valkey-tls-verify.test.ts", .passed = 7 },
+        .{ .path = "js/valkey/valkey.test.ts", .passed = 0, .todo = 2 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
