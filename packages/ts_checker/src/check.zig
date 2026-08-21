@@ -59732,6 +59732,30 @@ pub const Checker = struct {
         return null;
     }
 
+    fn virtualExportAssignmentTypeOnlyImportOrigin(
+        self: *Checker,
+        anchor: NodeId,
+        specifier: hir_mod.StringId,
+    ) CheckError!?TypeOnlyImportOrigin {
+        const spec = self.string_interner.get(specifier);
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec) or
+                !self.isExportAssignmentDecl(stmt)) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (ex.decl == hir_mod.none_node_id or self.hir.kindOf(ex.decl) != .identifier) continue;
+            const target_name = hir_mod.identifierOf(self.hir, ex.decl).name;
+            if (self.typeOnlyImportLocalDecl(target_name, stmt)) |origin| {
+                return .{ .node = origin, .name = target_name };
+            }
+        }
+        return null;
+    }
+
     fn localTypeOnlyImportOriginForExportPath(
         self: *Checker,
         anchor: NodeId,
@@ -59792,6 +59816,31 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn importModuleForLocalBinding(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?hir_mod.StringId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == name) return imp.module;
+            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.namespace_binding).name == name) return imp.module;
+        }
+        return null;
+    }
+
+    fn crossModuleTypeOnlyImportOrigin(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeOnlyImportOrigin {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (self.plainNamedImport(name, anchor)) |import| {
+            return try self.virtualRelativeExportPathTypeOnlyImportOrigin(anchor, import.module, &.{import.imported});
+        }
+        const module = self.importModuleForLocalBinding(name, anchor) orelse return null;
+        return try self.virtualExportAssignmentTypeOnlyImportOrigin(anchor, module);
     }
 
     /// TS1362 predicate: true when `name` is a plain named import whose
@@ -120129,8 +120178,27 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return self.argumentsObjectType() catch types.Primitive.any;
         }
-        if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and !self.isBuiltinName(id.name) and self.typeOnlyImportLocal(id.name, node)) {
+        if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
+            !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isBuiltinName(id.name) and self.typeOnlyImportLocal(id.name, node))
+        {
             if (self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node)) return types.Primitive.any;
+            const msg = std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' cannot be used as a value because it was imported using 'import type'.",
+                .{name_str},
+            ) catch return types.Primitive.any;
+            self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.type_only_import_used_as_value,
+                .message = msg,
+            }) catch return types.Primitive.any;
+            return types.Primitive.any;
+        }
+        if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and
+            !self.isComputedKeyInAmbientClassMember(node) and
+            (self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null)
+        {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' cannot be used as a value because it was imported using 'import type'.",
@@ -248628,4 +248696,46 @@ test "checker: repeated export stars from one module are unambiguous" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: type-only import provenance survives a named re-export" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\export class A {}
+        \\// @filename: /b.ts
+        \\import type { A } from './a';
+        \\export { A };
+        \\// @filename: /c.ts
+        \\import { A } from './b';
+        \\new A();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+}
+
+test "checker: export-equals moves type-only import diagnostics to consumers" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @esModuleInterop: true
+        \\// @filename: /a.ts
+        \\export class A {}
+        \\// @filename: /b.ts
+        \\import type * as types from './a';
+        \\export = types;
+        \\// @filename: /c.ts
+        \\import types from './b';
+        \\new types.A();
+        \\// @filename: /d.ts
+        \\import types = require('./b');
+        \\new types.A();
+        \\// @filename: /e.ts
+        \\import * as types from './b';
+        \\new types.A();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
 }
