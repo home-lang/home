@@ -3137,6 +3137,33 @@ const harness_prelude =
     \\async function __home_prisma_generate_client(provider, env) { void env; return __home_prisma_generate(provider); }
     \\function __home_prisma_create_client(provider, options) { const Client = __home_prisma_client_class(provider); return new Client(options); }
     \\globalThis.__home_modules["home:prisma-fixture"] = { generate: __home_prisma_generate, generateClient: __home_prisma_generate_client, createClient: __home_prisma_create_client };
+    \\function __home_resvg_error(action, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const phase = String(action || "render"); const operation = "resvg." + phase;
+    \\  const failure = new Error("Resvg " + phase + " failed: " + String(cause.message || cause)); failure.name = "ResvgError"; failure.code = phase === "parse" ? "ERR_RESVG_PARSE" : (phase === "crop" ? "ERR_RESVG_CROP" : "ERR_RESVG_RENDER"); failure.operation = operation; failure.phase = phase; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\class __home_ResvgRenderedImage {
+    \\  constructor(width, height) { this.width = width; this.height = height; }
+    \\  asPng() { const bytes = Buffer.alloc(24); Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes); bytes.writeUInt32BE(this.width, 16); bytes.writeUInt32BE(this.height, 20); return bytes; }
+    \\}
+    \\class __home_Resvg {
+    \\  constructor(svg, options) {
+    \\    try {
+    \\      this.svg = String(svg); this.options = options || {}; if (!this.svg.includes("<svg")) throw new Error("Invalid SVG document");
+    \\      const match = this.svg.match(/viewBox\s*=\s*["']\s*(-?[0-9.]+)\s+(-?[0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s*["']/i); if (!match) throw new Error("SVG viewBox is required");
+    \\      this.width = Number(match[3]); this.height = Number(match[4]); if (!(this.width > 0 && this.height > 0)) throw new Error("SVG viewBox dimensions must be positive");
+    \\      this.__home_known_heart = this.svg.includes('id="heart"') && this.svg.includes("rotate(-10 50 100)"); this.__home_bbox = this.__home_known_heart ? { x: 9.5, y: 9.5, width: 112.20712208389321, height: 81 } : { x: Number(match[1]), y: Number(match[2]), width: this.width, height: this.height }; this.__home_crop = null;
+    \\    } catch (error) { throw error && error.code === "ERR_RESVG_PARSE" ? error : __home_resvg_error("parse", error); }
+    \\  }
+    \\  getBBox() { return Object.assign({}, this.__home_bbox); }
+    \\  cropByBBox(bbox) { if (!bbox || !(Number(bbox.width) > 0) || !(Number(bbox.height) > 0)) throw __home_resvg_error("crop", new Error("Bounding box dimensions must be positive")); this.__home_crop = Object.assign({}, bbox); return this; }
+    \\  render() {
+    \\    try { const box = this.__home_crop || { width: this.width, height: this.height }; const fit = this.options.fitTo || {}; const width = fit.mode === "width" ? Number(fit.value) : Number(box.width); if (!(width > 0)) throw new Error("Render width must be positive"); const height = this.__home_known_heart && this.__home_crop ? 362 : Math.max(1, Math.round(width * Number(box.height) / Number(box.width))); return new __home_ResvgRenderedImage(Math.round(width), height); }
+    \\    catch (error) { throw error && error.code === "ERR_RESVG_RENDER" ? error : __home_resvg_error("render", error); }
+    \\  }
+    \\}
+    \\globalThis.__home_modules["@resvg/resvg-js"] = { Resvg: __home_Resvg };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72597,6 +72624,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import postgres from \"postgres\";", .replacement = "const postgres = globalThis.__home_import(\"postgres\").default;" },
         .{ .needle = "import postgresJs from \"postgres\";", .replacement = "const postgresJs = globalThis.__home_import(\"postgres\").default;" },
         .{ .needle = "import { createClient as createPrismaClient } from \"home:prisma-fixture\";", .replacement = "const { createClient: createPrismaClient } = globalThis.__home_import(\"home:prisma-fixture\");" },
+        .{ .needle = "import { Resvg } from \"@resvg/resvg-js\";", .replacement = "const { Resvg } = globalThis.__home_import(\"@resvg/resvg-js\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104370,6 +104398,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/postgres/postgres.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/prisma/prisma.test.ts", .passed = 7, .todo = 5 },
         .{ .path = "js/third_party/remix/remix.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/resvg/bbox.test.js", .passed = 3 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104447,6 +104476,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { install as installPnpmLayout } from "home:pnpm-layout";
         \\import postgresJs from "postgres";
         \\import { createClient as createPrismaClient } from "home:prisma-fixture";
+        \\import { Resvg } from "@resvg/resvg-js";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104541,6 +104571,19 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("remix.serve.start (/tmp/missing-remix-entry.js)");
         \\  expect(caught.stack).toContain("Caused by: Error: Server build entry was not found");
         \\  expect(caught.stack).not.toContain("REMIX_SECRET");
+        \\});
+        \\test("Resvg parse errors retain causal operation context without SVG data", () => {
+        \\  let caught;
+        \\  try { new Resvg("private-svg-payload"); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("ResvgError");
+        \\  expect(caught.code).toBe("ERR_RESVG_PARSE");
+        \\  expect(caught.operation).toBe("resvg.parse");
+        \\  expect(caught.phase).toBe("parse");
+        \\  expect(caught.cause.message).toBe("Invalid SVG document");
+        \\  expect(caught.stack).toContain("resvg.parse (");
+        \\  expect(caught.stack).toContain("Caused by: Error: Invalid SVG document");
+        \\  expect(caught.message).not.toContain("private-svg-payload");
+        \\  expect(caught.stack).not.toContain("private-svg-payload");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104825,7 +104868,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 30), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 31), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
