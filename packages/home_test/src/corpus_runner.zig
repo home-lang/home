@@ -58461,6 +58461,25 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/make-client"] = { ServiceClient: __home_grpc_EchoService, ServiceClientConstructor: __home_grpc_EchoService };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
+    \\const __home_grpc_duration = {
+    \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
+    \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
+    \\  durationToMs(duration) { return (duration.seconds * 1000 + duration.nanos / 1000000) | 0; },
+    \\  isDuration(value) { return !!value && typeof value.seconds === "number" && typeof value.nanos === "number"; },
+    \\  isDurationMessage(value) { return !!value && typeof value.seconds === "string" && typeof value.nanos === "number"; },
+    \\  parseDuration(value) {
+    \\    if (typeof value !== "string") return null;
+    \\    const match = value.match(/^(\d+)(?:\.(\d+))?s$/);
+    \\    if (!match) return null;
+    \\    return { seconds: Number.parseInt(match[1], 10), nanos: match[2] ? Number.parseInt(match[2].padEnd(9, "0"), 10) : 0 };
+    \\  },
+    \\  durationToString(duration) {
+    \\    if (duration.nanos === 0) return String(duration.seconds) + "s";
+    \\    const scaleFactor = duration.nanos % 1000000 === 0 ? 1000000 : duration.nanos % 1000 === 0 ? 1000 : 1;
+    \\    return String(duration.seconds) + "." + String(duration.nanos / scaleFactor) + "s";
+    \\  },
+    \\};
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/duration"] = __home_grpc_duration;
     \\globalThis.__home_modules["@grpc/proto-loader"] = {
     \\  loadSync(file, options) { return { __home_proto_file: String(file), options: options || {} }; },
     \\};
@@ -71043,6 +71062,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let client: Client;", .replacement = "let client;" },
         .{ .needle = "import parseLoadBalancingConfig = experimental.parseLoadBalancingConfig;", .replacement = "const parseLoadBalancingConfig = experimental.parseLoadBalancingConfig;" },
         .{ .needle = "const allTestCases: { [lbPolicyName: string]: TestCase[] } =", .replacement = "const allTestCases =" },
+        .{ .needle = "const expectationList: {\n      input: string;\n      result: duration.Duration | null;\n    }[] =", .replacement = "const expectationList =" },
+        .{ .needle = "import * as duration from \"@grpc/grpc-js/build/src/duration\";", .replacement = "const duration = globalThis.__home_import(\"@grpc/grpc-js/build/src/duration\");" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -101867,6 +101888,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-client.test.ts", .passed = 5 },
         .{ .path = "js/third_party/grpc-js/test-confg-parsing.test.ts", .passed = 7 },
         .{ .path = "js/third_party/grpc-js/test-deadline.test.ts", .passed = 2 },
+        .{ .path = "js/third_party/grpc-js/test-duration.test.ts", .passed = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
