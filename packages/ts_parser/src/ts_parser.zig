@@ -8632,6 +8632,28 @@ pub const Parser = struct {
         if (self.module_augmentation_depth > 0 and !self.importKeywordBeginsImportEquals(import_idx)) {
             try self.reportCodeAt(start.span.start, start.line, 2667, "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.");
         }
+        // `import\nimport { foo } from "m"` parses the second `import` as
+        // the missing module-specifier expression of the first declaration.
+        // Keep that keyword unread so source-element recovery can then parse
+        // the complete declaration beginning there.
+        if (self.peek().kind == .kw_import and
+            self.peekAt(1).kind != .open_paren and
+            self.peekAt(1).kind != .less_than and
+            self.peekAt(1).kind != .dot)
+        {
+            const missing_module = self.peek();
+            try self.reportCodeAt(missing_module.span.start, missing_module.line, 1109, "Expression expected.");
+            const empty_module = self.interner.intern("") catch return error.OutOfMemory;
+            return try self.builder.addImport(
+                tokenSpan(start),
+                empty_module,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                &.{},
+                false,
+            );
+        }
         var is_type_only = false;
         var type_kw_start: u32 = start.span.start;
         var type_kw_line: u32 = start.line;
@@ -10318,6 +10340,15 @@ pub const Parser = struct {
         }
         var recovered_initializer_arrow_tail = false;
         var recovered_variable_list_boundary = false;
+        if (init_node != hir_mod.none_node_id and
+            self.peek().kind == .kw_import and
+            self.hasDiagnosticAt(1109, self.peek().span.start))
+        {
+            // An invalid import expression returns a missing initializer
+            // without consuming `import`. Yield to source-element parsing so
+            // the same token can begin a recovered import declaration.
+            recovered_variable_list_boundary = true;
+        }
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
@@ -10453,6 +10484,7 @@ pub const Parser = struct {
             const comma_tok: ?Token = if (self.match(.comma))
                 self.tokens[self.cursor - 1]
             else if (!recovered_initializer_arrow_tail and
+                !recovered_variable_list_boundary and
                 !self.peek().flags.preceded_by_newline and
                 tokenCanStartVariableBinding(self.peek().kind))
             blk: {
@@ -10548,6 +10580,7 @@ pub const Parser = struct {
         // comma expression remains available to the checker. Declaration
         // starts use the same recovery boundary.
         if (!recovered_initializer_arrow_tail and
+            !recovered_variable_list_boundary and
             !self.peek().flags.preceded_by_newline and
             tokenStartsOuterStatementAfterVariableList(self.peek().kind))
         {
@@ -19425,9 +19458,19 @@ pub const Parser = struct {
                 // The checker treats `import` as a builtin so the
                 // chain types as `any` for now (full `ImportMeta`
                 // shape is a follow-up).
-                _ = self.advance();
                 const import_id = self.interner.intern("import") catch return error.OutOfMemory;
                 const callee = try self.builder.addIdentifier(tokenSpan(t), import_id);
+                if (self.peekAt(1).kind != .open_paren and
+                    self.peekAt(1).kind != .less_than and
+                    self.peekAt(1).kind != .dot)
+                {
+                    // Match TypeScript's missing-expression recovery: report
+                    // at `import` but leave it unread so an enclosing list can
+                    // yield and parse it as the next declaration.
+                    try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
+                    return callee;
+                }
+                _ = self.advance();
                 if (self.peek().kind == .less_than) {
                     if (self.findMatchingTypeArgsEnd(self.cursor)) |after_gt| {
                         if (self.tokens[after_gt].kind != .open_paren) {
@@ -25612,6 +25655,33 @@ test "parser: dynamic import with attributes argument" {
     // Just assert it parses without error — the dynamic-import call
     // shape is exercised here for compatibility only.
     _ = root;
+}
+
+test "parser: malformed import expressions recover as declarations" {
+    const consecutive =
+        \\import
+        \\import { foo } from './0';
+    ;
+    var first = try newTestSetup(consecutive);
+    defer destroyTestSetup(first);
+    _ = try first.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), first.parser.diagnostics.items.len);
+    const first_diag = first.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1109), first_diag.code);
+    try T.expectEqualStrings("Expression expected.", first_diag.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.lastIndexOf(u8, consecutive, "import").?)), first_diag.pos);
+    try T.expectEqual(@as(u32, 2), first_diag.line);
+
+    const initializer = "var x = import { foo } from './0';";
+    var second = try newTestSetup(initializer);
+    defer destroyTestSetup(second);
+    _ = try second.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), second.parser.diagnostics.items.len);
+    const second_diag = second.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1109), second_diag.code);
+    try T.expectEqualStrings("Expression expected.", second_diag.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, initializer, "import").?)), second_diag.pos);
+    try T.expectEqual(@as(u32, 1), second_diag.line);
 }
 
 test "parser: import.meta member access" {
