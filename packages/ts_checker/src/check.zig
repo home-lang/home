@@ -5396,6 +5396,7 @@ pub const Checker = struct {
         try self.checkUnusedTopLevelImports(stmts);
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
+        self.removeJsDocObjectMethodTypeMismatchCascades();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
         self.applyExplicitNoImplicitThisDirective();
         // Detection passes above append diagnostics in node-id
@@ -17773,6 +17774,7 @@ pub const Checker = struct {
 
     fn checkJsDocFunctionTypeTag(self: *Checker, node: NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
+        const mismatch_message = "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.";
         const f = hir_mod.fnDeclOf(self.hir, node);
         const src = self.source orelse return;
         const span = self.hir.spanOf(node);
@@ -17787,7 +17789,7 @@ pub const Checker = struct {
                     node,
                     self.sliceStartPos(src, tag.type_text),
                     TsCodes.jsdoc_function_type_mismatch,
-                    "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+                    mismatch_message,
                 );
                 return;
             }
@@ -17797,7 +17799,7 @@ pub const Checker = struct {
                         node,
                         self.sliceStartPos(src, tag.type_text),
                         TsCodes.jsdoc_function_type_mismatch,
-                        "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+                        mismatch_message,
                     );
                     return;
                 }
@@ -17806,7 +17808,7 @@ pub const Checker = struct {
                         node,
                         self.sliceStartPos(src, tag.type_text),
                         TsCodes.jsdoc_function_type_mismatch,
-                        "The type of a function declaration must match the function's signature.",
+                        mismatch_message,
                     );
                     return;
                 }
@@ -17815,7 +17817,7 @@ pub const Checker = struct {
                 const fn_name = self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name);
                 const base = jsDocTypeBaseName(type_text);
                 if (base.len == fn_name.len and std.mem.eql(u8, base, fn_name)) {
-                    try self.report(f.name, TsCodes.jsdoc_function_type_mismatch, "The type of a function declaration must match the function's signature.");
+                    try self.report(f.name, TsCodes.jsdoc_function_type_mismatch, mismatch_message);
                     return;
                 }
             }
@@ -17826,12 +17828,28 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(node);
         if (parent == hir_mod.none_node_id) return false;
         const parent_kind = self.hir.kindOf(parent);
-        if (parent_kind != .block_stmt and parent_kind != .export_decl) return false;
+        if (parent_kind != .block_stmt and parent_kind != .export_decl and parent_kind != .object_property) return false;
 
         if (self.callableSignatureCount(declared_t) != 1) return true;
         const declared_sig = self.firstSignatureType(declared_t) orelse return true;
         if (self.rest_signatures.contains(declared_sig)) return false;
         return self.interner.signatureParams(declared_sig).len < self.syntaxValueParameterCount(node);
+    }
+
+    fn removeJsDocObjectMethodTypeMismatchCascades(self: *Checker) void {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .fn_decl and kind != .fn_expr) continue;
+            if (!self.diagnosticExists(node, TsCodes.jsdoc_function_type_mismatch)) continue;
+            const property_node = self.hir.parentOf(node);
+            if (property_node == hir_mod.none_node_id or self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (!property.is_method or property.value != node) continue;
+            const object_node = self.hir.parentOf(property_node);
+            if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) continue;
+            self.removePriorDiagnosticsInNodeSpan(property_node, TsCodes.type_not_assignable);
+        }
     }
 
     fn jsDocFunctionHasTypeTag(self: *Checker, node: NodeId) CheckError!bool {
@@ -218949,8 +218967,8 @@ test "checker: checkjs JSDoc function type tags enforce declaration arity" {
             try T.expect(std.mem.indexOf(u8, d.message, "?: any") == null);
         }
     }
-    try T.expectEqual(@as(usize, 3), declaration_mismatches);
-    try T.expectEqual(@as(usize, 4), assignment_mismatches);
+    try T.expectEqual(@as(usize, 4), declaration_mismatches);
+    try T.expectEqual(@as(usize, 3), assignment_mismatches);
 }
 
 test "checker: checkjs JSDoc object property types contextualize values" {
@@ -219468,7 +219486,12 @@ test "checker: checkjs self-referential JSDoc type on function emits TS8030" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsdoc_function_type_mismatch) found = true;
+        if (d.code != TsCodes.jsdoc_function_type_mismatch) continue;
+        found = true;
+        try T.expectEqualStrings(
+            "A JSDoc '@type' tag on a function must have a signature with the correct number of arguments.",
+            d.message,
+        );
     }
     try T.expect(found);
 }
