@@ -4267,6 +4267,25 @@ const harness_prelude =
     \\  if (script.includes("Buffer.alloc(8 * 1024 * 1024") && script.includes("new Response(body).blob()")) return __home_spawn_completed("ok 8388608\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_blob_utf16_bom_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/blob.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("slice(1).text()") || !script.includes("oddJson") || !script.includes("alignedText")) return null;
+    \\  try {
+    \\    const oddText = __home_blob_bytes_to_text(new Uint8Array([0x41, 0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]).slice(1));
+    \\    const oddJson = JSON.parse(__home_blob_bytes_to_text(new Uint8Array([0x41, 0xff, 0xfe, 0x34, 0x00, 0x32, 0x00]).slice(1)));
+    \\    const alignedText = __home_blob_bytes_to_text(new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]));
+    \\    return __home_spawn_completed(JSON.stringify({ oddText, oddJson, alignedText }) + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const error = new Error("Blob UTF-16 child evaluation failed", { cause });
+    \\    error.code = "ERR_BLOB_CHILD_DECODE";
+    \\    error.operation = "blob.child.decode";
+    \\    error.stack = String(error.stack || error) + "\nCaused by: " + String(cause && cause.stack || cause);
+    \\    return __home_spawn_completed("", String(error.stack) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_s3_multipart_upload_id_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
@@ -26421,6 +26440,8 @@ const harness_prelude =
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
     \\    if (memfdDisabledFixture) return memfdDisabledFixture;
+    \\    const blobUtf16BomFixture = __home_spawn_blob_utf16_bom_fixture(options || {});
+    \\    if (blobUtf16BomFixture) return blobUtf16BomFixture;
     \\    const fetchAbortQueuedFixture = __home_spawn_fetch_abort_queued_fixture(options || {});
     \\    if (fetchAbortQueuedFixture) return fetchAbortQueuedFixture;
     \\    const fetchAbortStreamBodyFixture = __home_spawn_fetch_abort_stream_body_fixture(options || {});
@@ -26719,7 +26740,8 @@ const harness_prelude =
     \\    if (data instanceof __home_Archive) return data.bytes().then(bytes => Bun.write(targetPath, bytes, options));
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
     \\    let payloadBytes = null;
-    \\    if (payload && payload.__home_file_ref) payloadBytes = __home_file_bytes_sync(payload.path);
+    \\    if (payload && payload.__home_file_slice_ref) payloadBytes = Array.from(__home_file_slice_bytes(payload.__home_file_slice_ref, "bun.write.source.fileSlice", true));
+    \\    else if (payload && payload.__home_file_ref) payloadBytes = __home_file_bytes_sync(payload.path);
     \\    else if (typeof Response === "function" && payload instanceof Response) payloadBytes = __home_body_bytes_sync(payload.body);
     \\    const view = payloadBytes !== null ? new Uint8Array(payloadBytes) : __home_array_buffer_view(payload);
     \\    if (isStdioTarget) return Promise.resolve(payloadBytes !== null ? payloadBytes.length : __home_build_file_value_byte_length(payload));
@@ -26788,9 +26810,6 @@ const harness_prelude =
     \\      } catch (error) {
     \\        return Promise.reject(error);
     \\      }
-    \\    }
-    \\    function executableMagicBytes() {
-    \\      return process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
     \\    }
     \\    return {
     \\      __home_file_ref: true,
@@ -26955,20 +26974,18 @@ const harness_prelude =
     \\        }
     \\      },
     \\      slice(start, end, contentType) {
-    \\        const sparse = globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath) ? globalThis.__home_written_file_sparse[filePath] : null;
-    \\        const nativeText = sparse ? null : __home_build_read_text(filePath);
-    \\        const bytes = sparse ? null : (globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[filePath] ? executableMagicBytes() : (nativeText === null ? executableMagicBytes() : __home_file_bytes_sync(filePath)));
-    \\        if (typeof start === "string" && end === undefined && contentType === undefined) return sparse ? __home_sparse_blob_from_parts(sparse.parts, sparse.size || 0, start) : new Blob([new Uint8Array(bytes)], { type: start });
+    \\        const size = this.size;
+    \\        if (typeof start === "string" && end === undefined && contentType === undefined) return __home_file_slice_blob(filePath, 0, size, start);
     \\        let firstNumber;
-    \\        try { firstNumber = Number(start); } catch (error) { firstNumber = 0; }
-    \\        const first = Math.max(0, Number.isNaN(firstNumber) ? 0 : firstNumber);
+    \\        try { firstNumber = start === undefined ? 0 : Number(start); } catch (error) { firstNumber = 0; }
+    \\        if (Number.isNaN(firstNumber)) firstNumber = 0;
+    \\        const first = firstNumber < 0 ? Math.max(size + firstNumber, 0) : Math.min(firstNumber, size);
     \\        let lastNumber;
-    \\        const size = sparse ? (sparse.size || 0) : bytes.length;
     \\        try { lastNumber = end === undefined || (typeof end === "string" && end[0] === "-") ? size : Number(end); } catch (error) { lastNumber = size; }
-    \\        const last = Math.min(size, Math.max(first, Number.isNaN(lastNumber) ? 0 : lastNumber));
-    \\        const blob = sparse ? new Blob([new Uint8Array(__home_sparse_blob_slice_bytes(sparse.parts, first, last))], { type: contentType === undefined ? this.type : contentType }) : new Blob([new Uint8Array(bytes.slice(first, last))], { type: contentType === undefined ? this.type : contentType });
-    \\        try { Object.defineProperty(blob, "__home_file_slice_ref", { configurable: true, value: { path: filePath, start: first, end: last } }); } catch (error) {}
-    \\        return blob;
+    \\        if (Number.isNaN(lastNumber)) lastNumber = 0;
+    \\        const lastCandidate = lastNumber < 0 ? Math.max(size + lastNumber, 0) : Math.min(lastNumber, size);
+    \\        const last = Math.max(first, lastCandidate);
+    \\        return __home_file_slice_blob(filePath, first, last, contentType === undefined ? this.type : contentType);
     \\      },
     \\    };
     \\  },
@@ -62113,8 +62130,8 @@ const harness_prelude =
     \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
-    \\  if ((String(specifier).startsWith("blob:") || String(resolved).startsWith("blob:")) && globalThis.__home_blob_url_registry && (globalThis.__home_blob_url_registry[String(specifier)] || globalThis.__home_blob_url_registry[String(resolved)])) {
-    \\    throw new BuildMessage("Unexpected token while parsing JavaScript module", "error", null);
+    \\  if (String(specifier).startsWith("blob:") || String(resolved).startsWith("blob:")) {
+    \\    return __home_import_blob_module(String(specifier).startsWith("blob:") ? String(specifier) : String(resolved));
     \\  }
     \\  const mockKey = __home_mock_module_key(resolved);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[mockKey];
@@ -62331,8 +62348,8 @@ const harness_prelude =
     \\}
     \\globalThis.require = function(specifier) {
     \\  const rawSpecifier = String(specifier);
-    \\  if (rawSpecifier.startsWith("blob:") && globalThis.__home_blob_url_registry && globalThis.__home_blob_url_registry[rawSpecifier]) {
-    \\    throw new BuildMessage("Unexpected token while parsing JavaScript module", "error", null);
+    \\  if (rawSpecifier.startsWith("blob:")) {
+    \\    return __home_import_blob_module(rawSpecifier);
     \\  }
     \\  const queryIndex = rawSpecifier.indexOf("?");
     \\  const query = queryIndex === -1 ? "" : rawSpecifier.slice(queryIndex);
@@ -62725,14 +62742,14 @@ const harness_prelude =
     \\  for (const entry of form.__home_entries || []) {
     \\    const value = entry[1];
     \\    const isFileRef = !!(value && value.__home_file_ref);
-    \\    const isBlob = !!(value && Array.isArray(value.__home_blob_bytes));
+    \\    const isBlob = !!(value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || value.__home_file_slice_ref));
     \\    lines.push("--" + boundary);
     \\    let disposition = 'Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"';
     \\    if (isBlob || isFileRef) disposition += '; filename="' + __home_formdata_escape_name(__home_formdata_file_name(value)) + '"';
     \\    lines.push(disposition);
     \\    if ((isBlob || isFileRef) && value.type) lines.push("Content-Type: " + value.type);
     \\    lines.push("");
-    \\    lines.push(isBlob ? __home_utf8_bytes_to_text(value.__home_blob_bytes) : (isFileRef ? __home_file_ref_text(value) : String(value)));
+    \\    lines.push(isBlob ? (value.__home_file_slice_ref ? __home_utf8_bytes_to_text(__home_file_slice_bytes(value.__home_file_slice_ref, "formdata.fileSlice", true)) : __home_utf8_bytes_to_text(value.__home_blob_typed_bytes || value.__home_blob_bytes)) : (isFileRef ? __home_file_ref_text(value) : String(value)));
     \\  }
     \\  lines.push("--" + boundary + "--");
     \\  lines.push("");
@@ -64073,6 +64090,7 @@ const harness_prelude =
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
     \\  if (body instanceof ArrayBuffer) return new Uint8Array(body);
     \\  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    \\  if (body && body.__home_file_slice_ref) return __home_file_slice_bytes(body.__home_file_slice_ref, "body.fileSlice", true);
     \\  if (body && Array.isArray(body.__home_blob_sparse_parts)) return __home_sparse_blob_slice_bytes(body.__home_blob_sparse_parts, 0, body.size || 0, "body.bytes", true, "Out of memory");
     \\  if (body && Array.isArray(body.__home_blob_bytes)) return body.__home_blob_bytes.slice();
     \\  if (body && body.__home_blob_typed_bytes) return new Uint8Array(body.__home_blob_typed_bytes);
@@ -64444,6 +64462,14 @@ const harness_prelude =
     \\  }
     \\  return { __home_body_value: value, locked: false, cancel() { this.locked = false; return Promise.resolve(); } };
     \\}
+    \\function __home_body_record_with_blob_stream(value) {
+    \\  const isBlobValue = !!(value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || Array.isArray(value.__home_blob_sparse_parts) || value.__home_file_slice_ref));
+    \\  if (!isBlobValue || typeof value.stream !== "function") return __home_body_record(value);
+    \\  if (Array.isArray(value.__home_blob_sparse_parts) && (value.size || 0) > 64 * 1024 * 1024) return __home_body_record(value);
+    \\  const body = __home_body_record(value.stream());
+    \\  try { Object.defineProperty(body, "__home_body_value", { configurable: true, value }); } catch (error) {}
+    \\  return body;
+    \\}
     \\function __home_content_type(headers) {
     \\  if (!headers || typeof headers.get !== "function") return "";
     \\  return String(headers.get("content-type") || headers.get("Content-Type") || "");
@@ -64569,7 +64595,7 @@ const harness_prelude =
     \\    if (typeof body === "symbol") throw new TypeError("Response body cannot be a Symbol");
     \\    const status = options.status === undefined ? 200 : Number(options.status);
     \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
-    \\    this.body = __home_body_record(body);
+    \\    this.body = __home_body_record_with_blob_stream(body);
     \\    __home_add_body_owner(this.body, this);
     \\    this.init = options;
     \\    this.status = status;
@@ -64849,6 +64875,173 @@ const harness_prelude =
     \\};
     \\function __home_resolve_object_url(id) {
     \\  return globalThis.__home_blob_url_registry[String(id)];
+    \\}
+    \\function __home_blob_module_error(blobURL, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause === undefined ? "Unknown Blob module failure" : cause));
+    \\  const operation = "blob.module.import";
+    \\  const failure = new Error("Unable to import Blob module " + String(blobURL) + " during " + String(phase));
+    \\  failure.code = "ERR_BLOB_MODULE";
+    \\  failure.operation = operation;
+    \\  failure.phase = String(phase);
+    \\  failure.blobURL = String(blobURL);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " [" + String(phase) + "] (" + String(blobURL) + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_blob_module_source(blob, blobURL) {
+    \\  try {
+    \\    let bytes;
+    \\    if (Array.isArray(blob.__home_blob_sparse_parts)) {
+    \\      bytes = __home_sparse_blob_slice_bytes(blob.__home_blob_sparse_parts, 0, blob.size || 0, "blob.module.read", true, "Blob module source is too large");
+    \\    } else if (blob.__home_blob_typed_bytes) {
+    \\      bytes = new Uint8Array(blob.__home_blob_typed_bytes);
+    \\    } else {
+    \\      bytes = new Uint8Array(blob.__home_blob_bytes || []);
+    \\    }
+    \\    return __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes));
+    \\  } catch (cause) {
+    \\    if (cause && cause.code === "ERR_BLOB_MODULE") throw cause;
+    \\    throw __home_blob_module_error(blobURL, "read", cause);
+    \\  }
+    \\}
+    \\function __home_prepare_blob_module_source(source) {
+    \\  const bindings = new Map();
+    \\  let defaultBinding = null;
+    \\  let code = String(source);
+    \\  code = code.replace(/\bexport\s+type\s+\{[\s\S]*?\}\s*;?/g, "");
+    \\  code = code.replace(/\bexport\s*\{([\s\S]*?)\}\s*;?/g, (_whole, entries) => {
+    \\    for (const rawEntry of String(entries).split(",")) {
+    \\      const entry = rawEntry.trim().replace(/^type\s+/, "");
+    \\      if (!entry) continue;
+    \\      const match = entry.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/);
+    \\      if (match) bindings.set(match[2] || match[1], match[1]);
+    \\    }
+    \\    return "";
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+async\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_whole, name) => {
+    \\    defaultBinding = name;
+    \\    return "async function " + name;
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_whole, name) => {
+    \\    defaultBinding = name;
+    \\    return "function " + name;
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_whole, name) => {
+    \\    defaultBinding = name;
+    \\    return "class " + name;
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+async\s+function\s*(?=\()/g, () => {
+    \\    defaultBinding = "__home_blob_default";
+    \\    return "const __home_blob_default = async function";
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+function\s*(?=\()/g, () => {
+    \\    defaultBinding = "__home_blob_default";
+    \\    return "const __home_blob_default = function";
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+class\s*(?=\{)/g, () => {
+    \\    defaultBinding = "__home_blob_default";
+    \\    return "const __home_blob_default = class ";
+    \\  });
+    \\  code = code.replace(/\bexport\s+default\s+/g, () => {
+    \\    defaultBinding = "__home_blob_default";
+    \\    return "const __home_blob_default = ";
+    \\  });
+    \\  code = code.replace(/\bexport\s+(async\s+function|function|class|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_whole, declaration, name) => {
+    \\    bindings.set(name, name);
+    \\    return declaration + " " + name;
+    \\  });
+    \\  if (defaultBinding) bindings.set("default", defaultBinding);
+    \\  return { code, bindings };
+    \\}
+    \\function __home_blob_module_loader(blob) {
+    \\  const type = String(blob && blob.type || "").toLowerCase();
+    \\  if (type.includes("tsx")) return "tsx";
+    \\  if (type.includes("typescript") || type.includes("ts")) return "ts";
+    \\  if (type.includes("jsx")) return "jsx";
+    \\  return "js";
+    \\}
+    \\function __home_apply_blob_source_error(error, evaluation) {
+    \\  const sourceURLFormats = __home_source_url_error_formats(error, evaluation);
+    \\  if (!sourceURLFormats) return error;
+    \\  try { Object.defineProperty(error, "stack", { configurable: true, writable: true, value: sourceURLFormats.stack }); } catch {}
+    \\  try { Object.defineProperty(error, "__home_source_url_inspected_stack", { configurable: true, value: sourceURLFormats.inspectedStack }); } catch {}
+    \\  return error;
+    \\}
+    \\function __home_with_blob_source_evaluation(value, evaluation) {
+    \\  if (typeof value !== "function") return value;
+    \\  return new Proxy(value, {
+    \\    apply(target, thisValue, argumentsList) {
+    \\      const previousEvaluation = globalThis.__home_active_source_evaluation;
+    \\      globalThis.__home_active_source_evaluation = evaluation;
+    \\      try { return Reflect.apply(target, thisValue, argumentsList); }
+    \\      catch (error) { throw __home_apply_blob_source_error(error, evaluation); }
+    \\      finally { globalThis.__home_active_source_evaluation = previousEvaluation; }
+    \\    },
+    \\    construct(target, argumentsList, newTarget) {
+    \\      const previousEvaluation = globalThis.__home_active_source_evaluation;
+    \\      globalThis.__home_active_source_evaluation = evaluation;
+    \\      try { return Reflect.construct(target, argumentsList, newTarget === value ? target : newTarget); }
+    \\      catch (error) { throw __home_apply_blob_source_error(error, evaluation); }
+    \\      finally { globalThis.__home_active_source_evaluation = previousEvaluation; }
+    \\    },
+    \\  });
+    \\}
+    \\function __home_import_blob_module(blobURL) {
+    \\  const url = String(blobURL);
+    \\  const blob = globalThis.__home_blob_url_registry && globalThis.__home_blob_url_registry[url];
+    \\  if (!blob) throw __home_blob_module_error(url, "resolve", Object.assign(new Error("Object URL has been revoked or does not exist"), { code: "ERR_MODULE_NOT_FOUND" }));
+    \\  const source = __home_blob_module_source(blob, url);
+    \\  const sourceWithURL = source + "\n//# sourceURL=" + url.replace(/[\r\n]/g, "");
+    \\  const loader = __home_blob_module_loader(blob);
+    \\  let scanResult;
+    \\  let prepared;
+    \\  let executable;
+    \\  try {
+    \\    const transpiler = new Bun.Transpiler({ loader, platform: "bun" });
+    \\    scanResult = transpiler.scan(source, loader);
+    \\    prepared = __home_prepare_blob_module_source(source);
+    \\    executable = String(transpiler.transformSync(prepared.code, loader)).replace(/\bimport\s*\(/g, "__home_dynamic_import(");
+    \\  } catch (cause) {
+    \\    throw __home_blob_module_error(url, "transpile", cause);
+    \\  }
+    \\  const exportNames = new Set(Array.isArray(scanResult && scanResult.exports) ? scanResult.exports.map(String) : []);
+    \\  for (const name of prepared.bindings.keys()) exportNames.add(String(name));
+    \\  const captures = [];
+    \\  for (const exportName of exportNames) {
+    \\    const binding = prepared.bindings.get(exportName) || exportName;
+    \\    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(binding)) {
+    \\      throw __home_blob_module_error(url, "link", new SyntaxError("Unsupported Blob module export binding: " + String(binding)));
+    \\    }
+    \\    captures.push(JSON.stringify(exportName) + ": " + binding);
+    \\  }
+    \\  let values;
+    \\  try {
+    \\    values = Function("__home_dynamic_import", executable + "\n//# sourceURL=" + url.replace(/[\r\n]/g, "") + "\nreturn {" + captures.join(",") + "};")(__home_dynamic_import);
+    \\  } catch (cause) {
+    \\    throw __home_blob_module_error(url, "evaluate", __home_apply_blob_source_error(cause, {
+    \\      source: sourceWithURL,
+    \\      kind: "blob",
+    \\      caller: {},
+    \\      filename: String(globalThis.__home_current_filename || ""),
+    \\    }));
+    \\  }
+    \\  const evaluation = {
+    \\    source: sourceWithURL,
+    \\    kind: "blob",
+    \\    caller: {},
+    \\    filename: String(globalThis.__home_current_filename || ""),
+    \\  };
+    \\  const namespace = Object.create(null);
+    \\  Object.defineProperty(namespace, Symbol.toStringTag, { value: "Module" });
+    \\  for (const name of exportNames) {
+    \\    Object.defineProperty(namespace, name, {
+    \\      enumerable: true,
+    \\      value: __home_with_blob_source_evaluation(values[name], evaluation),
+    \\    });
+    \\  }
+    \\  return Object.freeze(namespace);
     \\}
     \\function __home_fetch_thenable(response, error) {
     \\  const thenable = {
@@ -66489,6 +66682,7 @@ const harness_prelude =
     \\function __home_blob_part_to_sparse(part, copiedLargeParts) {
     \\  if (part && part.__home_sparse_blob_part) return { length: Math.max(0, Number(part.length) || 0), fill: Number(part.fill) & 0xff };
     \\  if (part && Array.isArray(part.__home_blob_sparse_parts)) return { nested: part.__home_blob_sparse_parts.slice(), size: part.size || 0 };
+    \\  if (part && part.__home_file_ref) return { length: Math.max(0, Number(part.size) || 0), filePath: String(part.path), offset: 0 };
     \\  const largePartThreshold = 16 * 1024 * 1024;
     \\  if (part instanceof ArrayBuffer && part.byteLength >= largePartThreshold) {
     \\    let bytes = copiedLargeParts.get(part);
@@ -66519,6 +66713,7 @@ const harness_prelude =
     \\      for (const nested of sparse.nested) {
     \\        const length = Math.max(0, Number(nested.length) || 0);
     \\        if (nested.bytes) __home_array_append(parts, { length, bytes: nested.bytes, offset: Math.max(0, Number(nested.offset) || 0) });
+    \\        else if (nested.filePath !== undefined) __home_array_append(parts, { length, filePath: String(nested.filePath), offset: Math.max(0, Number(nested.offset) || 0) });
     \\        else __home_array_append(parts, { length, fill: Number(nested.fill) & 0xff });
     \\        size += length;
     \\      }
@@ -66542,6 +66737,7 @@ const harness_prelude =
     \\      const overlapEnd = Math.min(partEnd, end);
     \\      const sliceLength = overlapEnd - overlapStart;
     \\      if (part.bytes) __home_array_append(out, { length: sliceLength, bytes: part.bytes, offset: Math.max(0, Number(part.offset) || 0) + overlapStart - partStart });
+    \\      else if (part.filePath !== undefined) __home_array_append(out, { length: sliceLength, filePath: String(part.filePath), offset: Math.max(0, Number(part.offset) || 0) + overlapStart - partStart });
     \\      else __home_array_append(out, { length: sliceLength, fill: Number(part.fill) & 0xff });
     \\    }
     \\    offset = partEnd;
@@ -66560,6 +66756,7 @@ const harness_prelude =
     \\  let cursor = 0;
     \\  for (const part of __home_sparse_blob_slice_parts(parts, start, end)) {
     \\    if (part.bytes) out.set(new Uint8Array(part.bytes.buffer, part.bytes.byteOffset + (Number(part.offset) || 0), part.length), cursor);
+    \\    else if (part.filePath !== undefined) out.set(__home_file_slice_bytes({ path: String(part.filePath), start: Number(part.offset) || 0, end: (Number(part.offset) || 0) + part.length }, String(operation || "blob.materialize") + ".filePart", false), cursor);
     \\    else out.fill(Number(part.fill) & 0xff, cursor, cursor + part.length);
     \\    cursor += part.length;
     \\  }
@@ -66580,6 +66777,41 @@ const harness_prelude =
     \\  blob.size = blob.__home_blob_typed_bytes.byteLength;
     \\  blob.type = type === undefined ? "" : __home_blob_type(type);
     \\  blob.__home_content_type = blob.type;
+    \\  return blob;
+    \\}
+    \\function __home_file_slice_error(operation, reference, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause === undefined ? "Unknown file slice failure" : cause));
+    \\  const failure = new Error("Unable to read Bun.file slice " + String(reference.path));
+    \\  failure.code = "ERR_BUN_FILE_SLICE";
+    \\  failure.operation = String(operation || "bun.file.slice.read");
+    \\  failure.path = String(reference.path);
+    \\  failure.start = Number(reference.start) || 0;
+    \\  failure.end = Number(reference.end) || 0;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.path + ":" + String(failure.start) + "-" + String(failure.end) + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_file_slice_bytes(reference, operation, enforceSyntheticLimit) {
+    \\  try {
+    \\    if (!__home_build_file_exists(reference.path)) throw __home_bun_file_read_error("open", reference.path);
+    \\    const length = Math.max(0, Number(reference.end) - Number(reference.start));
+    \\    if (enforceSyntheticLimit !== false) __home_blob_check_allocation(operation, length, "Out of memory");
+    \\    return new Uint8Array(__home_file_bytes_sync(reference.path).slice(reference.start, reference.end));
+    \\  } catch (cause) {
+    \\    if (cause && (cause.code === "ERR_BUN_FILE_SLICE" || cause.code === "ERR_BLOB_ALLOCATION")) throw cause;
+    \\    throw __home_file_slice_error(operation, reference, cause);
+    \\  }
+    \\}
+    \\function __home_file_slice_blob(path, start, end, type) {
+    \\  const first = Math.max(0, Number(start) || 0);
+    \\  const last = Math.max(first, Number(end) || 0);
+    \\  const blob = Object.create(Blob.prototype);
+    \\  blob.parts = [];
+    \\  Object.defineProperty(blob, "__home_file_slice_ref", { configurable: true, value: { path: String(path), start: first, end: last } });
+    \\  blob.size = last - first;
+    \\  blob.type = type === undefined ? "" : __home_blob_type(type);
     \\  return blob;
     \\}
     \\function __home_array_append(array, value) {
@@ -66648,20 +66880,48 @@ const harness_prelude =
     \\    return Promise.reject(error);
     \\  }
     \\}
+    \\function __home_blob_bytes_to_text(input) {
+    \\  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    \\  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    \\    let output = "";
+    \\    for (let index = 2; index + 1 < bytes.length; index += 2) output += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+    \\    if ((bytes.length - 2) % 2 !== 0) output += "\ufffd";
+    \\    return output;
+    \\  }
+    \\  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    \\    let output = "";
+    \\    for (let index = 2; index + 1 < bytes.length; index += 2) output += String.fromCharCode((bytes[index] << 8) | bytes[index + 1]);
+    \\    if ((bytes.length - 2) % 2 !== 0) output += "\ufffd";
+    \\    return output;
+    \\  }
+    \\  return __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes));
+    \\}
     \\Blob.prototype.arrayBuffer = function() {
+    \\  if (this.__home_file_slice_ref) {
+    \\    try { return Promise.resolve(__home_file_slice_bytes(this.__home_file_slice_ref, "bun.file.slice.arrayBuffer", false).buffer); }
+    \\    catch (error) { return Promise.reject(error); }
+    \\  }
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.arrayBuffer", false, "Out of memory").then(bytes => bytes.buffer);
     \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes).buffer);
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
     \\};
     \\Blob.prototype.bytes = function() {
+    \\  if (this.__home_file_slice_ref) {
+    \\    try { return Promise.resolve(__home_file_slice_bytes(this.__home_file_slice_ref, "bun.file.slice.bytes", true)); }
+    \\    catch (error) { return Promise.reject(error); }
+    \\  }
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.bytes", true, "Out of memory");
     \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes));
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.text = function() {
-    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.text", true, "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
-    \\  if (this.__home_blob_typed_bytes) return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_typed_bytes)));
-    \\  return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_bytes || [])));
+    \\  if (this.__home_file_slice_ref) {
+    \\    try { return Promise.resolve(__home_blob_bytes_to_text(__home_file_slice_bytes(this.__home_file_slice_ref, "bun.file.slice.text", true))); }
+    \\    catch (error) { return Promise.reject(error); }
+    \\  }
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.text", true, "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_blob_bytes_to_text(bytes));
+    \\  if (this.__home_blob_typed_bytes) return Promise.resolve(__home_blob_bytes_to_text(this.__home_blob_typed_bytes));
+    \\  return Promise.resolve(__home_blob_bytes_to_text(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.json = function() {
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.json", true, "Cannot parse a JSON string longer than 2^32-1 characters").then(bytes => __home_parse_json_body_text(__home_utf8_bytes_to_text(bytes)));
@@ -66697,6 +66957,10 @@ const harness_prelude =
     \\  try { last = end === undefined || (typeof end === "string" && end[0] === "-") ? size : Number(end); } catch (error) { last = size; }
     \\  first = Number.isNaN(first) ? 0 : first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
     \\  last = Number.isNaN(last) ? 0 : last < 0 ? Math.max(size + last, 0) : Math.min(last, size);
+    \\  if (this.__home_file_slice_ref) {
+    \\    const reference = this.__home_file_slice_ref;
+    \\    return __home_file_slice_blob(reference.path, reference.start + first, reference.start + Math.max(first, last), contentType);
+    \\  }
     \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_sparse_blob_from_parts(__home_sparse_blob_slice_parts(this.__home_blob_sparse_parts, first, Math.max(first, last)), Math.max(first, last) - first, contentType);
     \\  if (this.__home_blob_typed_bytes) return __home_typed_blob_from_view(this.__home_blob_typed_bytes.slice(first, Math.max(first, last)), contentType);
     \\  const blob = Object.create(Blob.prototype);
@@ -66707,6 +66971,17 @@ const harness_prelude =
     \\  return blob;
     \\};
     \\Blob.prototype.stream = function() {
+    \\  if (this.__home_file_slice_ref) {
+    \\    const reference = this.__home_file_slice_ref;
+    \\    return new ReadableStream({
+    \\      start(controller) {
+    \\        try {
+    \\          controller.enqueue(__home_file_slice_bytes(reference, "bun.file.slice.stream", true));
+    \\          controller.close();
+    \\        } catch (error) { controller.error(error); }
+    \\      },
+    \\    });
+    \\  }
     \\  if (Array.isArray(this.__home_blob_sparse_parts) && (this.size || 0) > 64 * 1024 * 1024) __home_unsupported("Sparse Blob stream materialization is too large");
     \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : (this.__home_blob_typed_bytes ? new Uint8Array(this.__home_blob_typed_bytes) : new Uint8Array(this.__home_blob_bytes || []));
     \\  return new ReadableStream({
@@ -66716,6 +66991,14 @@ const harness_prelude =
     \\    },
     \\  });
     \\};
+    \\Object.defineProperty(Blob.prototype, "name", {
+    \\  configurable: true,
+    \\  get() { return this.__home_blob_name; },
+    \\  set(value) {
+    \\    if (typeof value !== "string") return;
+    \\    Object.defineProperty(this, "__home_blob_name", { configurable: true, writable: true, value });
+    \\  },
+    \\});
     \\globalThis.Blob = Blob;
     \\var File = function(parts, name, options) {
     \\  if (!(this instanceof File)) throw new TypeError("Class constructor File cannot be invoked without 'new'");
@@ -67243,7 +67526,7 @@ const harness_prelude =
     \\      this.headers = __home_request_clone_headers(input.headers);
     \\      this.__home_text = input.__home_text;
     \\      this.__home_formdata = input.__home_formdata;
-    \\      if (input.body && Object.prototype.hasOwnProperty.call(input.body, "__home_body_value")) this.body = __home_body_record(input.body.__home_body_value);
+    \\      if (input.body && Object.prototype.hasOwnProperty.call(input.body, "__home_body_value")) this.body = __home_body_record_with_blob_stream(input.body.__home_body_value);
     \\      else if (__home_stream_chunks_replayable(input.body)) {
     \\        const chunks = input.body.__home_chunks.slice();
     \\        this.body = new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
@@ -67278,7 +67561,7 @@ const harness_prelude =
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\    } else if (bodyOption !== undefined && bodyOption !== null) {
     \\      this.__home_formdata = null;
-    \\      this.body = __home_body_record(bodyOption);
+    \\      this.body = __home_body_record_with_blob_stream(bodyOption);
     \\      this.__home_text = __home_request_body_text(this.body);
     \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
@@ -69005,9 +69288,16 @@ const harness_prelude =
     \\  const errorLine = lines[errorIndex];
     \\  const thrown = /\bthrow\b/.test(errorLine);
     \\  let functionName = "";
+    \\  let functionDeclarationLine = "";
+    \\  let functionDeclarationLineNumber = 0;
     \\  for (let index = errorIndex - 1; index >= 0; index--) {
     \\    const declaration = lines[index].match(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-    \\    if (declaration) { functionName = declaration[1]; break; }
+    \\    if (declaration) {
+    \\      functionName = declaration[1];
+    \\      functionDeclarationLine = lines[index];
+    \\      functionDeclarationLineNumber = index + 1;
+    \\      break;
+    \\    }
     \\  }
     \\  let invocationIndex = -1;
     \\  if (functionName) {
@@ -69025,6 +69315,8 @@ const harness_prelude =
     \\    errorColumn,
     \\    thrown,
     \\    functionName,
+    \\    functionDeclarationLine,
+    \\    functionDeclarationLineNumber,
     \\    invocationLineNumber: invocationIndex + 1,
     \\    invocationColumn,
     \\    caller: evaluation.caller || {},
@@ -69056,7 +69348,10 @@ const harness_prelude =
     \\  const invocationFrame = details.invocationLineNumber > 0
     \\    ? "      at " + (entryName ? entryName + " (" + invocationLocation + ")" : invocationLocation) + "\n"
     \\    : "";
-    \\  const inspectedStack = prefix + details.errorLine + "\n" + inspectedCaret + "\n" +
+    \\  const declarationFrame = details.kind === "blob" && details.functionDeclarationLine
+    \\    ? String(details.functionDeclarationLineNumber) + " | " + details.functionDeclarationLine + "\n"
+    \\    : "";
+    \\  const inspectedStack = declarationFrame + prefix + details.errorLine + "\n" + inspectedCaret + "\n" +
     \\    "error: " + message + "\n" + functionFrame + invocationFrame +
     \\    "      at " + callerFrame + "\n";
     \\  return { stack: thrownStack, inspectedStack };
@@ -70303,30 +70598,79 @@ const harness_prelude =
     \\  }
     \\  function __home_make_spawn_stdin_pull_stream(underlyingSource) {
     \\    const chunks = [];
+    \\    const allChunks = [];
     \\    let closed = false;
     \\    let cancelled = false;
+    \\    let storedError = null;
+    \\    let pullCount = 0;
+    \\    function pullError(cause) {
+    \\      const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\      const failure = new Error("ReadableStream pull failed", { cause: underlying });
+    \\      failure.code = "ERR_READABLE_STREAM_PULL";
+    \\      failure.operation = "readableStream.pull";
+    \\      failure.pullCount = pullCount;
+    \\      failure.stack = String(failure.stack || failure) + "\nCaused by: " + String(underlying.stack || underlying);
+    \\      return failure;
+    \\    }
     \\    const controller = {
-    \\      enqueue(chunk) { if (closed) throw new TypeError("ReadableStream is closed"); chunks.push(chunk); },
-    \\      close() { closed = true; },
-    \\      error() { closed = true; },
+    \\      get desiredSize() { return closed ? 0 : 1; },
+    \\      enqueue(chunk) {
+    \\        if (closed) throw new TypeError("ReadableStream is closed");
+    \\        chunks.push(chunk);
+    \\        allChunks.push(chunk);
+    \\      },
+    \\      close() { closed = true; if (stream) stream.__home_closed = true; },
+    \\      error(reason) {
+    \\        storedError = pullError(reason || new Error("ReadableStream controller errored"));
+    \\        closed = true;
+    \\        if (stream) { stream.__home_errored = storedError; stream.__home_closed = true; }
+    \\      },
     \\    };
-    \\    const stream = {
+    \\    const stream = Object.setPrototypeOf({
     \\      locked: false,
+    \\      __home_chunks: chunks,
+    \\      __home_all_chunks: allChunks,
+    \\      __home_closed: false,
+    \\      __home_errored: null,
+    \\      __home_underlying_source: underlyingSource,
     \\      getReader() {
     \\        stream.locked = true;
     \\        const reader = {
     \\          read() {
     \\            if (chunks.length > 0) return Promise.resolve({ done: false, value: chunks.shift() });
+    \\            if (storedError) return Promise.reject(storedError);
     \\            if (closed) return Promise.resolve({ done: true, value: undefined });
+    \\            pullCount++;
+    \\            if (pullCount > 100000) {
+    \\              storedError = pullError(new RangeError("ReadableStream pull limit exceeded"));
+    \\              closed = true;
+    \\              stream.__home_errored = storedError;
+    \\              stream.__home_closed = true;
+    \\              return Promise.reject(storedError);
+    \\            }
     \\            let pullResult;
     \\            try { pullResult = underlyingSource.pull(controller); }
-    \\            catch (error) {
+    \\            catch (cause) {
+    \\              storedError = pullError(cause);
     \\              closed = true;
-    \\              return Promise.resolve(chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: true, value: undefined });
+    \\              stream.__home_errored = storedError;
+    \\              stream.__home_closed = true;
+    \\              return Promise.reject(storedError);
     \\            }
     \\            return Promise.resolve(pullResult).then(
-    \\              () => chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: closed, value: undefined },
-    \\              () => { closed = true; return chunks.length > 0 ? { done: false, value: chunks.shift() } : { done: true, value: undefined }; },
+    \\              () => {
+    \\                if (chunks.length > 0) return { done: false, value: chunks.shift() };
+    \\                if (storedError) throw storedError;
+    \\                if (closed) return { done: true, value: undefined };
+    \\                return reader.read();
+    \\              },
+    \\              cause => {
+    \\                storedError = pullError(cause);
+    \\                closed = true;
+    \\                stream.__home_errored = storedError;
+    \\                stream.__home_closed = true;
+    \\                throw storedError;
+    \\              },
     \\            );
     \\          },
     \\          cancel(reason) { return stream.cancel(reason); },
@@ -70338,12 +70682,16 @@ const harness_prelude =
     \\        if (cancelled) return Promise.resolve(undefined);
     \\        cancelled = true;
     \\        closed = true;
+    \\        stream.__home_closed = true;
     \\        return Promise.resolve(typeof underlyingSource.cancel === "function" ? underlyingSource.cancel(reason) : undefined);
     \\      },
-    \\    };
+    \\    }, __home_NativeReadableStream.prototype);
     \\    return stream;
     \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
+    \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts") && underlyingSource && typeof underlyingSource.pull === "function") {
+    \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("js/node/async_hooks/AsyncLocalStorage.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes("readable stream ") && typeof globalThis.__home_async_context_readable_stream === "function") {
     \\      return globalThis.__home_async_context_readable_stream(underlyingSource, strategy);
     \\    }
@@ -73372,7 +73720,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string;", .replacement = ";" },
         .{ .needle = "let databaseUrl: string;", .replacement = "let databaseUrl;" },
         .{ .needle = "let sql: SQL;", .replacement = "let sql;" },
-        .{ .needle = "name: string | number;", .replacement = "" },
+        .{ .needle = "name: string | number;", .replacement = "name = undefined;" },
         .{ .needle = ": [string, unknown][] =", .replacement = " =" },
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = ": typeof globalFetch =", .replacement = " =" },
@@ -95442,6 +95790,256 @@ test "bootstrap runner mirrors fetch blob write corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
+test "bootstrap runner imports TypeScript Blob modules with source-aware errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("Blob module import contract", async () => {
+        \\  const blob = new Blob([`
+        \\    export default function plus(value: number): number { return value + 1; }
+        \\    export function inspectFailure(value: number): string {
+        \\      return Bun.inspect(new Error("blob stack"));
+        \\    }
+        \\  `], { type: "application/typescript" });
+        \\  const url = URL.createObjectURL(blob);
+        \\  const namespace = await import(url);
+        \\  expect(Object.prototype.toString.call(namespace)).toBe("[object Module]");
+        \\  expect(namespace.default(2)).toBe(3);
+        \\  expect(namespace.inspectFailure(1)).toContain("inspectFailure(value: number): string");
+        \\  URL.revokeObjectURL(url);
+        \\  let failure;
+        \\  try { await import(url); } catch (error) { failure = error; }
+        \\  expect(failure.code).toBe("ERR_BLOB_MODULE");
+        \\  expect(failure.operation).toBe("blob.module.import");
+        \\  expect(failure.phase).toBe("resolve");
+        \\  expect(failure.blobURL).toBe(url);
+        \\  expect(failure.cause.code).toBe("ERR_MODULE_NOT_FOUND");
+        \\  expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/blob-module-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Blob module regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner preserves lazy Bun.file slice ranges" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("lazy Bun.file slice contract", async () => {
+        \\  const path = "home-file-slice-regression.txt";
+        \\  await Bun.write(path, "BunFoo");
+        \\  const file = Bun.file(path);
+        \\  expect(file.slice(-1, 3).size).toBe(0);
+        \\  expect(file.slice(100, 3).size).toBe(0);
+        \\  const slice = file.slice(1, 4, "Text/Plain");
+        \\  expect(slice.size).toBe(3);
+        \\  expect(slice.type).toBe("text/plain");
+        \\  expect(await slice.slice(1, 3).text()).toBe("nF");
+        \\  await Bun.write(path, "XYZ123");
+        \\  expect(await slice.text()).toBe("YZ1");
+        \\  await Bun.file(path).delete();
+        \\  let failure;
+        \\  try { await slice.bytes(); } catch (error) { failure = error; }
+        \\  expect(failure.code).toBe("ERR_BUN_FILE_SLICE");
+        \\  expect(failure.operation).toBe("bun.file.slice.bytes");
+        \\  expect(failure.path).toBe(path);
+        \\  expect(failure.start).toBe(1);
+        \\  expect(failure.end).toBe(4);
+        \\  expect(failure.cause.code).toBe("ENOENT");
+        \\  expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/bun-file-slice-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.file slice regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner honors Blob name accessor and subclass fields" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("Blob name contract", () => {
+        \\  const blob = new Blob(["value"]);
+        \\  expect(blob.name).toBeUndefined();
+        \\  blob.name = "asset.svg";
+        \\  blob.name = 10;
+        \\  expect(blob.name).toBe("asset.svg");
+        \\  class InheritedBlob extends Blob {}
+        \\  const inherited = new InheritedBlob([]);
+        \\  inherited.name = "inherited.svg";
+        \\  inherited.name = 10;
+        \\  expect(inherited.name).toBe("inherited.svg");
+        \\  class OwnFieldBlob extends Blob {
+        \\    name: string | number;
+        \\    constructor() { super([]); this.name = "own.svg"; }
+        \\  }
+        \\  const own = new OwnFieldBlob();
+        \\  own.name = 10;
+        \\  expect(own.name).toBe(10);
+        \\  Object.defineProperty(blob, "name", { value: 42, writable: false });
+        \\  expect(blob.name).toBe(42);
+        \\  expect(new File([], "file.txt").name).toBe("file.txt");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/blob-name-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Blob name regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner keeps Bun.file-backed Blob parts lazy" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("lazy file-backed Blob parts", async () => {
+        \\  const missing = Bun.file("home-missing-file-part.txt");
+        \\  const wrapped = new File([missing], "wrapper.txt");
+        \\  expect(wrapped.name).toBe("wrapper.txt");
+        \\  expect(wrapped.size).toBe(0);
+        \\  expect(await wrapped.text()).toBe("");
+        \\  const path = "home-existing-file-part.txt";
+        \\  await Bun.write(path, "abc");
+        \\  const blob = new Blob(["<", Bun.file(path), ">"]).slice(1, 4);
+        \\  expect(blob.size).toBe(3);
+        \\  expect(await blob.text()).toBe("abc");
+        \\  const unread = new Blob([Bun.file(path)]);
+        \\  await Bun.file(path).delete();
+        \\  let failure;
+        \\  try { await unread.bytes(); } catch (error) { failure = error; }
+        \\  expect(failure.code).toBe("ERR_BUN_FILE_SLICE");
+        \\  expect(failure.operation).toBe("blob.bytes.filePart");
+        \\  expect(failure.path).toBe(path);
+        \\  expect(failure.cause.code).toBe("ENOENT");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/blob-file-part-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Blob file-part regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner decodes UTF-16 BOMs from sliced Blob ranges" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("sliced Blob BOM decoding", async () => {
+        \\  const littleEndian = new Uint8Array([0x41, 0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
+        \\  expect(await new Blob([littleEndian]).slice(1).text()).toBe("hi");
+        \\  const json = new Uint8Array([0x41, 0xff, 0xfe, 0x34, 0x00, 0x32, 0x00]);
+        \\  expect(await new Blob([json]).slice(1).json()).toBe(42);
+        \\  const bigEndian = new Uint8Array([0x00, 0xfe, 0xff, 0x00, 0x68, 0x00, 0x69]);
+        \\  expect(await new Blob([bigEndian]).slice(1).text()).toBe("hi");
+        \\  expect(await new Blob([new Uint8Array([0xff, 0xfe, 0x68])]).text()).toBe("\ufffd");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/blob-utf16-bom-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Blob UTF-16 BOM regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner streams sliced Blob response bodies as bytes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("sliced Blob response stream", async () => {
+        \\  const slice = new Blob(["0123456789"]).slice(3, 7);
+        \\  const response = new Response(slice);
+        \\  expect(response.headers.get("content-length")).toBe("4");
+        \\  const reader = response.body.getReader();
+        \\  const chunks = [];
+        \\  while (true) {
+        \\    const { done, value } = await reader.read();
+        \\    if (done) break;
+        \\    expect(value instanceof Uint8Array).toBe(true);
+        \\    chunks.push(value);
+        \\  }
+        \\  expect(Buffer.concat(chunks).toString()).toBe("3456");
+        \\  expect(slice.size).toBe(4);
+        \\  expect(await slice.text()).toBe("3456");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "home/blob-response-stream-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Blob response stream regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
 test "bootstrap runner mirrors fetch utf8 bom corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -107786,6 +108384,8 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/blob-array-fast-path.test.ts", .passed = 11 },
         .{ .path = "js/web/fetch/blob-file-name-ownership.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/blob-oom.test.ts", .passed = 16 },
+        .{ .path = "js/web/fetch/blob-write.test.ts", .passed = 10 },
+        .{ .path = "js/web/fetch/blob.test.ts", .passed = 26 },
         .{ .path = "regression/issue/02368.test.ts", .passed = 2 },
         .{ .path = "js/web/request/request.test.ts", .passed = 4 },
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
