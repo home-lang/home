@@ -66498,6 +66498,12 @@ const harness_prelude =
     \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid issuer option for object payload");
     \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "iss")) throw new Error('Bad "options.issuer" option. The payload already has an "iss" property.');
     \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "jwtid")) {
+    \\    if (typeof opts.jwtid !== "string") throw new Error('"jwtid" must be a string');
+    \\    if (typeof payload === "string") throw new Error("invalid jwtid option for string payload");
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid jwtid option for object payload");
+    \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "jti")) throw new Error('Bad "options.jwtid" option. The payload already has an "jti" property.');
+    \\  }
     \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "iat") && typeof payload.iat !== "number") throw new Error('"iat" should be a number of seconds');
     \\  let expiresInSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresIn")) {
@@ -66515,6 +66521,7 @@ const harness_prelude =
     \\    const timestamp = typeof body.iat === "number" && body.iat ? body.iat : now;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "issuer")) body.iss = opts.issuer;
+    \\    if (Object.prototype.hasOwnProperty.call(opts, "jwtid")) body.jti = opts.jwtid;
     \\    if (typeof opts.notBefore === "number") body.nbf = timestamp + opts.notBefore;
     \\    if (expiresInSeconds !== undefined) body.exp = timestamp + expiresInSeconds;
     \\    if (opts.noTimestamp === true) delete body.iat; else if (!body.iat) body.iat = timestamp;
@@ -66562,6 +66569,7 @@ const harness_prelude =
     \\    const issuers = Array.isArray(opts.issuer) ? opts.issuer : [opts.issuer];
     \\    if (!payload || typeof payload !== "object" || !Object.prototype.hasOwnProperty.call(payload, "iss") || !issuers.some(issuer => issuer === payload.iss)) { const invalidIssuer = __home_jwt_error("JsonWebTokenError", "jwt issuer invalid. expected: " + String(opts.issuer)); invalidIssuer.claim = "iss"; throw invalidIssuer; }
     \\  }
+    \\  if (opts.jwtid !== undefined && (!payload || typeof payload !== "object" || !Object.prototype.hasOwnProperty.call(payload, "jti") || payload.jti !== opts.jwtid)) { const invalidJwtId = __home_jwt_error("JsonWebTokenError", "jwt jwtid invalid. expected: " + String(opts.jwtid)); invalidJwtId.claim = "jti"; throw invalidJwtId; }
     \\  if (opts.maxAge !== undefined) {
     \\    if (!payload || typeof payload !== "object" || typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) { const missingIssuedAt = __home_jwt_error("JsonWebTokenError", "iat required when maxAge is specified"); missingIssuedAt.claim = "iat"; throw missingIssuedAt; }
     \\    const maxAgeSeconds = __home_jwt_timespan_seconds(opts.maxAge); if (maxAgeSeconds === undefined) { const invalidMaxAge = __home_jwt_error("JsonWebTokenError", '"maxAge" should be a number of seconds or string representing a timespan'); invalidMaxAge.claim = "iat"; throw invalidMaxAge; }
@@ -103698,6 +103706,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
         .{ .path = "js/third_party/jsonwebtoken/claim-iat.test.js", .passed = 39 },
         .{ .path = "js/third_party/jsonwebtoken/claim-iss.test.js", .passed = 28 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-jti.test.js", .passed = 24 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103823,6 +103832,17 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim iss");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt issuer invalid. expected: first,second");
         \\});
+        \\test("jsonwebtoken JWT ID errors retain claim context", async () => {
+        \\  const token = jwt.sign({ jti: "actual" }, "secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", { jwtid: "expected" }, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("jti");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("jwt jwtid invalid. expected: expected");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim jti");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt jwtid invalid. expected: expected");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103834,7 +103854,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
