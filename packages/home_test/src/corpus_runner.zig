@@ -71475,6 +71475,31 @@ const harness_prelude =
     \\    return controller.signal;
     \\  } });
     \\}
+    \\function __home_abort_signal_any_error(index, error) {
+    \\  const cause = error instanceof Error ? error : new TypeError(String(error)); const inputIndex = Number.isInteger(index) && index >= 0 ? index : null; const operation = "abort.signal.any";
+    \\  const location = inputIndex === null ? "input iterable" : "input " + String(inputIndex); const failure = new TypeError("AbortSignal.any failed for " + location + ": " + String(cause.message || cause));
+    \\  failure.code = "ERR_ABORT_SIGNAL_ANY"; failure.operation = operation; failure.inputIndex = inputIndex; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "TypeError") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + location + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\if (typeof AbortSignal.any !== "function") {
+    \\  Object.defineProperty(AbortSignal, "any", { configurable: true, writable: true, value(signals) {
+    \\    let inputs; try { if (signals === null || signals === undefined || typeof signals[Symbol.iterator] !== "function") throw new TypeError("signals must be an iterable of AbortSignal values"); inputs = Array.from(signals); } catch (error) { throw error && error.code === "ERR_ABORT_SIGNAL_ANY" ? error : __home_abort_signal_any_error(null, error); }
+    \\    const controller = new AbortController(); const listeners = []; let settled = false;
+    \\    const cleanup = () => { for (const entry of listeners) if (typeof entry.signal.removeEventListener === "function") entry.signal.removeEventListener("abort", entry.listener); listeners.length = 0; };
+    \\    const settle = signal => { if (settled) return; settled = true; cleanup(); controller.abort(signal.reason); };
+    \\    for (let index = 0; index < inputs.length; index++) {
+    \\      const signal = inputs[index];
+    \\      if (!signal || typeof signal !== "object" || typeof signal.addEventListener !== "function" || !("aborted" in signal)) { cleanup(); throw __home_abort_signal_any_error(index, new TypeError("signal input must be an AbortSignal")); }
+    \\      if (signal.aborted) { settle(signal); break; }
+    \\      const listener = () => settle(signal); listeners.push({ signal, listener });
+    \\      try { signal.addEventListener("abort", listener, { once: true }); } catch (error) { cleanup(); throw __home_abort_signal_any_error(index, error); }
+    \\      if (signal.aborted) { settle(signal); break; }
+    \\    }
+    \\    return controller.signal;
+    \\  } });
+    \\}
+    \\globalThis.__home_modules["home:abort-signal-support"] = { any: AbortSignal.any, createError: __home_abort_signal_any_error };
     \\globalThis.__home_modules["abort-controller"] = {};
     \\Object.defineProperty(globalThis.__home_modules["abort-controller"], "AbortController", { enumerable: true, get() { return AbortController; } });
     \\if (typeof Promise.withResolvers !== "function") {
@@ -104797,6 +104822,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const undiciH2Loader = globalThis.__home_import("home:undici-h2-loader");
         \\const wptH2Loader = globalThis.__home_import("home:wpt-h2-loader");
         \\const valkeyTestUtils = globalThis.__home_import("home:valkey-test-utils");
+        \\const abortSignalSupport = globalThis.__home_import("home:abort-signal-support");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104810,6 +104836,27 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.cause.message).toBe("route exploded");
         \\  expect(caught.stack).toContain("Hono.fetch (GET /boom");
         \\  expect(caught.stack).toContain("Caused by: TypeError: route exploded");
+        \\});
+        \\test("AbortSignal.any input errors retain composition index and cause", () => {
+        \\  let caught; try { AbortSignal.any([new AbortController().signal, {}]); } catch (error) { caught = error; }
+        \\  expect(abortSignalSupport.any).toBe(AbortSignal.any);
+        \\  expect(caught).toBeInstanceOf(TypeError);
+        \\  expect(caught.code).toBe("ERR_ABORT_SIGNAL_ANY");
+        \\  expect(caught.operation).toBe("abort.signal.any");
+        \\  expect(caught.inputIndex).toBe(1);
+        \\  expect(caught.cause).toBeInstanceOf(TypeError);
+        \\  expect(caught.cause.message).toBe("signal input must be an AbortSignal");
+        \\  expect(caught.stack).toContain("abort.signal.any (input 1");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: signal input must be an AbortSignal");
+        \\});
+        \\test("AbortSignal.any preserves first reasons and cleans losing listeners", () => {
+        \\  const prior = new AbortController(); const ignored = new AbortController(); const priorReason = new Error("already stopped"); prior.abort(priorReason);
+        \\  const priorCombined = AbortSignal.any([prior.signal, ignored.signal]);
+        \\  expect(priorCombined.aborted).toBe(true); expect(priorCombined.reason).toBe(priorReason);
+        \\  const active = new Set(); const tracked = { aborted: false, reason: undefined, addEventListener(_type, listener) { active.add(listener); }, removeEventListener(_type, listener) { active.delete(listener); } };
+        \\  const winner = new AbortController(); const winnerReason = new Error("winner reason"); const combined = AbortSignal.any([tracked, winner.signal]);
+        \\  expect(active.size).toBe(1); winner.abort(winnerReason);
+        \\  expect(combined.aborted).toBe(true); expect(combined.reason).toBe(winnerReason); expect(active.size).toBe(0);
         \\});
         \\test("MongoDB connection errors retain sanitized operation context", async () => {
         \\  const client = new MongoClient("mongodb+srv://user:super-secret@db.example.test/home"); let caught;
@@ -105429,7 +105476,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 49), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 51), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
@@ -106818,6 +106865,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
         .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
+        .{ .path = "js/web/abort/abort.test.ts", .passed = 5 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
