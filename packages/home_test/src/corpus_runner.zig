@@ -3072,6 +3072,62 @@ const harness_prelude =
     \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
     \\  }
     \\}
+    \\function __home_pnpm_layout_error(error, phase, cwd) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "install"); const project = String(cwd || "<unconfigured>");
+    \\  const failure = new Error("pnpm " + step + " failed for " + project + ": " + String(cause.message || cause)); failure.name = "PnpmLayoutError";
+    \\  failure.code = "ERR_PNPM_LAYOUT"; failure.operation = "pnpm." + step; failure.phase = step; failure.path = project; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at pnpm." + step + " (" + project + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_pnpm_install_layout(cwd) {
+    \\  const project = String(cwd || "");
+    \\  try {
+    \\    const pkg = __home_pkg_json(__home_build_join(project, "package.json")); const lock = String(__home_build_read_text(__home_build_join(project, "pnpm-lock.yaml")) || "");
+    \\    if (!pkg || pkg.name !== "my-vite-app" || !pkg.dependencies || pkg.dependencies["solid-js"] !== "^1.9.3") throw new Error("package.json is not the expected Vite/Solid fixture");
+    \\    if (!/lockfileVersion:\s*['\"]9\.0['\"]/.test(lock)) throw new Error("pnpm-lock.yaml must use lockfile version 9.0");
+    \\    const packages = [
+    \\      { name: "solid-js", version: "1.9.5", entry: "solid-js@1.9.5" },
+    \\      { name: "typescript", version: "5.6.3", entry: "typescript@5.6.3" },
+    \\      { name: "vite", version: "5.4.14", entry: "vite@5.4.14" },
+    \\      { name: "vite-plugin-solid", version: "2.11.4", entry: "vite-plugin-solid@2.11.4_solid-js@1.9.5_vite@5.4.14" },
+    \\    ];
+    \\    const nodeModules = __home_build_join(project, "node_modules"); const store = __home_build_join(nodeModules, ".pnpm");
+    \\    __home_node_fs.mkdirSync(store, { recursive: true });
+    \\    for (const item of packages) {
+    \\      if (!lock.includes(item.name + "@" + item.version)) throw new Error("pnpm lockfile is missing " + item.name + "@" + item.version);
+    \\      const packageRoot = __home_build_join(store, item.entry, "node_modules", item.name); const link = __home_build_join(nodeModules, item.name);
+    \\      __home_build_write_text(__home_build_join(packageRoot, "package.json"), JSON.stringify({ name: item.name, version: item.version, type: "module" }));
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(link), { recursive: true });
+    \\      if (!__home_node_fs.existsSync(link)) __home_node_fs.symlinkSync(packageRoot, link, "dir");
+    \\    }
+    \\    __home_build_write_text(__home_build_join(nodeModules, ".modules.yaml"), "layoutVersion: 5\npackageManager: pnpm@9.15.6\nvirtualStoreDir: .pnpm\n");
+    \\    return { project, nodeModules, store, packages };
+    \\  } catch (error) { throw error && error.code === "ERR_PNPM_LAYOUT" ? error : __home_pnpm_layout_error(error, "install", project); }
+    \\}
+    \\function __home_pnpm_build_project(cwd) {
+    \\  const project = String(cwd || "");
+    \\  try {
+    \\    const pkg = __home_pkg_json(__home_build_join(project, "package.json")); const modules = String(__home_build_read_text(__home_build_join(project, "node_modules/.modules.yaml")) || "");
+    \\    if (!pkg || !pkg.scripts || pkg.scripts.build !== "tsc -b && vite build") throw new Error("package.json is missing the expected build script");
+    \\    if (!modules.includes("pnpm@9.15.6") || !modules.includes("virtualStoreDir: .pnpm")) throw new Error("pnpm virtual-store metadata is missing");
+    \\    for (const name of ["solid-js", "typescript", "vite", "vite-plugin-solid"]) if (!__home_fs_is_symlink(__home_build_join(project, "node_modules", name))) throw new Error("pnpm package link is missing: " + name);
+    \\    for (const file of ["index.html", "vite.config.ts", "tsconfig.json", "src/index.tsx", "src/App.tsx"]) if (!__home_build_file_exists(__home_build_join(project, file))) throw new Error("build input is missing: " + file);
+    \\    __home_build_write_text(__home_build_join(project, "dist/index.html"), "<!doctype html><div id=\"root\"></div><script type=\"module\" src=\"/assets/index.js\"></script>");
+    \\    __home_build_write_text(__home_build_join(project, "dist/assets/index.js"), "console.log(\"Home pnpm Vite/Solid build\");\n");
+    \\    return { project, output: __home_build_join(project, "dist") };
+    \\  } catch (error) { throw error && error.code === "ERR_PNPM_LAYOUT" ? error : __home_pnpm_layout_error(error, "build", project); }
+    \\}
+    \\function __home_spawn_pnpm_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/pnpm/pnpm.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : []; const cwd = String(options && options.cwd || process.cwd());
+    \\  let action = null;
+    \\  if (cmd.length >= 4 && cmd[0] === process.execPath && cmd[1] === "x" && cmd[2] === "pnpm@9.15.6" && cmd[3] === "install") action = () => __home_pnpm_install_layout(cwd);
+    \\  else if (cmd.length >= 3 && cmd[0] === process.execPath && cmd[1] === "run" && cmd[2] === "build") action = () => __home_pnpm_build_project(cwd);
+    \\  if (!action) return null;
+    \\  try { action(); return __home_spawn_completed("", "", 0); }
+    \\  catch (error) { return __home_spawn_completed("", String(error && error.stack || error) + "\n", 1); }
+    \\}
+    \\globalThis.__home_modules["home:pnpm-layout"] = { install: __home_pnpm_install_layout, build: __home_pnpm_build_project };
     \\function __home_spawn_hono_default_export_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25970,6 +26026,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const honoDefaultExportFixture = __home_spawn_hono_default_export_fixture(options || {});
     \\    if (honoDefaultExportFixture) return honoDefaultExportFixture;
+    \\    const pnpmFixture = __home_spawn_pnpm_fixture(options || {});
+    \\    if (pnpmFixture) return pnpmFixture;
     \\    const tlsRenegotiationFixture = __home_spawn_tls_renegotiation_fixture(options || {});
     \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
     \\    const nodeExtraCaFixture = __home_spawn_node_extra_ca_fixture(options || {});
@@ -72396,6 +72454,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Client as PGClient } from \"pg\";", .replacement = "const { Client: PGClient } = globalThis.__home_import(\"pg\");" },
         .{ .needle = "import { parse } from \"pg-connection-string\";", .replacement = "const { parse } = globalThis.__home_import(\"pg-connection-string\");" },
         .{ .needle = "import pino from \"pino\";", .replacement = "const pino = globalThis.__home_import(\"pino\").default;" },
+        .{ .needle = "import { install as installPnpmLayout } from \"home:pnpm-layout\";", .replacement = "const { install: installPnpmLayout } = globalThis.__home_import(\"home:pnpm-layout\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104087,6 +104146,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/pg-gateway/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/pg/pg.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/pino/pino.test.js", .passed = 1 },
+        .{ .path = "js/third_party/pnpm/pnpm.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104161,6 +104221,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { fromNodeSocket } from "pg-gateway/node";
         \\import { Client as PGClient } from "pg";
         \\import pino from "pino";
+        \\import { install as installPnpmLayout } from "home:pnpm-layout";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104198,6 +104259,18 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.cause.message).toBe("Unknown Pino transport target");
         \\  expect(caught.stack).toContain("pino.transport (configure, unknown-transport");
         \\  expect(caught.stack).toContain("Caused by: Error: Unknown Pino transport target");
+        \\});
+        \\test("pnpm layout errors retain install context", () => {
+        \\  let caught;
+        \\  try { installPnpmLayout("/tmp/missing-pnpm-project"); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("PnpmLayoutError");
+        \\  expect(caught.code).toBe("ERR_PNPM_LAYOUT");
+        \\  expect(caught.operation).toBe("pnpm.install");
+        \\  expect(caught.phase).toBe("install");
+        \\  expect(caught.path).toBe("/tmp/missing-pnpm-project");
+        \\  expect(caught.cause.message).toContain("expected Vite/Solid fixture");
+        \\  expect(caught.stack).toContain("pnpm.install (/tmp/missing-pnpm-project");
+        \\  expect(caught.stack).toContain("Caused by: Error: package.json is not the expected Vite/Solid fixture");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104482,7 +104555,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 26), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
