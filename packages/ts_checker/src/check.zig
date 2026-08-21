@@ -134616,8 +134616,10 @@ pub const Checker = struct {
 
     fn checkJsPrototypeAssignmentThisType(self: *Checker, node: NodeId) ?TypeId {
         if (!self.sourceHasCheckJsDirective()) return null;
+        const object_literal_owner = self.checkJsPrototypeObjectLiteralOwnerName(node) orelse
+            self.checkJsComputedPrototypeObjectLiteralOwnerName(node);
         var owner_opt = self.checkJsPrototypeAssignmentOwnerName(node);
-        if (owner_opt == null) owner_opt = self.checkJsPrototypeObjectLiteralOwnerName(node);
+        if (owner_opt == null) owner_opt = object_literal_owner;
         if (owner_opt == null) {
             if (!self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return null;
             owner_opt = self.checkJsPrototypeOwnerNameBeforeNode(node);
@@ -134631,6 +134633,12 @@ pub const Checker = struct {
             const imported_t = (self.virtualImportTypeForLocal(owner, node) catch null) orelse return null;
             const instance_t = (self.constructReturnType(imported_t) catch null) orelse return null;
             return instance_t;
+        }
+        if (self.strict_flags.no_implicit_any and object_literal_owner == null) {
+            const constructor = self.jsConstructorFunctionDeclForName(node, owner);
+            if (constructor != null and !self.fnHasJsDocClassOrConstructorTag(constructor.?)) {
+                return self.priorCheckJsPrototypeObjectType(node, owner);
+            }
         }
         const constructor_instance = self.jsConstructorInstanceTypeForHeritage(node, owner) catch null;
         if (constructor_instance) |instance_t| return instance_t;
@@ -220154,7 +220162,7 @@ test "checker: computed JavaScript prototype replacement keeps constructor membe
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checkjs prototype method assignments use constructor-inferred this members" {
+test "checker: strict checkjs prototype methods inherit only tagged constructor members" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -220166,6 +220174,16 @@ test "checker: checkjs prototype method assignments use constructor-inferred thi
         \\  this.arg = 'hi'
         \\}
         \\Installer.prototype.second = function () {
+        \\  this.arg = false
+        \\}
+        \\/** @constructor */
+        \\function Tagged() {
+        \\  this.arg = 0
+        \\}
+        \\Tagged.prototype.first = function () {
+        \\  this.arg = 'hi'
+        \\}
+        \\Tagged.prototype.second = function () {
         \\  this.arg = false
         \\}
     );
