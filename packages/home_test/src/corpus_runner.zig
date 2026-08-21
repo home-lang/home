@@ -64861,6 +64861,51 @@ const harness_prelude =
     \\  if (signal && signal.reason !== undefined) return signal.reason;
     \\  return new DOMException("The operation was aborted.", "AbortError");
     \\}
+    \\function __home_fetch_request_signal_error(cause, href) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause));
+    \\  const operation = "fetch.server.request.signal";
+    \\  const failure = new TypeError("Unable to create the server Request AbortSignal for " + String(href));
+    \\  failure.code = "ERR_FETCH_REQUEST_SIGNAL";
+    \\  failure.operation = operation;
+    \\  failure.url = String(href);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_link_server_request_signal(request, clientSignal, href) {
+    \\  let clientAbortListener = null;
+    \\  try {
+    \\    if (clientSignal !== undefined && clientSignal !== null && typeof clientSignal.addEventListener !== "function") {
+    \\      throw new TypeError("fetch signal must be an AbortSignal");
+    \\    }
+    \\    const controller = new AbortController();
+    \\    const signal = controller.signal;
+    \\    Object.defineProperty(request, "signal", { configurable: true, enumerable: false, value: signal });
+    \\    if (clientSignal) {
+    \\      clientAbortListener = () => controller.abort(__home_fetch_abort_reason(clientSignal));
+    \\      if (clientSignal.aborted) clientAbortListener();
+    \\      else {
+    \\        clientSignal.addEventListener("abort", clientAbortListener, { once: true });
+    \\        if (clientSignal.aborted) clientAbortListener();
+    \\      }
+    \\    }
+    \\    let cleaned = false;
+    \\    return {
+    \\      signal,
+    \\      cleanup() {
+    \\        if (cleaned) return;
+    \\        cleaned = true;
+    \\        if (clientAbortListener && clientSignal && typeof clientSignal.removeEventListener === "function") clientSignal.removeEventListener("abort", clientAbortListener);
+    \\        clientAbortListener = null;
+    \\      },
+    \\    };
+    \\  } catch (cause) {
+    \\    if (clientAbortListener && clientSignal && typeof clientSignal.removeEventListener === "function") clientSignal.removeEventListener("abort", clientAbortListener);
+    \\    throw __home_fetch_request_signal_error(cause, href);
+    \\  }
+    \\}
     \\function __home_fetch_abortable(promise, signal) {
     \\  if (!signal || typeof signal.addEventListener !== "function") return promise;
     \\  if (signal.aborted) return Promise.reject(__home_fetch_abort_reason(signal));
@@ -65245,8 +65290,12 @@ const harness_prelude =
     \\  if (!usesHttp3 && requestedTransport !== "http2" && handle.__home_http1_enabled === false) {
     \\    return __home_fetch_thenable(null, new Error("HTTP/1.1 listener is disabled"));
     \\  }
+    \\  if (abortSignal !== undefined && abortSignal !== null && typeof abortSignal.addEventListener !== "function") {
+    \\    return __home_fetch_thenable(null, __home_fetch_request_signal_error(new TypeError("fetch signal must be an AbortSignal"), href));
+    \\  }
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
+    \\    let requestSignalLink = null;
     \\    try {
     \\      let requestInit = init || {};
     \\      if (fetchOptions && fetchOptions.compress === "gzip" && fetchOptions.body !== undefined && fetchOptions.body !== null) {
@@ -65257,7 +65306,8 @@ const harness_prelude =
     \\        requestInit = Object.assign({}, fetchOptions, { body: compressedBody, headers: compressedHeaders });
     \\      }
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
-    \\      request.__home_fetch_abort_signal = abortSignal || request.signal;
+    \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
+    \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
     \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
     \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
     \\      if (maxRequestBodySize > 0) {
@@ -65311,10 +65361,12 @@ const harness_prelude =
     \\        }
     \\        return response;
     \\      }).finally(() => {
+    \\        if (requestSignalLink) requestSignalLink.cleanup();
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
     \\      return __home_fetch_abortable(responsePromise, abortSignal);
     \\    } catch (error) {
+    \\      if (requestSignalLink) requestSignalLink.cleanup();
     \\      if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      if (typeof handle.error === "function") {
     \\        try { return __home_fetch_thenable(handle.error(error), null); } catch (handlerError) { return __home_fetch_thenable(null, handlerError); }
@@ -76581,6 +76633,45 @@ fn rewriteTextEncoderCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
+fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const fixture_source = try Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "packages/runtime/test/bun-corpus/js/web/fetch/abortsignal-leak-fixture.ts",
+        allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer allocator.free(fixture_source);
+
+    const fixture_without_main = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        fixture_source,
+        "if (import.meta.main) {\n  await runAll();\n}\n",
+        "",
+    );
+    defer allocator.free(fixture_without_main);
+    const fixture_import =
+        \\import {
+        \\  server,
+        \\  testReqSignalAbortEvent,
+        \\  testReqSignalAbortEventNeverResolves,
+        \\  testReqSignalGetter,
+        \\} from "./abortsignal-leak-fixture";
+    ;
+    const test_without_fixture_import = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        fixture_import,
+        "",
+    );
+    defer allocator.free(test_without_fixture_import);
+
+    return std.mem.concat(allocator, u8, &.{ fixture_without_main, "\n", test_without_fixture_import });
+}
+
 fn rewriteDenoEventCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
@@ -80715,6 +80806,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteBufferResolveObjectURLCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
         try rewriteDenoEncodingCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
+        try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
         try rewriteTextEncoderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
@@ -107314,6 +107407,78 @@ test "bootstrap runner mirrors slow-connect fetch abort matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap local fetch gives server requests linked AbortSignals and structured failures" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("server Request signal follows the client signal", async () => {
+        \\  const controller = new AbortController();
+        \\  const started = Promise.withResolvers();
+        \\  const server = Bun.serve({
+        \\    port: 0,
+        \\    async fetch(request) {
+        \\      expect(typeof request.signal?.addEventListener).toBe("function");
+        \\      expect(request.signal === controller.signal).toBe(false);
+        \\      const aborted = Promise.withResolvers();
+        \\      request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+        \\      started.resolve(request.signal);
+        \\      await aborted.promise;
+        \\      return new Response("aborted");
+        \\    },
+        \\  });
+        \\  try {
+        \\    const reason = new Error("client stopped");
+        \\    const pending = fetch(server.url, { signal: controller.signal }).catch(error => error);
+        \\    const serverSignal = await started.promise;
+        \\    controller.abort(reason);
+        \\    expect(await pending).toBe(reason);
+        \\    expect(serverSignal.aborted).toBe(true);
+        \\    expect(serverSignal.reason).toBe(reason);
+        \\  } finally {
+        \\    server.stop(true);
+        \\  }
+        \\});
+        \\
+        \\test("invalid fetch signals report structured context", async () => {
+        \\  const server = Bun.serve({ port: 0, fetch() { return new Response("ok"); } });
+        \\  try {
+        \\    const error = await fetch(server.url, { signal: {} }).catch(error => error);
+        \\    expect(error).toBeInstanceOf(TypeError);
+        \\    expect(error.code).toBe("ERR_FETCH_REQUEST_SIGNAL");
+        \\    expect(error.operation).toBe("fetch.server.request.signal");
+        \\    expect(error.url).toBe(server.url.href);
+        \\    expect(error.cause).toBeInstanceOf(TypeError);
+        \\    expect(error.stack).toContain("fetch.server.request.signal");
+        \\  } finally {
+        \\    server.stop(true);
+        \\  }
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/fetch-server-request-signal.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_link_server_request_signal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_FETCH_REQUEST_SIGNAL") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed or file_run.result.passed != 2) {
+        std.debug.print(
+            "server Request AbortSignal regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -107446,6 +107611,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/request/request.test.ts", .passed = 4 },
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
+        .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
         .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
