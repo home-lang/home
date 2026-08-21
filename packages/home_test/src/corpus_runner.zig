@@ -69494,25 +69494,44 @@ const harness_prelude =
     \\  Object.defineProperty(HomeSharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
     \\  Object.defineProperty(globalThis, "SharedArrayBuffer", { configurable: true, writable: true, value: HomeSharedArrayBuffer });
     \\}
+    \\function __home_atomics_wait_error(operation, typedArray, index, error) {
+    \\  const cause = error instanceof Error ? error : new TypeError(String(error)); const kind = typedArray && typedArray.constructor && typedArray.constructor.name ? String(typedArray.constructor.name) : "<invalid typed array>"; const safeIndex = Number.isSafeInteger(index) ? Number(index) : null;
+    \\  const Failure = cause instanceof RangeError ? RangeError : TypeError; const failure = new Failure("Atomic wait validation failed for " + kind + (safeIndex === null ? "" : " at index " + String(safeIndex)) + ": " + String(cause.message || cause));
+    \\  failure.name = String(cause.name || Failure.name); failure.code = "ERR_ATOMICS_WAIT"; failure.operation = String(operation || "atomics.wait"); failure.typedArray = kind; failure.index = safeIndex; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "TypeError") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + kind + (safeIndex === null ? "" : ", index " + String(safeIndex)) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_atomics_wait_state(operation, typedArray, index, value, timeout) {
+    \\  try {
+    \\    const isInt32 = typeof Int32Array === "function" && typedArray instanceof Int32Array; const isBigInt64 = typeof BigInt64Array === "function" && typedArray instanceof BigInt64Array;
+    \\    if (!isInt32 && !isBigInt64) throw new TypeError("Atomics.wait requires an Int32Array or BigInt64Array");
+    \\    if (!typedArray.buffer || !__home_is_shared_array_buffer_like(typedArray.buffer)) throw new TypeError("Atomics.wait requires shared memory");
+    \\    const current = Atomics.load(typedArray, index); const expected = isBigInt64 ? BigInt(value) : Number(value) | 0; let delay = timeout === undefined ? Infinity : Number(timeout);
+    \\    if (Number.isNaN(delay)) delay = Infinity; else delay = Math.max(0, delay);
+    \\    return { current, expected, timeout: delay };
+    \\  } catch (error) { throw error && error.code === "ERR_ATOMICS_WAIT" ? error : __home_atomics_wait_error(operation, typedArray, index, error); }
+    \\}
     \\if (typeof Atomics === "object" && typeof Atomics.wait === "function") {
     \\  const __home_native_atomics_wait = Atomics.wait;
     \\  Atomics.wait = function(typedArray, index, value, timeout) {
-    \\    try { return __home_native_atomics_wait.call(Atomics, typedArray, index, value, timeout); }
-    \\    catch (error) {
-    \\      if (typedArray && typedArray.buffer && __home_is_shared_array_buffer_like(typedArray.buffer)) return "timed-out";
-    \\      throw error;
-    \\    }
+    \\    const usesHomeSharedMemory = !!(typedArray && typedArray.buffer && __home_is_shared_array_buffer_like(typedArray.buffer));
+    \\    if (!usesHomeSharedMemory) return __home_native_atomics_wait.call(Atomics, typedArray, index, value, timeout);
+    \\    const state = __home_atomics_wait_state("atomics.wait", typedArray, index, value, timeout); if (state.current !== state.expected) return "not-equal";
+    \\    try { return __home_native_atomics_wait.call(Atomics, typedArray, index, value, timeout); } catch (_error) { return "timed-out"; }
     \\  };
     \\}
     \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
     \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
-    \\    if (Atomics.load(typedArray, index) !== value) return { async: false, value: "not-equal" };
+    \\    const state = __home_atomics_wait_state("atomics.waitAsync", typedArray, index, value, timeout);
+    \\    if (state.current !== state.expected) return { async: false, value: "not-equal" };
+    \\    if (state.timeout === 0) return { async: false, value: "timed-out" };
     \\    return { async: true, value: new Promise(resolve => {
-    \\      const timedOut = () => resolve("timed-out");
-    \\      setTimeout(() => Atomics.load(typedArray, index) !== value ? resolve("ok") : timedOut(), Math.max(0, Number(timeout) || 0));
+    \\      if (state.timeout === Infinity) return;
+    \\      setTimeout(() => Atomics.load(typedArray, index) !== state.expected ? resolve("ok") : resolve("timed-out"), state.timeout);
     \\    }) };
     \\  };
     \\}
+    \\globalThis.__home_modules["home:atomics-support"] = { createError: __home_atomics_wait_error, waitState: __home_atomics_wait_state };
     \\if (typeof Float16Array !== "function") {
     \\  var Float16Array = Uint16Array;
     \\}
@@ -104823,6 +104842,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const wptH2Loader = globalThis.__home_import("home:wpt-h2-loader");
         \\const valkeyTestUtils = globalThis.__home_import("home:valkey-test-utils");
         \\const abortSignalSupport = globalThis.__home_import("home:abort-signal-support");
+        \\const atomicsSupport = globalThis.__home_import("home:atomics-support");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104857,6 +104877,26 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  const winner = new AbortController(); const winnerReason = new Error("winner reason"); const combined = AbortSignal.any([tracked, winner.signal]);
         \\  expect(active.size).toBe(1); winner.abort(winnerReason);
         \\  expect(combined.aborted).toBe(true); expect(combined.reason).toBe(winnerReason); expect(active.size).toBe(0);
+        \\});
+        \\test("Atomics wait validation retains typed-array and causal operation context", () => {
+        \\  const view = new Int8Array(new SharedArrayBuffer(4)); let caught;
+        \\  try { Atomics.wait(view, 0, 0, 0); } catch (error) { caught = error; }
+        \\  expect(typeof atomicsSupport.waitState).toBe("function");
+        \\  expect(caught).toBeInstanceOf(TypeError);
+        \\  expect(caught.code).toBe("ERR_ATOMICS_WAIT");
+        \\  expect(caught.operation).toBe("atomics.wait");
+        \\  expect(caught.typedArray).toBe("Int8Array");
+        \\  expect(caught.index).toBe(0);
+        \\  expect(caught.cause).toBeInstanceOf(TypeError);
+        \\  expect(caught.cause.message).toBe("Atomics.wait requires an Int32Array or BigInt64Array");
+        \\  expect(caught.stack).toContain("atomics.wait (Int8Array, index 0");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: Atomics.wait requires an Int32Array or BigInt64Array");
+        \\});
+        \\test("Atomics.waitAsync preserves immediate and asynchronous outcomes", async () => {
+        \\  const view = new Int32Array(new SharedArrayBuffer(4)); Atomics.store(view, 0, 7);
+        \\  const mismatch = Atomics.waitAsync(view, 0, 0, 10); expect(mismatch.async).toBe(false); expect(mismatch.value).toBe("not-equal");
+        \\  const immediateTimeout = Atomics.waitAsync(view, 0, 7, 0); expect(immediateTimeout.async).toBe(false); expect(immediateTimeout.value).toBe("timed-out");
+        \\  const delayedTimeout = Atomics.waitAsync(view, 0, 7, 1); expect(delayedTimeout.async).toBe(true); expect(await delayedTimeout.value).toBe("timed-out");
         \\});
         \\test("MongoDB connection errors retain sanitized operation context", async () => {
         \\  const client = new MongoClient("mongodb+srv://user:super-secret@db.example.test/home"); let caught;
@@ -105476,7 +105516,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 51), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 53), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
@@ -106866,6 +106906,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
         .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
         .{ .path = "js/web/abort/abort.test.ts", .passed = 5 },
+        .{ .path = "js/web/atomics.test.ts", .passed = 28 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
