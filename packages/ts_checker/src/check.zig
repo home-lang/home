@@ -19734,7 +19734,21 @@ pub const Checker = struct {
             try self.lowerValueTypeAnnotation(object_id.name, variable.type_annotation)
         else
             (try self.jsDocTypeForLeadingNode(declaration)) orelse return null;
-        return self.interner.objectMember(declared_t, member.name);
+        if (self.interner.objectMember(declared_t, member.name)) |member_t| return member_t;
+        if (self.varDeclHasReactFunctionComponentType(declaration)) {
+            const member_text = self.string_interner.get(member.name);
+            if (std.mem.eql(u8, member_text, "propTypes") or
+                std.mem.eql(u8, member_text, "defaultProps")) return types.Primitive.any;
+        }
+        return null;
+    }
+
+    fn varDeclHasReactFunctionComponentType(self: *Checker, declaration: NodeId) bool {
+        if (!self.sourceHasReactJsxReference()) return false;
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBody(src, self.hir.spanOf(declaration).start) orelse return false;
+        return std.mem.indexOf(u8, body, "React.SFC") != null or
+            std.mem.indexOf(u8, body, "React.FunctionComponent") != null;
     }
 
     fn priorCheckJsPropertyAssignmentDeclaredType(
@@ -73619,6 +73633,12 @@ pub const Checker = struct {
         else
             null;
         const ns_node = absolute_ns_node orelse relative_ns_node orelse {
+            if (resolved_path.len == 1 and
+                std.mem.eql(u8, self.string_interner.get(resolved_path[0]), "React") and
+                self.sourceHasReactJsxReference())
+            {
+                if (try self.syntheticReactQualifiedType(r.name)) |react_t| return react_t;
+            }
             // Fallback for `JSX.<Type>` qualified refs in fixtures that
             // reference the lib's `react.d.ts` via `/// <reference path
             // ="/.lib/react.d.ts" />` but never declare the JSX
@@ -73699,6 +73719,21 @@ pub const Checker = struct {
         };
     }
 
+    fn syntheticReactQualifiedType(self: *Checker, name: hir_mod.StringId) CheckError!?TypeId {
+        const text = self.string_interner.get(name);
+        if (!std.mem.eql(u8, text, "SFC") and !std.mem.eql(u8, text, "FunctionComponent")) return null;
+        const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        const prop_types_name = self.string_interner.intern("propTypes") catch return error.OutOfMemory;
+        const default_props_name = self.string_interner.intern("defaultProps") catch return error.OutOfMemory;
+        const params = [_]TypeId{types.Primitive.any};
+        const call_t = self.interner.internSignature(&params, types.Primitive.any, false) catch return error.OutOfMemory;
+        return self.interner.internObjectType(&.{
+            .{ .name = call_name, .type = call_t, .is_optional = false, .is_readonly = true, .is_method = true },
+            .{ .name = prop_types_name, .type = types.Primitive.any, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = default_props_name, .type = types.Primitive.any, .is_optional = true, .is_readonly = false, .is_method = false },
+        }) catch return error.OutOfMemory;
+    }
+
     fn reportCannotFindNamespaceForQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!void {
         if (self.hir.kindOf(type_node) != .type_ref) return;
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
@@ -73737,6 +73772,9 @@ pub const Checker = struct {
         // unfindable. A missing member is a TS2339, not TS2503. Mirrors
         // `instanceofOperatorWithRHSHasSymbolHasInstance` (clean baseline).
         if (std.mem.eql(u8, root_text, "globalThis")) return;
+        if (std.mem.eql(u8, root_text, "React") and
+            self.sourceHasReactJsxReference() and
+            self.localNameIsImportBinding(root_name, type_node)) return;
         // Suppress `Cannot find namespace 'JSX'.` when the fixture
         // references the react.d.ts triple-slash library ÃÂ¢ÃÂÃÂ tsc treats
         // JSX as an ambient namespace provided by that lib and never
@@ -88648,6 +88686,9 @@ pub const Checker = struct {
     ) CheckError!void {
         const pos = self.sliceStartPos(src, root_text);
         const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        if (std.mem.eql(u8, root_text, "React") and
+            self.sourceHasReactJsxReference() and
+            self.localNameIsImportBinding(root_name, anchor)) return;
         if (self.findVisibleNamedTypeDecl(anchor, root_name) orelse
             self.findNamedClassDeclInAnyVirtualSection(anchor, root_name)) |decl|
         {
@@ -100499,6 +100540,15 @@ pub const Checker = struct {
                     try self.checkJsInferredClassMemberWrite(a.target);
                 const target_is_repeated_callable_expando =
                     try self.isRepeatedCallableExpandoAssignment(node, a);
+                if (a.op == null and self.sourceHasCheckJsDirective() and
+                    (try self.expandoFunctionMemberKey(a.target)) != null)
+                {
+                    const explicit_receiver = self.expandoReceiverHasExplicitType(node, a.target);
+                    if (!explicit_receiver or (try self.explicitExpandoReceiverMemberType(a.target)) != null) {
+                        self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
+                        self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
+                    }
+                }
                 if (target_is_js_container_prototype_object_assignment) {
                     self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
                     self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
@@ -247155,6 +247205,30 @@ test "checker: JSX constructor interfaces use concrete managed props" {
             diagnostic.message,
         );
     }
+}
+
+test "checker: checked JSX function components retain local and React expandos" {
+    const s = try newTsxSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: components.jsx
+        \\/// <reference path="/.lib/react16.d.ts" />
+        \\import React from "react";
+        \\/** @type {React.SFC} */
+        \\const Typed = () => null;
+        \\Typed.defaultProps = { tabs: "default" };
+        \\const Open = () => null;
+        \\Open.propTypes = {};
+        \\Open.defaultProps = {};
+        \\/** @type {{defaultProps: {tabs: string}} & (() => any)} */
+        \\const Declared = () => null;
+        \\Declared.defaultProps = { tabs: "default" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: JSX class tuple children use inherited constructor overloads" {
