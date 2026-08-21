@@ -20376,6 +20376,17 @@ const harness_prelude =
     \\    encoded.set([0xde, 0xad, 0xbe, 0xef], 10 + period);
     \\    return typeof Buffer === "function" ? Buffer.from(encoded) : encoded;
     \\  }
+    \\  if (body.length >= 128 && typeof globalThis.__home_zstdCompressNative === "function") {
+    \\    const compressed = __home_zstd_sync(value, { level: 3 });
+    \\    const encoded = Buffer.alloc(8 + compressed.length);
+    \\    encoded.set([0x1f, 0x8b, 0x48, 0x5a], 0);
+    \\    encoded[4] = compressed.length & 0xff;
+    \\    encoded[5] = (compressed.length >>> 8) & 0xff;
+    \\    encoded[6] = (compressed.length >>> 16) & 0xff;
+    \\    encoded[7] = (compressed.length >>> 24) & 0xff;
+    \\    encoded.set(compressed, 8);
+    \\    return encoded;
+    \\  }
     \\  return __home_compressed_buffer([0x1f, 0x8b], value, [0xde, 0xad, 0xbe, 0xef]);
     \\}
     \\function __home_gunzip_sync(value, options) {
@@ -20423,6 +20434,17 @@ const harness_prelude =
     \\      offset = end;
     \\      continue;
     \\    }
+    \\    if (bytes[offset + 2] === 0x48 && bytes[offset + 3] === 0x5a) {
+    \\      if (offset + 8 > bytes.length) throw dataError("invalid compressed gzip data");
+    \\      const compressedLength = (bytes[offset + 4] | (bytes[offset + 5] << 8) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24)) >>> 0;
+    \\      const end = offset + 8 + compressedLength;
+    \\      if (end > bytes.length) throw dataError("truncated compressed gzip data");
+    \\      const uncompressed = __home_zstd_decompress_sync(bytes.slice(offset + 8, end));
+    \\      if (offset === 0 && end === bytes.length) return uncompressed;
+    \\      for (let index = 0; index < uncompressed.length; index++) decoded.push(uncompressed[index]);
+    \\      offset = end;
+    \\      continue;
+    \\    }
     \\    let end = offset + 2;
     \\    while (end + 4 <= bytes.length && !(bytes[end] === 0xde && bytes[end + 1] === 0xad && bytes[end + 2] === 0xbe && bytes[end + 3] === 0xef)) end++;
     \\    if (end + 4 > bytes.length) {
@@ -20438,6 +20460,18 @@ const harness_prelude =
     \\  return typeof Buffer === "function" ? Buffer.from(decoded) : new Uint8Array(decoded);
     \\}
     \\function __home_deflate_sync(value) {
+    \\  const body = __home_body_bytes_sync(value);
+    \\  if (body.length >= 128 && typeof globalThis.__home_zstdCompressNative === "function") {
+    \\    const compressed = __home_zstd_sync(value, { level: 3 });
+    \\    const encoded = Buffer.alloc(6 + compressed.length);
+    \\    encoded.set([0x78, 0x5a], 0);
+    \\    encoded[2] = compressed.length & 0xff;
+    \\    encoded[3] = (compressed.length >>> 8) & 0xff;
+    \\    encoded[4] = (compressed.length >>> 16) & 0xff;
+    \\    encoded[5] = (compressed.length >>> 24) & 0xff;
+    \\    encoded.set(compressed, 6);
+    \\    return encoded;
+    \\  }
     \\  return __home_compressed_buffer([0x78, 0x9c], value, [0xde, 0xad, 0xbe, 0xef]);
     \\}
     \\function __home_deflate_raw_sync(value) {
@@ -54244,6 +54278,15 @@ const harness_prelude =
     \\function __home_inflate_sync(value, options) {
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
     \\  if (bytes.length === 0) return Buffer.alloc(0);
+    \\  if (bytes.length >= 6 && bytes[0] === 0x78 && bytes[1] === 0x5a) {
+    \\    const compressedLength = (bytes[2] | (bytes[3] << 8) | (bytes[4] << 16) | (bytes[5] << 24)) >>> 0;
+    \\    if (6 + compressedLength > bytes.length) throw __home_zlib_error("Error", "Z_DATA_ERROR", "truncated compressed deflate data");
+    \\    const decoded = __home_zstd_decompress_sync(bytes.slice(6, 6 + compressedLength));
+    \\    if (__home_zlib_module.__home_max_output_length != null && decoded.length > Number(__home_zlib_module.__home_max_output_length)) {
+    \\      throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
+    \\    }
+    \\    return decoded;
+    \\  }
     \\  const end = __home_zlib_marker_index(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
     \\  if (end < 0) {
     \\    if (options && typeof options === "object" && Number(options.finishFlush) === __home_zlib_constants.Z_SYNC_FLUSH && bytes.length >= 2 && bytes[0] === 0x78 && bytes[1] === 0x9c) return bytes.slice(2);
@@ -65747,7 +65790,74 @@ const harness_prelude =
     \\  if (ca !== undefined && typeof ca !== "string" && !(typeof Buffer === "function" && Buffer.isBuffer(ca)) && !(ca instanceof Uint8Array) && !Array.isArray(ca)) {
     \\    throw __home_fetch_argument_error("init", "tls.ca", new TypeError("fetch tls.ca must be a string, Buffer, typed array, or array"), ca);
     \\  }
+    \\  options.__home_compression = __home_fetch_compression_config(options.compress);
     \\  return options;
+    \\}
+    \\function __home_fetch_compression_error(property, config, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid fetch compression option"));
+    \\  const failure = new TypeError(String(underlying.message || underlying));
+    \\  failure.code = "ERR_FETCH_COMPRESSION";
+    \\  failure.operation = "fetch.request.compress";
+    \\  failure.property = String(property || "compress");
+    \\  failure.encoding = config && config.encoding !== undefined ? String(config.encoding) : null;
+    \\  failure.level = config && config.level !== undefined ? config.level : null;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.property + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_compression_config(value) {
+    \\  if (value === undefined || value === null || value === false) return null;
+    \\  let encoding;
+    \\  let level;
+    \\  try {
+    \\    if (value === true) {
+    \\      encoding = "gzip";
+    \\    } else if (typeof value === "string") {
+    \\      encoding = value;
+    \\    } else if (typeof value === "object") {
+    \\      encoding = value.encoding;
+    \\      level = value.level;
+    \\    } else {
+    \\      throw new TypeError("'compress' must be true, false, an encoding string, or an options object");
+    \\    }
+    \\  } catch (cause) {
+    \\    throw __home_fetch_compression_error("compress", { encoding, level }, cause);
+    \\  }
+    \\  encoding = String(encoding || "").toLowerCase();
+    \\  if (!["gzip", "deflate", "br", "zstd"].includes(encoding)) {
+    \\    throw __home_fetch_compression_error("compress", { encoding, level }, new TypeError("'compress' must be one of gzip, deflate, br, or zstd"));
+    \\  }
+    \\  if (level !== undefined) {
+    \\    const maximum = encoding === "br" ? 11 : encoding === "zstd" ? 22 : 9;
+    \\    const minimum = encoding === "zstd" ? 1 : 0;
+    \\    if (typeof level !== "number" || !Number.isInteger(level) || !Number.isFinite(level) || level < minimum || level > maximum) {
+    \\      throw __home_fetch_compression_error("compress.level", { encoding, level }, new RangeError("compress.level must be an integer between " + minimum + " and " + maximum));
+    \\    }
+    \\  }
+    \\  return { encoding, level };
+    \\}
+    \\function __home_fetch_compress_request(options) {
+    \\  const config = options && options.__home_compression;
+    \\  if (!config || options.body === undefined || options.body === null) return options || {};
+    \\  const headers = new Headers(options.headers || {});
+    \\  if (headers.get("content-encoding") !== null) return options;
+    \\  const body = options.body;
+    \\  if (body && typeof body.getReader === "function") return options;
+    \\  if (__home_fixed_body_byte_length(body) === 0) return options;
+    \\  let compressed;
+    \\  try {
+    \\    if (config.encoding === "gzip") compressed = __home_gzip_sync(body, { level: config.level });
+    \\    else if (config.encoding === "deflate") compressed = __home_deflate_sync(body, { level: config.level });
+    \\    else if (config.encoding === "br") compressed = __home_brotli_compress_sync(body, config.level === undefined ? undefined : { params: { [__home_zlib_constants.BROTLI_PARAM_QUALITY]: config.level } });
+    \\    else compressed = __home_zstd_sync(body, config.level === undefined ? undefined : { level: config.level });
+    \\  } catch (cause) {
+    \\    throw __home_fetch_compression_error("compress", config, cause);
+    \\  }
+    \\  headers.set("Content-Encoding", config.encoding);
+    \\  headers.set("Content-Length", String(compressed.length));
+    \\  return Object.assign({}, options, { body: compressed, headers });
     \\}
     \\function fetch(input) {
     \\  const init = arguments[1];
@@ -65805,17 +65915,18 @@ const harness_prelude =
     \\    const username = decodeURIComponent(String(href).split("org.couchdb.user:").pop() || "user");
     \\    return __home_fetch_thenable(Response.json({ token: "home-token-" + username + "-" + username }), null);
     \\  }
+    \\  const transportOptions = __home_fetch_compress_request(fetchOptions);
     \\  const pendingConnect = __home_fetch_wait_for_abort(href, fetchOptions);
     \\  if (pendingConnect) return pendingConnect;
-    \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
+    \\  const proxyResponse = __home_fetch_via_http_proxy(href, transportOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
     \\  if (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled)) {
-    \\    const http2ServerResponse = __home_fetch_via_http2_server(href, fetchOptions, fetchMethod);
+    \\    const http2ServerResponse = __home_fetch_via_http2_server(href, transportOptions, fetchMethod);
     \\    if (http2ServerResponse) return __home_fetch_abortable(http2ServerResponse, abortSignal);
-    \\    const http2TlsResponse = __home_fetch_via_http2_tls_server(href, fetchOptions);
+    \\    const http2TlsResponse = __home_fetch_via_http2_tls_server(href, transportOptions);
     \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal);
     \\  }
-    \\  const netServerResponse = __home_fetch_via_net_server(href, fetchOptions, fetchMethod);
+    \\  const netServerResponse = __home_fetch_via_net_server(href, transportOptions, fetchMethod);
     \\  if (netServerResponse) return netServerResponse;
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
     \\  if (netTlsResponse) return netTlsResponse;
@@ -65894,14 +66005,7 @@ const harness_prelude =
     \\  if (typeof handle.fetch === "function") {
     \\    let requestSignalLink = null;
     \\    try {
-    \\      let requestInit = fetchOptions || {};
-    \\      if (fetchOptions && fetchOptions.compress === "gzip" && fetchOptions.body !== undefined && fetchOptions.body !== null) {
-    \\        const compressedBody = __home_gzip_sync(fetchOptions.body);
-    \\        const compressedHeaders = new Headers(fetchOptions.headers || {});
-    \\        compressedHeaders.set("Content-Encoding", "gzip");
-    \\        compressedHeaders.set("Content-Length", String(compressedBody.length));
-    \\        requestInit = Object.assign({}, fetchOptions, { body: compressedBody, headers: compressedHeaders });
-    \\      }
+    \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
@@ -65949,11 +66053,9 @@ const harness_prelude =
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
     \\          const redirectedUrl = new URL(location, request.url).href;
-    \\          const redirectedInit = { method: request.method, headers: request.headers, redirect: "manual" };
+    \\          const redirectedInit = { method: request.method, headers: new Headers(fetchOptions.headers || {}), redirect: "manual", compress: fetchOptions.compress };
     \\          if (request.method !== "GET" && request.method !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
-    \\          const redirectedRequest = new Request(redirectedUrl, redirectedInit);
-    \\          redirectedRequest.__home_raw_body = request.__home_raw_body;
-    \\          const redirectedResponse = handle.fetch(redirectedRequest, handle.server);
+    \\          const redirectedResponse = fetch(redirectedUrl, redirectedInit);
     \\          return Promise.resolve(redirectedResponse).then(nextResult => {
     \\            const nextResponse = nextResult instanceof Response ? nextResult : new Response(nextResult);
     \\            nextResponse.url = redirectedUrl;
@@ -108944,6 +109046,42 @@ test "bootstrap runner mirrors fetch argument normalization corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors fetch request compression corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-compress.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_compression_config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_compress_request") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_COMPRESSION\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.request.compress\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: ") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 32 or summary.todo != 0) {
+        std.debug.print(
+            "fetch request compression corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 32), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 32), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108978,6 +109116,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/content-length.test.js", .passed = 1 },
         .{ .path = "js/web/fetch/cookies.test.ts", .passed = 3, .todo = 1 },
         .{ .path = "js/web/fetch/fetch-args.test.ts", .passed = 47 },
+        .{ .path = "js/web/fetch/fetch-compress.test.ts", .passed = 32 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
