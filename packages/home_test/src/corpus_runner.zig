@@ -70923,18 +70923,60 @@ const harness_prelude =
     \\globalThis.CompressionStream = __home_CompressionStream;
     \\globalThis.DecompressionStream = __home_DecompressionStream;
     \\if (typeof globalThis.TextEncoderStream !== "function" || !globalThis.TextEncoderStream.__home_corpus_transform) {
+    \\  function __home_text_encoder_stream_error(cause, operation) {
+    \\    if (cause && (typeof cause === "object" || typeof cause === "function")) {
+    \\      try { if (cause.code === undefined) cause.code = "ERR_TEXT_ENCODER_STREAM"; } catch (_error) {}
+    \\      try { if (cause.operation === undefined) cause.operation = operation; } catch (_error) {}
+    \\      try {
+    \\        const frame = "    at " + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\        if (typeof cause.stack === "string" && !cause.stack.includes(frame)) cause.stack += "\n" + frame;
+    \\      } catch (_error) {}
+    \\    }
+    \\    return cause;
+    \\  }
     \\  globalThis.TextEncoderStream = function TextEncoderStream() {
     \\    const encoder = new TextEncoder();
     \\    let leadingSurrogate = "";
     \\    const handle = globalThis.__home_make_transform(
     \\      function transformAlgorithm(chunk) {
     \\        // WHATWG: convert chunk to a USVString (ToString), then UTF-8 encode.
-    \\        const text = String(chunk);
-    \\        const buffer = encoder.encode(text);
+    \\        let text;
+    \\        try { text = String(chunk); }
+    \\        catch (cause) { throw __home_text_encoder_stream_error(cause, "TextEncoderStream.transform.toString"); }
+    \\        if (text.length === 0) return undefined;
+    \\        let complete = "";
+    \\        if (leadingSurrogate) {
+    \\          const first = text.charCodeAt(0);
+    \\          if (first >= 0xdc00 && first <= 0xdfff) {
+    \\            complete = leadingSurrogate + text[0];
+    \\            text = text.slice(1);
+    \\          } else {
+    \\            complete = "\uFFFD";
+    \\          }
+    \\          leadingSurrogate = "";
+    \\        }
+    \\        if (text.length > 0) {
+    \\          const last = text.charCodeAt(text.length - 1);
+    \\          if (last >= 0xd800 && last <= 0xdbff) {
+    \\            leadingSurrogate = text[text.length - 1];
+    \\            text = text.slice(0, -1);
+    \\          }
+    \\        }
+    \\        let buffer;
+    \\        try { buffer = encoder.encode(complete + text); }
+    \\        catch (cause) { throw __home_text_encoder_stream_error(cause, "TextEncoderStream.transform.encode"); }
     \\        if (buffer.length) handle.enqueue(buffer);
     \\        return undefined;
     \\      },
-    \\      function flushAlgorithm() { return undefined; },
+    \\      function flushAlgorithm() {
+    \\        if (!leadingSurrogate) return undefined;
+    \\        leadingSurrogate = "";
+    \\        let buffer;
+    \\        try { buffer = encoder.encode("\uFFFD"); }
+    \\        catch (cause) { throw __home_text_encoder_stream_error(cause, "TextEncoderStream.flush.encode"); }
+    \\        if (buffer.length) handle.enqueue(buffer);
+    \\        return undefined;
+    \\      },
     \\    );
     \\    this.__home_text_encoder_stream = true;
     \\    this.readable = handle.readable;
@@ -107248,6 +107290,8 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
         .{ .path = "js/web/encoding/text-decoder-stream.test.ts", .passed = 39 },
         .{ .path = "js/web/encoding/text-decoder-wpt.test.ts", .passed = 2207 },
+        .{ .path = "js/web/encoding/text-decoder.test.js", .passed = 77 },
+        .{ .path = "js/web/encoding/text-encoder-stream.test.ts", .passed = 19 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
