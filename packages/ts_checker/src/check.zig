@@ -5317,6 +5317,7 @@ pub const Checker = struct {
             try self.checkMultipleDefaultExports(stmts);
         }
         try self.checkJSDocTypedefMissingTypeTags(root);
+        try self.checkJSDocTypedefMissingNames(root);
         try self.checkJsDocTemplateDeclarations(root);
         try self.checkJSDocTypedefTypeTags(root);
         try self.checkJSDocUnsupportedNamepathTypes(root);
@@ -6263,6 +6264,43 @@ pub const Checker = struct {
         }
     }
 
+    fn checkJSDocTypedefMissingNames(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            var tag_search: usize = 0;
+            while (std.mem.indexOfPos(u8, body, tag_search, "@typedef")) |tag_pos| {
+                tag_search = tag_pos + "@typedef".len;
+                var type_start = tag_search;
+                while (type_start < body.len and jsDocTriviaByte(body[type_start])) : (type_start += 1) {}
+                if (type_start >= body.len or body[type_start] != '{') continue;
+                const type_len = jsDocBalancedBraceLen(body[type_start..]);
+                if (type_len == 0) continue;
+                var name_start = type_start + type_len;
+                while (name_start < body.len and jsDocTriviaByte(body[name_start])) : (name_start += 1) {}
+                if (name_start < body.len and isJsDocIdentStart(body[name_start])) continue;
+
+                const close_pos: u32 = @intCast(body_start + type_start + type_len - 1);
+                for ([_]u32{ close_pos, close_pos + 1 }) |pos| {
+                    if (self.hasDiagnosticAtPosition(TsCodes.identifier_expected, pos)) continue;
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = pos,
+                        .code = TsCodes.identifier_expected,
+                        .message = "Identifier expected.",
+                    });
+                }
+            }
+        }
+    }
+
     fn checkJSDocImportRequireSyntax(self: *Checker, root: NodeId) CheckError!void {
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
@@ -6502,6 +6540,7 @@ pub const Checker = struct {
             }
             for (tags, 0..) |tag, tag_index| {
                 if (tag.kind != .typedef_tag or tag.type_text.len == 0) continue;
+                try self.reportClassLocalTypedefTemplateReferences(src, body, comment_start, tag.type_text, root);
                 var pushed_template_scope = false;
                 defer if (pushed_template_scope) self.popNarrowScope();
                 for (tags[0..tag_index]) |template_tag| {
@@ -6555,6 +6594,55 @@ pub const Checker = struct {
                     }
                 }
             }
+        }
+    }
+
+    fn reportClassLocalTypedefTemplateReferences(
+        self: *Checker,
+        src: []const u8,
+        typedef_body: []const u8,
+        comment_start: usize,
+        type_text: []const u8,
+        root: NodeId,
+    ) CheckError!void {
+        var owner = hir_mod.none_node_id;
+        var owner_len: u32 = std.math.maxInt(u32);
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const span = self.hir.spanOf(node);
+            if (comment_start <= span.start or comment_start >= span.end) continue;
+            const len = span.end - span.start;
+            if (len < owner_len) {
+                owner = node;
+                owner_len = len;
+            }
+        }
+        if (owner == hir_mod.none_node_id) return;
+        const class_jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, owner) orelse return;
+        if (std.mem.indexOf(u8, class_jsdoc.body, "@template") == null) return;
+        const type_pos = self.sliceStartPos(src, type_text) orelse return;
+
+        var i: usize = 0;
+        while (i < type_text.len) {
+            while (i < type_text.len and !isJsDocIdentStart(type_text[i])) : (i += 1) {}
+            if (i >= type_text.len) break;
+            const name_start = i;
+            i += 1;
+            while (i < type_text.len and isJsDocIdentChar(type_text[i])) : (i += 1) {}
+            const name = type_text[name_start..i];
+            if (!jsDocBodyDeclaresTemplateName(class_jsdoc.body, name) or
+                jsDocBodyDeclaresTemplateName(typedef_body, name)) continue;
+            const pos = type_pos + @as(u32, @intCast(name_start));
+            if (self.hasDiagnosticAtPosition(TsCodes.cannot_find_name, pos)) continue;
+            const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name});
+            try self.diagnostics.append(self.gpa, .{
+                .node = root,
+                .pos = pos,
+                .code = TsCodes.cannot_find_name,
+                .message = message,
+            });
         }
     }
 
@@ -216964,6 +217052,29 @@ test "checker: nameless JSDoc typedef does not report TS8021" {
     }
 }
 
+test "checker: typed nameless JSDoc typedef reports both missing-name anchors" {
+    const source =
+        \\// @checkjs: true
+        \\/**
+        \\ * @typedef {string}
+        \\ */
+        \\exports.SomeName;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const close_pos: u32 = @intCast(std.mem.indexOf(u8, source, "}") orelse unreachable);
+    var at_close = false;
+    var after_close = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.identifier_expected) continue;
+        at_close = at_close or diagnostic.pos == close_pos;
+        after_close = after_close or diagnostic.pos == close_pos + 1;
+    }
+    try T.expect(at_close);
+    try T.expect(after_close);
+}
+
 test "checker: checkjs JSDoc @typedef with template parameters" {
     // Phase 4 #14 ÃÂ¢ÃÂÃÂ `@template T @typedef Pair<T>` declares a
     // generic alias.
@@ -217593,6 +217704,7 @@ test "checker: checkjs class template parameters drive constructor inference" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs JSDoc @overload declares overload signatures" {
