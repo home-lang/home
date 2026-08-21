@@ -112718,7 +112718,7 @@ pub const Checker = struct {
                     const v = hir_mod.varDeclOf(self.hir, decl);
                     if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
                     if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
-                    if (v.type_annotation == hir_mod.none_node_id) return v.name;
+                    if (v.type_annotation == hir_mod.none_node_id and !self.varDeclHasJsDocTypeTag(decl)) return v.name;
                     return null;
                 }
             }
@@ -112730,7 +112730,7 @@ pub const Checker = struct {
                 const dk = self.hir.kindOf(decl);
                 if (dk != .var_decl and dk != .let_decl and dk != .const_decl) return null;
                 const v = hir_mod.varDeclOf(self.hir, decl);
-                if (v.type_annotation == hir_mod.none_node_id) return v.name;
+                if (v.type_annotation == hir_mod.none_node_id and !self.varDeclHasJsDocTypeTag(decl)) return v.name;
                 return null;
             }
         }
@@ -200227,6 +200227,20 @@ test "checker: explicitly annotated assertion aliases are accepted" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assertion_call_target_needs_explicit_annotations));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assertion_call_target_must_be_qualified_name));
+}
+
+test "checker: JSDoc type explicitly annotates assertion aliases" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @typedef {(check: boolean) => asserts check} AssertFunc */
+        \\/** @type {AssertFunc} */
+        \\const assert = check => {};
+        \\assert(true);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assertion_call_target_needs_explicit_annotations));
 }
 
 test "checker: tsgo alias checkjs assertion arrow requires an explicit variable annotation" {
