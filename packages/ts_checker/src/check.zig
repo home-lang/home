@@ -32360,13 +32360,12 @@ pub const Checker = struct {
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         const has_jsdoc_templates = self.fnHasJsDocTemplateTags(node);
         const prototype_constructor = self.enclosingPrototypeMethodConstructor(node);
-        const has_prototype_constructor_templates = if (prototype_constructor) |constructor|
-            self.fnHasJsDocTemplateTags(constructor)
-        else
-            false;
+        if (prototype_constructor) |constructor| {
+            try self.reportPrototypeConstructorTemplateReferences(node, constructor);
+        }
         try self.checkTypeParameterDeclList(type_params);
         try self.checkFunctionSignatureLocalTypeVisibility(node, type_params);
-        if (type_params.len > 0 or has_jsdoc_templates or has_prototype_constructor_templates) try self.pushNarrowScope();
+        if (type_params.len > 0 or has_jsdoc_templates) try self.pushNarrowScope();
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -32412,11 +32411,6 @@ pub const Checker = struct {
             try captured_tp_ids.append(self.gpa, tp_id);
         }
         try self.recordJsDocTemplateTypeParams(node, &captured_tp_ids);
-        // Prototype methods inherit their constructor's class-level templates,
-        // even when the method does not declare type parameters of its own.
-        if (prototype_constructor) |constructor| {
-            try self.recordJsDocTemplateTypeParams(constructor, &captured_tp_ids);
-        }
 
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
@@ -82964,16 +82958,65 @@ pub const Checker = struct {
         return null;
     }
 
-    fn pushEnclosingPrototypeConstructorTemplateScope(self: *Checker, fn_node: NodeId) CheckError!bool {
-        const constructor = self.enclosingPrototypeMethodConstructor(fn_node) orelse return false;
-        const has_templates = self.fnHasJsDocTemplateTags(constructor);
-        if (!has_templates) return false;
-        try self.pushNarrowScope();
-        errdefer self.popNarrowScope();
-        var captured: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer captured.deinit(self.gpa);
-        try self.recordJsDocTemplateTypeParams(constructor, &captured);
-        return true;
+    fn reportPrototypeConstructorTemplateReferences(
+        self: *Checker,
+        method_node: NodeId,
+        constructor: NodeId,
+    ) CheckError!void {
+        const src = self.source orelse return;
+        const constructor_body = self.leadingJsDocBodyForFunctionOrOwner(src, constructor) orelse return;
+        if (std.mem.indexOf(u8, constructor_body, "@template") == null) return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, constructor_body) catch return;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .template_tag or tag.name.len == 0) continue;
+            try self.reportPrototypeConstructorTemplateName(method_node, tag.name);
+            var comma_names = std.mem.trimStart(u8, tag.description, " \t\r\n");
+            while (comma_names.len > 0 and comma_names[0] == ',') {
+                comma_names = std.mem.trimStart(u8, comma_names[1..], " \t\r\n");
+                if (comma_names.len == 0 or !isJsDocIdentStart(comma_names[0])) break;
+                var name_len: usize = 1;
+                while (name_len < comma_names.len and isJsDocIdentChar(comma_names[name_len])) : (name_len += 1) {}
+                try self.reportPrototypeConstructorTemplateName(method_node, comma_names[0..name_len]);
+                comma_names = std.mem.trimStart(u8, comma_names[name_len..], " \t\r\n");
+            }
+        }
+    }
+
+    fn reportPrototypeConstructorTemplateName(
+        self: *Checker,
+        method_node: NodeId,
+        template_name: []const u8,
+    ) CheckError!void {
+        const src = self.source orelse return;
+        const method_body = self.leadingJsDocBodyForFunctionOrOwner(src, method_node) orelse return;
+        if (jsDocBodyDeclaresTemplateName(method_body, template_name)) return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, method_body) catch return;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.type_text.len == 0) continue;
+            const type_pos = self.sliceStartPos(src, tag.type_text) orelse continue;
+            var offset: usize = 0;
+            while (std.mem.indexOfPos(u8, tag.type_text, offset, template_name)) |hit| {
+                offset = hit + template_name.len;
+                const before_ok = hit == 0 or !isJsDocIdentChar(tag.type_text[hit - 1]);
+                const after_ok = offset == tag.type_text.len or !isJsDocIdentChar(tag.type_text[offset]);
+                if (!before_ok or !after_ok) continue;
+                const pos = type_pos + @as(u32, @intCast(hit));
+                if (self.hasDiagnosticAtPosition(TsCodes.cannot_find_name, pos)) continue;
+                const message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot find name '{s}'.",
+                    .{template_name},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = method_node,
+                    .pos = pos,
+                    .code = TsCodes.cannot_find_name,
+                    .message = message,
+                });
+            }
+        }
     }
 
     fn checkJsMemberAssignedFunctionForName(
@@ -86614,11 +86657,6 @@ pub const Checker = struct {
     }
 
     fn jsDocTypeTextToTypeAt(self: *Checker, src: []const u8, type_text: []const u8, at_node: NodeId) CheckError!?TypeId {
-        const pushed_constructor_scope = if (at_node != hir_mod.none_node_id)
-            try self.pushEnclosingPrototypeConstructorTemplateScope(at_node)
-        else
-            false;
-        defer if (pushed_constructor_scope) self.popNarrowScope();
         const prev = self.jsdoc_diagnostic_anchor;
         if (at_node != hir_mod.none_node_id) self.jsdoc_diagnostic_anchor = at_node;
         defer self.jsdoc_diagnostic_anchor = prev;
@@ -87112,9 +87150,8 @@ pub const Checker = struct {
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
         if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) return false;
-        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse
+        _ = self.jsConstructorFunctionDeclForName(anchor, name) orelse
             self.checkJsFunctionVariableInitializer(anchor, name) orelse return false;
-        if (self.fnProvidesCheckJsConstructorInstance(fn_node)) return false;
         const pos = self.sliceStartPos(src, name_text);
         for (self.diagnostics.items) |diagnostic| {
             if (diagnostic.code == TsCodes.value_used_as_type_did_you_mean_typeof and diagnostic.pos == pos) return true;
@@ -87222,19 +87259,23 @@ pub const Checker = struct {
     fn reportUnsupportedJsConstructorTemplateReference(self: *Checker, src: []const u8, name_text: []const u8) CheckError!bool {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
-        const template_name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
-        if (self.lookupNarrow(template_name)) |resolved| {
-            if (resolved < self.interner.pool.typeCount() and self.interner.pool.flagsOf(resolved).is_type_parameter) {
-                return false;
-            }
-        }
         const owner_node = self.enclosingPrototypeConstructorOwnerNode(anchor) orelse return false;
         if (self.hir.kindOf(owner_node) != .identifier) return false;
         const owner = hir_mod.identifierOf(self.hir, owner_node).name;
         const fn_node = self.jsConstructorFunctionDeclForName(anchor, owner) orelse return false;
-        if (self.fnLooksLikeCheckJsConstructor(fn_node)) return false;
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
         if (!jsDocBodyDeclaresTemplateName(body, name_text)) return false;
+        var current = anchor;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            const kind = self.hir.kindOf(current);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            if (current != fn_node) {
+                if (self.leadingJsDocBodyForFunctionOrOwner(src, current)) |method_body| {
+                    if (jsDocBodyDeclaresTemplateName(method_body, name_text)) return false;
+                }
+            }
+            break;
+        }
         const pos = self.sliceStartPos(src, name_text);
         for (self.diagnostics.items) |diagnostic| {
             if (diagnostic.code == TsCodes.cannot_find_name and diagnostic.pos == pos) return true;
@@ -87620,14 +87661,6 @@ pub const Checker = struct {
                 }
             }
         }
-        // A prototype method can reference its constructor's `@template` params
-        // even though the method's own JSDoc declares none — the constructor's
-        // `@template` lives in a separate JSDoc block, so this runs regardless
-        // of the anchor's own `@template` presence (the earlier early-return on
-        // a method body without `@template` masked it). Fixes jsdocTemplateTag4
-        // (`Ctor.prototype.m = function`) and jsdocTemplateTag5
-        // (`Ctor.prototype = { m() {} }`).
-        if (try self.jsDocConstructorTemplateForPrototypeMethod(anchor, name)) |t| return t;
         // An ES6 class method can reference the enclosing class's `@template`
         // params even though the method's own JSDoc declares none — the
         // `@template` lives on the class's leading JSDoc. Mirrors
@@ -87778,51 +87811,6 @@ pub const Checker = struct {
                 }
             }
         }
-        return null;
-    }
-
-    fn jsConstructorFunctionAssignmentForOwnerNode(self: *Checker, anchor: NodeId, owner_node: NodeId) ?NodeId {
-        const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const owner_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(owner_node), " \t\r\n");
-        if (owner_text.len == 0) return null;
-        const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
-            const stmt = if (self.hir.kindOf(raw) == .export_decl) self.unwrapExportDecl(raw) else raw;
-            if (stmt == hir_mod.none_node_id or self.hir.kindOf(stmt) != .assignment) continue;
-            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
-            const a = hir_mod.assignmentOf(self.hir, stmt);
-            if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
-            const target_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(a.target), " \t\r\n");
-            if (!std.mem.eql(u8, target_text, owner_text)) continue;
-            const vk = self.hir.kindOf(a.value);
-            if (vk == .fn_expr or vk == .arrow_fn or vk == .fn_decl) return a.value;
-        }
-        return null;
-    }
-
-    fn jsDocConstructorTemplateForPrototypeMethod(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (!self.sourceHasCheckJsDirective()) return null;
-        const owner_node = self.enclosingPrototypeConstructorOwnerNode(anchor) orelse return null;
-        const ctor_fn = if (self.hir.kindOf(owner_node) == .identifier) blk: {
-            const ctor_name = hir_mod.identifierOf(self.hir, owner_node).name;
-            break :blk self.jsConstructorFunctionDeclForName(anchor, ctor_name) orelse
-                self.jsConstructorFunctionAssignmentForOwnerNode(anchor, owner_node) orelse return null;
-        } else self.jsConstructorFunctionAssignmentForOwnerNode(anchor, owner_node) orelse return null;
-        if (ctor_fn == anchor) return null;
-        if (!self.fnLooksLikeCheckJsConstructor(ctor_fn)) return null;
-        const src = self.source orelse return null;
-        const body = self.leadingJsDocBodyForFunctionOrOwner(src, ctor_fn) orelse return null;
-        if (std.mem.indexOf(u8, body, "@template") == null) return null;
-        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
-        defer self.gpa.free(tags);
-        for (tags) |tag| {
-            if (tag.kind != .template_tag or tag.name.len == 0) continue;
-            const tag_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
-            if (tag_name != name) continue;
-            return try self.freshJsDocTemplateParamType(name);
-        }
-        if (try self.jsDocTemplateParamTypeFromBody(body, name)) |t| return t;
         return null;
     }
 
@@ -99193,6 +99181,15 @@ pub const Checker = struct {
                 if (checked_js_cross_virtual_function_class) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     break :blk types.Primitive.any;
+                }
+                if (self.sourceHasCheckJsDirective() and self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.jsConstructorFunctionDeclForName(c.callee, id.name)) |fn_node| {
+                        if (self.fnHasJsDocTemplateTags(fn_node)) {
+                            try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                            break :blk types.Primitive.any;
+                        }
+                    }
                 }
                 if (self.sourceHasCheckJsDirective() and self.strict_flags.no_implicit_any and
                     self.hir.kindOf(c.callee) == .identifier)
@@ -133045,15 +133042,9 @@ pub const Checker = struct {
         if (assignment_node == hir_mod.none_node_id) return;
         const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
         if (assignment.value != object_node) return;
-        const owner = self.ctorPrototypeOwnerName(assignment.target) orelse return;
+        _ = self.ctorPrototypeOwnerName(assignment.target) orelse return;
         if (self.hir.kindOf(assignment.target) == .element_access or
             std.mem.indexOfScalar(u8, self.nodeSourceTextOrEmpty(assignment.target), '[') != null) return;
-        if (self.checkJsFunctionDeclNamedInVirtualProgram(object_node, owner) orelse
-            self.findFunctionDeclForNameNearNode(object_node, owner) orelse
-            self.jsConstructorFunctionDeclForName(object_node, owner)) |constructor|
-        {
-            if (self.fnProvidesCheckJsConstructorInstance(constructor)) return;
-        }
         for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
             if (self.hir.kindOf(property_node) != .object_property) continue;
             const property = hir_mod.objectPropertyOf(self.hir, property_node);
@@ -133064,7 +133055,7 @@ pub const Checker = struct {
             {
                 continue;
             }
-            try self.reportFunctionThisMembersMissingFromType(property.value, object_t);
+            try self.reportFunctionThisMembersMissingFromType(property.value, object_t, false);
         }
     }
 
@@ -133095,12 +133086,9 @@ pub const Checker = struct {
         if (!self.sourceHasCheckJsDirective()) return;
         const value_kind = self.hir.kindOf(assignment.value);
         if (value_kind != .fn_decl and value_kind != .fn_expr) return;
-        const owner = self.prototypeExpandoCtorName(assignment.target) orelse return;
-        if (self.jsConstructorFunctionDeclForName(assignment_node, owner)) |constructor| {
-            if (self.fnProvidesCheckJsConstructorInstance(constructor)) return;
-        }
+        _ = self.prototypeExpandoCtorName(assignment.target) orelse return;
         const prototype_t = (try self.priorPrototypeObjectAssignmentType(assignment_node, assignment.target)) orelse return;
-        try self.reportFunctionThisMembersMissingFromType(assignment.value, prototype_t);
+        try self.reportFunctionThisMembersMissingFromType(assignment.value, prototype_t, true);
     }
 
     fn reportObjectLiteralThisMembersMissingFromExplicitShape(
@@ -133120,9 +133108,141 @@ pub const Checker = struct {
             if (!self.nodeIsThisReference(member.object) and
                 !std.mem.eql(u8, std.mem.trim(u8, self.nodeSourceTextOrEmpty(member.object), " \t\r\n"), "this")) continue;
             if (self.objectLiteralExplicitlyDeclaresMember(object_node, member.name)) continue;
+            if (self.checkJsPrototypeObjectLiteralUsesComputedTarget(candidate) and
+                (try self.checkJsPrototypeConstructorThisMemberType(candidate, member.name)) != null) continue;
+            self.removeIndexedAccessCascadeForMissingPrototypeMember(candidate);
             if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
-            try self.reportPropertyDoesNotExistOnType(candidate, member.name, object_t);
+            const target_text = (try self.allocExplicitPrototypeDiagnosticTypeName(object_node, object_t)) orelse {
+                try self.reportPropertyDoesNotExist(candidate, member.name);
+                continue;
+            };
+            try self.reportPropertyDoesNotExistOnTypeText(candidate, member.name, target_text);
         }
+    }
+
+    fn objectLiteralMethodOwnsJsDocTemplate(
+        self: *Checker,
+        object_node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            if (property.value == hir_mod.none_node_id) continue;
+            const property_name: ?hir_mod.StringId = switch (self.hir.kindOf(property.key)) {
+                .identifier => hir_mod.identifierOf(self.hir, property.key).name,
+                .literal_string => hir_mod.literalStringOf(self.hir, property.key).value,
+                else => null,
+            };
+            if (property_name != name) continue;
+            return self.fnHasJsDocTemplateTags(property.value);
+        }
+        return false;
+    }
+
+    fn allocExplicitPrototypeDiagnosticTypeName(
+        self: *Checker,
+        object_node: NodeId,
+        object_t: TypeId,
+    ) CheckError!?[]const u8 {
+        if (object_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(object_t).is_object_type)
+        {
+            return self.allocPropertyMissingTargetTypeName(object_t);
+        }
+        const members = self.interner.objectMembers(object_t);
+        const constructor_has_templates = self.prototypeReplacementConstructorHasTemplates(object_node);
+        var has_inherited_template = false;
+        for (members) |member| {
+            if (member.is_method and self.interner.isSignature(member.type) and
+                (constructor_has_templates or self.generic_signature_params.contains(member.type)) and
+                !self.objectLiteralMethodOwnsJsDocTemplate(object_node, member.name))
+            {
+                has_inherited_template = true;
+                break;
+            }
+        }
+        if (!has_inherited_template) return self.allocPropertyMissingTargetTypeName(object_t);
+        if (members.len > 8 or
+            self.interner.objectStringIndex(object_t) != types.Primitive.none or
+            self.interner.objectNumberIndex(object_t) != types.Primitive.none or
+            self.interner.objectSymbolIndex(object_t) != types.Primitive.none)
+        {
+            return self.allocPropertyMissingTargetTypeName(object_t);
+        }
+
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, "{ ");
+        for (members) |member| {
+            if (!try self.appendObjectShapeMember(&buf, arena, member)) return null;
+            if (member.is_optional) try buf.append(arena, '?');
+            if (member.is_method and self.interner.isSignature(member.type)) {
+                const signature_text = (try self.allocCallSignatureFnTypeName(member.type, null)) orelse return null;
+                const params_start = std.mem.indexOfScalar(u8, signature_text, '(') orelse return null;
+                const arrow = std.mem.indexOf(u8, signature_text, ") => ") orelse return null;
+                try buf.appendSlice(arena, signature_text[params_start .. arrow + 1]);
+                try buf.appendSlice(arena, ": ");
+                if ((constructor_has_templates or self.generic_signature_params.contains(member.type)) and
+                    !self.objectLiteralMethodOwnsJsDocTemplate(object_node, member.name))
+                {
+                    try buf.appendSlice(arena, "any");
+                } else {
+                    try buf.appendSlice(arena, signature_text[arrow + 5 ..]);
+                }
+                try buf.appendSlice(arena, "; ");
+                continue;
+            }
+            try buf.appendSlice(arena, ": ");
+            const type_name = (try self.allocObjectShapeMemberTypeName(member.type)) orelse return null;
+            try buf.appendSlice(arena, type_name);
+            try buf.appendSlice(arena, "; ");
+        }
+        try buf.append(arena, '}');
+        return buf.items;
+    }
+
+    fn prototypeReplacementConstructorHasTemplates(self: *Checker, object_node: NodeId) bool {
+        var assignment_node = self.hir.parentOf(object_node);
+        if (assignment_node == hir_mod.none_node_id or self.hir.kindOf(assignment_node) != .assignment or
+            hir_mod.assignmentOf(self.hir, assignment_node).value != object_node)
+        {
+            assignment_node = hir_mod.none_node_id;
+            var candidate: NodeId = 1;
+            while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+                if (self.hir.kindOf(candidate) != .assignment) continue;
+                if (hir_mod.assignmentOf(self.hir, candidate).value != object_node) continue;
+                assignment_node = candidate;
+                break;
+            }
+        }
+        if (assignment_node == hir_mod.none_node_id) return false;
+        const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
+        const owner = self.ctorPrototypeOwnerName(assignment.target) orelse return false;
+        const constructor = self.checkJsFunctionDeclNamedInVirtualProgram(object_node, owner) orelse
+            self.findFunctionDeclForNameNearNode(object_node, owner) orelse
+            self.jsConstructorFunctionDeclForName(object_node, owner) orelse return false;
+        return self.fnHasJsDocTemplateTags(constructor);
+    }
+
+    fn removeIndexedAccessCascadeForMissingPrototypeMember(self: *Checker, member_node: NodeId) void {
+        const parent = self.hir.parentOf(member_node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .element_access) return;
+        if (hir_mod.elementOf(self.hir, parent).object != member_node) return;
+        self.removePriorDiagnosticsInNodeSpan(parent, TsCodes.element_implicitly_any);
+    }
+
+    fn reportPropertyDoesNotExistOnExplicitPrototypeType(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        receiver_t: TypeId,
+    ) CheckError!void {
+        if (try self.allocPropertyMissingTargetTypeName(receiver_t)) |target_text| {
+            try self.reportPropertyDoesNotExistOnTypeText(node, name, target_text);
+            return;
+        }
+        try self.reportPropertyDoesNotExist(node, name);
     }
 
     fn reportUnsupportedNestedCommonJsFunctionThisMembers(
@@ -133135,10 +133255,15 @@ pub const Checker = struct {
         const value_kind = self.hir.kindOf(assignment.value);
         if (value_kind != .fn_decl and value_kind != .fn_expr) return;
         const receiver_t = try self.checkExpression(target.object);
-        try self.reportFunctionThisMembersMissingFromType(assignment.value, receiver_t);
+        try self.reportFunctionThisMembersMissingFromType(assignment.value, receiver_t, false);
     }
 
-    fn reportFunctionThisMembersMissingFromType(self: *Checker, function_node: NodeId, receiver_t: TypeId) CheckError!void {
+    fn reportFunctionThisMembersMissingFromType(
+        self: *Checker,
+        function_node: NodeId,
+        receiver_t: TypeId,
+        explicit_prototype_shape: bool,
+    ) CheckError!void {
         const function_span = self.hir.spanOf(function_node);
         const section = self.virtualSectionStartForNode(function_node);
         var candidate: NodeId = 1;
@@ -133151,8 +133276,13 @@ pub const Checker = struct {
             if (!self.nodeIsThisReference(member.object)) continue;
             if (!self.thisReferenceBelongsToFunction(member.object, function_node)) continue;
             if ((try self.lookupObjectMember(receiver_t, member.name)) != null) continue;
+            if (explicit_prototype_shape) self.removeIndexedAccessCascadeForMissingPrototypeMember(candidate);
             if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
-            try self.reportPropertyDoesNotExistOnType(candidate, member.name, receiver_t);
+            if (explicit_prototype_shape) {
+                try self.reportPropertyDoesNotExistOnExplicitPrototypeType(candidate, member.name, receiver_t);
+            } else {
+                try self.reportPropertyDoesNotExistOnType(candidate, member.name, receiver_t);
+            }
         }
     }
 
@@ -214538,7 +214668,7 @@ test "checker: tsgo current JSDoc enum self type merges without circular diagnos
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
 }
 
-test "checker: checkjs JSDoc generic constructor type substitutes inferred this members" {
+test "checker: untagged JSDoc generic constructors keep tsgo value and prototype errors" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -214583,13 +214713,12 @@ test "checker: checkjs JSDoc generic constructor type substitutes inferred this 
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.type_not_assignable);
-        try T.expect(d.code != TsCodes.property_does_not_exist);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checkjs JSDoc constructor typed this member substitutes template" {
+test "checker: untagged constructor templates do not scope prototype JSDoc" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -214610,19 +214739,9 @@ test "checker: checkjs JSDoc constructor typed this member substitutes template"
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var saw_mismatch = false;
-    var mismatch_count: usize = 0;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.type_not_assignable) continue;
-        mismatch_count += 1;
-        if (std.mem.indexOf(u8, d.message, "boolean") != null and
-            std.mem.indexOf(u8, d.message, "number") != null)
-        {
-            saw_mismatch = true;
-        }
-    }
-    try T.expect(saw_mismatch);
-    try T.expectEqual(@as(usize, 1), mismatch_count);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs JSDoc template constraint applies only to first parameter" {
@@ -217237,6 +217356,42 @@ test "checker: strict checked JavaScript rejects tagged constructor functions" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
 }
 
+test "checker: generic JavaScript constructor patterns keep tsgo diagnostics" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/** @template T @param {T} value */
+        \\function C(value) { this.x = value; }
+        \\C.prototype = { method() { return this.x; } };
+        \\new C(1);
+        \\/** @type {C<number>} */ var instance;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "{ method(): any; }") != null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "<T>") == null);
+    }
+}
+
+test "checker: computed JavaScript prototype replacement keeps constructor members" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\function C() { this.map = {}; }
+        \\C["prototype"] = { get(key) { return this.map[key]; } };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
 test "checker: checkjs prototype method assignments use constructor-inferred this members" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -217349,29 +217504,30 @@ test "checker: expando properties assigned in variable initializers join the fun
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checkjs prototype method resolves the constructor's @template param (no TS2304)" {
-    // The class-level `@template T` on the constructor is in scope for a
-    // prototype method's JSDoc, so `@param {T}` resolves rather than tripping
-    // TS2304. Mirrors constructorFunctionMethodTypeParameters.
+test "checker: untagged constructor template is outside prototype method scope" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
         \\// @filename: index.js
-        \\/** @template {string} T @param {T} t */
+        \\/**
+        \\ * @template {string} T
+        \\ * @param {T} t
+        \\ */
         \\function Cls(t) { this.t = t; }
-        \\/** @template {string} V @param {T} t @param {V} v @return {V} */
+        \\/**
+        \\ * @template {string} V
+        \\ * @param {T} t
+        \\ * @param {V} v
+        \\ * @return {V}
+        \\ */
         \\Cls.prototype.m = function (t, v) { return v; };
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_find_name) {
-            try T.expect(std.mem.indexOf(u8, d.message, "'T'") == null);
-        }
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
-test "checker: checkjs prototype methods resolve all constructor @template tags" {
+test "checker: constructor templates stay outside separately declared prototype methods" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -217432,12 +217588,7 @@ test "checker: checkjs prototype methods resolve all constructor @template tags"
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_find_name) {
-            try T.expect(std.mem.indexOf(u8, d.message, "'K'") == null);
-            try T.expect(std.mem.indexOf(u8, d.message, "'V'") == null);
-        }
-    }
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: unused ECMAScript #field reports TS6133; one read via `#x in v` does not" {
