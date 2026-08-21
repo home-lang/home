@@ -58976,6 +58976,43 @@ pub const Checker = struct {
         return null;
     }
 
+    fn virtualCommonJsExportedMemberClassInstanceType(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec) or
+                self.hir.kindOf(raw) != .assignment or
+                self.commonJsExportsAssignmentName(raw) != member_name) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, raw);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            const class_decl = switch (self.hir.kindOf(assignment.value)) {
+                .class_decl, .class_expr => assignment.value,
+                .identifier => self.findNamedDeclInVirtualSection(
+                    raw,
+                    hir_mod.identifierOf(self.hir, assignment.value).name,
+                ) orelse continue,
+                else => continue,
+            };
+            if (self.hir.kindOf(class_decl) != .class_decl and self.hir.kindOf(class_decl) != .class_expr) continue;
+            try self.checkClassDecl(class_decl);
+            if (self.class_static_type_by_node.get(class_decl)) |static_t| {
+                if (try self.constructReturnType(static_t)) |instance_t| return instance_t;
+            }
+            const class = hir_mod.classOf(self.hir, class_decl);
+            if (class.name != hir_mod.none_node_id and self.hir.kindOf(class.name) == .identifier) {
+                const name = hir_mod.identifierOf(self.hir, class.name).name;
+                if (self.class_instance_types.get(name)) |instance_t| return instance_t;
+            }
+        }
+        return null;
+    }
+
     fn virtualCommonJsRepeatedWholeObjectExportType(
         self: *Checker,
         anchor: NodeId,
@@ -59346,6 +59383,19 @@ pub const Checker = struct {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
             if ((try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, leaf)) == .value) {
+                if (try self.virtualCommonJsExportedMemberClassInstanceType(anchor, spec, leaf)) |class_t| {
+                    return class_t;
+                }
+                if (try self.virtualRelativeModuleExportValueType(anchor, spec_id, leaf)) |value_export| {
+                    const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_export);
+                    if (jsdoc_t != value_export) return jsdoc_t;
+                }
+                if (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) |module_t| {
+                    if (try self.lookupObjectMember(module_t, leaf)) |value_export| {
+                        const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_export);
+                        if (jsdoc_t != value_export) return jsdoc_t;
+                    }
+                }
                 if (try self.virtualModuleHasWholeCommonJsExport(anchor, spec)) {
                     try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
                 } else {
@@ -59361,6 +59411,8 @@ pub const Checker = struct {
         const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
         const value_t = (try self.lookupObjectMember(module_t, leaf)) orelse return null;
         if (space == .value) return value_t;
+        const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_t);
+        if (jsdoc_t != value_t) return jsdoc_t;
         try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
         return types.Primitive.any;
     }
@@ -59397,6 +59449,7 @@ pub const Checker = struct {
         if (self.class_name_by_static.get(value_t)) |class_name| {
             if (self.class_instance_types.get(class_name)) |instance_t| return instance_t;
         }
+        if (try self.constructReturnType(value_t)) |instance_t| return instance_t;
         return value_t;
     }
 
@@ -88924,6 +88977,7 @@ pub const Checker = struct {
         if (try self.jsDocGenericTypeTextToType(src, trimmed)) |generic_t| return generic_t;
         if (try self.jsDocFunctionType(trimmed)) |sig| return sig;
         if (try self.jsDocImportedNamespaceMemberType(src, trimmed)) |import_t| return import_t;
+        if (try self.jsDocVisibleNamespaceMemberType(trimmed)) |namespace_t| return namespace_t;
         if (try self.jsDocPrimitiveType(trimmed)) |prim| return prim;
         if (try self.jsDocMappedTypeTextToType(src, trimmed)) |mapped_t| return mapped_t;
         if (try self.jsDocObjectSkeletonFromTypeText(trimmed)) |obj| return obj;
@@ -90094,6 +90148,9 @@ pub const Checker = struct {
         if (std.mem.trim(u8, args_text, " \t\r\n").len == 0) {
             const bare_name = std.mem.trimEnd(u8, name, ".");
             return self.jsDocBareBuiltinGenericType(bare_name) orelse types.Primitive.any;
+        }
+        if (try self.jsDocVisibleNamespaceGenericType(src, name, args_text, type_text)) |namespace_t| {
+            return namespace_t;
         }
         if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return types.Primitive.any;
         var args = JsDocTopLevelSplitter.init(args_text, ',');
@@ -91364,6 +91421,48 @@ pub const Checker = struct {
         const leaf_id = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
         const leaf_pos = self.sliceStartPos(src, leaf_text);
         return try self.virtualCommonJsImportMemberByName(anchor, spec_buf[0..spec_len], leaf_id, .jsdoc_type, leaf_pos);
+    }
+
+    fn jsDocVisibleNamespaceMemberType(self: *Checker, qualified_name: []const u8) CheckError!?TypeId {
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return null;
+        const last_dot = std.mem.lastIndexOfScalar(u8, qualified_name, '.') orelse return null;
+        if (last_dot == 0 or last_dot + 1 >= qualified_name.len) return null;
+
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        var segments = std.mem.splitScalar(u8, qualified_name[0..last_dot], '.');
+        while (segments.next()) |segment| {
+            if (segment.len == 0) return null;
+            for (segment) |c| if (!isJsDocIdentChar(c)) return null;
+            try path.append(self.gpa, self.string_interner.intern(segment) catch return error.OutOfMemory);
+        }
+        const leaf_text = qualified_name[last_dot + 1 ..];
+        for (leaf_text) |c| if (!isJsDocIdentChar(c)) return null;
+        const leaf = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
+
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, path.items) orelse return null;
+        if (!self.namespaceDeclIsAmbient(ns_node) and
+            self.virtualSectionStartForNode(ns_node) != self.virtualSectionStartForNode(anchor)) return null;
+        const decl = self.findVisibleTypeDeclInNamespace(ns_node, leaf, anchor) orelse return null;
+        return try self.typeOfExportedTypeDecl(decl, leaf);
+    }
+
+    fn jsDocVisibleNamespaceGenericType(
+        self: *Checker,
+        src: []const u8,
+        qualified_name: []const u8,
+        args_text: []const u8,
+        display_text: []const u8,
+    ) CheckError!?TypeId {
+        _ = (try self.jsDocVisibleNamespaceMemberType(qualified_name)) orelse return null;
+        const last_dot = std.mem.lastIndexOfScalar(u8, qualified_name, '.') orelse return null;
+        const leaf = qualified_name[last_dot + 1 ..];
+        return try self.jsDocGenericNominalTypeTextToType(src, leaf, args_text, display_text);
     }
 
     fn jsDocImportNamespaceLocalMatches(body: []const u8, local_name: []const u8) bool {
@@ -216854,6 +216953,50 @@ test "checker: checkjs JSDoc namespace import tag resolves qualified implements 
         if (d.code == TsCodes.class_incorrectly_implements_interface) saw_incorrect_implements = true;
     }
     try T.expect(saw_incorrect_implements);
+}
+
+test "checker: checkjs JSDoc import type resolves CommonJS exported class alias" {
+    const b = try newBoundSetup(
+        \\// @checkjs: true
+        \\// @filename: /mod.js
+        \\class C {
+        \\  s() {}
+        \\}
+        \\module.exports.C = C;
+        \\// @filename: /use.js
+        \\/** @typedef {import("./mod").C} X */
+        \\/** @param {X} value */
+        \\function use(value) {
+        \\  value.s;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.namespace_no_exported_member));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+}
+
+test "checker: checkjs JSDoc implements resolves ambient namespace interfaces" {
+    const b = try newBoundSetup(
+        \\// @checkjs: true
+        \\// @filename: /defs.d.ts
+        \\declare namespace N {
+        \\  interface A { m(): number; }
+        \\  interface AT<T> { gen(): T; }
+        \\}
+        \\// @filename: /use.js
+        \\/** @implements N.A */
+        \\class B {
+        \\  m() { return 0; }
+        \\}
+        \\/** @implements {N.AT<string>} */
+        \\class BT {
+        \\  gen() { return ""; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.class_incorrectly_implements_interface));
 }
 
 test "checker: checkjs JSDoc typedef reports lowercase unresolved generic argument" {
