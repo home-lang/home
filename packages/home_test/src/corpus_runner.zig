@@ -3032,6 +3032,27 @@ const harness_prelude =
     \\__home_PGPool.prototype.end = function() { this.ended = true; return Promise.resolve(undefined); };
     \\globalThis.__home_modules["pg"] = { Client: __home_PGClient, Pool: __home_PGPool };
     \\globalThis.__home_modules["pg-connection-string"] = { parse: __home_pg_connection_options };
+    \\function __home_postgres_js_error(config, phase, error) {
+    \\  const options = __home_pg_connection_options(config); const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "query");
+    \\  const endpoint = String(options.host || "<unconfigured>") + ":" + String(Number(options.port) || 5432); const database = String(options.database || "<unconfigured>");
+    \\  const failure = new Error("postgres.js " + step + " failed for " + endpoint + "/" + database + ": " + String(cause.message || cause)); failure.name = "PostgresJSError";
+    \\  failure.code = step === "close" ? "ERR_POSTGRES_JS_CLOSE" : step === "connect" ? "ERR_POSTGRES_JS_CONNECT" : "ERR_POSTGRES_JS_QUERY"; failure.operation = "postgres." + step; failure.phase = step; failure.endpoint = endpoint; failure.database = database; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at postgres." + step + " (" + endpoint + "/" + database + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_postgres_js(connection, explicitOptions) {
+    \\  const options = Object.assign(__home_pg_connection_options(connection), explicitOptions && typeof explicitOptions === "object" ? explicitOptions : {});
+    \\  const sql = function(strings) {
+    \\    if (sql.closed) return Promise.reject(__home_postgres_js_error(options, "query", new Error("postgres.js client is closed")));
+    \\    return Promise.reject(__home_postgres_js_error(options, "query", new Error("native postgres.js TLS transport is unavailable in the bootstrap runtime")));
+    \\  };
+    \\  sql.options = options; sql.closed = false;
+    \\  sql.unsafe = function() { return sql.apply(undefined, arguments); };
+    \\  sql.end = function() { sql.closed = true; return Promise.resolve(undefined); };
+    \\  return sql;
+    \\}
+    \\__home_postgres_js.default = __home_postgres_js;
+    \\globalThis.__home_modules["postgres"] = __home_postgres_js;
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72455,6 +72476,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { parse } from \"pg-connection-string\";", .replacement = "const { parse } = globalThis.__home_import(\"pg-connection-string\");" },
         .{ .needle = "import pino from \"pino\";", .replacement = "const pino = globalThis.__home_import(\"pino\").default;" },
         .{ .needle = "import { install as installPnpmLayout } from \"home:pnpm-layout\";", .replacement = "const { install: installPnpmLayout } = globalThis.__home_import(\"home:pnpm-layout\");" },
+        .{ .needle = "import postgres from \"postgres\";", .replacement = "const postgres = globalThis.__home_import(\"postgres\").default;" },
+        .{ .needle = "import postgresJs from \"postgres\";", .replacement = "const postgresJs = globalThis.__home_import(\"postgres\").default;" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104147,6 +104170,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/pg/pg.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/pino/pino.test.js", .passed = 1 },
         .{ .path = "js/third_party/pnpm/pnpm.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/postgres/postgres.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104222,6 +104246,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { Client as PGClient } from "pg";
         \\import pino from "pino";
         \\import { install as installPnpmLayout } from "home:pnpm-layout";
+        \\import postgresJs from "postgres";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104271,6 +104296,22 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.cause.message).toContain("expected Vite/Solid fixture");
         \\  expect(caught.stack).toContain("pnpm.install (/tmp/missing-pnpm-project");
         \\  expect(caught.stack).toContain("Caused by: Error: package.json is not the expected Vite/Solid fixture");
+        \\});
+        \\test("postgres.js query errors retain redacted connection context", async () => {
+        \\  const sql = postgresJs("postgres://user:super-secret@db.example.test:55432/home");
+        \\  let caught;
+        \\  try { await sql`SELECT private_value FROM secrets WHERE id = ${42}`; } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("PostgresJSError");
+        \\  expect(caught.code).toBe("ERR_POSTGRES_JS_QUERY");
+        \\  expect(caught.operation).toBe("postgres.query");
+        \\  expect(caught.phase).toBe("query");
+        \\  expect(caught.endpoint).toBe("db.example.test:55432");
+        \\  expect(caught.database).toBe("home");
+        \\  expect(caught.cause.message).toContain("native postgres.js TLS transport");
+        \\  expect(caught.stack).toContain("postgres.query (db.example.test:55432/home");
+        \\  expect(caught.message).not.toContain("super-secret");
+        \\  expect(caught.stack).not.toContain("private_value");
+        \\  await sql.end();
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104555,7 +104596,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 28), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
