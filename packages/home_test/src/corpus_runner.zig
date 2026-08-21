@@ -38571,7 +38571,7 @@ const harness_prelude =
     \\globalThis.__home_modules["node:test"] = __home_node_test;
     \\function __home_fake_timers_clock() {}
     \\__home_fake_timers_clock.install = function(options) {
-    \\  const opts = options || {};
+    \\  const opts = typeof options === "number" ? { now: options } : (options || {});
     \\  const now = Object.prototype.hasOwnProperty.call(opts, "now") ? opts.now : 0;
     \\  vi.useFakeTimers({ now });
     \\  return __home_fake_timers_clock_instance();
@@ -66500,6 +66500,11 @@ const harness_prelude =
     \\  const actual = __home_jwt_key_curve(key); if (!expected || !actual || actual === expected) return;
     \\  const error = new Error('"alg" parameter "' + algorithm + '" requires curve "' + expected + '".'); error.claim = "key"; throw error;
     \\}
+    \\function __home_jwt_asymmetric_algorithm_error(keyFamily) {
+    \\  const allowed = keyFamily === "rsa" ? "RS256, PS256, RS384, PS384, RS512, PS512" : (keyFamily === "rsa-pss" ? "PS256, PS384, PS512" : (keyFamily === "ec" ? "ES256, ES384, ES512" : undefined));
+    \\  if (!allowed) return null;
+    \\  const error = new Error('"alg" parameter for "' + keyFamily + '" key type must be one of: ' + allowed + "."); error.claim = "key"; return error;
+    \\}
     \\function __home_jwt_key_hash(value) { const text = String(value); let hash = 2166136261; for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16); }
     \\function __home_jwt_key_identity(key) {
     \\  const path = String(key && key.__home_source_path || "").toLowerCase();
@@ -66539,7 +66544,7 @@ const harness_prelude =
     \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
     \\  }
     \\  if (/^ES/.test(algorithm) && opts.allowInvalidAsymmetricKeyTypes !== true) {
-    \\    if (__home_jwt_key_family(secret) !== "ec") throw new Error('"alg" parameter for "' + __home_jwt_key_family(secret) + '" key type must be one of: RS256, RS384, RS512, PS256, PS384, PS512');
+    \\    if (__home_jwt_key_family(secret) !== "ec") { const algorithmError = __home_jwt_asymmetric_algorithm_error(__home_jwt_key_family(secret)); if (algorithmError) throw algorithmError; throw new Error('"alg" parameter for "' + __home_jwt_key_family(secret) + '" key type must be one of: RS256, RS384, RS512, PS256, PS384, PS512'); }
     \\    __home_jwt_validate_ec_curve(algorithm, secret);
     \\  }
     \\  let notBeforeSeconds;
@@ -66602,7 +66607,7 @@ const harness_prelude =
     \\  }
     \\  const baseHeader = { alg: algorithm, typ: "JWT" }; if (Object.prototype.hasOwnProperty.call(opts, "keyid")) baseHeader.kid = opts.keyid;
     \\  const header = Object.assign(baseHeader, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
-    \\  const signature = __home_jwt_encode_segment("home-jwt-signature:" + algorithm + ":" + __home_jwt_key_identity(secret), undefined);
+    \\  const signature = algorithm === "none" ? "" : __home_jwt_encode_segment("home-jwt-signature:" + algorithm + ":" + __home_jwt_key_identity(secret), undefined);
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + "." + signature;
     \\}
     \\function __home_jwt_sign(payload, secret, options, callback) {
@@ -66612,10 +66617,11 @@ const harness_prelude =
     \\}
     \\function __home_jwt_verify_failure(error, options, claim) {
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const failure = __home_jwt_error(cause.name || "JsonWebTokenError", String(cause.message || cause));
-    \\  failure.code = cause.code || "ERR_JWT_VERIFY"; failure.operation = "jsonwebtoken.verify"; failure.claim = String(claim || "token"); failure.cause = cause;
+    \\  const originalCause = cause.cause instanceof Error ? cause.cause : cause;
+    \\  failure.code = cause.code || "ERR_JWT_VERIFY"; failure.operation = "jsonwebtoken.verify"; failure.claim = String(claim || "token"); failure.cause = originalCause;
     \\  if (cause.expiredAt !== undefined) failure.expiredAt = cause.expiredAt;
     \\  if (cause.date !== undefined) failure.date = cause.date;
-    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  const causeSummary = String(originalCause.name || "Error") + ": " + String(originalCause.message || originalCause); const causeStack = String(originalCause.stack || "");
     \\  failure.stack = String(failure.stack || failure) + "\n    at jsonwebtoken.verify (claim " + failure.claim + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
     \\}
     \\function __home_jwt_audience_text(audience) { return (Array.isArray(audience) ? audience : [audience]).map(value => String(value)).join(" or "); }
@@ -66637,17 +66643,22 @@ const harness_prelude =
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (typeof token !== "string") throw __home_jwt_error("JsonWebTokenError", "jwt must be a string");
     \\  if (token.trim() !== token) { const invalidWhitespace = __home_jwt_error("JsonWebTokenError", "invalid token"); invalidWhitespace.claim = "token"; throw invalidWhitespace; }
-    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const opts = options || {}; const parts = token.split(".");
+    \\  const opts = options || {}; const parts = token.split(".");
     \\  if (parts.length !== 3) { const malformed = __home_jwt_error("JsonWebTokenError", "jwt malformed"); malformed.claim = "token"; throw malformed; }
     \\  const decoded = __home_jwt_decode(token, { complete: true }); if (!decoded || !decoded.header) { const invalid = __home_jwt_error("JsonWebTokenError", "invalid token"); invalid.claim = "token"; throw invalid; } const payload = decoded.payload;
-    \\  const algorithm = String(decoded.header.alg || ""); const validKeyMaterial = typeof secret === "string" || (typeof Buffer === "function" && Buffer.isBuffer(secret)) || !!(secret && secret.__home_key_object);
+    \\  const algorithm = String(decoded.header.alg || ""); const hasSignature = parts[2].length !== 0;
+    \\  if (!hasSignature && secret !== null && secret !== undefined) { const missingSignature = __home_jwt_error("JsonWebTokenError", "jwt signature is required"); missingSignature.claim = "signature"; throw missingSignature; }
+    \\  if (!hasSignature && (secret === null || secret === undefined) && (!Array.isArray(opts.algorithms) || !opts.algorithms.includes("none"))) { const unsignedNotAllowed = __home_jwt_error("JsonWebTokenError", 'please specify "none" in "algorithms" to verify unsigned tokens'); unsignedNotAllowed.claim = "algorithm"; throw unsignedNotAllowed; }
+    \\  if (hasSignature && (secret === null || secret === undefined)) { const missingKey = __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); missingKey.claim = "key"; throw missingKey; }
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "clockTimestamp") && typeof opts.clockTimestamp !== "number") { const invalidClock = __home_jwt_error("JsonWebTokenError", "clockTimestamp must be a number"); invalidClock.claim = "clockTimestamp"; throw invalidClock; }
+    \\  const validKeyMaterial = !hasSignature && algorithm === "none" || typeof secret === "string" || (typeof Buffer === "function" && Buffer.isBuffer(secret)) || !!(secret && secret.__home_key_object);
     \\  if (!validKeyMaterial) { const invalidKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey is not valid key material"); invalidKey.claim = "key"; throw invalidKey; }
     \\  if (Array.isArray(opts.algorithms) && !opts.algorithms.includes(algorithm)) { const invalidAlgorithm = __home_jwt_error("JsonWebTokenError", "invalid algorithm"); invalidAlgorithm.claim = "algorithm"; throw invalidAlgorithm; }
     \\  const keyFamily = __home_jwt_key_family(secret);
     \\  if (/^HS/.test(algorithm) && keyFamily !== "secret") { const invalidHmacKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be a symmetric key when using " + algorithm); invalidHmacKey.claim = "key"; throw invalidHmacKey; }
-    \\  if (/^(?:RS|PS)/.test(algorithm) && keyFamily !== "rsa" && opts.allowInvalidAsymmetricKeyTypes !== true) { const invalidRsaKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric RSA key when using " + algorithm); invalidRsaKey.claim = "key"; throw invalidRsaKey; }
+    \\  if (/^(?:RS|PS)/.test(algorithm) && keyFamily !== "rsa" && opts.allowInvalidAsymmetricKeyTypes !== true) { const algorithmError = __home_jwt_asymmetric_algorithm_error(keyFamily); if (algorithmError) throw algorithmError; const invalidRsaKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric RSA key when using " + algorithm); invalidRsaKey.claim = "key"; throw invalidRsaKey; }
     \\  if (/^ES/.test(algorithm) && opts.allowInvalidAsymmetricKeyTypes !== true) {
-    \\    if (keyFamily !== "ec") { const invalidEcKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric EC key when using " + algorithm); invalidEcKey.claim = "key"; throw invalidEcKey; }
+    \\    if (keyFamily !== "ec") { const algorithmError = __home_jwt_asymmetric_algorithm_error(keyFamily); if (algorithmError) throw algorithmError; const invalidEcKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric EC key when using " + algorithm); invalidEcKey.claim = "key"; throw invalidEcKey; }
     \\    __home_jwt_validate_ec_curve(algorithm, secret);
     \\  }
     \\  if (String(decoded.header.alg || "") === "none" && parts[2] !== "") { const unexpectedSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); unexpectedSignature.claim = "signature"; throw unexpectedSignature; }
@@ -66684,8 +66695,24 @@ const harness_prelude =
     \\}
     \\function __home_jwt_verify(token, secret, options, callback) {
     \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
-    \\  try { const payload = __home_jwt_verify_core(token, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, payload)); return undefined; } return payload; }
-    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && error.claim ? error.claim : (error && error.name === "TokenExpiredError" ? "exp" : "token")); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
+    \\  if (typeof secret === "function") {
+    \\    if (typeof callback !== "function") { const synchronousProvider = __home_jwt_error("JsonWebTokenError", "verify must be called asynchronous if secret or public key is provided as a callback"); synchronousProvider.claim = "key"; throw __home_jwt_verify_failure(synchronousProvider, options, "key"); }
+    \\    let decoded; try { decoded = __home_jwt_decode(token, { complete: true }); if (!decoded || !decoded.header) throw __home_jwt_error("JsonWebTokenError", "invalid token"); } catch (error) { callback(__home_jwt_verify_failure(error, options, "token")); return undefined; }
+    \\    let settled = false;
+    \\    try {
+    \\      secret(decoded.header, (providerError, resolvedKey) => {
+    \\        if (settled) return; settled = true;
+    \\        if (providerError) { const callbackError = __home_jwt_error("JsonWebTokenError", "error in secret or public key callback: " + String(providerError.message || providerError)); callbackError.claim = "key"; callbackError.cause = providerError instanceof Error ? providerError : new Error(String(providerError)); callback(__home_jwt_verify_failure(callbackError, options, "key")); return; }
+    \\        __home_jwt_verify(token, resolvedKey, options, callback);
+    \\      });
+    \\    } catch (error) { if (!settled) { settled = true; callback(__home_jwt_verify_failure(error, options, "key")); } }
+    \\    return undefined;
+    \\  }
+    \\  let payload;
+    \\  try { payload = __home_jwt_verify_core(token, secret, options); }
+    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && error.claim ? error.claim : (error && error.name === "TokenExpiredError" ? "exp" : "token")); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { callback(failure); return undefined; } throw failure; }
+    \\  if (typeof callback === "function") { callback(null, payload); return undefined; }
+    \\  return payload;
     \\}
     \\globalThis.__home_modules["jsonwebtoken"] = {
     \\  JsonWebTokenError: __home_jwt_JsonWebTokenError,
@@ -66695,7 +66722,7 @@ const harness_prelude =
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
     \\};
-    \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; }, sign(options) { options = options || {}; const header = options.header || { alg: "HS256" }; const payload = options.payload && typeof options.payload === "object" ? JSON.stringify(options.payload) : String(options.payload); return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payload, options.encoding) + ".home"; } };
+    \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; }, sign(options) { options = options || {}; const header = options.header || { alg: "HS256" }; const payload = options.payload && typeof options.payload === "object" ? JSON.stringify(options.payload) : String(options.payload); const signature = String(header.alg || "") === "none" ? "" : "home"; return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payload, options.encoding) + "." + signature; } };
     \\function __home_jwt_test_expect_error(actual, expected) { if (!actual && !expected) return; if (!actual || !expected || actual.message !== expected.message || actual.name !== expected.name || actual.code !== expected.code) throw new Error("jsonwebtoken sync/async errors differ"); }
     \\function __home_jwt_test_sign(payload, secret, options, callback) { const timestamp = Math.floor(Date.now() / 1000); if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && !payload.iat) payload = Object.assign({}, payload, { iat: timestamp }); __home_jwt_sign(payload, secret, options, (error, asyncToken) => { let syncError, syncToken; try { syncToken = __home_jwt_sign(payload, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && syncToken !== asyncToken) throw new Error("jsonwebtoken sync/async signatures differ"); callback(error || null, error ? undefined : syncToken); } catch (caught) { callback(caught); } }); }
     \\function __home_jwt_test_verify(token, secret, options, callback) { __home_jwt_verify(token, secret, options, (error, asyncPayload) => { let syncError, syncPayload; try { syncPayload = __home_jwt_verify(token, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && JSON.stringify(syncPayload) !== JSON.stringify(asyncPayload)) throw new Error("jsonwebtoken sync/async verification differs"); callback(error || null, error ? undefined : syncPayload); } catch (caught) { callback(caught); } }); }
@@ -103856,6 +103883,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/schema.test.js", .passed = 5 },
         .{ .path = "js/third_party/jsonwebtoken/test-utils.js", .passed = 0 },
         .{ .path = "js/third_party/jsonwebtoken/validateAsymmetricKey.test.js", .passed = 13, .todo = 3 },
+        .{ .path = "js/third_party/jsonwebtoken/verify.test.js", .passed = 19, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -104106,6 +104134,25 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm ES256");
         \\  expect(caught.stack).toContain('Caused by: Error: "alg" parameter "ES256" requires curve "prime256v1".');
         \\});
+        \\test("jsonwebtoken key-provider errors retain their original cause", async () => {
+        \\  const token = jwt.sign({ value: 1 }, "secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, (_header, callback) => callback(new Error("key lookup failed")), {}, error => { caught = error; resolve(); }));
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("key");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.message).toContain("error in secret or public key callback");
+        \\  expect(caught.cause.message).toBe("key lookup failed");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim key");
+        \\  expect(caught.stack).toContain("Caused by: Error: key lookup failed");
+        \\});
+        \\test("jsonwebtoken consumer callback errors escape without rewrapping", () => {
+        \\  const token = jwt.sign({ value: 1 }, "secret"); let caught;
+        \\  try { jwt.verify(token, "secret", {}, () => { throw new RangeError("consumer callback failed"); }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("RangeError");
+        \\  expect(caught.message).toBe("consumer callback failed");
+        \\  expect(caught.code).toBeUndefined();
+        \\  expect(caught.cause).toBeUndefined();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -104117,7 +104164,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 20), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
