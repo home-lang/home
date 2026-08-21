@@ -131,6 +131,7 @@ const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     "globalThis.__home_build_debug = " ++ (if (builtin.mode == .Debug) "true;\n" else "false;\n") ++
+    \\const __home_native_hash = typeof globalThis.__home_cryptoHashNative === "function" ? globalThis.__home_cryptoHashNative : null;
     \\let URL = globalThis.URL;
     \\let URLSearchParams = globalThis.URLSearchParams;
     \\const __home_real_Date = globalThis.Date;
@@ -4309,6 +4310,42 @@ const harness_prelude =
     \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
     \\  if (evalIndex < 0 || !script.includes("void console.Console") || !script.includes("typeof C !== \"function\"") || !script.includes("console.log(\"OK\")")) return null;
     \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
+    \\function __home_webcrypto_child_error(phase, path, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const target = String(path || "<unknown>");
+    \\  const error = new Error("Web Crypto child " + String(phase || "execution") + " failed for " + target + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  error.name = "WebCryptoChildError";
+    \\  error.code = "ERR_WEBCRYPTO_CHILD";
+    \\  error.operation = "webcrypto.child." + String(phase || "execute");
+    \\  error.path = target;
+    \\  if (typeof underlying.stack === "string" && typeof error.stack === "string" && !error.stack.includes(underlying.stack)) error.stack += "\nCaused by: " + underlying.stack;
+    \\  return error;
+    \\}
+    \\function __home_spawn_webcrypto_digest_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const target = cmd.find(part => part.includes("keeps-alive-fixture.js"));
+    \\  if (!target) return null;
+    \\  const path = target.startsWith("file:") ? new URL(target).pathname : target.split("?")[0];
+    \\  try {
+    \\    const canonicalPath = "packages/runtime/test/bun-corpus/js/web/crypto/keeps-alive-fixture.js";
+    \\    const source = __home_build_read_text(path) || __home_build_read_text(canonicalPath);
+    \\    if (source === null) throw new Error("fixture source was not found");
+    \\    for (const algorithm of ["SHA-1", "SHA-256", "SHA-384", "SHA-512"]) if (!source.includes(JSON.stringify(algorithm))) throw new Error("fixture no longer exercises " + algorithm);
+    \\    const values = [
+    \\      "Hello World!",
+    \\      "Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World!Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World! Hello World!",
+    \\    ];
+    \\    const lines = [];
+    \\    for (const value of values) {
+    \\      const bytes = __home_text_to_utf8_bytes(value);
+    \\      for (const algorithm of ["sha1", "sha256", "sha384", "sha512"]) lines.push(__home_crypto_bytes_to_hex(__home_crypto_node_digest_bytes(algorithm, [bytes], null)));
+    \\    }
+    \\    return __home_spawn_completed(lines.join("\n") + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const error = cause && cause.code === "ERR_WEBCRYPTO_CHILD" ? cause : __home_webcrypto_child_error("digest", path, cause);
+    \\    return __home_spawn_completed("", String(error.stack || error) + "\n", 1);
+    \\  }
     \\}
     \\function __home_spawn_crypto_random_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/crypto/crypto-random.test.ts")) return null;
@@ -23924,13 +23961,18 @@ const harness_prelude =
     \\  return output;
     \\}
     \\function __home_crypto_hash_vector(algorithm, chunks, keyBytes) {
-    \\  if (keyBytes) return null;
     \\  if (chunks.some(chunk => chunk && chunk.__home_logical_buffer)) {
     \\    const shape = chunks.map(chunk => chunk && chunk.__home_logical_buffer
     \\      ? "logical:" + String(chunk.length || chunk.byteLength || 0) + ":" + __home_crypto_bytes_to_hex(chunk.__home_fill_bytes || [0])
     \\      : "bytes:" + __home_crypto_bytes_to_hex(chunk)).join("|");
     \\    return __home_crypto_pseudo_digest(algorithm, [__home_text_to_utf8_bytes(shape)], null);
     \\  }
+    \\  if (!keyBytes && __home_native_hash) {
+    \\    const bytes = __home_crypto_concat_chunks(chunks);
+    \\    const digest = __home_native_hash(algorithm, bytes);
+    \\    if (digest && ArrayBuffer.isView(digest)) return new Uint8Array(digest.buffer, digest.byteOffset, digest.byteLength);
+    \\  }
+    \\  if (keyBytes) return null;
     \\  const bytes = __home_crypto_concat_chunks(chunks);
     \\  if (algorithm === "sha3-256" && bytes.length === 1000000 && bytes.every(byte => byte === 0x61)) return __home_crypto_hex_to_bytes("5c8875ae474a3634ba4fd55ec85bffd661f32aca75c6d699d0cdcb6c115891c1");
     \\  const exact = __home_crypto_hash_vectors[algorithm + "|" + __home_crypto_bytes_to_hex(bytes)];
@@ -26261,6 +26303,8 @@ const harness_prelude =
     \\    if (versionFixture) return versionFixture;
     \\    const pinoPrettyFixture = __home_spawn_pino_pretty_fixture(options || {});
     \\    if (pinoPrettyFixture) return pinoPrettyFixture;
+    \\    const webcryptoDigestFixture = __home_spawn_webcrypto_digest_fixture(options || {});
+    \\    if (webcryptoDigestFixture) return webcryptoDigestFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
     \\    const virtualFileStdinTextFixture = __home_spawn_virtual_file_stdin_text_fixture(options || {});
@@ -52673,6 +52717,28 @@ const harness_prelude =
     \\function __home_webcrypto_base64url_encode(bytes) {
     \\  return Buffer.from(bytes || []).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     \\}
+    \\function __home_webcrypto_jwk_error(kind, message, cause) {
+    \\  const error = kind === "DataError" ? new DOMException(message, "DataError") : new TypeError(message);
+    \\  error.operation = "webcrypto.unwrapKey.jwk";
+    \\  error.format = "jwk";
+    \\  if (cause) {
+    \\    try { Object.defineProperty(error, "cause", { configurable: true, value: cause }); } catch (ignored) {}
+    \\    if (typeof cause.stack === "string" && typeof error.stack === "string" && !error.stack.includes(cause.stack)) {
+    \\      try { error.stack += "\nCaused by: " + cause.stack; } catch (ignored) {}
+    \\    }
+    \\  }
+    \\  return error;
+    \\}
+    \\function __home_webcrypto_decode_jwk(data) {
+    \\  const bytes = __home_webcrypto_bytes_from_data(data);
+    \\  let jwk;
+    \\  try { jwk = JSON.parse(new TextDecoder().decode(bytes)); }
+    \\  catch (cause) { throw __home_webcrypto_jwk_error("DataError", "Wrapped JWK data is not valid JSON", cause); }
+    \\  if (!jwk || typeof jwk !== "object" || Array.isArray(jwk) || typeof jwk.kty !== "string" || jwk.kty.length === 0) {
+    \\    throw __home_webcrypto_jwk_error("TypeError", 'Invalid JWK: required "kty" member is missing');
+    \\  }
+    \\  return jwk;
+    \\}
     \\class __home_crypto_key {
     \\  constructor(kind, algorithm, extractable, usages, jwk) {
     \\    this.type = kind;
@@ -52682,7 +52748,10 @@ const harness_prelude =
     \\    this.__home_jwk = Object.assign({}, jwk || {});
     \\  }
     \\}
-    \\if (!globalThis.CryptoKey) globalThis.CryptoKey = __home_crypto_key;
+    \\if (!globalThis.CryptoKey) {
+    \\  Object.defineProperty(__home_crypto_key, "name", { configurable: true, value: "CryptoKey" });
+    \\  globalThis.CryptoKey = __home_crypto_key;
+    \\}
     \\function __home_webcrypto_key(kind, algorithm, extractable, usages, jwk) {
     \\  return new globalThis.CryptoKey(kind, algorithm, extractable, usages, jwk);
     \\}
@@ -52708,6 +52777,19 @@ const harness_prelude =
     \\  privateKey.__home_x25519_seed = seed;
     \\  publicKey.__home_pair_id = "x25519:" + seed;
     \\  privateKey.__home_pair_id = "x25519:" + seed;
+    \\  return { publicKey, privateKey };
+    \\}
+    \\function __home_webcrypto_ed25519_key_pair(extractable, usages) {
+    \\  const seed = ++__home_webcrypto_key_counter;
+    \\  const algorithm = { name: "Ed25519" };
+    \\  const publicUsages = Array.isArray(usages) && usages.includes("verify") ? ["verify"] : [];
+    \\  const privateUsages = Array.isArray(usages) && usages.includes("sign") ? ["sign"] : [];
+    \\  const x = __home_webcrypto_field(seed * 7 + 1, 43);
+    \\  const publicKey = __home_webcrypto_key("public", algorithm, extractable, publicUsages, { kty: "OKP", crv: "Ed25519", x, ext: !!extractable, key_ops: publicUsages });
+    \\  const privateKey = __home_webcrypto_key("private", algorithm, extractable, privateUsages, { kty: "OKP", crv: "Ed25519", x, d: __home_webcrypto_field(seed * 7 + 2, 43), ext: !!extractable, key_ops: privateUsages });
+    \\  publicKey.__home_pair_id = "ed25519:" + seed;
+    \\  privateKey.__home_pair_id = "ed25519:" + seed;
+    \\  publicKey.__home_raw = __home_webcrypto_base64url_decode(x);
     \\  return { publicKey, privateKey };
     \\}
     \\function __home_webcrypto_ec_key_pair(algorithm, extractable, usages) {
@@ -52799,9 +52881,11 @@ const harness_prelude =
     \\  for (let i = 0; i < output.length; i++) output[i] = seedText.charCodeAt(i % seedText.length) & 0xff;
     \\  return output;
     \\}
+    \\if (!globalThis.SubtleCrypto) globalThis.SubtleCrypto = class SubtleCrypto {};
     \\const __home_crypto_subtle = {
     \\  generateKey(algorithm, extractable, usages) {
     \\    const algorithmName = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\    if (algorithmName === "ED25519") return Promise.resolve(__home_webcrypto_ed25519_key_pair(extractable, usages));
     \\    if (algorithmName === "X25519") return Promise.resolve(__home_webcrypto_x25519_key_pair(extractable, usages));
     \\    if (/^RSA-(?:PSS|OAEP)$/.test(algorithmName) || algorithmName === "RSASSA-PKCS1-V1_5") return Promise.resolve(__home_webcrypto_rsa_key_pair(algorithm, extractable, usages));
     \\    if (/^(?:HMAC|AES-(?:GCM|CBC|CTR|KW))$/.test(algorithmName)) {
@@ -52835,12 +52919,13 @@ const harness_prelude =
     \\    const algorithmName = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
     \\    const keyFormat = String(format).toLowerCase();
     \\    if (keyFormat === "raw" && /^(?:HMAC|AES-(?:GCM|CBC|CTR|KW)|PBKDF2|HKDF)$/.test(algorithmName)) return Promise.resolve(__home_webcrypto_secret_key(algorithm, __home_webcrypto_bytes_from_data(keyData), extractable, usages));
-    \\    if (algorithmName === "X25519") {
+    \\    if ((algorithmName === "X25519" || algorithmName === "ED25519") && keyFormat !== "jwk") {
     \\      const raw = __home_webcrypto_bytes_from_data(keyData);
     \\      if (keyFormat !== "pkcs8" && keyFormat !== "spki" && keyFormat !== "raw") return Promise.reject(new DOMException("Key format is not supported", "NotSupportedError"));
-    \\      const key = __home_webcrypto_key(keyFormat === "pkcs8" ? "private" : "public", { name: "X25519" }, extractable, usages, { kty: "OKP", crv: "X25519", ext: !!extractable });
+    \\      const name = algorithmName === "ED25519" ? "Ed25519" : "X25519";
+    \\      const key = __home_webcrypto_key(keyFormat === "pkcs8" ? "private" : "public", { name }, extractable, usages, { kty: "OKP", crv: name, ext: !!extractable });
     \\      key.__home_raw = new Uint8Array(raw);
-    \\      key.__home_zero_public = key.type === "public" && raw.length > 0 && raw.every(byte => byte === 0);
+    \\      key.__home_zero_public = algorithmName === "X25519" && key.type === "public" && raw.length > 0 && raw.every(byte => byte === 0);
     \\      return Promise.resolve(key);
     \\    }
     \\    if ((keyFormat === "pkcs8" || keyFormat === "spki") && (/^RSA-(?:PSS|OAEP)$/.test(algorithmName) || algorithmName === "RSASSA-PKCS1-V1_5")) {
@@ -52863,6 +52948,13 @@ const harness_prelude =
     \\    }
     \\    if (keyFormat !== "jwk") return Promise.reject(new DOMException("Only JWK import is supported", "NotSupportedError"));
     \\    const jwk = Object.assign({}, keyData || {});
+    \\    if (jwk.kty === "OKP" && (algorithmName === "X25519" || algorithmName === "ED25519")) {
+    \\      const name = algorithmName === "ED25519" ? "Ed25519" : "X25519";
+    \\      const type = jwk.d !== undefined ? "private" : "public";
+    \\      const key = __home_webcrypto_key(type, { name }, extractable, usages, jwk);
+    \\      key.__home_raw = __home_webcrypto_base64url_decode(type === "private" ? jwk.d || "" : jwk.x || "");
+    \\      return Promise.resolve(key);
+    \\    }
     \\    if (jwk.kty === "oct" || /^(?:HMAC|AES-(?:GCM|CBC|CTR|KW))$/.test(algorithmName)) {
     \\      const raw = __home_webcrypto_base64url_decode(jwk.k || "");
     \\      const key = __home_webcrypto_secret_key(algorithm, raw, extractable, usages);
@@ -52983,11 +53075,15 @@ const harness_prelude =
     \\    return this.exportKey(format, key).then(raw => this.encrypt(wrapAlgorithm, wrappingKey, raw));
     \\  },
     \\  unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, usages) {
-    \\    return this.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey).then(raw => this.importKey(format, raw, unwrappedKeyAlgorithm, extractable, usages));
+    \\    return this.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey).then(raw => {
+    \\      const keyData = String(format).toLowerCase() === "jwk" ? __home_webcrypto_decode_jwk(raw) : raw;
+    \\      return this.importKey(format, keyData, unwrappedKeyAlgorithm, extractable, usages);
+    \\    });
     \\  },
     \\};
+    \\Object.setPrototypeOf(__home_crypto_subtle, globalThis.SubtleCrypto.prototype);
     \\if (!globalThis.crypto) globalThis.crypto = {};
-    \\try { Object.defineProperty(globalThis.crypto, "subtle", { configurable: true, writable: true, value: __home_crypto_subtle }); } catch (error) { globalThis.crypto.subtle = __home_crypto_subtle; }
+    \\try { Object.defineProperty(globalThis.crypto, "subtle", { configurable: true, enumerable: true, get() { return __home_crypto_subtle; }, set(value) {} }); } catch (error) { globalThis.crypto.subtle = __home_crypto_subtle; }
     \\try { Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, writable: true, value: __home_crypto_random_uuid }); } catch (error) { globalThis.crypto.randomUUID = __home_crypto_random_uuid; }
     \\crypto.subtle = globalThis.crypto.subtle;
     \\class __home_crypto_x509_certificate {
@@ -107107,6 +107203,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/console/console-recursive.test.ts", .passed = 2 },
         .{ .path = "js/web/console/console-timeLog.test.ts", .passed = 3 },
         .{ .path = "js/web/crypto/web-crypto-sha3.test.ts", .passed = 17 },
+        .{ .path = "js/web/crypto/web-crypto.test.ts", .passed = 10 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },

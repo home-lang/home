@@ -157,6 +157,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_cryptoHashNative",
+            home_rt.jsc.node_modules.hashNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_shellLexNative",
             shellLexNative,
         );
