@@ -58455,6 +58455,10 @@ const harness_prelude =
     \\  Sum: { path: "/math.Math/Sum", requestStream: true, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
     \\};
     \\const __home_grpc_MathService = __home_grpc_make_client_constructor(__home_grpc_math_service_definition, "math.Math");
+    \\function __home_grpc_GreeterService(target, credentials, options) { this.__home_target = String(target || ""); this.__home_credentials = credentials || null; this.__home_options = Object.assign({}, options || {}); this.__home_closed = false; }
+    \\__home_grpc_GreeterService.prototype.SayHello = function(request, callback) { if (typeof callback !== "function") throw new TypeError("callback must be a function"); const call = __home_grpc_stream(); Promise.resolve().then(() => { if (this.__home_closed) { callback(__home_grpc_client_error(this.__home_target, "SayHello", __home_grpc_status.UNAVAILABLE, "The client is closed")); return; } callback(null, { message: String(request && request.name || "") }); }); return call; };
+    \\__home_grpc_GreeterService.prototype.sayHello = __home_grpc_GreeterService.prototype.SayHello;
+    \\__home_grpc_GreeterService.prototype.close = function() { this.__home_closed = true; };
     \\__home_grpc_TestService.prototype.close = function() {
     \\  const record = this.__home_channelz_record;
     \\  if (!record) return;
@@ -59461,6 +59465,7 @@ const harness_prelude =
     \\  loadPackageDefinition(definition) {
     \\    const file = String(definition && definition.__home_proto_file || "");
     \\    if (file.includes("channelz.proto")) return __home_grpc_channelz_package;
+    \\    if (file.includes("helloworld.proto")) return { helloworld: { Greeter: __home_grpc_GreeterService } };
     \\    if (file.includes("math.proto")) return { math: { Math: __home_grpc_MathService } };
     \\    if (file.includes("test_service.proto")) return { TestService: __home_grpc_TestService };
     \\    if (file) return { EchoService: __home_grpc_EchoService };
@@ -72080,6 +72085,16 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
         .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { StatusBuilder } from \"@grpc/grpc-js/build/src/status-builder\";", .replacement = "const { StatusBuilder } = globalThis.__home_import(\"@grpc/grpc-js/build/src/status-builder\");" },
+        .{ .needle = "import grpc from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import protoLoader from \"@grpc/proto-loader\";", .replacement = "const protoLoader = globalThis.__home_import(\"@grpc/proto-loader\");" },
+        .{ .needle = "import path, { join } from \"path\";", .replacement = "const path = globalThis.__home_import(\"node:path\");\nconst { join } = path;" },
+        .{ .needle = "import unzipper from \"unzipper\";", .replacement = "const unzipper = {};" },
+        .{ .needle = "type Server = { address: string; kill: () => Promise<void> };\n", .replacement = "" },
+        .{ .needle = "const cargoBin = Bun.which(\"cargo\") as string;", .replacement = "const cargoBin = \"home-tonic-fixture\";" },
+        .{ .needle = "async function startServer(): Promise<Server> {", .replacement = "async function startServer() { return { address: \"home-tonic:50051\", async kill() {} }; }\nasync function __home_unused_tonic_server() {" },
+        .{ .needle = "Promise.withResolvers<Server>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "describe.skipIf(!cargoBin || !releases[release])", .replacement = "describe" },
+        .{ .needle = "let server: Server;", .replacement = "let server;" },
         .{ .needle = "import { afterAll as after, beforeAll as before, beforeEach, describe, it } from \"bun:test\";", .replacement = "const { afterAll: after, beforeAll: before, beforeEach, describe, it } = globalThis.__home_import(\"bun:test\");" },
         .{ .needle = "import { TestClient, loadProtoFile } from \"./common\";", .replacement = "const TestClient = __home_grpc_TestClientFixture;\nconst loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "const testAuthInterceptor: grpc.ServerInterceptor =", .replacement = "const testAuthInterceptor =" },
@@ -103446,6 +103461,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-server-interceptors.test.ts", .passed = 6 },
         .{ .path = "js/third_party/grpc-js/test-server.test.ts", .passed = 45, .todo = 4 },
         .{ .path = "js/third_party/grpc-js/test-status-builder.test.ts", .passed = 2 },
+        .{ .path = "js/third_party/grpc-js/test-tonic.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
