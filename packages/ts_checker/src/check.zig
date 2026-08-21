@@ -52569,6 +52569,19 @@ pub const Checker = struct {
     }
 
     fn reportImportCallOptionsTypeLiteralMismatch(self: *Checker, options_node: NodeId) CheckError!void {
+        if (self.hir.kindOf(options_node) != .object_literal) {
+            var options_t = self.hir.typeOf(options_node);
+            if (options_t == types.Primitive.none) options_t = try self.checkExpression(options_node);
+            options_t = try self.expressionLiteralType(options_node, options_t);
+            const source_name = (try self.allocAssignmentDiagnosticTypeName(options_t)) orelse return;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' has no properties in common with type 'ImportCallOptions'.",
+                .{source_name},
+            );
+            try self.report(options_node, TsCodes.no_properties_in_common, msg);
+            return;
+        }
         try self.reportImportAttributesTypeLiteralMismatch(options_node, true);
     }
 
@@ -100301,16 +100314,18 @@ pub const Checker = struct {
                         try self.report(args[1], TsCodes.dynamic_import_second_argument_bad_module, "Dynamic imports only support a second argument when the '--module' option is set to 'esnext', 'node16', 'node18', 'node20', 'nodenext', or 'preserve'.");
                     }
                     if (args.len > 0) {
+                        var specifier_is_spread = false;
                         if (!reported_second_arg_module_error and args.len <= 2) {
                             for (args) |arg| {
                                 if (self.hir.kindOf(arg) == .spread) {
+                                    if (arg == args[0]) specifier_is_spread = true;
                                     try self.report(arg, TsCodes.dynamic_import_spread_argument, "Argument of dynamic import cannot be spread element.");
                                     break;
                                 }
                             }
-                            if (args.len == 2) {
-                                try self.reportImportCallOptionsTypeLiteralMismatch(args[1]);
-                            }
+                        }
+                        if (args.len == 2 and self.hir.kindOf(args[1]) != .spread) {
+                            try self.reportImportCallOptionsTypeLiteralMismatch(args[1]);
                         }
                         const spec_t = arg_types.items[0];
                         const string_like = self.engine.isAssignableTo(spec_t, types.Primitive.string_t) catch false;
@@ -100321,9 +100336,9 @@ pub const Checker = struct {
                         // nullable arm is gated by strictNullChecks (without
                         // it `null`/`undefined` widen into the domain type so
                         // a bare `string` specifier stays clean).
-                        if (!string_like or
+                        if (!specifier_is_spread and (!string_like or
                             (self.strict_flags.strict_null_checks and
-                                (self.typeIncludesNull(spec_t) or self.typeIncludesUndefined(spec_t))))
+                                (self.typeIncludesNull(spec_t) or self.typeIncludesUndefined(spec_t)))))
                         {
                             const diagnostic_spec_t = if (self.hir.kindOf(args[0]) == .conditional)
                                 try self.valueNodeLiteralType(args[0], spec_t)
@@ -100337,6 +100352,21 @@ pub const Checker = struct {
                                 .{spec_name},
                             );
                             try self.report(args[0], TsCodes.dynamic_import_specifier_must_be_string, msg);
+                        }
+                        if (reported_second_arg_module_error and self.hir.kindOf(args[0]) == .literal_string) {
+                            const lit = hir_mod.literalStringOf(self.hir, args[0]);
+                            const spec = self.string_interner.get(lit.value);
+                            if (!std.mem.startsWith(u8, spec, ".") and
+                                !self.referenceLibProvidesBareModule(spec) and
+                                !(try self.isKnownAmbientModuleName(args[0], spec)))
+                            {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Cannot find module '{s}' or its corresponding type declarations.",
+                                    .{spec},
+                                );
+                                try self.report(args[0], TsCodes.cannot_find_module, msg);
+                            }
                         }
                     }
                     try self.checkNoLibDynamicImportPromiseValue(node);
@@ -220199,6 +220229,24 @@ test "checker: dynamic import rejects spread arguments" {
         }
     }
     try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.dynamic_import_specifier_must_be_string));
+}
+
+test "checker: dynamic import invalid options retain type and resolution diagnostics" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\import("missing-module", "invalid-options");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.dynamic_import_second_argument_bad_module));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_module));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.no_properties_in_common,
+        "Type '\"invalid-options\"' has no properties in common with type 'ImportCallOptions'.",
+    ));
 }
 
 test "checker: dynamic import second-argument module error suppresses spread error" {
