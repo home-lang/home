@@ -66612,6 +66612,13 @@ const harness_prelude =
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const opts = options || {}; const parts = token.split(".");
     \\  if (parts.length !== 3) { const malformed = __home_jwt_error("JsonWebTokenError", "jwt malformed"); malformed.claim = "token"; throw malformed; }
     \\  const decoded = __home_jwt_decode(token, { complete: true }); if (!decoded || !decoded.header) { const invalid = __home_jwt_error("JsonWebTokenError", "invalid token"); invalid.claim = "token"; throw invalid; } const payload = decoded.payload;
+    \\  const algorithm = String(decoded.header.alg || ""); const validKeyMaterial = typeof secret === "string" || (typeof Buffer === "function" && Buffer.isBuffer(secret)) || !!(secret && secret.__home_key_object);
+    \\  if (!validKeyMaterial) { const invalidKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey is not valid key material"); invalidKey.claim = "key"; throw invalidKey; }
+    \\  if (Array.isArray(opts.algorithms) && !opts.algorithms.includes(algorithm)) { const invalidAlgorithm = __home_jwt_error("JsonWebTokenError", "invalid algorithm"); invalidAlgorithm.claim = "algorithm"; throw invalidAlgorithm; }
+    \\  const keyFamily = __home_jwt_key_family(secret);
+    \\  if (/^HS/.test(algorithm) && keyFamily !== "secret") { const invalidHmacKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be a symmetric key when using " + algorithm); invalidHmacKey.claim = "key"; throw invalidHmacKey; }
+    \\  if (/^(?:RS|PS)/.test(algorithm) && keyFamily !== "rsa" && opts.allowInvalidAsymmetricKeyTypes !== true) { const invalidRsaKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric RSA key when using " + algorithm); invalidRsaKey.claim = "key"; throw invalidRsaKey; }
+    \\  if (/^ES/.test(algorithm) && keyFamily !== "ec" && opts.allowInvalidAsymmetricKeyTypes !== true) { const invalidEcKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric EC key when using " + algorithm); invalidEcKey.claim = "key"; throw invalidEcKey; }
     \\  if (String(decoded.header.alg || "") === "none" && parts[2] !== "") { const unexpectedSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); unexpectedSignature.claim = "signature"; throw unexpectedSignature; }
     \\  let signatureText = ""; try { signatureText = __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[2])); } catch (error) {}
     \\  if (signatureText.startsWith("home-jwt-signature:")) { const expectedSignature = "home-jwt-signature:" + String(decoded.header.alg || "HS256") + ":" + __home_jwt_key_identity(secret); if (signatureText !== expectedSignature) { const invalidSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); invalidSignature.claim = "signature"; throw invalidSignature; } }
@@ -103778,6 +103785,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/issue_70.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.asymmetric_signing.test.js", .passed = 36, .todo = 6 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.hs.test.js", .passed = 14 },
+        .{ .path = "js/third_party/jsonwebtoken/jwt.malicious.test.js", .passed = 3 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103986,6 +103994,17 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm HS256");
         \\  expect(caught.stack).toContain("Caused by: Error: secretOrPrivateKey must be a symmetric key when using HS256");
         \\});
+        \\test("jsonwebtoken HMAC verification rejects asymmetric keys with context", () => {
+        \\  const token = jwt.sign({ value: 1 }, "secret"); const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 }); let caught;
+        \\  try { jwt.verify(token, publicKey, { algorithms: ["HS256", "RS256"] }); } catch (error) { caught = error; }
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("key");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("secretOrPublicKey must be a symmetric key when using HS256");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim key");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: secretOrPublicKey must be a symmetric key when using HS256");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103997,7 +104016,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
