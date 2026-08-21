@@ -3265,6 +3265,11 @@ const harness_prelude =
     \\  const wptTest = (body, name) => register(name, () => body({})); for (const file of sources) { try { Function("test", "ReadableStream", "Request", "fetch", "Promise", file.source + "\n//# sourceURL=" + file.path)(wptTest, WPTH2Stream, WPTH2Request, wptFetch, WPTH2Promise); } catch (error) { throw error && error.code === "ERR_WPT_H2" ? error : __home_wpt_h2_error("load", file.name, file.path, error); } } return { files: names.slice(), origin };
     \\}
     \\globalThis.__home_modules["home:wpt-h2-loader"] = { register: __home_wpt_h2_register, createError: __home_wpt_h2_error };
+    \\function __home_valkey_endpoint(input) { try { const url = new URL(String(input)); return url.protocol + "//" + url.hostname + (url.port ? ":" + url.port : ""); } catch (_error) { return "<unknown endpoint>"; } }
+    \\function __home_valkey_redact(value, endpoint) { return String(value || "").replace(/(?:redis|rediss|valkey)(?:\+tls|\+unix)?:\/\/[^\s'"\)]+/gi, String(endpoint || "<redacted endpoint>")).replace(/(?:authorization|token|secret|password)=([^&\s]+)/gi, "$1=<redacted>"); }
+    \\function __home_valkey_error(phase, endpoint, error) { const step = String(phase || "connect"); const target = __home_valkey_endpoint(endpoint); const original = error instanceof Error ? error : new Error(String(error)); const cause = new Error(__home_valkey_redact(original.message || original, target)); cause.name = String(original.name || "Error"); const operation = "valkey." + step; const failure = new Error("Valkey " + step + " failed at " + target + ": " + cause.message); failure.name = "ValkeyClientError"; failure.code = "ERR_VALKEY_CLIENT"; failure.operation = operation; failure.phase = step; failure.endpoint = target; failure.cause = cause; const causeSummary = cause.name + ": " + cause.message; const causeStack = __home_valkey_redact(original.stack || "", target); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure; }
+    \\const __home_valkey_test_context = { redis: null, id: 0, generateKey(name) { this.id++; return "home-valkey-" + String(this.id) + "-" + String(name); } };
+    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, isEnabled: false, ctx: __home_valkey_test_context, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -77184,6 +77189,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { RedisClient } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { ConnectionType, createClient, ctx, isEnabled } from \"../test-utils\";",
+            .replacement = "const { ConnectionType, createClient, ctx, isEnabled } = globalThis.__home_import(\"home:valkey-test-utils\");",
+        },
+        .{
             .needle = "import { serve } from \"bun\";",
             .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
         },
@@ -104640,6 +104649,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/undici-h2/run.test.ts", .passed = 11 },
         .{ .path = "js/third_party/webpack/webpack.test.ts", .passed = 0, .todo = 2 },
         .{ .path = "js/third_party/wpt-h2/run.test.ts", .passed = 20, .todo = 4 },
+        .{ .path = "js/valkey/integration/complex-operations.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104727,6 +104737,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const svelteServer = globalThis.__home_import("svelte/server");
         \\const undiciH2Loader = globalThis.__home_import("home:undici-h2-loader");
         \\const wptH2Loader = globalThis.__home_import("home:wpt-h2-loader");
+        \\const valkeyTestUtils = globalThis.__home_import("home:valkey-test-utils");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104963,6 +104974,20 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.message).not.toContain("secret");
         \\  expect(caught.stack).not.toContain("wpt-private-token");
         \\  expect(caught.stack).not.toContain("/private/path");
+        \\});
+        \\test("Valkey connection errors retain causal operation context without credentials or database paths", () => {
+        \\  const caught = valkeyTestUtils.createError("connect", "redis://user:secret@valkey.example.test:6380/private-db?token=valkey-private-token", new Error("connection refused for redis://user:secret@valkey.example.test:6380/private-db?token=valkey-private-token"));
+        \\  expect(caught.name).toBe("ValkeyClientError");
+        \\  expect(caught.code).toBe("ERR_VALKEY_CLIENT");
+        \\  expect(caught.operation).toBe("valkey.connect");
+        \\  expect(caught.phase).toBe("connect");
+        \\  expect(caught.endpoint).toBe("redis://valkey.example.test:6380");
+        \\  expect(caught.cause.message).toContain("connection refused");
+        \\  expect(caught.stack).toContain("valkey.connect (redis://valkey.example.test:6380)");
+        \\  expect(caught.stack).toContain("Caused by: Error: connection refused");
+        \\  expect(caught.message).not.toContain("secret");
+        \\  expect(caught.stack).not.toContain("valkey-private-token");
+        \\  expect(caught.stack).not.toContain("/private-db");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105297,7 +105322,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 45), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 46), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
