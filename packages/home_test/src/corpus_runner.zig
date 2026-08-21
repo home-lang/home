@@ -70916,6 +70916,8 @@ const harness_prelude =
     \\    const decoder = new TextDecoder(label === undefined ? "utf-8" : label, { fatal, ignoreBOM });
     \\    const handle = globalThis.__home_make_transform(
     \\      function transformAlgorithm(chunk) {
+    \\        const sourceBuffer = chunk instanceof ArrayBuffer ? chunk : (ArrayBuffer.isView(chunk) ? chunk.buffer : null);
+    \\        if (sourceBuffer && globalThis.__home_transferred_array_buffers && globalThis.__home_transferred_array_buffers.has(sourceBuffer)) return undefined;
     \\        const text = decoder.decode(chunk, { stream: true });
     \\        if (text) handle.enqueue(text);
     \\        return undefined;
@@ -72013,6 +72015,7 @@ const harness_prelude =
     \\  }
     \\  return transferList;
     \\}
+    \\globalThis.__home_transferred_array_buffers = globalThis.__home_transferred_array_buffers || new WeakSet();
     \\function __home_message_port_schedule_drain(port) {
     \\  if (port.__home_message_drain_pending) return;
     \\  port.__home_message_drain_pending = true;
@@ -72044,9 +72047,10 @@ const harness_prelude =
     \\      error.code = 25;
     \\      throw error;
     \\    }
+    \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
+    \\    for (const buffer of buffers) globalThis.__home_transferred_array_buffers.add(buffer);
     \\    const peer = this.__home_peer;
     \\    if (!peer || peer.__home_closed) return;
-    \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
     \\    const payload = buffers.length > 0 && typeof structuredClone === "function" ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
     \\    peer.__home_messages.push(payload);
     \\    if (peer.listenerCount("message") > 0 || typeof peer.onmessage === "function") __home_message_port_schedule_drain(peer);
@@ -107204,6 +107208,10 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/console/console-timeLog.test.ts", .passed = 3 },
         .{ .path = "js/web/crypto/web-crypto-sha3.test.ts", .passed = 17 },
         .{ .path = "js/web/crypto/web-crypto.test.ts", .passed = 10 },
+        .{ .path = "js/web/encoding/encode-bad-chunks.test.ts", .passed = 6 },
+        .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
+        .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
+        .{ .path = "js/web/encoding/text-decoder-stream.test.ts", .passed = 39 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
