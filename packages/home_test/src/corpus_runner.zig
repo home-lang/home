@@ -30487,7 +30487,12 @@ const harness_prelude =
     \\}
     \\globalThis.structuredClone = structuredClone;
     \\function __home_fail(message) {
-    \\  throw new Error(message);
+    \\  const failure = new Error(message);
+    \\  failure.code = "ERR_BUN_TEST_ASSERTION";
+    \\  failure.operation = "bun.test.expect";
+    \\  failure.testName = String(globalThis.__home_current_snapshot_name || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at bun.test.expect (" + (failure.testName || "<unregistered test>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  throw failure;
     \\}
     \\function __home_expect_label_message(label, message) {
     \\  let text = String(message);
@@ -31128,6 +31133,19 @@ const harness_prelude =
     \\    }
     \\    return true;
     \\  }
+    \\  const aBlob = typeof Blob === "function" && a instanceof Blob;
+    \\  const bBlob = typeof Blob === "function" && b instanceof Blob;
+    \\  if (aBlob || bBlob) {
+    \\    if (!aBlob || !bBlob || Number(a.size) !== Number(b.size) || String(a.type) !== String(b.type)) return false;
+    \\    const aFile = typeof File === "function" && a instanceof File;
+    \\    const bFile = typeof File === "function" && b instanceof File;
+    \\    if (aFile !== bFile || (aFile && String(a.name) !== String(b.name))) return false;
+    \\    const aBytes = __home_body_bytes_sync(a);
+    \\    const bBytes = __home_body_bytes_sync(b);
+    \\    if (aBytes.length !== bBytes.length) return false;
+    \\    for (let i = 0; i < aBytes.length; i++) if ((aBytes[i] & 0xff) !== (bBytes[i] & 0xff)) return false;
+    \\    return true;
+    \\  }
     \\  const aBufferLike = __home_is_array_buffer_like(a);
     \\  const bBufferLike = __home_is_array_buffer_like(b);
     \\  if (aBufferLike || bBufferLike) {
@@ -31473,7 +31491,10 @@ const harness_prelude =
     \\}
     \\function __home_record_async_failure(error, parsed) {
     \\  __home_bun_tests.failed++;
-    \\  if (error && typeof error.message === "string" && parsed && parsed.name && !String(error.message).startsWith(String(parsed.name) + ": ")) error.message = String(parsed.name) + ": " + error.message;
+    \\  const testName = parsed && parsed.name ? String(parsed.name) : (error && error.testName ? String(error.testName) : String(globalThis.__home_current_snapshot_name || ""));
+    \\  if (error && typeof error.message === "string" && testName && !String(error.message).startsWith(testName + ": ")) error.message = testName + ": " + error.message;
+    \\  if (error && typeof error === "object" && testName && error.testName === undefined) error.testName = testName;
+    \\  if (error && typeof error.stack === "string" && testName) error.stack = error.stack.replace(/at bun\.test\.expect \([^\n]*\)/, "at bun.test.expect (" + testName + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")");
     \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = __home_error_message(error);
     \\}
     \\function __home_record_unsupported(message) {
@@ -32871,6 +32892,11 @@ const harness_prelude =
     \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, () => "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\    },
     \\    toThrow(expected) {
+    \\      const assertionTestName = String(globalThis.__home_current_snapshot_name || "");
+    \\      const recordAsyncAssertionFailure = error => {
+    \\        if (error && typeof error === "object" && assertionTestName) error.testName = assertionTestName;
+    \\        __home_record_async_failure(error, assertionTestName ? { name: assertionTestName } : undefined);
+    \\      };
     \\      if (typeof value !== "function" && !(value instanceof Error)) throw new Error("Expected value to be a function");
     \\      if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
     \\        __home_fail("Expected value must be string or Error: " + __home_format(expected));
@@ -32938,14 +32964,14 @@ const harness_prelude =
     \\            try {
     \\              __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
     \\            } catch (error) {
-    \\              __home_record_async_failure(error);
+    \\              recordAsyncAssertionFailure(error);
     \\            }
     \\          },
     \\          function(error) {
     \\            try {
     \\              assertThrownMatches(error);
     \\            } catch (assertionError) {
-    \\              __home_record_async_failure(assertionError);
+    \\              recordAsyncAssertionFailure(assertionError);
     \\            }
     \\          },
     \\        ).then(
@@ -32954,7 +32980,7 @@ const harness_prelude =
     \\          },
     \\          function(error) {
     \\            __home_bun_tests.pending--;
-    \\            __home_record_async_failure(error);
+    \\            recordAsyncAssertionFailure(error);
     \\          },
     \\        );
     \\        return;
@@ -52526,7 +52552,8 @@ const harness_prelude =
     \\  return value;
     \\}
     \\function __home_crypto_random_view(buffer) {
-    \\  if (buffer instanceof ArrayBuffer) return { view: new Uint8Array(buffer), scale: 1 };
+    \\  const tag = buffer == null ? "" : Object.prototype.toString.call(buffer);
+    \\  if (buffer instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return { view: new Uint8Array(buffer), scale: 1 };
     \\  if (ArrayBuffer.isView(buffer)) return { view: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength), scale: buffer.BYTES_PER_ELEMENT || 1 };
     \\  throw __home_crypto_arg_type_error("buffer");
     \\}
@@ -52562,7 +52589,9 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_THIS";
     \\    throw error;
     \\  }
-    \\  if (!ArrayBuffer.isView(buffer) || buffer instanceof DataView) throw new DOMException("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'", "TypeMismatchError");
+    \\  const tag = buffer == null ? "" : Object.prototype.toString.call(buffer);
+    \\  const isBuffer = buffer instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]";
+    \\  if ((!isBuffer && !ArrayBuffer.isView(buffer)) || buffer instanceof DataView) throw new DOMException("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'", "TypeMismatchError");
     \\  return __home_crypto_random_fill_sync(buffer);
     \\}
     \\let __home_crypto_random_uuid_counter = 0;
@@ -62644,8 +62673,11 @@ const harness_prelude =
     \\    this.__home_entries = [];
     \\  };
     \\  function __home_formdata_value(value, filename) {
-    \\    if (value && value.__home_file_ref) return value;
-    \\    if (value && Array.isArray(value.__home_blob_bytes)) {
+    \\    if (value && value.__home_file_ref) {
+    \\      if (typeof File === "function" && filename !== undefined) return new File([value], String(filename), { type: value.type || "" });
+    \\      return value;
+    \\    }
+    \\    if (value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || Array.isArray(value.__home_blob_sparse_parts) || value.__home_file_slice_ref)) {
     \\      if (typeof File === "function" && filename !== undefined) {
     \\        return new File([value], filename === undefined ? (value.name || "blob") : String(filename), { type: value.type || "" });
     \\      }
@@ -62742,14 +62774,14 @@ const harness_prelude =
     \\  for (const entry of form.__home_entries || []) {
     \\    const value = entry[1];
     \\    const isFileRef = !!(value && value.__home_file_ref);
-    \\    const isBlob = !!(value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || value.__home_file_slice_ref));
+    \\    const isBlob = !!(value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || Array.isArray(value.__home_blob_sparse_parts) || value.__home_file_slice_ref));
     \\    lines.push("--" + boundary);
     \\    let disposition = 'Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"';
     \\    if (isBlob || isFileRef) disposition += '; filename="' + __home_formdata_escape_name(__home_formdata_file_name(value)) + '"';
     \\    lines.push(disposition);
     \\    if ((isBlob || isFileRef) && value.type) lines.push("Content-Type: " + value.type);
     \\    lines.push("");
-    \\    lines.push(isBlob ? (value.__home_file_slice_ref ? __home_utf8_bytes_to_text(__home_file_slice_bytes(value.__home_file_slice_ref, "formdata.fileSlice", true)) : __home_utf8_bytes_to_text(value.__home_blob_typed_bytes || value.__home_blob_bytes)) : (isFileRef ? __home_file_ref_text(value) : String(value)));
+    \\    lines.push(isBlob ? (value.__home_file_slice_ref ? __home_utf8_bytes_to_text(__home_file_slice_bytes(value.__home_file_slice_ref, "formdata.fileSlice", true)) : (Array.isArray(value.__home_blob_sparse_parts) ? __home_utf8_bytes_to_text(__home_sparse_blob_slice_bytes(value.__home_blob_sparse_parts, 0, value.size || 0, "formdata.sparseBlob", true, "Out of memory")) : __home_utf8_bytes_to_text(value.__home_blob_typed_bytes || value.__home_blob_bytes))) : (isFileRef ? __home_file_ref_text(value) : String(value)));
     \\  }
     \\  lines.push("--" + boundary + "--");
     \\  lines.push("");
@@ -64088,7 +64120,8 @@ const harness_prelude =
     \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
     \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
-    \\  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    \\  const bodyTag = body == null ? "" : Object.prototype.toString.call(body);
+    \\  if (body instanceof ArrayBuffer || bodyTag === "[object ArrayBuffer]" || bodyTag === "[object SharedArrayBuffer]") return new Uint8Array(body);
     \\  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     \\  if (body && body.__home_file_slice_ref) return __home_file_slice_bytes(body.__home_file_slice_ref, "body.fileSlice", true);
     \\  if (body && Array.isArray(body.__home_blob_sparse_parts)) return __home_sparse_blob_slice_bytes(body.__home_blob_sparse_parts, 0, body.size || 0, "body.bytes", true, "Out of memory");
@@ -64257,7 +64290,8 @@ const harness_prelude =
     \\  if (body == null) return 0;
     \\  if (body && body.__home_file_ref) return Number(body.size) || 0;
     \\  if (body && body.__home_logical_buffer) return body.byteLength || body.length || 0;
-    \\  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
+    \\  const bodyTag = body == null ? "" : Object.prototype.toString.call(body);
+    \\  if (body instanceof ArrayBuffer || bodyTag === "[object ArrayBuffer]" || bodyTag === "[object SharedArrayBuffer]" || ArrayBuffer.isView(body)) return body.byteLength;
     \\  if (body && Array.isArray(body.__home_blob_sparse_parts)) return Number(body.size) || 0;
     \\  if (body && typeof body.getReader === "function") return null;
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_fixed_body_byte_length(body.__home_body_value);
@@ -64562,6 +64596,18 @@ const harness_prelude =
     \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata_bytes(bytes || [], contentType);
     \\  return __home_parse_formdata_text(__home_utf8_bytes_to_text(bytes || []), contentType);
     \\}
+    \\function __home_body_formdata_error(operation, contentType, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Body is null"));
+    \\  const failure = new TypeError("Cannot parse a null body as FormData");
+    \\  failure.code = "ERR_BODY_FORM_DATA";
+    \\  failure.operation = String(operation || "body.formData");
+    \\  failure.contentType = String(contentType || "");
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (content-type " + (failure.contentType || "<none>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_sparse_body_blob(body) {
     \\  let value = body;
     \\  while (value && Object.prototype.hasOwnProperty.call(value, "__home_body_value")) value = value.__home_body_value;
@@ -64722,13 +64768,13 @@ const harness_prelude =
     \\};
     \\Response.prototype.json = function() {
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
-    \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value") && typeof this.body.__home_body_value === "string") return Promise.resolve(__home_parse_json_body_text(this.body.__home_body_value));
     \\  return __home_consume_body_text(this, "response.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
     \\};
     \\function __home_response_direct_body_view(response) {
     \\  if (!response || !response.body || !Object.prototype.hasOwnProperty.call(response.body, "__home_body_value")) return null;
     \\  const value = response.body.__home_body_value;
-    \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  const tag = value == null ? "" : Object.prototype.toString.call(value);
+    \\  if (value instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return new Uint8Array(value);
     \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     \\  return null;
     \\}
@@ -64780,6 +64826,7 @@ const harness_prelude =
     \\  return __home_consume_response_bytes(this, "response.bytes", true, "Out of memory").then(bytes => new Uint8Array(bytes));
     \\};
     \\Response.prototype.formData = function() {
+    \\  if (this.body == null) return Promise.reject(__home_body_formdata_error("response.formData", __home_content_type(this.headers), new TypeError("Body is null")));
     \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
@@ -67599,6 +67646,7 @@ const harness_prelude =
     \\  Request.prototype.formData = function() {
     \\    "use strict";
     \\    __home_request_check_this(this);
+    \\    if (this.body == null) return Promise.reject(__home_body_formdata_error("request.formData", __home_content_type(this.headers), new TypeError("Body is null")));
     \\    return __home_consume_body(this).then(bytes => __home_parse_formdata_bytes(bytes, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
@@ -67629,9 +67677,8 @@ const harness_prelude =
     \\}
     \\Request.prototype.json = function() {
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
-    \\  if (typeof this.__home_text === "string" && this.__home_text.length > 0) return Promise.resolve(__home_parse_json_body_text(this.__home_text));
     \\  if (__home_sparse_body_blob(this.body)) return __home_consume_body_text(this, "request.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
-    \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
+    \\  return __home_consume_body_text(this, "request.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
     \\};
     \\globalThis.Request = Request;
     \\if (typeof __home_undici_module === "object") {
@@ -70153,7 +70200,20 @@ const harness_prelude =
     \\    __home_shared_array_buffer_values.add(buffer);
     \\    return buffer;
     \\  };
-    \\  Object.setPrototypeOf(HomeSharedArrayBuffer.prototype, ArrayBuffer.prototype);
+    \\  const sharedPrototype = {};
+    \\  const arrayBufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+    \\  Object.defineProperties(sharedPrototype, {
+    \\    constructor: { configurable: true, writable: true, value: HomeSharedArrayBuffer },
+    \\    byteLength: { configurable: true, get() { return arrayBufferByteLength.call(this); } },
+    \\    slice: { configurable: true, writable: true, value(start, end) {
+    \\      const sliced = ArrayBuffer.prototype.slice.call(this, start, end);
+    \\      Object.setPrototypeOf(sliced, sharedPrototype);
+    \\      __home_shared_array_buffer_values.add(sliced);
+    \\      return sliced;
+    \\    } },
+    \\    [Symbol.toStringTag]: { configurable: true, value: "SharedArrayBuffer" },
+    \\  });
+    \\  HomeSharedArrayBuffer.prototype = sharedPrototype;
     \\  Object.defineProperty(HomeSharedArrayBuffer, Symbol.hasInstance, { configurable: true, value(value) { return __home_is_shared_array_buffer_like(value); } });
     \\  Object.defineProperty(globalThis, "SharedArrayBuffer", { configurable: true, writable: true, value: HomeSharedArrayBuffer });
     \\}
@@ -108390,6 +108450,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/request/request.test.ts", .passed = 4 },
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
+        .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
