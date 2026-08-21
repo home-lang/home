@@ -58148,10 +58148,11 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at ServiceConfig.parse (" + String(path || "<root>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
-    \\function __home_grpc_status_error(code, operation) {
-    \\  const label = code === __home_grpc_status.CANCELLED ? "Cancelled" : code === __home_grpc_status.DEADLINE_EXCEEDED ? "Deadline exceeded" : code === __home_grpc_status.UNIMPLEMENTED ? "Method not implemented" : "gRPC call failed";
-    \\  const error = new Error(label); error.code = code; error.details = label;
-    \\  error.stack = String(error.stack || error) + "\n    at grpc call propagation (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")" + (operation ? "\n    at TestService." + String(operation) + " deadline/termination" : "");
+    \\function __home_grpc_status_error(code, operation, details, originalCause) {
+    \\  const label = details || (code === __home_grpc_status.CANCELLED ? "Cancelled" : code === __home_grpc_status.DEADLINE_EXCEEDED ? "Deadline exceeded" : code === __home_grpc_status.UNIMPLEMENTED ? "Method not implemented" : "gRPC call failed");
+    \\  const cause = originalCause instanceof Error ? originalCause : new Error(label);
+    \\  const error = new Error(label); error.code = code; error.details = label; error.cause = cause; error.operation = String(operation || "call");
+    \\  error.stack = String(error.stack || error) + "\n    at ClientCall." + error.operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\n    at ServerCall." + error.operation + " (deadline/cancellation propagation)\nCaused by: " + String(cause.stack || cause);
     \\  return error;
     \\}
     \\function __home_grpc_client_call(kind, request, options, callback) {
@@ -58159,18 +58160,25 @@ const harness_prelude =
     \\  const call = __home_grpc_stream(), parent = options.parent, flags = options.propagate_flags;
     \\  call.request = request || {}; call.__home_kind = kind; call.__home_callback = typeof callback === "function" ? callback : null; call.__home_children = []; call.__home_terminal = false;
     \\  call.__home_deadline = options.deadline || (parent && (flags & __home_grpc_propagate.DEADLINE) ? parent.__home_deadline : null);
-    \\  call.__home_finish = function(code, value) {
+    \\  call.__home_finish = function(code, value, details, cause) {
     \\    if (this.__home_terminal) return; this.__home_terminal = true;
     \\    if (this.__home_deadline_timer) clearTimeout(this.__home_deadline_timer);
     \\    if (typeof this.__home_channelz_complete === "function") this.__home_channelz_complete(code, value);
-    \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code, this.__home_method);
+    \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code, this.__home_method, details, cause);
     \\    for (const child of this.__home_children.slice()) if ((code === __home_grpc_status.CANCELLED && child.cancellation) || (code === __home_grpc_status.DEADLINE_EXCEEDED && child.deadline)) child.call.__home_finish(code);
     \\    if (this.__home_callback) this.__home_callback(error, value);
     \\    if (kind === "serverStream" || kind === "bidiStream") { if (error) this.emit("error", error); this.emit("status", { code, details: error ? error.details : "OK", metadata: new __home_grpc_Metadata() }); }
     \\  };
-    \\  call.cancel = function() { this.__home_finish(__home_grpc_status.CANCELLED); };
+    \\  call.write = function(data) { if (this.__home_terminal) return false; this.emit("data", data); return true; };
+    \\  call.end = function() { if (this.__home_terminal) return this; this.emit("end"); return this; };
+    \\  call.cancel = function() {
+    \\    if (this.__home_terminal) return;
+    \\    const cause = new Error("Client cancelled the call"); cause.code = __home_grpc_status.CANCELLED;
+    \\    this.__home_finish(__home_grpc_status.CANCELLED, undefined, "Cancelled on client", cause);
+    \\    this.emit("cancelled");
+    \\  };
     \\  if (parent && parent.__home_children) parent.__home_children.push({ call, cancellation: flags === undefined || !!(flags & __home_grpc_propagate.CANCELLATION), deadline: !!(flags & __home_grpc_propagate.DEADLINE) });
-    \\  if (call.__home_deadline) { const delay = Math.max(0, Number(new Date(call.__home_deadline)) - Date.now()); call.__home_deadline_timer = setTimeout(() => call.__home_finish(__home_grpc_status.DEADLINE_EXCEEDED), delay); }
+    \\  if (call.__home_deadline) { const delay = Math.max(0, Number(new Date(call.__home_deadline)) - Date.now()); call.__home_deadline_timer = setTimeout(() => { const cause = new Error("Deadline timer elapsed"); cause.code = __home_grpc_status.DEADLINE_EXCEEDED; call.__home_finish(__home_grpc_status.DEADLINE_EXCEEDED, undefined, "Deadline exceeded", cause); }, delay); }
     \\  return call;
     \\}
     \\function __home_grpc_channelz_register_channel(client) {
@@ -58212,6 +58220,24 @@ const harness_prelude =
     \\    if (serverRecord) serverRecord.data[successful ? "calls_succeeded" : "calls_failed"] += 1;
     \\    if (serverSocket) { serverSocket.data.streams_succeeded += 1; if (successful) serverSocket.data.messages_sent += 1; }
     \\  };
+    \\}
+    \\function __home_grpc_timeout_error(value, target, operation) {
+    \\  const raw = String(value);
+    \\  const cause = new TypeError("Invalid grpc-timeout value '" + raw + "'");
+    \\  const failure = new Error(cause.message);
+    \\  failure.code = __home_grpc_status.INTERNAL; failure.details = cause.message; failure.timeout = raw; failure.target = String(target || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Client." + String(operation || "makeUnaryRequest") + " (target " + failure.target + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\n    at Metadata.grpc-timeout (value " + raw + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_timeout_millis(metadata, target, operation) {
+    \\  const values = metadata && typeof metadata.get === "function" ? metadata.get("grpc-timeout") : [];
+    \\  if (!Array.isArray(values) || values.length === 0) return null;
+    \\  const raw = String(values[0]), match = raw.match(/^(\d{1,8})([HMSmun])$/);
+    \\  if (!match) throw __home_grpc_timeout_error(raw, target, operation);
+    \\  const amount = Number(match[1]), multipliers = { H: 3600000, M: 60000, S: 1000, m: 1, u: 0.001, n: 0.000001 };
+    \\  const millis = amount * multipliers[match[2]];
+    \\  if (!Number.isFinite(millis)) throw __home_grpc_timeout_error(raw, target, operation);
+    \\  return millis;
     \\}
     \\function __home_grpc_TestService(target, credentials, options) {
     \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target); this.__home_options = Object.assign({}, options || {});
@@ -58258,6 +58284,21 @@ const harness_prelude =
     \\  return call;
     \\};
     \\__home_grpc_TestService.prototype.unary = function(request, options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke("unary", "unary", request, options, callback); };
+    \\__home_grpc_TestService.prototype.unary.path = "/TestService/unary";
+    \\__home_grpc_TestService.prototype.unary.requestSerialize = value => value;
+    \\__home_grpc_TestService.prototype.unary.responseDeserialize = value => value;
+    \\__home_grpc_TestService.prototype.makeUnaryRequest = function(path, serialize, deserialize, argument, metadata, options, callback) {
+    \\  void serialize; void deserialize;
+    \\  const effectiveOptions = Object.assign({}, options && typeof options === "object" ? options : {});
+    \\  try {
+    \\    const timeout = __home_grpc_timeout_millis(metadata, this.__home_target, "makeUnaryRequest");
+    \\    if (timeout !== null) { const deadline = Date.now() + Math.max(0, timeout); if (!effectiveOptions.deadline || Number(new Date(effectiveOptions.deadline)) > deadline) effectiveOptions.deadline = deadline; }
+    \\  } catch (error) {
+    \\    const call = __home_grpc_stream(); Promise.resolve().then(() => { if (typeof callback === "function") callback(error, undefined); }); return call;
+    \\  }
+    \\  const method = String(path || "").toLowerCase().includes("unary") ? "unary" : String(path || "").split("/").filter(Boolean).pop() || "unary";
+    \\  return this.__home_invoke(method, "unary", argument, effectiveOptions, callback);
+    \\};
     \\__home_grpc_TestService.prototype.clientStream = function(options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke("clientStream", "clientStream", {}, options, callback); };
     \\__home_grpc_TestService.prototype.serverStream = function(request, options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("serverStream", "serverStream", request, options); };
     \\__home_grpc_TestService.prototype.bidiStream = function(options) { if (!options || typeof options !== "object") options = {}; return this.__home_invoke("bidiStream", "bidiStream", {}, options); };
@@ -71826,6 +71867,12 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
         .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
+        .{ .needle = "import { Server, ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { Server, ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
+        .{ .needle = "import { ServiceError } from \"@grpc/grpc-js/build/src/call\";", .replacement = "" },
+        .{ .needle = "import { sendUnaryData, ServerUnaryCall, ServerWritableStream } from \"@grpc/grpc-js/build/src/server-call\";", .replacement = "" },
+        .{ .needle = "unary(call: ServerUnaryCall<any, any>, cb: sendUnaryData<any>)", .replacement = "unary(call, cb)" },
+        .{ .needle = "serverStream(stream: ServerWritableStream<any, any>)", .replacement = "serverStream(stream)" },
+        .{ .needle = "(error: ServiceError) =>", .replacement = "error =>" },
         .{ .needle = "let client: InstanceType<grpc.ServiceClientConstructor>;", .replacement = "let client;" },
         .{ .needle = "import { Picker } from \"@grpc/grpc-js/build/src/picker\";", .replacement = "" },
         .{ .needle = "import { Endpoint, subchannelAddressToString } from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { subchannelAddressToString } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
@@ -88523,6 +88570,24 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(credentialError.stack).includes("field keyCertPair[0].private_key"));
         \\  assert.ok(String(credentialError.stack).includes("Caused by:"));
         \\});
+        \\
+        \\test("deadline metadata and cancellation retain lifecycle diagnostics", () => {
+        \\  const metadata = new grpc.Metadata(); metadata.set("grpc-timeout", "Infinity");
+        \\  let timeoutError;
+        \\  try { __home_grpc_timeout_millis(metadata, "deadline.test:443", "makeUnaryRequest"); } catch (error) { timeoutError = error; }
+        \\  assert.strictEqual(timeoutError.code, grpc.status.INTERNAL);
+        \\  assert.strictEqual(timeoutError.timeout, "Infinity");
+        \\  assert.ok(timeoutError.cause instanceof TypeError);
+        \\  assert.ok(String(timeoutError.stack).includes("Client.makeUnaryRequest"));
+        \\  assert.ok(String(timeoutError.stack).includes("Metadata.grpc-timeout"));
+        \\  assert.ok(String(timeoutError.stack).includes("Caused by:"));
+        \\  const call = __home_grpc_client_call("serverStream", {}, {}, null); let cancelled = false, emittedData = false, cancellationError;
+        \\  call.__home_method = "serverStream"; call.on("cancelled", () => { cancelled = true; }); call.on("data", () => { emittedData = true; }); call.on("error", error => { cancellationError = error; });
+        \\  call.cancel(); call.write({ ignored: true });
+        \\  assert.strictEqual(cancelled, true); assert.strictEqual(emittedData, false);
+        \\  assert.strictEqual(cancellationError.code, grpc.status.CANCELLED); assert.strictEqual(cancellationError.details, "Cancelled on client");
+        \\  assert.ok(cancellationError.cause instanceof Error); assert.ok(String(cancellationError.stack).includes("ClientCall.serverStream")); assert.ok(String(cancellationError.stack).includes("ServerCall.serverStream"));
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88540,7 +88605,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 19), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -103046,6 +103111,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-retry-config.test.ts", .passed = 28 },
         .{ .path = "js/third_party/grpc-js/test-retry.test.ts", .passed = 15 },
         .{ .path = "js/third_party/grpc-js/test-server-credentials.test.ts", .passed = 11 },
+        .{ .path = "js/third_party/grpc-js/test-server-deadlines.test.ts", .passed = 3 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
