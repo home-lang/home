@@ -66641,7 +66641,7 @@ const harness_prelude =
     \\  if (opts.subject !== undefined && (!payload || typeof payload !== "object" || !Object.prototype.hasOwnProperty.call(payload, "sub") || payload.sub !== opts.subject)) { const invalidSubject = __home_jwt_error("JsonWebTokenError", "jwt subject invalid. expected: " + String(opts.subject)); invalidSubject.claim = "sub"; throw invalidSubject; }
     \\  if (opts.maxAge !== undefined) {
     \\    if (!payload || typeof payload !== "object" || typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) { const missingIssuedAt = __home_jwt_error("JsonWebTokenError", "iat required when maxAge is specified"); missingIssuedAt.claim = "iat"; throw missingIssuedAt; }
-    \\    const maxAgeSeconds = __home_jwt_timespan_seconds(opts.maxAge); if (maxAgeSeconds === undefined) { const invalidMaxAge = __home_jwt_error("JsonWebTokenError", '"maxAge" should be a number of seconds or string representing a timespan'); invalidMaxAge.claim = "iat"; throw invalidMaxAge; }
+    \\    const maxAgeSeconds = __home_jwt_timespan_seconds(opts.maxAge); if (maxAgeSeconds === undefined) { const invalidMaxAge = __home_jwt_error("JsonWebTokenError", '"maxAge" should be a number of seconds or string representing a timespan eg: "1d", "20h", 60'); invalidMaxAge.claim = "iat"; throw invalidMaxAge; }
     \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0); const expiresAt = payload.iat + maxAgeSeconds;
     \\    if (clockTimestamp >= expiresAt + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "maxAge exceeded"); expired.expiredAt = new Date(expiresAt * 1000); expired.claim = "iat"; throw expired; }
     \\  }
@@ -103787,6 +103787,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/jwt.hs.test.js", .passed = 14 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.malicious.test.js", .passed = 3 },
         .{ .path = "js/third_party/jsonwebtoken/option-complete.test.js", .passed = 2 },
+        .{ .path = "js/third_party/jsonwebtoken/option-maxAge.test.js", .passed = 10 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
