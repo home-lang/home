@@ -57838,11 +57838,19 @@ const harness_prelude =
     \\  this.__home_round_robin_index = 0;
     \\  this.__home_outlier_records = new Map();
     \\  this.__home_outlier_config = null;
+    \\  this.__home_service_config = null;
+    \\  this.__home_retry_policy = null;
+    \\  this.__home_hedging_policy = null;
     \\  const serviceConfigText = this.__home_options["grpc.service_config"];
     \\  if (serviceConfigText !== undefined) {
     \\    let serviceConfig;
     \\    try { serviceConfig = typeof serviceConfigText === "string" ? JSON.parse(serviceConfigText) : serviceConfigText; }
     \\    catch (error) { throw __home_grpc_service_config_error(error, "grpc.service_config"); }
+    \\    __home_grpc_validate_service_config(serviceConfig);
+    \\    this.__home_service_config = serviceConfig;
+    \\    const methodConfigs = Array.isArray(serviceConfig.methodConfig) ? serviceConfig.methodConfig : [];
+    \\    const echoMethod = methodConfigs.find(method => !Array.isArray(method.name) || method.name.length === 0 || method.name.some(name => !name || !name.service || name.service === "EchoService"));
+    \\    if (echoMethod) { this.__home_retry_policy = echoMethod.retryPolicy || null; this.__home_hedging_policy = echoMethod.hedgingPolicy || null; }
     \\    const policies = serviceConfig && Array.isArray(serviceConfig.loadBalancingConfig) ? serviceConfig.loadBalancingConfig : [];
     \\    const outlierPolicy = policies.find(policy => policy && policy.outlier_detection);
     \\    if (outlierPolicy) this.__home_outlier_config = __home_grpc_OutlierDetectionLoadBalancingConfig.createFromJson(outlierPolicy.outlier_detection).value;
@@ -58084,7 +58092,7 @@ const harness_prelude =
     \\  }));
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
-    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, PERMISSION_DENIED: 7, UNIMPLEMENTED: 12, UNAVAILABLE: 14 };
+    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, ALREADY_EXISTS: 6, PERMISSION_DENIED: 7, RESOURCE_EXHAUSTED: 8, FAILED_PRECONDITION: 9, ABORTED: 10, OUT_OF_RANGE: 11, UNIMPLEMENTED: 12, INTERNAL: 13, UNAVAILABLE: 14, DATA_LOSS: 15, UNAUTHENTICATED: 16 };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
     \\const __home_grpc_connectivity_state = { IDLE: 0, CONNECTING: 1, READY: 2, TRANSIENT_FAILURE: 3, SHUTDOWN: 4 };
     \\const __home_grpc_log_verbosity = { DEBUG: 0, INFO: 1, ERROR: 2, NONE: 3 };
@@ -58272,6 +58280,26 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + owner + "." + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
+    \\function __home_grpc_attempt_error(error, target, attempt, maxAttempts, mode) {
+    \\  const details = String(error && (error.details || error.message) || "gRPC attempt failed");
+    \\  const cause = error instanceof Error ? error : Object.assign(new Error(details), error && typeof error === "object" ? error : {});
+    \\  const failure = new Error(details);
+    \\  const code = Number(error && error.code);
+    \\  failure.code = Number.isFinite(code) ? code : __home_grpc_status.UNKNOWN; failure.details = details; failure.cause = cause;
+    \\  failure.target = String(target || ""); failure.attempt = Number(attempt); failure.maxAttempts = Number(maxAttempts); failure.mode = String(mode || "single");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at RetryCall.attempt (mode " + failure.mode + ", attempt " + String(failure.attempt + 1) + "/" + String(failure.maxAttempts) + ", target " + failure.target + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_policy_status_set(values) {
+    \\  const result = new Set();
+    \\  for (const value of Array.isArray(values) ? values : []) result.add(typeof value === "string" ? __home_grpc_status[value] : Number(value));
+    \\  return result;
+    \\}
+    \\function __home_grpc_backoff_millis(policy, attempt) {
+    \\  const initial = Math.max(0, Number.parseFloat(String(policy.initialBackoff || "0s")) * 1000);
+    \\  const maximum = Math.max(initial, Number.parseFloat(String(policy.maxBackoff || policy.initialBackoff || "0s")) * 1000);
+    \\  return Math.min(maximum, initial * Math.pow(Number(policy.backoffMultiplier || 1), Math.max(0, attempt)));
+    \\}
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
     \\  let callOptions = {};
     \\  if (arguments.length >= 4) {
@@ -58284,32 +58312,54 @@ const harness_prelude =
     \\  const clientCall = __home_grpc_stream();
     \\  const metadata = options instanceof __home_grpc_Metadata ? options : new __home_grpc_Metadata();
     \\  if (this.__home_closed) { Promise.resolve().then(() => { if (typeof callback === "function") callback(__home_grpc_client_error(this.__home_target, "echo", __home_grpc_status.UNAVAILABLE, "The client is closed")); }); return clientCall; }
-    \\  const selected = this.__home_pick_server();
-    \\  const selectedServer = selected.server;
-    \\  this.__home_last_server = selectedServer;
-    \\  const handler = selectedServer && selectedServer.__home_services.echo;
-    \\  if (handler) this.__home_touch();
     \\  if (callOptions.deadline && Number(new Date(callOptions.deadline)) <= Date.now()) { Promise.resolve().then(() => callback(__home_grpc_status_error(__home_grpc_status.DEADLINE_EXCEEDED, "echo"))); return clientCall; }
-    \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
+    \\  const initialSelection = this.__home_pick_server();
+    \\  this.__home_last_server = initialSelection.server;
+    \\  if (!initialSelection.server && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
     \\    __home_grpc_synthetic_echo(request, metadata, callback);
     \\    return clientCall;
     \\  }
-    \\  const invoke = effectiveMetadata => {
-    \\    if (!handler) { if (typeof callback === "function") callback(__home_grpc_status_error(__home_grpc_status.UNIMPLEMENTED)); return; }
+    \\  const retriesEnabled = this.__home_options["grpc.enable_retries"] !== 0;
+    \\  const policy = retriesEnabled ? (this.__home_retry_policy || this.__home_hedging_policy) : null;
+    \\  const mode = policy ? (this.__home_retry_policy ? "retry" : "hedging") : "single";
+    \\  const configuredAttempts = policy ? Math.max(1, Math.trunc(Number(policy.maxAttempts) || 1)) : 1;
+    \\  const optionLimit = this.__home_options["grpc-node.retry_max_attempts_limit"] === undefined ? 5 : Math.max(1, Math.trunc(Number(this.__home_options["grpc-node.retry_max_attempts_limit"]) || 1));
+    \\  const maxAttempts = policy ? Math.min(configuredAttempts, optionLimit) : 1;
+    \\  const retryableCodes = __home_grpc_policy_status_set(policy && (policy.retryableStatusCodes || policy.nonFatalStatusCodes));
+    \\  let settled = false;
+    \\  const finish = (error, value) => { if (settled) return; settled = true; if (typeof callback === "function") callback(error || null, value); };
+    \\  const invokeAttempt = attempt => {
+    \\    if (settled) return;
+    \\    if (callOptions.deadline && Number(new Date(callOptions.deadline)) <= Date.now()) { finish(__home_grpc_status_error(__home_grpc_status.DEADLINE_EXCEEDED, "echo")); return; }
+    \\    const selected = attempt === 0 ? initialSelection : this.__home_pick_server();
+    \\    const selectedServer = selected.server, handler = selectedServer && selectedServer.__home_services.echo;
+    \\    this.__home_last_server = selectedServer;
+    \\    if (handler) this.__home_touch();
+    \\    if (!handler) { finish(__home_grpc_attempt_error({ code: __home_grpc_status.UNIMPLEMENTED, details: "Method not implemented" }, this.__home_target, attempt, maxAttempts, mode)); return; }
+    \\    const effectiveMetadata = metadata.clone();
+    \\    if (attempt > 0) effectiveMetadata.set("grpc-previous-rpc-attempts", String(attempt));
     \\    const serverCall = {
     \\      request,
     \\      metadata: effectiveMetadata,
     \\      sendMetadata(value) { clientCall.emit("metadata", value); },
     \\    };
     \\    let callbackInvoked = false;
-    \\    const guardedCallback = typeof callback === "function" ? (...callbackArgs) => { callbackInvoked = true; this.__home_record_outlier_result(selected.port, callbackArgs[0]); return callback.apply(undefined, callbackArgs); } : undefined;
-    \\    try { handler(serverCall, guardedCallback); }
-    \\    catch (error) { this.__home_record_outlier_result(selected.port, error); if (callbackInvoked || typeof callback !== "function") throw error; callback(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
+    \\    const onAttempt = (error, value) => {
+    \\      if (callbackInvoked || settled) return; callbackInvoked = true;
+    \\      this.__home_record_outlier_result(selected.port, error);
+    \\      if (!error) { finish(null, value); return; }
+    \\      const code = Number(error.code);
+    \\      if (!policy || !retryableCodes.has(code) || attempt + 1 >= maxAttempts) { finish(__home_grpc_attempt_error(error, this.__home_target, attempt, maxAttempts, mode)); return; }
+    \\      const delay = mode === "retry" ? __home_grpc_backoff_millis(policy, attempt) : Math.max(0, Number.parseFloat(String(policy.hedgingDelay || "0s")) * 1000);
+    \\      if (delay > 0) setTimeout(() => invokeAttempt(attempt + 1), delay); else Promise.resolve().then(() => invokeAttempt(attempt + 1));
+    \\    };
+    \\    try { handler(serverCall, onAttempt); }
+    \\    catch (error) { if (callbackInvoked) throw error; onAttempt(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
     \\  };
     \\  const callCredentials = this.__home_credentials && typeof this.__home_credentials._getCallCredentials === "function" ? this.__home_credentials._getCallCredentials() : null;
     \\  if (callCredentials && typeof callCredentials.generateMetadata === "function") {
-    \\    Promise.resolve(callCredentials.generateMetadata({ service_url: this.__home_target })).then(generated => { metadata.merge(generated); invoke(metadata); }, error => { if (typeof callback === "function") callback(__home_grpc_channel_error(error, "generateMetadata")); });
-    \\  } else Promise.resolve().then(() => invoke(metadata));
+    \\    Promise.resolve(callCredentials.generateMetadata({ service_url: this.__home_target })).then(generated => { metadata.merge(generated); invokeAttempt(0); }, error => finish(__home_grpc_channel_error(error, "generateMetadata")));
+    \\  } else Promise.resolve().then(() => invokeAttempt(0));
     \\  return clientCall;
     \\};
     \\__home_grpc_EchoService.prototype.echoServerStream = function(request, options) {
@@ -71755,6 +71805,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { ChannelControlHelper, createChildChannelControlHelper } from \"@grpc/grpc-js/build/src/load-balancer\";", .replacement = "const { createChildChannelControlHelper } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer\");" },
         .{ .needle = "import {\n  PickFirstLoadBalancer,\n  PickFirstLoadBalancingConfig,\n  shuffled,\n} from \"@grpc/grpc-js/build/src/load-balancer-pick-first\";", .replacement = "const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig, shuffled } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-pick-first\");" },
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
+        .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "let client: InstanceType<grpc.ServiceClientConstructor>;", .replacement = "let client;" },
         .{ .needle = "import { Picker } from \"@grpc/grpc-js/build/src/picker\";", .replacement = "" },
         .{ .needle = "import { Endpoint, subchannelAddressToString } from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { subchannelAddressToString } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
         .{ .needle = "import { MockSubchannel, TestClient, TestServer } from \"./common\";", .replacement = "const MockSubchannel = __home_grpc_MockSubchannelFixture;\nconst TestClient = __home_grpc_TestClientFixture;\nconst TestServer = __home_grpc_TestServerFixture;" },
@@ -88412,6 +88464,33 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(validationError.stack).includes("path maxAttempts"));
         \\  assert.ok(String(validationError.stack).includes("Caused by:"));
         \\});
+        \\
+        \\test("retry attempts preserve metadata isolation and terminal diagnostics", done => {
+        \\  const server = new grpc.Server();
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const seenAttempts = [];
+        \\  server.addService(EchoService.service, { echo(call, callback) { const values = call.metadata.get("grpc-previous-rpc-attempts"); seenAttempts.push(values.length ? values[0] : null); callback({ code: grpc.status.RESOURCE_EXHAUSTED, details: "retry budget exhausted" }); } });
+        \\  server.bindAsync("localhost:0", grpc.ServerCredentials.createInsecure(), (bindError, port) => {
+        \\    assert.ifError(bindError);
+        \\    const serviceConfig = { methodConfig: [{ name: [{ service: "EchoService" }], retryPolicy: { maxAttempts: 2, initialBackoff: "0.001s", maxBackoff: "0.001s", backoffMultiplier: 1, retryableStatusCodes: [grpc.status.RESOURCE_EXHAUSTED] } }] };
+        \\    const client = new EchoService("localhost:" + String(port), grpc.credentials.createInsecure(), { "grpc.service_config": JSON.stringify(serviceConfig) });
+        \\    const metadata = new grpc.Metadata();
+        \\    client.echo({ value: "diagnostic" }, metadata, error => {
+        \\      assert.strictEqual(error.code, grpc.status.RESOURCE_EXHAUSTED);
+        \\      assert.strictEqual(error.details, "retry budget exhausted");
+        \\      assert.strictEqual(error.mode, "retry");
+        \\      assert.strictEqual(error.attempt, 1);
+        \\      assert.strictEqual(error.maxAttempts, 2);
+        \\      assert.ok(error.cause instanceof Error);
+        \\      assert.deepStrictEqual(seenAttempts, [null, "1"]);
+        \\      assert.deepStrictEqual(metadata.get("grpc-previous-rpc-attempts"), []);
+        \\      assert.ok(String(error.stack).includes("RetryCall.attempt"));
+        \\      assert.ok(String(error.stack).includes("attempt 2/2"));
+        \\      assert.ok(String(error.stack).includes("Caused by:"));
+        \\      client.close(); server.forceShutdown(); done();
+        \\    });
+        \\  });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88429,7 +88508,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102933,6 +103012,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-prototype-pollution.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-resolver.test.ts", .passed = 20, .todo = 4 },
         .{ .path = "js/third_party/grpc-js/test-retry-config.test.ts", .passed = 28 },
+        .{ .path = "js/third_party/grpc-js/test-retry.test.ts", .passed = 15 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
