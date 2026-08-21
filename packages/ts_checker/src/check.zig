@@ -60988,29 +60988,13 @@ pub const Checker = struct {
                         // for `A<X>` is the first decl's and the body stays
                         // consistent. Mirrors
                         // `twoGenericInterfacesWithDifferentConstraints`.
-                        // Same-constraint merges (the common case, e.g.
-                        // `interface C<T,U>` twice with method overloads)
-                        // are left on the original last-wins path —
-                        // substituting there would disturb method-level
-                        // generics (`foo<W>`) and break overload resolution
-                        // (`twoMergedInterfacesWithDifferingOverloads`).
+                        // Same-constraint merges also share the first
+                        // declaration's interface parameter IDs. Method-level
+                        // generics remain distinct because the substitution
+                        // map contains only `param_ids`, not signature params.
                         var unified_t = iface_t;
                         if (self.generic_aliases.get(id.name)) |first| {
                             if (first.params.len == param_ids.items.len and param_ids.items.len > 0) {
-                                var conflict = false;
-                                for (param_ids.items, first.params) |cur_p, first_p| {
-                                    if (self.typeParameterConstraint(cur_p) != self.typeParameterConstraint(first_p)) {
-                                        conflict = true;
-                                        break;
-                                    }
-                                }
-                                var has_generic_method = false;
-                                for (self.interner.objectMembers(iface_t)) |m| {
-                                    if (self.generic_signature_params.contains(m.type)) {
-                                        has_generic_method = true;
-                                        break;
-                                    }
-                                }
                                 // A single-declaration generic interface may
                                 // be re-checked to refresh forward references.
                                 // Rewrite that refreshed body onto the first
@@ -61023,7 +61007,7 @@ pub const Checker = struct {
                                 const prev_decl = self.last_iface_decl_for_name.get(id.name) orelse hir_mod.none_node_id;
                                 const is_real_merge = prev_decl != node and prev_decl != hir_mod.none_node_id;
                                 const is_self_recheck = prev_decl == node;
-                                if (is_self_recheck or (is_real_merge and (conflict or !has_generic_method))) {
+                                if (is_self_recheck or is_real_merge) {
                                     var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                                     defer subs.deinit(self.gpa);
                                     for (param_ids.items, first.params) |cur_p, first_p| {
@@ -63780,68 +63764,11 @@ pub const Checker = struct {
         number_idx: TypeId,
         symbol_idx: TypeId,
     ) CheckError!void {
-        if (string_idx != types.Primitive.none) {
-            for (members) |m| {
-                if (self.syntheticSignatureMemberName(m.name)) continue;
-                if (self.isSymbolNamedMember(m.name)) continue;
-                if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
-                if (try self.indexMemberAssignableToIndex(node, m.type, string_idx)) continue;
-                const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
-                const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
-                const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
-                const inherited = merged_owner == hir_mod.none_node_id and local_anchor == node;
-                // Inherited member: anchor TS2411 at the new
-                // index-signature in this container so the diagnostic
-                // surfaces on the indexer line. When no index sig is
-                // declared at this layer (i.e. it too is inherited),
-                // drop the emit so we don't double-count the parent's
-                // own diagnostic. Mirrors `computedPropertyNames45/44`.
-                const final_anchor = if (inherited)
-                    self.mergedInterfaceIndexSignatureNode(node, "string")
-                else
-                    anchor;
-                if (final_anchor == hir_mod.none_node_id) continue;
-                const display_owner = if (merged_owner != hir_mod.none_node_id) merged_owner else node;
-                const prop_str = self.classOrInterfaceMemberDisplayName(display_owner, m.name);
-                const index_decl = self.mergedInterfaceIndexSignatureNode(node, "string");
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string", m.decl_node, index_decl);
-                if (self.diagnosticExistsWithMessage(final_anchor, TsCodes.property_not_assignable_to_index_type, msg)) continue;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = final_anchor,
-                    .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
-                    .code = TsCodes.property_not_assignable_to_index_type,
-                    .message = msg,
-                });
-            }
-        }
-        if (number_idx != types.Primitive.none) {
-            for (members) |m| {
-                if (self.syntheticSignatureMemberName(m.name)) continue;
-                if (!self.memberNameIsNumeric(m.name)) continue;
-                if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
-                if (try self.indexMemberAssignableToIndex(node, m.type, number_idx)) continue;
-                const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
-                const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
-                const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
-                const inherited = merged_owner == hir_mod.none_node_id and local_anchor == node;
-                const final_anchor = if (inherited)
-                    self.mergedInterfaceIndexSignatureNode(node, "number")
-                else
-                    anchor;
-                if (final_anchor == hir_mod.none_node_id) continue;
-                const display_owner = if (merged_owner != hir_mod.none_node_id) merged_owner else node;
-                const prop_str = self.classOrInterfaceMemberDisplayName(display_owner, m.name);
-                const index_decl = self.mergedInterfaceIndexSignatureNode(node, "number");
-                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number", m.decl_node, index_decl);
-                if (self.diagnosticExistsWithMessage(final_anchor, TsCodes.property_not_assignable_to_index_type, msg)) continue;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = final_anchor,
-                    .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
-                    .code = TsCodes.property_not_assignable_to_index_type,
-                    .message = msg,
-                });
-            }
-        }
+        // Numeric properties are constrained by the number index first and
+        // then the string index. This ordering matches source-level member
+        // checking in tsgo and matters when both diagnostics share a span.
+        try self.checkIndexSignatureMembersForKind(node, members, number_idx, "number", true);
+        try self.checkIndexSignatureMembersForKind(node, members, string_idx, "string", false);
         if (number_idx != types.Primitive.none and string_idx != types.Primitive.none and
             !(try self.indexValueAssignableToStringIndex(number_idx, string_idx)))
         {
@@ -63901,6 +63828,86 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn checkIndexSignatureMembersForKind(
+        self: *Checker,
+        node: NodeId,
+        members: []const types.ObjectMember,
+        index_t: TypeId,
+        index_kind: []const u8,
+        numeric_only: bool,
+    ) CheckError!void {
+        if (index_t == types.Primitive.none) return;
+        var reported_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer reported_names.deinit(self.gpa);
+        for (members) |m| {
+            if (self.syntheticSignatureMemberName(m.name) or self.isSymbolNamedMember(m.name)) continue;
+            if (numeric_only and !self.memberNameIsNumeric(m.name)) continue;
+            if (m.type == types.Primitive.any or index_t == types.Primitive.any) continue;
+            if (try self.indexMemberAssignableToIndex(node, m.type, index_t)) continue;
+            const numeric_key = std.mem.trim(u8, self.string_interner.get(m.name), "'\"");
+            if (numeric_only and reported_names.contains(numeric_key)) continue;
+            if (numeric_only and self.mergedInterfaceHasPriorEquivalentNumericMember(node, m.decl_node)) continue;
+
+            const merged_owner = self.mergedInterfaceMemberOwner(node, m.decl_node);
+            const local_anchor = self.classOrInterfaceMemberNode(node, m.name);
+            const anchor = if (merged_owner != hir_mod.none_node_id) m.decl_node else local_anchor;
+            const inherited = merged_owner == hir_mod.none_node_id and local_anchor == node;
+            // An inherited member is owned by a newly declared indexer. If
+            // this layer has no matching index declaration, the parent has
+            // already emitted the constraint diagnostic.
+            const final_anchor = if (inherited)
+                self.mergedInterfaceIndexSignatureNode(node, index_kind)
+            else
+                anchor;
+            if (final_anchor == hir_mod.none_node_id) continue;
+            const display_owner = if (merged_owner != hir_mod.none_node_id) merged_owner else node;
+            const prop_str = self.classOrInterfaceMemberDisplayName(display_owner, m.name);
+            const index_decl = self.mergedInterfaceIndexSignatureNode(node, index_kind);
+            const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, index_t, index_kind, m.decl_node, index_decl);
+            if (self.diagnosticExistsWithMessage(final_anchor, TsCodes.property_not_assignable_to_index_type, msg)) {
+                if (numeric_only) try reported_names.put(self.gpa, numeric_key, {});
+                continue;
+            }
+            try self.diagnostics.append(self.gpa, .{
+                .node = final_anchor,
+                .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
+                .code = TsCodes.property_not_assignable_to_index_type,
+                .message = msg,
+            });
+            if (numeric_only) try reported_names.put(self.gpa, numeric_key, {});
+        }
+    }
+
+    fn mergedInterfaceHasPriorEquivalentNumericMember(
+        self: *Checker,
+        node: NodeId,
+        member_node: NodeId,
+    ) bool {
+        if (self.hir.kindOf(node) != .interface_decl or
+            self.hir.kindOf(member_node) != .interface_member or
+            !self.nodeHasAncestor(member_node, node)) return false;
+
+        const iface = hir_mod.interfaceOf(self.hir, node);
+        if (iface.name == hir_mod.none_node_id or self.hir.kindOf(iface.name) != .identifier) return false;
+        const interface_name = hir_mod.identifierOf(self.hir, iface.name).name;
+        if (!self.interfaceDeclScopesMatchExistingType(node, interface_name)) return false;
+        const previous = self.last_iface_decl_for_name.get(interface_name) orelse return false;
+        if (previous == node or self.hir.kindOf(previous) != .interface_decl) return false;
+
+        const member = hir_mod.interfaceMemberOf(self.hir, member_node);
+        if (member.name == 0 or member.is_method) return false;
+        const member_name = std.mem.trim(u8, self.string_interner.get(member.name), "'\"");
+        for (hir_mod.interfaceMembers(self.hir, previous)) |previous_node| {
+            if (self.hir.kindOf(previous_node) != .interface_member) continue;
+            const previous_member = hir_mod.interfaceMemberOf(self.hir, previous_node);
+            if (previous_member.name == 0 or previous_member.is_method) continue;
+            const previous_name = std.mem.trim(u8, self.string_interner.get(previous_member.name), "'\"");
+            if (!std.mem.eql(u8, member_name, previous_name)) continue;
+            if (self.nodeSourceTextEqual(member.type_node, previous_member.type_node)) return true;
+        }
+        return false;
     }
 
     /// TS2717 for duplicate property declarations inside an inline
@@ -189005,6 +189012,51 @@ test "checker: a merged generic interface keeps consistent type params for insta
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: merged generic call signatures share interface params beside method generics" {
+    const s = try newSetup(
+        \\namespace G {
+        \\  interface A<T> { (): string; (x: T): T; }
+        \\  interface A<T> { (x: T, y: number): T; <U>(x: U, y: T): U; }
+        \\  var a: A<boolean>;
+        \\  var r1 = a(true, 2);
+        \\  var r2 = a(1, true);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: derived interface checks numeric members before string index constraints" {
+    const s = try newSetup(
+        \\interface Base {
+        \\  [x: number]: { x: number; y: number };
+        \\  [x: string]: { x: number };
+        \\}
+        \\interface Derived extends Base { 1: { y: number } }
+        \\interface Derived2 extends Base { '1': { y: number } }
+        \\interface Derived3 extends Base { foo: { y: number } }
+        \\interface Derived4 extends Base { foo(): { x: number } }
+        \\interface Derived5 extends Base { 1: { x: number } }
+        \\interface Derived5 extends Base { '1': { x: number } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var messages: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer messages.deinit(T.allocator);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.property_not_assignable_to_index_type) {
+            try messages.append(T.allocator, diagnostic.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 7), messages.items.len);
+    try T.expect(std.mem.indexOf(u8, messages.items[0], "'number' index type") != null);
+    try T.expect(std.mem.indexOf(u8, messages.items[1], "'string' index type") != null);
+    try T.expect(std.mem.indexOf(u8, messages.items[2], "'number' index type") != null);
+    try T.expect(std.mem.indexOf(u8, messages.items[3], "'string' index type") != null);
 }
 
 test "checker: interface arity mismatch fires TS2428 once per declaration" {
