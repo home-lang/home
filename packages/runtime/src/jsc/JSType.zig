@@ -111,80 +111,79 @@ pub const JSType = enum(u8) {
     /// Arbitrary precision integer type for JavaScript BigInt values.
     HeapBigInt = 3,
 
-    /// Heap-allocated double values (new in recent WebKit).
-    HeapDouble = 4,
-
-    /// Heap-allocated int32 values (new in recent WebKit).
-    HeapInt32 = 5,
-
     /// JavaScript Symbol primitive - unique identifiers.
-    Symbol = 6,
+    Symbol = 4,
 
     /// Accessor property descriptor containing getter and/or setter functions.
-    GetterSetter = 7,
+    GetterSetter = 5,
 
     /// Custom native getter/setter implementation for built-in properties.
-    CustomGetterSetter = 8,
+    CustomGetterSetter = 6,
 
     /// Wrapper for native API values exposed to JavaScript.
-    APIValueWrapper = 9,
+    APIValueWrapper = 7,
 
     /// Compiled native code executable for built-in functions.
-    NativeExecutable = 10,
+    NativeExecutable = 8,
 
     /// Compiled executable for top-level program code.
-    ProgramExecutable = 11,
+    ProgramExecutable = 9,
 
     /// Compiled executable for ES6 module code.
-    ModuleProgramExecutable = 12,
+    ModuleProgramExecutable = 10,
 
     /// Compiled executable for eval() expressions.
-    EvalExecutable = 13,
+    EvalExecutable = 11,
 
     /// Compiled executable for function bodies.
-    FunctionExecutable = 14,
+    FunctionExecutable = 12,
 
-    UnlinkedFunctionExecutable = 15,
-    UnlinkedProgramCodeBlock = 16,
-    UnlinkedModuleProgramCodeBlock = 17,
-    UnlinkedEvalCodeBlock = 18,
-    UnlinkedFunctionCodeBlock = 19,
+    UnlinkedFunctionExecutable = 13,
+    UnlinkedProgramCodeBlock = 14,
+    UnlinkedModuleProgramCodeBlock = 15,
+    UnlinkedEvalCodeBlock = 16,
+    UnlinkedFunctionCodeBlock = 17,
 
     /// Compiled bytecode block ready for execution.
-    CodeBlock = 20,
+    CodeBlock = 18,
 
-    JSCellButterfly = 21,
-    JSSourceCode = 22,
+    JSCellButterfly = 19,
+    JSSourceCode = 20,
 
     /// Slim promise reaction (no rejection handler / context payload).
-    SlimPromiseReaction = 23,
+    SlimPromiseReaction = 21,
 
     /// Full promise reaction (carries onFulfilled/onRejected and async context).
-    FullPromiseReaction = 24,
+    FullPromiseReaction = 22,
 
     /// Context object for Promise.all() operations.
-    PromiseAllContext = 25,
+    PromiseAllContext = 23,
 
     /// Global context for Promise.all() (new in recent WebKit).
-    PromiseAllGlobalContext = 26,
+    PromiseAllGlobalContext = 24,
+
+    /// Context used while streaming a WebAssembly module.
+    WebAssemblyStreamingContext = 25,
 
     /// Microtask dispatcher for promise/microtask queue management.
-    JSMicrotaskDispatcher = 27,
+    JSMicrotaskDispatcher = 26,
 
     /// Module loader registry entry (new C++ module loader).
-    ModuleRegistryEntry = 28,
+    ModuleRegistryEntry = 27,
 
     /// Module loading context (new C++ module loader).
-    ModuleLoadingContext = 29,
+    ModuleLoadingContext = 28,
 
     /// Module loader payload (new C++ module loader).
-    ModuleLoaderPayload = 30,
+    ModuleLoaderPayload = 29,
 
     /// Module graph loading state (new C++ module loader).
-    ModuleGraphLoadingState = 31,
+    ModuleGraphLoadingState = 30,
 
     /// JSModuleLoader cell type (new C++ module loader).
-    JSModuleLoader = 32,
+    JSModuleLoader = 31,
+
+    Sentinel = 32,
 
     /// Base JavaScript object type.
     Object = 33,
@@ -298,55 +297,58 @@ pub const JSType = enum(u8) {
     /// Generator object created by generator functions.
     Generator = 75,
 
+    /// Async function generator object used by async generator functions.
+    AsyncFunctionGenerator = 76,
+
     /// Async generator object for asynchronous iteration.
-    AsyncGenerator = 76,
+    AsyncGenerator = 77,
 
     /// Iterator for Array objects.
-    JSArrayIterator = 77,
+    JSArrayIterator = 78,
 
-    Iterator = 78,
-    IteratorHelper = 79,
+    Iterator = 79,
+    IteratorHelper = 80,
 
     /// Iterator for Map objects.
-    MapIterator = 80,
+    MapIterator = 81,
 
     /// Iterator for Set objects.
-    SetIterator = 81,
+    SetIterator = 82,
 
     /// Iterator for String objects.
-    StringIterator = 82,
+    StringIterator = 83,
 
-    WrapForValidIterator = 83,
+    WrapForValidIterator = 84,
 
     /// Iterator for RegExp string matching.
-    RegExpStringIterator = 84,
+    RegExpStringIterator = 85,
 
-    AsyncFromSyncIterator = 85,
+    AsyncFromSyncIterator = 86,
 
     /// JavaScript Promise object for asynchronous operations.
-    JSPromise = 86,
+    JSPromise = 87,
 
     /// JavaScript Map object for key-value storage.
-    Map = 87,
+    Map = 88,
 
     /// JavaScript Set object for unique value storage.
-    Set = 88,
+    Set = 89,
 
     /// WeakMap for weak key-value references.
-    WeakMap = 89,
+    WeakMap = 90,
 
     /// WeakSet for weak value references.
-    WeakSet = 90,
+    WeakSet = 91,
 
-    WebAssemblyModule = 91,
-    WebAssemblyInstance = 92,
-    WebAssemblyGCObject = 93,
+    WebAssemblyModule = 92,
+    WebAssemblyInstance = 93,
+    WebAssemblyGCObject = 94,
 
     /// Boxed String object.
-    StringObject = 94,
+    StringObject = 95,
 
-    DerivedStringObject = 95,
-    InternalFieldTuple = 96,
+    DerivedStringObject = 96,
+    InternalFieldTuple = 97,
 
     MaxJS = 0b11111111,
     Event = 0b11101111,
@@ -384,6 +386,7 @@ pub const JSType = enum(u8) {
             .Int8Array,
             .InternalFunction,
             .JSArrayIterator,
+            .AsyncFunctionGenerator,
             .AsyncGenerator,
             .JSDate,
             .JSFunction,
@@ -419,7 +422,7 @@ pub const JSType = enum(u8) {
 
     pub inline fn isObject(this: JSType) bool {
         // inline constexpr bool isObjectType(JSType type) { return type >= ObjectType; }
-        return @intFromEnum(this) >= @intFromEnum(JSType.Object);
+        return @backingInt(this) >= @backingInt(JSType.Object);
     }
 
     pub fn isFunction(this: JSType) bool {
@@ -529,6 +532,8 @@ pub const JSType = enum(u8) {
             .FullPromiseReaction,
             .PromiseAllContext,
             .PromiseAllGlobalContext,
+            .WebAssemblyStreamingContext,
+            .Sentinel,
             => true,
             else => false,
         };
@@ -646,6 +651,20 @@ test "JSType classifies primitive tags" {
     try std.testing.expect(JSType.StringObject.isStringLike());
     try std.testing.expect(JSType.DerivedStringObject.isStringLike());
     try std.testing.expect(!JSType.Object.isString());
+}
+
+test "JSType matches the linked JavaScriptCore ABI anchors" {
+    const std = @import("std");
+    try std.testing.expectEqual(@as(u8, 4), @backingInt(JSType.Symbol));
+    try std.testing.expectEqual(@as(u8, 25), @backingInt(JSType.WebAssemblyStreamingContext));
+    try std.testing.expectEqual(@as(u8, 32), @backingInt(JSType.Sentinel));
+    try std.testing.expectEqual(@as(u8, 33), @backingInt(JSType.Object));
+    try std.testing.expectEqual(@as(u8, 76), @backingInt(JSType.AsyncFunctionGenerator));
+    try std.testing.expectEqual(@as(u8, 81), @backingInt(JSType.MapIterator));
+    try std.testing.expectEqual(@as(u8, 82), @backingInt(JSType.SetIterator));
+    try std.testing.expectEqual(@as(u8, 87), @backingInt(JSType.JSPromise));
+    try std.testing.expectEqual(@as(u8, 95), @backingInt(JSType.StringObject));
+    try std.testing.expectEqual(@as(u8, 97), @backingInt(JSType.InternalFieldTuple));
 }
 
 test "JSType.isObject uses range check" {

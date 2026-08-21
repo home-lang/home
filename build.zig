@@ -133,6 +133,9 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     // is portable across machines (point these at a locally-built Bun).
     const bun_obj_root = b.graph.environ_map.get("HOME_BUN_OBJ_ROOT") orelse bun_obj_root_default;
     const bun_webkit_lib = b.graph.environ_map.get("HOME_BUN_WEBKIT_LIB") orelse bun_webkit_lib_default;
+    const bun_webkit_root = std.fs.path.dirname(bun_webkit_lib) orelse bun_webkit_lib;
+
+    m.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{bun_webkit_root}) });
 
     // Fork std: filesystem moved to `std.Io.Dir` (io-parameterized).
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -174,6 +177,12 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addCSourceFile(.{
         .file = b.path("packages/runtime/src/native/idna.cpp"),
         .flags = &.{ "-std=c++20", "-Wno-unused-parameter" },
+        .language = .cpp,
+    });
+
+    m.addCSourceFile(.{
+        .file = b.path("packages/runtime/src/native/jstype_abi.cpp"),
+        .flags = &.{"-std=c++20"},
         .language = .cpp,
     });
 

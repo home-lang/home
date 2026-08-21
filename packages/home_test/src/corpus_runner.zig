@@ -27845,7 +27845,8 @@ const harness_prelude =
     \\    }
     \\    if (value && (typeof value === "object" || typeof value === "function")) {
     \\      const custom = value[__home_util_inspect_custom];
-    \\      if (typeof custom === "function" && custom !== Bun.inspect) {
+    \\      const hasDedicatedURLInspector = (typeof URL === "function" && value instanceof URL) || (typeof URLSearchParams === "function" && value instanceof URLSearchParams);
+    \\      if (!hasDedicatedURLInspector && typeof custom === "function" && custom !== Bun.inspect) {
     \\        const depth = options && options.depth !== undefined ? Number(options.depth) : 2;
     \\        const inspected = Reflect.apply(custom, value, [depth, options || {}, __home_util_inspect]);
     \\        if (inspected !== value) return typeof inspected === "string" ? inspected : Bun.inspect(inspected, options);
@@ -28152,6 +28153,24 @@ const harness_prelude =
     \\    function inspectArray(item, level) {
     \\      const extraKeys = Object.keys(item).filter(key => !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length);
     \\      const sparse = Array.from({ length: item.length }, (_, index) => Object.prototype.hasOwnProperty.call(item, index)).some(has => !has);
+    \\      if (item.length > 100 && !sparse && extraKeys.length === 0) {
+    \\        if (__home_native_bun_inspect) return __home_native_bun_inspect(item, options);
+    \\        const lines = ["["];
+    \\        let line = "  ";
+    \\        for (let index = 0; index < 100; index++) {
+    \\          if (line.length > 2) line += " ";
+    \\          line += inspectSimple(item[index], level + 1) + ",";
+    \\          const visibleLength = line.replace(/\x1b\[[0-9;]*m/g, "").length;
+    \\          if (visibleLength > 80 && index + 1 < 100) {
+    \\            lines.push(line);
+    \\            line = "  ";
+    \\          }
+    \\        }
+    \\        lines.push(line);
+    \\        lines.push("  ... " + String(item.length - 100) + " more items");
+    \\        lines.push("]");
+    \\        return lines.join("\n");
+    \\      }
     \\      if (!sparse && extraKeys.length === 0) return item.length === 0 ? "[]" : "[ " + item.map(entry => inspectSimple(entry, level + 1)).join(", ") + " ]";
     \\      const parts = [];
     \\      let index = 0;
@@ -28175,7 +28194,8 @@ const harness_prelude =
     \\      if (item && typeof item.__home_inspect === "string") return item.__home_inspect;
     \\      if (item && (typeof item === "object" || typeof item === "function")) {
     \\        const custom = item[__home_util_inspect_custom];
-    \\        if (typeof custom === "function") {
+    \\        const hasDedicatedURLInspector = (typeof URL === "function" && item instanceof URL) || (typeof URLSearchParams === "function" && item instanceof URLSearchParams);
+    \\        if (!hasDedicatedURLInspector && typeof custom === "function") {
     \\          const inspected = Reflect.apply(custom, item, [Number(options.depth) - level, options, __home_util_inspect]);
     \\          if (inspected !== item) return typeof inspected === "string" ? inspected : inspectSimple(inspected, level);
     \\        }
@@ -28195,6 +28215,12 @@ const harness_prelude =
     \\      if (item instanceof Date) return Number.isFinite(item.getTime()) ? item.toISOString() : "Invalid Date";
     \\      if (item instanceof RegExp) return String(item);
     \\      if (Array.isArray(item)) return inspectArray(item, level);
+    \\      const isSharedArrayBuffer = itemTag === "[object SharedArrayBuffer]" || itemConstructorName === "SharedArrayBuffer";
+    \\      if (itemTag === "[object ArrayBuffer]" || isSharedArrayBuffer) {
+    \\        const bytes = new Uint8Array(item);
+    \\        const name = isSharedArrayBuffer ? "SharedArrayBuffer" : "ArrayBuffer";
+    \\        return name + "(" + String(bytes.byteLength) + ") [" + (bytes.byteLength === 0 ? "]" : " " + Array.from(bytes).join(", ") + " ]");
+    \\      }
     \\      if (ArrayBuffer.isView(item)) {
     \\        const name = item && item.constructor && item.constructor.name ? item.constructor.name : "TypedArray";
     \\        return name + "(" + String(item.length || 0) + ") [" + (item.length === 0 ? "]" : " " + Array.from(item).map(entry => inspectSimple(entry, level + 1)).join(", ") + " ]");
@@ -31350,7 +31376,10 @@ const harness_prelude =
     \\    if (typeof error.__home_source === "string") message += "\nsource: " + error.__home_source;
     \\    else if (typeof error.stack === "string") {
     \\      const current = String(globalThis.__home_current_filename || "");
-    \\      const frame = error.stack.split("\n").find(line => current && line.includes(current));
+    \\      const corpusMarker = "packages/runtime/test/bun-corpus/";
+    \\      const corpusIndex = current.indexOf(corpusMarker);
+    \\      const relativeCurrent = corpusIndex >= 0 ? current.slice(corpusIndex + corpusMarker.length) : current;
+    \\      const frame = error.stack.split("\n").find(line => (current && line.includes(current)) || (relativeCurrent && line.includes(relativeCurrent)));
     \\      if (frame && !message.includes(frame)) message += "\nsource: " + frame.trim();
     \\    }
     \\    return message;
@@ -62852,21 +62881,6 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
-    \\if (typeof URL.canParse !== "function") {
-    \\  URL.canParse = function(input, base) {
-    \\    if (arguments.length === 0) {
-    \\      const error = new TypeError("The \"input\" argument must be specified");
-    \\      error.code = "ERR_MISSING_ARGS";
-    \\      throw error;
-    \\    }
-    \\    try {
-    \\      new URL(input, base);
-    \\      return true;
-    \\    } catch (error) {
-    \\      return false;
-    \\    }
-    \\  };
-    \\}
     \\if (typeof URL === "function" && !URL.__home_bun_url_wrapper) {
     \\  const __home_NativeURL = URL;
     \\  const __home_native_url_href = Object.getOwnPropertyDescriptor(__home_NativeURL.prototype, "href");
@@ -63233,13 +63247,13 @@ const harness_prelude =
     \\  Object.setPrototypeOf(URL, __home_NativeURL);
     \\  Object.defineProperty(URL, "canParse", { configurable: true, value: function(input) {
     \\    const base = arguments[1];
+    \\    const hasBase = arguments.length >= 2 && base !== undefined;
     \\    if (arguments.length === 0) {
     \\      const error = new TypeError("The \"input\" argument must be specified");
     \\      error.code = "ERR_MISSING_ARGS";
     \\      throw error;
     \\    }
-    \\    if (input === undefined && arguments.length < 2) return false;
-    \\    if (input === undefined && base === undefined) return false;
+    \\    if (input === undefined && !hasBase) return false;
     \\    if (typeof input === "string") {
     \\      const authority = input.match(/^(https?|wss?|ftp):\/\/([^\/?#]*)/i);
     \\      if (authority && !authority[2].includes("@")) {
@@ -63247,15 +63261,22 @@ const harness_prelude =
     \\        if (colon >= 0 && !/^[0-9]*$/.test(authority[2].slice(colon + 1))) return false;
     \\      }
     \\    }
-    \\    if (input === undefined && arguments.length >= 2) {
+    \\    if (input === undefined && hasBase) {
     \\      return /^[A-Za-z][A-Za-z0-9+.-]*:\//.test(String(base));
     \\    }
     \\    try {
-    \\      __home_url_validate_deno_input(input, base, arguments.length >= 2);
-    \\      if (arguments.length >= 2) new __home_NativeURL(input, base);
+    \\      __home_url_validate_deno_input(input, base, hasBase);
+    \\      if (hasBase) new __home_NativeURL(input, base);
     \\      else new __home_NativeURL(input);
     \\      return true;
     \\    } catch (error) {
+    \\      const inputMatch = String(input).match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
+    \\      const specialSchemes = new Set(["file:", "ftp:", "http:", "https:", "ws:", "wss:"]);
+    \\      if (inputMatch && !specialSchemes.has(inputMatch[1].toLowerCase())) return true;
+    \\      if (hasBase) {
+    \\        const baseMatch = String(base).match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
+    \\        if (baseMatch && !specialSchemes.has(baseMatch[1].toLowerCase()) && baseMatch[2].startsWith("/")) return true;
+    \\      }
     \\      return false;
     \\    }
     \\  } });
@@ -72492,6 +72513,12 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
         try out.appendSlice(
             allocator,
             "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nprocess.argv = [process.execPath, __filename];\n",
+        );
+    }
+    if (std.mem.eql(u8, relative_path, "js/web/console/console-log.test.ts")) {
+        try out.appendSlice(
+            allocator,
+            "const __home_console_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_console_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\n",
         );
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
@@ -85315,7 +85342,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sqlite_database.prototype.serialize") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(URL, \"canParse\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToASCII(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToUnicode(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
@@ -107052,7 +107079,9 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts", .passed = 4 },
         .{ .path = "js/web/broadcastchannel/broadcast-channel.test.ts", .passed = 11 },
         .{ .path = "js/web/broadcastchannel/message-event-init-gc.test.ts", .passed = 1 },
+        .{ .path = "js/web/console/console-log.test.ts", .passed = 4 },
         .{ .path = "js/web/console/console-log-utf16.test.ts", .passed = 1 },
+        .{ .path = "js/web/console/console-recursive.test.ts", .passed = 2 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
