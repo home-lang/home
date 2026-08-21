@@ -99795,6 +99795,7 @@ pub const Checker = struct {
                 }
                 if (is_synth_update and self.updateOperandRequiresVariableDiagnostic(a.target, target_t)) {
                     try self.reportUpdateOperandRequiresVariable(a.target);
+                    assignment_target_diag_fired = true;
                 }
                 if (self.expressionIsOptionalChain(a.target)) {
                     // Distinguish synthetic update expressions
@@ -100202,7 +100203,10 @@ pub const Checker = struct {
                                 !value_is_untyped_uninit and
                                 !self.typeIsExactNullish(value_t) and
                                 self.isArithmeticOperandAllowed(value_t);
-                            if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
+                            if (assignment_target_diag_fired) {
+                                // Reference-target diagnostics win once the
+                                // update operand's arithmetic type is valid.
+                            } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
                             } else if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
                                 try self.reportNullishRelationalOperand(a.target, target_t);
@@ -138900,7 +138904,7 @@ pub const Checker = struct {
     }
 
     fn updateOperandRequiresVariableDiagnostic(self: *Checker, target: NodeId, target_t: TypeId) bool {
-        if (self.updateOperandIsEnumBinaryExpression(target)) return false;
+        if (self.updateOperandIsEnumBinaryExpression(target)) return true;
         if (self.typeIsExactUndefined(target_t)) return false;
         if (self.nodeSourceTextIs(target, "undefined")) return false;
         return switch (self.hir.kindOf(target)) {
@@ -248764,4 +248768,15 @@ test "checker: computed enum updates respect the readonly reverse index" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_index_signature));
+}
+
+test "checker: enum arithmetic updates require a writable reference" {
+    const s = try newSetup(
+        \\enum E { A, B }
+        \\--(E["A"] + E.B);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.update_operand_not_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_operand_type));
 }
