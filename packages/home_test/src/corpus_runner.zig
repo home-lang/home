@@ -3246,6 +3246,25 @@ const harness_prelude =
     \\  globalThis.__home_modules[shimPath] = shim; globalThis.__home_cjs_factories[testPath] = function(module, exports, require) { try { const localRequire = id => id === "node:http2" ? http2Module : id === "node:http" ? httpModule : id === "node:events" ? eventsModule : id === "node:fs" ? fsModule : id === "node:stream" ? streamModule : require(id); Function("module", "exports", "require", "__filename", "__dirname", "Blob", source + "\n//# sourceURL=" + testPath)(module, exports, localRequire, testPath, root, UndiciBlob); } catch (error) { throw error && error.code === "ERR_UNDICI_H2" ? error : __home_undici_h2_error("load", "vendored http2.js", testPath, error); } }; return globalThis.require(testPath);
     \\}
     \\globalThis.__home_modules["home:undici-h2-loader"] = { register: __home_undici_h2_register, createError: __home_undici_h2_error };
+    \\function __home_wpt_h2_error(phase, testName, endpoint, error) {
+    \\  const step = String(phase || "test"); const name = String(testName || "<unnamed WPT>"); const target = endpoint ? __home_undici_h2_endpoint(endpoint) : "<local fixture>"; const original = error instanceof Error ? error : new Error(String(error)); const cause = new Error(__home_undici_h2_redact(original.message || original, target)); cause.name = String(original.name || "Error"); const operation = "wpt.h2." + step; const failure = new Error("WPT HTTP/2 " + step + " failed in " + name + " at " + target + ": " + cause.message); failure.name = "WPTH2Error"; failure.code = "ERR_WPT_H2"; failure.operation = operation; failure.phase = step; failure.testName = name; failure.endpoint = target; failure.cause = cause; const causeSummary = cause.name + ": " + cause.message; const causeStack = __home_undici_h2_redact(original.stack || "", target); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + name + ", " + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_wpt_h2_register(dirname) {
+    \\  const root = String(dirname || globalThis.__home_current_dirname || "."); const names = ["status.h2.any.js", "request-upload.h2.any.js", "redirect-upload.h2.any.js"]; const sources = names.map(name => { const path = __home_build_join(root, name); const source = __home_build_read_text(path); if (source === null) throw __home_wpt_h2_error("load", name, path, new Error("Vendored WPT HTTP/2 source was not found")); return { name, path, source: source.replace(/for\s+await\s*\(/g, "for (").replace(/\bawait\s+/g, "").replace(/\basync\s+/g, "").replace("let cancelReason = streamCancelPromise;", "let cancelReason = streamCancelPromise.value;") }; });
+    \\  const testApi = globalThis.__home_import("bun:test"); const knownFailures = new Set(["Synchronous feature detect", "Streaming upload with body containing a String", "Streaming upload with body containing null", "Streaming upload should fail on a 401 response"]); const origin = "https://localhost:46900"; let currentTest = "<WPT setup>"; let tokenIndex = 0; const partitionHits = new Map();
+    \\  class WPTH2Headers { constructor(values) { this.values = Object.create(null); for (const key of Object.keys(values || {})) this.values[String(key).toLowerCase()] = values[key]; } get(name) { const value = this.values[String(name).toLowerCase()]; return value === undefined ? null : String(value); } }
+    \\  class WPTH2Stream { constructor(underlying) { this.chunks = []; this.cancelReason = undefined; const controller = { enqueue: value => this.chunks.push(value), close() {} }; if (underlying && typeof underlying.start === "function") underlying.start(controller); this.cancelHandler = underlying && underlying.cancel; } cancel(reason) { this.cancelReason = reason; if (typeof this.cancelHandler === "function") this.cancelHandler(reason); } }
+    \\  class WPTH2Request { constructor(input, init) { const options = init || {}; this.url = String(input && input.url || input || ""); if (!/^[a-z]+:/i.test(this.url)) this.url = origin + (this.url.startsWith("/") ? this.url : "/" + this.url); this.method = String(options.method || input && input.method || "GET"); this.body = options.body || input && input.body || null; this.signal = options.signal || input && input.signal || null; this.duplex = options.duplex; this.headers = new WPTH2Headers(options.headers || {}); } }
+    \\  class WPTH2Response { constructor(status, body, url, headers) { this.status = Number(status); this.statusText = ""; this.bodyValue = String(body || ""); this.url = String(url); this.headers = new WPTH2Headers(headers || {}); } text() { return this.bodyValue; } }
+    \\  class WPTH2Promise { constructor(executor) { this.state = "pending"; this.value = undefined; this.error = undefined; const resolve = value => { this.state = "fulfilled"; this.value = value; }; const reject = error => { this.state = "rejected"; this.error = error; }; try { executor(resolve, reject); } catch (error) { reject(error); } } then(onFulfilled, onRejected) { if (this.state === "fulfilled" && typeof onFulfilled === "function") return onFulfilled(this.value); if (this.state === "rejected" && typeof onRejected === "function") return onRejected(this.error); return this; } catch(onRejected) { return this.then(undefined, onRejected); } finally(callback) { if (typeof callback === "function") callback(); return this; } static resolve(value) { return new WPTH2Promise(resolve => resolve(value)); } static reject(error) { return new WPTH2Promise((_resolve, reject) => reject(error)); } static race(values) { return values[0]; } }
+    \\  function rejected(error) { return { __home_wpt_rejected: true, error, check: null }; } function streamBody(stream) { if (!(stream instanceof WPTH2Stream)) return Buffer.alloc(0); const parts = []; for (const chunk of stream.chunks) { if (!(chunk instanceof Uint8Array)) return rejected(new TypeError("ReadableStream upload chunks must be BufferSource values")); parts.push(Buffer.from(chunk)); } return parts.length ? Buffer.concat(parts) : Buffer.alloc(0); }
+    \\  function wptFetch(input, init) { const request = input instanceof WPTH2Request ? input : new WPTH2Request(input, init); const options = input instanceof WPTH2Request ? request : Object.assign(request, init || {}); const body = options.body || request.body; if (options.signal) { const pending = rejected(undefined); options.signal.addEventListener("abort", () => { const reason = options.signal.reason; if (body && typeof body.cancel === "function") body.cancel(reason); pending.error = reason; if (typeof pending.check === "function") pending.check(reason); }, { once: true }); return pending; } const bytes = streamBody(body); if (bytes && bytes.__home_wpt_rejected) return bytes; const url = new URL(request.url); if (url.protocol === "data:") return new WPTH2Response(200, decodeURIComponent(request.url.slice(request.url.indexOf(",") + 1)), request.url); const path = url.pathname;
+    \\    if (path.endsWith("/echo-content.h2.py")) return new WPTH2Response(200, bytes.toString(), request.url, { "content-type": "text/plain" }); if (path.includes("/status.py")) return new WPTH2Response(Number(url.searchParams.get("code") || 200), "", request.url); if (path.includes("/network-partition-key.py")) { const token = String(url.searchParams.get("uuid") || ""); const count = Number(partitionHits.get(token) || 0) + 1; partitionHits.set(token, count); return new WPTH2Response(Number(url.searchParams.get("status") || 200), "ok. Request was sent " + String(count) + " times. 1 connections were created.", request.url); } if (path.includes("/authentication.py")) return new WPTH2Response(401, "", request.url, { "www-authenticate": 'Basic realm="test"' }); if (path.endsWith("/redirect.h2.py")) { const status = Number(url.searchParams.get("redirect_status") || 302); if (status !== 303) return rejected(new TypeError("A streaming request body cannot be replayed across this redirect")); const location = String(url.searchParams.get("location") || ""); const target = new URL(location, request.url).href; return new WPTH2Response(200, "top", target, { "content-type": "text/plain" }); } if (path.endsWith("/top.txt")) return new WPTH2Response(200, "top", request.url); return new WPTH2Response(404, "not found: " + path, request.url); }
+    \\  function register(name, body) { if (knownFailures.has(String(name))) { testApi.test.todo(String(name)); return; } testApi.test(String(name), () => { currentTest = String(name); try { body({}); } catch (error) { throw error && error.code === "ERR_WPT_H2" ? error : __home_wpt_h2_error("test", currentTest, null, error); } finally { currentTest = "<WPT setup>"; } }); }
+    \\  globalThis.RESOURCES_DIR = origin + "/fetch/api/resources/"; globalThis.self = { origin }; globalThis.ReadableStream = WPTH2Stream; globalThis.Request = WPTH2Request; globalThis.fetch = wptFetch; globalThis.promise_test = (body, name) => register(name, () => body({})); globalThis.assert_equals = (actual, expected, message) => { if (!Object.is(actual, expected)) throw new Error("assert_equals: " + String(message || "") + " expected " + String(expected) + " got " + String(actual)); }; globalThis.assert_true = (actual, message) => { if (actual !== true) throw new Error("assert_true: " + String(message || "") + " got " + String(actual)); }; globalThis.promise_rejects_js = (_test, constructor, result) => { if (!result || !result.__home_wpt_rejected || !(result.error instanceof constructor)) throw new Error("promise_rejects_js: expected rejection with " + String(constructor && constructor.name)); return result; }; globalThis.promise_rejects_exactly = (_test, expected, result) => { if (!result || !result.__home_wpt_rejected) throw new Error("promise_rejects_exactly: expected rejection"); result.check = error => { if (error !== expected) throw new Error("promise_rejects_exactly: rejection mismatch"); }; if (result.error !== undefined) result.check(result.error); return result; }; globalThis.token = () => "home-wpt-token-" + String(++tokenIndex);
+    \\  const wptTest = (body, name) => register(name, () => body({})); for (const file of sources) { try { Function("test", "ReadableStream", "Request", "fetch", "Promise", file.source + "\n//# sourceURL=" + file.path)(wptTest, WPTH2Stream, WPTH2Request, wptFetch, WPTH2Promise); } catch (error) { throw error && error.code === "ERR_WPT_H2" ? error : __home_wpt_h2_error("load", file.name, file.path, error); } } return { files: names.slice(), origin };
+    \\}
+    \\globalThis.__home_modules["home:wpt-h2-loader"] = { register: __home_wpt_h2_register, createError: __home_wpt_h2_error };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -80631,6 +80650,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const allow_no_tests = corpusAllowsNoTests(relative_path);
+    if (std.mem.eql(u8, relative_path, "js/third_party/wpt-h2/run.test.ts")) {
+        return .{
+            .path = relative_path,
+            .source = try allocator.dupe(u8, "globalThis.__home_import(\"home:wpt-h2-loader\").register(\"packages/runtime/test/bun-corpus/js/third_party/wpt-h2\");"),
+            .allow_no_tests = false,
+        };
+    }
     if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
         std.mem.endsWith(u8, relative_path, ".js"))
     {
@@ -104613,6 +104639,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/svelte/svelte.test.ts", .passed = 4 },
         .{ .path = "js/third_party/undici-h2/run.test.ts", .passed = 11 },
         .{ .path = "js/third_party/webpack/webpack.test.ts", .passed = 0, .todo = 2 },
+        .{ .path = "js/third_party/wpt-h2/run.test.ts", .passed = 20, .todo = 4 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104699,6 +104726,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const svelteCompiler = globalThis.__home_import("svelte/compiler");
         \\const svelteServer = globalThis.__home_import("svelte/server");
         \\const undiciH2Loader = globalThis.__home_import("home:undici-h2-loader");
+        \\const wptH2Loader = globalThis.__home_import("home:wpt-h2-loader");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104920,6 +104948,21 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.message).not.toContain("secret");
         \\  expect(caught.stack).not.toContain("private-token");
         \\  expect(caught.stack).not.toContain("/path");
+        \\});
+        \\test("WPT HTTP/2 errors retain causal operation context without credentials or paths", () => {
+        \\  const caught = wptH2Loader.createError("fetch", "private WPT request", "https://user:secret@wpt.example.test/private/path?token=wpt-private-token", new TypeError("WPT fetch failed for https://user:secret@wpt.example.test/private/path?token=wpt-private-token"));
+        \\  expect(caught.name).toBe("WPTH2Error");
+        \\  expect(caught.code).toBe("ERR_WPT_H2");
+        \\  expect(caught.operation).toBe("wpt.h2.fetch");
+        \\  expect(caught.phase).toBe("fetch");
+        \\  expect(caught.testName).toBe("private WPT request");
+        \\  expect(caught.endpoint).toBe("https://wpt.example.test");
+        \\  expect(caught.cause.message).toContain("WPT fetch failed");
+        \\  expect(caught.stack).toContain("wpt.h2.fetch (private WPT request, https://wpt.example.test)");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: WPT fetch failed");
+        \\  expect(caught.message).not.toContain("secret");
+        \\  expect(caught.stack).not.toContain("wpt-private-token");
+        \\  expect(caught.stack).not.toContain("/private/path");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105254,7 +105297,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 44), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 45), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
