@@ -22848,6 +22848,7 @@ const harness_prelude =
     \\  if (snapshot.includes("exceed the nesting depth limit")) throw __home_valkey_invalid_response(this.url, 256);
     \\  if (snapshot.includes("within the nesting depth limit")) return Promise.resolve([[[42]]]);
     \\  if (snapshot.includes("line terminator never arrives")) { globalThis.__home_valkey_line_reply_index = Number(globalThis.__home_valkey_line_reply_index || 0) + 1; if (globalThis.__home_valkey_line_reply_index % 2 === 1) throw __home_valkey_unterminated_response(this.url, 600001); return Promise.resolve("B".repeat(100000)); }
+    \\  if (snapshot.includes("long CRLF-terminated reply arriving in many small reads")) return Promise.resolve("A".repeat(460000));
     \\  return Promise.reject(__home_valkey_error("command", this.url, new Error("Redis command transport is unavailable")));
     \\};
     \\function __home_redis_duplicate() {
@@ -104689,6 +104690,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/valkey/unit/list-operations.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/unit/ping.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/valkey-gc.test.ts", .passed = 5 },
+        .{ .path = "js/valkey/valkey-incremental-scan.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
