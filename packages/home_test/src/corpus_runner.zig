@@ -3000,6 +3000,38 @@ const harness_prelude =
     \\function __home_MongoClient(connectionString) { this.__home_connection_string = String(connectionString || ""); }
     \\__home_MongoClient.prototype.connect = function() { return Promise.reject(__home_mongodb_connect_error(this.__home_connection_string, new Error("native MongoDB TLS transport is unavailable in the bootstrap runtime"))); };
     \\globalThis.__home_modules["mongodb"] = { MongoClient: __home_MongoClient };
+    \\function __home_pg_connection_options(value) {
+    \\  const input = value && typeof value === "object" ? Object.assign({}, value) : { connectionString: String(value || "") };
+    \\  const connectionString = String(input.connectionString || "");
+    \\  if (connectionString) {
+    \\    try {
+    \\      const parsed = new URL(connectionString);
+    \\      if (input.host === undefined) input.host = parsed.hostname;
+    \\      if (input.port === undefined) input.port = parsed.port ? Number(parsed.port) : 5432;
+    \\      if (input.user === undefined) input.user = decodeURIComponent(parsed.username || "");
+    \\      if (input.password === undefined) input.password = decodeURIComponent(parsed.password || "");
+    \\      if (input.database === undefined) input.database = decodeURIComponent(String(parsed.pathname || "").replace(/^\/+/, ""));
+    \\    } catch (error) {}
+    \\  }
+    \\  return input;
+    \\}
+    \\function __home_pg_operation_error(config, phase, error) {
+    \\  const options = __home_pg_connection_options(config); const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "connect");
+    \\  const endpoint = String(options.host || "<unconfigured>") + ":" + String(Number(options.port) || 5432); const database = String(options.database || "<unconfigured>");
+    \\  const failure = new Error("PostgreSQL " + step + " failed for " + endpoint + "/" + database + ": " + String(cause.message || cause)); failure.name = "PGConnectionError";
+    \\  failure.code = step === "query" ? "ERR_PG_QUERY" : step === "pool" ? "ERR_PG_POOL" : "ERR_PG_CONNECT"; failure.operation = "pg." + step; failure.phase = step; failure.endpoint = endpoint; failure.database = database; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at pg." + step + " (" + endpoint + "/" + database + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_PGClient(config) { this.options = __home_pg_connection_options(config); this.ended = false; }
+    \\__home_PGClient.prototype.connect = function() { return Promise.reject(__home_pg_operation_error(this.options, "connect", new Error("native node-postgres TLS transport is unavailable in the bootstrap runtime"))); };
+    \\__home_PGClient.prototype.query = function() { return Promise.reject(__home_pg_operation_error(this.options, "query", new Error("node-postgres client is not connected"))); };
+    \\__home_PGClient.prototype.end = function() { this.ended = true; return Promise.resolve(undefined); };
+    \\function __home_PGPool(config) { this.options = __home_pg_connection_options(config); this.ended = false; }
+    \\__home_PGPool.prototype.query = function() { return Promise.reject(__home_pg_operation_error(this.options, "pool", new Error("native node-postgres TLS pool is unavailable in the bootstrap runtime"))); };
+    \\__home_PGPool.prototype.end = function() { this.ended = true; return Promise.resolve(undefined); };
+    \\globalThis.__home_modules["pg"] = { Client: __home_PGClient, Pool: __home_PGPool };
+    \\globalThis.__home_modules["pg-connection-string"] = { parse: __home_pg_connection_options };
     \\function __home_spawn_hono_default_export_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -72318,6 +72350,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from \"home:next-auth-fixture\";", .replacement = "const { createError: createNextAuthFixtureError, validate: validateNextAuthFixture } = globalThis.__home_import(\"home:next-auth-fixture\");" },
         .{ .needle = "import net, { AddressInfo } from \"node:net\";", .replacement = "const net = globalThis.__home_import(\"node:net\");" },
         .{ .needle = "import { fromNodeSocket } from \"pg-gateway/node\";", .replacement = "const { fromNodeSocket } = globalThis.__home_import(\"pg-gateway/node\");" },
+        .{ .needle = "import { Client, Pool } from \"pg\";", .replacement = "const { Client, Pool } = globalThis.__home_import(\"pg\");" },
+        .{ .needle = "import { Client as PGClient } from \"pg\";", .replacement = "const { Client: PGClient } = globalThis.__home_import(\"pg\");" },
+        .{ .needle = "import { parse } from \"pg-connection-string\";", .replacement = "const { parse } = globalThis.__home_import(\"pg-connection-string\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104007,6 +104042,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/next-auth/next-auth.test.ts", .passed = 1 },
         .{ .path = "js/third_party/nodemailer/nodemailer.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/pg-gateway/pglite.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/pg/pg.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104079,6 +104115,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { MongoClient } from "mongodb";
         \\import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from "home:next-auth-fixture";
         \\import { fromNodeSocket } from "pg-gateway/node";
+        \\import { Client as PGClient } from "pg";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104149,6 +104186,22 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.cause.message).toBe("protocol query exploded");
         \\  expect(caught.stack).toContain("pg-gateway.query (127.0.0.1:55432/home");
         \\  expect(caught.stack).toContain("Caused by: TypeError: protocol query exploded");
+        \\});
+        \\test("node-postgres connection errors retain redacted TLS context", async () => {
+        \\  const client = new PGClient({ connectionString: "postgres://user:super-secret@db.example.test:55432/home", ssl: { rejectUnauthorized: false } });
+        \\  let caught;
+        \\  try { await client.connect(); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("PGConnectionError");
+        \\  expect(caught.code).toBe("ERR_PG_CONNECT");
+        \\  expect(caught.operation).toBe("pg.connect");
+        \\  expect(caught.phase).toBe("connect");
+        \\  expect(caught.endpoint).toBe("db.example.test:55432");
+        \\  expect(caught.database).toBe("home");
+        \\  expect(caught.cause.message).toContain("native node-postgres TLS transport");
+        \\  expect(caught.stack).toContain("pg.connect (db.example.test:55432/home");
+        \\  expect(caught.stack).toContain("Caused by: Error: native node-postgres TLS transport");
+        \\  expect(caught.message).not.toContain("super-secret");
+        \\  expect(caught.stack).not.toContain("super-secret");
         \\});
         \\test("http2-wrapper errors retain negotiation context", async () => {
         \\  let caught;
@@ -104372,7 +104425,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 24), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 25), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
