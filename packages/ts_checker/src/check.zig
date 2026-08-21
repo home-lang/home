@@ -15653,7 +15653,7 @@ pub const Checker = struct {
             }
         }
         defer if (type_params.len > 0) self.popNarrowScope();
-        try self.walkFnBody(node);
+        try self.walkFnBody(node, try self.jsDocDeclaredReturnForFunction(node));
     }
 
     fn checkFnSignatureOnlyNoBody(self: *Checker, node: NodeId) CheckError!void {
@@ -16869,9 +16869,15 @@ pub const Checker = struct {
         _ = try self.checkFnSignatureOnly(node);
         try self.seedRepeatedVarsFromPolymorphicThisParameters(node);
         const f = hir_mod.fnDeclOf(self.hir, node);
+        const jsdoc_declared_return = if (f.return_type == hir_mod.none_node_id)
+            try self.jsDocDeclaredReturnForFunction(node)
+        else
+            null;
         if (f.return_type == hir_mod.none_node_id) {
-            if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-                if (jsdoc_return.origin != .contextual_type) {
+            if (jsdoc_declared_return) |jsdoc_return| {
+                if (jsdoc_return.origin != .contextual_type and
+                    jsdoc_return.origin != .contextual_type_owner)
+                {
                     try self.refineSignatureReturn(node, jsdoc_return.type);
                 }
             }
@@ -16893,7 +16899,7 @@ pub const Checker = struct {
         try self.checkFnParameterDuplicateNames(node);
         try self.checkArgumentsCollisionWithRestParameter(node);
         try self.checkAsyncReturnTypeIsPromise(node);
-        try self.walkFnBody(node);
+        try self.walkFnBody(node, jsdoc_declared_return);
         try self.checkGeneratorReturnProtocolCompatibility(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
@@ -17128,7 +17134,8 @@ pub const Checker = struct {
         // A named callable supplied through `@type` is a contextual target,
         // not an explicit return annotation. Infer the async Promise return
         // and let ordinary function assignability compare it with the target.
-        if (jsdoc_return.origin == .contextual_type) return;
+        if (jsdoc_return.origin == .contextual_type or
+            jsdoc_return.origin == .contextual_type_owner) return;
         if (self.target_emit_es5) {
             const display = (try self.allocSimpleTypeName(jsdoc_return.type)) orelse "unknown";
             const msg = try std.fmt.allocPrint(
@@ -17477,10 +17484,12 @@ pub const Checker = struct {
             declared_t = self.lowererLowerWithTypeParams(f.return_type) catch return;
             has_annotation = true;
         } else if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-            report_node = node;
-            report_pos = jsdoc_return.pos;
-            declared_t = jsdoc_return.type;
-            has_annotation = true;
+            if (jsdoc_return.origin != .contextual_type_owner) {
+                report_node = node;
+                report_pos = jsdoc_return.pos;
+                declared_t = jsdoc_return.type;
+                has_annotation = true;
+            }
         }
 
         if (has_annotation) {
@@ -17608,6 +17617,7 @@ pub const Checker = struct {
             returns_tag,
             inline_function_type,
             contextual_type,
+            contextual_type_owner,
         };
     };
 
@@ -17616,7 +17626,10 @@ pub const Checker = struct {
         if (!self.virtualSectionIsJsLike(node)) return null;
         const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
-        const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return null;
+        const direct_jsdoc = self.leadingJsDocBodyWithStart(src, span.start);
+        const jsdoc = direct_jsdoc orelse
+            self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, node) orelse return null;
+        const body = jsdoc.body;
         if (std.mem.indexOf(u8, body, "@callback") != null) return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
@@ -17640,6 +17653,8 @@ pub const Checker = struct {
                     .pos = pos,
                     .origin = if (jsDocFunctionOpenParen(type_text) != null)
                         .inline_function_type
+                    else if (self.jsDocBlockBelongsToFunctionOwner(node, jsdoc.start))
+                        .contextual_type_owner
                     else
                         .contextual_type,
                 };
@@ -18025,7 +18040,11 @@ pub const Checker = struct {
     /// `checkFnDecl` so callers (e.g. `checkClassDecl`) can run the
     /// signature pass first, register the enclosing scope's
     /// `this`-type, and only then walk the body.
-    fn walkFnBody(self: *Checker, node: NodeId) CheckError!void {
+    fn walkFnBody(
+        self: *Checker,
+        node: NodeId,
+        cached_jsdoc_return: ?JsDocDeclaredReturn,
+    ) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.body == hir_mod.none_node_id) return;
         // Unused type parameters are reported only on the
@@ -18180,12 +18199,12 @@ pub const Checker = struct {
                 !self.typeNodeContainsInvalidThisType(f.return_type))
                 self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none
             else blk: {
-                if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return| {
-                    const contextual_function_expression = jsdoc_return.origin == .contextual_type and
-                        self.hir.kindOf(node) == .fn_expr;
-                    if (!contextual_function_expression and
-                        !(f.flags.is_async and jsdoc_return.origin == .contextual_type))
-                    {
+                const jsdoc_return_for_body: ?JsDocDeclaredReturn = if (cached_jsdoc_return) |jsdoc_return|
+                    jsdoc_return
+                else
+                    try self.jsDocDeclaredReturnForFunction(node);
+                if (jsdoc_return_for_body) |jsdoc_return| {
+                    if (jsdoc_return.origin != .contextual_type_owner) {
                         declared_from_jsdoc = true;
                         break :blk jsdoc_return.type;
                     }
@@ -34223,7 +34242,8 @@ pub const Checker = struct {
         }
         const contextual_jsdoc_is_async_target = if (f.flags.is_async)
             if (try self.jsDocDeclaredReturnForFunction(node)) |jsdoc_return|
-                jsdoc_return.origin == .contextual_type
+                jsdoc_return.origin == .contextual_type or
+                    jsdoc_return.origin == .contextual_type_owner
             else
                 false
         else
@@ -84405,6 +84425,16 @@ pub const Checker = struct {
         return has_type_marker and !saw_type_tag;
     }
 
+    fn jsDocBlockBelongsToFunctionOwner(self: *Checker, fn_node: NodeId, jsdoc_start: usize) bool {
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return false;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .var_decl and parent_kind != .let_decl and parent_kind != .const_decl) return false;
+        const variable = hir_mod.varDeclOf(self.hir, parent);
+        if (variable.init != fn_node) return false;
+        return jsdoc_start < self.hir.spanOf(parent).start;
+    }
+
     fn functionOrOwnerHasMalformedClosureJsDocTypeTag(self: *Checker, fn_node: NodeId) bool {
         const src = self.source orelse return false;
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
@@ -91488,6 +91518,15 @@ pub const Checker = struct {
     fn leadingJsDocBodyForFunctionOrOwnerWithStart(self: *Checker, src: []const u8, fn_node: NodeId) ?JsDocBody {
         const span = self.hir.spanOf(fn_node);
         if (self.leadingJsDocBodyWithStart(src, span.start)) |jsdoc| return jsdoc;
+        const node_kind = self.hir.kindOf(fn_node);
+        if (node_kind == .fn_decl or node_kind == .fn_expr or node_kind == .arrow_fn) {
+            const function = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (function.flags.is_async) {
+                if (asyncModifierStartBeforeFunction(src, span.start)) |async_start| {
+                    if (self.leadingJsDocBodyWithStart(src, async_start)) |jsdoc| return jsdoc;
+                }
+            }
+        }
 
         const parent = self.hir.parentOf(fn_node);
         if (parent == hir_mod.none_node_id) return null;
@@ -91520,6 +91559,16 @@ pub const Checker = struct {
             return null;
         }
         return null;
+    }
+
+    fn asyncModifierStartBeforeFunction(src: []const u8, function_start: u32) ?u32 {
+        var end = @min(@as(usize, function_start), src.len);
+        while (end > 0 and std.ascii.isWhitespace(src[end - 1])) : (end -= 1) {}
+        if (end < "async".len) return null;
+        const start = end - "async".len;
+        if (!std.mem.eql(u8, src[start..end], "async")) return null;
+        if (start > 0 and isJsDocIdentChar(src[start - 1])) return null;
+        return @intCast(start);
     }
 
     fn varStatementStartForDeclarator(self: *Checker, src: []const u8, decl_start: u32) ?u32 {
@@ -231648,6 +231697,39 @@ test "checker: TS2534 reports reachable endpoint in never-returning function" {
     try T.expectEqual(@as(usize, 2), count_2534);
     try T.expectEqual(@as(usize, 0), count_2355);
     try T.expect(saw_never_anchor);
+}
+
+test "checker: JSDoc callback returns distinguish direct and variable ownership" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: callback.js
+        \\/**
+        \\ * @callback PromiseCallback
+        \\ * @returns {Promise<number>}
+        \\ */
+        \\/** @type {PromiseCallback} */
+        \\function directMissing() {}
+        \\/** @type {PromiseCallback} */
+        \\async function directAsync() { return "bad"; }
+        \\var inlineMissing = /** @type {PromiseCallback} */ function() {};
+        \\/** @type {PromiseCallback} */
+        \\var ownedMissing = function() {};
+        \\/**
+        \\ * @callback NeverCallback
+        \\ * @returns {never}
+        \\ */
+        \\/** @type {NeverCallback} */
+        \\function directNever() {}
+        \\var inlineNever = /** @type {NeverCallback} */ function() {};
+        \\/** @type {NeverCallback} */
+        \\var ownedNever = function() {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.fn_must_return_value));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.fn_returning_never_reachable_endpoint));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: reachabilityChecks7 async TS7030 + TS2355 fire at the right anchors" {
