@@ -58106,6 +58106,11 @@ const harness_prelude =
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
     \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, ALREADY_EXISTS: 6, PERMISSION_DENIED: 7, RESOURCE_EXHAUSTED: 8, FAILED_PRECONDITION: 9, ABORTED: 10, OUT_OF_RANGE: 11, UNIMPLEMENTED: 12, INTERNAL: 13, UNAVAILABLE: 14, DATA_LOSS: 15, UNAUTHENTICATED: 16 };
+    \\function __home_grpc_StatusBuilder() { this.__home_code = undefined; this.__home_details = undefined; this.__home_metadata = undefined; }
+    \\__home_grpc_StatusBuilder.prototype.withCode = function(code) { this.__home_code = code; return this; };
+    \\__home_grpc_StatusBuilder.prototype.withDetails = function(details) { this.__home_details = details; return this; };
+    \\__home_grpc_StatusBuilder.prototype.withMetadata = function(metadata) { this.__home_metadata = metadata; return this; };
+    \\__home_grpc_StatusBuilder.prototype.build = function() { const status = {}; if (this.__home_code !== undefined) status.code = this.__home_code; if (this.__home_details !== undefined) status.details = this.__home_details; if (this.__home_metadata !== undefined) status.metadata = this.__home_metadata; return status; };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
     \\const __home_grpc_connectivity_state = { IDLE: 0, CONNECTING: 1, READY: 2, TRANSIENT_FAILURE: 3, SHUTDOWN: 4 };
     \\const __home_grpc_log_verbosity = { DEBUG: 0, INFO: 1, ERROR: 2, NONE: 3 };
@@ -59437,6 +59442,7 @@ const harness_prelude =
     \\  makeGenericClientConstructor: __home_grpc_make_client_constructor,
     \\  Server: __home_grpc_Server,
     \\  ServerCredentials: __home_grpc_ServerCredentials,
+    \\  StatusBuilder: __home_grpc_StatusBuilder,
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  connectivityState: __home_grpc_connectivity_state,
@@ -59466,7 +59472,8 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/call-credentials"] = { CallCredentials: __home_grpc_CallCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/channel-credentials"] = { ChannelCredentials: __home_grpc_ChannelCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/make-client"] = { ServiceClient: __home_grpc_EchoService, ServiceClientConstructor: __home_grpc_EchoService };
-    \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Metadata: __home_grpc_Metadata, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials, StatusBuilder: __home_grpc_StatusBuilder };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/status-builder"] = { StatusBuilder: __home_grpc_StatusBuilder };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/logging"] = __home_grpc_logging;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/metadata"] = { Metadata: __home_grpc_Metadata };
@@ -72072,6 +72079,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import {\n  PickFirstLoadBalancer,\n  PickFirstLoadBalancingConfig,\n  shuffled,\n} from \"@grpc/grpc-js/build/src/load-balancer-pick-first\";", .replacement = "const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig, shuffled } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-pick-first\");" },
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
         .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import { StatusBuilder } from \"@grpc/grpc-js/build/src/status-builder\";", .replacement = "const { StatusBuilder } = globalThis.__home_import(\"@grpc/grpc-js/build/src/status-builder\");" },
         .{ .needle = "import { afterAll as after, beforeAll as before, beforeEach, describe, it } from \"bun:test\";", .replacement = "const { afterAll: after, beforeAll: before, beforeEach, describe, it } = globalThis.__home_import(\"bun:test\");" },
         .{ .needle = "import { TestClient, loadProtoFile } from \"./common\";", .replacement = "const TestClient = __home_grpc_TestClientFixture;\nconst loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "const testAuthInterceptor: grpc.ServerInterceptor =", .replacement = "const testAuthInterceptor =" },
@@ -103437,6 +103445,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-server-errors.test.ts", .passed = 34 },
         .{ .path = "js/third_party/grpc-js/test-server-interceptors.test.ts", .passed = 6 },
         .{ .path = "js/third_party/grpc-js/test-server.test.ts", .passed = 45, .todo = 4 },
+        .{ .path = "js/third_party/grpc-js/test-status-builder.test.ts", .passed = 2 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
