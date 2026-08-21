@@ -66645,7 +66645,7 @@ const harness_prelude =
     \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0); const expiresAt = payload.iat + maxAgeSeconds;
     \\    if (clockTimestamp >= expiresAt + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "maxAge exceeded"); expired.expiredAt = new Date(expiresAt * 1000); expired.claim = "iat"; throw expired; }
     \\  }
-    \\  return payload;
+    \\  return opts.complete === true ? decoded : payload;
     \\}
     \\function __home_jwt_verify(token, secret, options, callback) {
     \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
@@ -103786,6 +103786,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/jwt.asymmetric_signing.test.js", .passed = 36, .todo = 6 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.hs.test.js", .passed = 14 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.malicious.test.js", .passed = 3 },
+        .{ .path = "js/third_party/jsonwebtoken/option-complete.test.js", .passed = 2 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
