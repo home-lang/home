@@ -36291,6 +36291,7 @@ const harness_prelude =
     \\  const authorityUrl = __home_http2_authority_url(authority, options);
     \\  const authorityPort = Number(authorityUrl.port || (authorityUrl.protocol === "https:" ? 443 : 80));
     \\  const server = __home_http2_servers[authorityPort];
+    \\  const grpcServer = typeof __home_grpc_servers === "object" ? __home_grpc_servers[authorityPort] : null;
     \\  const client = __home_http_event_target();
     \\  const http1Server = globalThis.__home_serve_handles_by_origin && globalThis.__home_serve_handles_by_origin[authorityUrl.origin];
     \\  const protocolMismatch = !!server && (authorityUrl.protocol === "https:") !== !!server.__home_secure;
@@ -36452,6 +36453,13 @@ const harness_prelude =
     \\        return this;
     \\      };
     \\      stream.close = function() { return this.end(); };
+    \\      stream.destroy = stream.close;
+    \\      return stream;
+    \\    }
+    \\    if (grpcServer && String(requestHeaders["content-type"] || "").toLowerCase() !== "application/grpc") {
+    \\      stream.write = function() { return false; };
+    \\      stream.end = function() { Promise.resolve().then(() => { stream.emit("response", { ":status": __home_http2_constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE }); stream.closed = true; stream.destroyed = true; stream.emit("end"); stream.emit("close"); __home_http2_maybe_close_client(client); }); return this; };
+    \\      stream.close = function() { this.closed = true; this.destroyed = true; this.emit("close"); return this; };
     \\      stream.destroy = stream.close;
     \\      return stream;
     \\    }
@@ -58359,7 +58367,7 @@ const harness_prelude =
     \\  const clientCall = __home_grpc_client_call(kind, request, effectiveOptions, callback);
     \\  clientCall.__home_method = method; __home_grpc_channelz_begin_call(this, clientCall);
     \\  const pendingInput = []; let pendingEnd = false, started = false;
-    \\  const server = __home_grpc_servers[this.__home_port], handler = server && server.__home_services[method];
+    \\  const server = __home_grpc_servers[this.__home_port], methodAlias = String(method).slice(0, 1).toLowerCase() + String(method).slice(1), handler = server && (server.__home_services[method] || server.__home_services[methodAlias]);
     \\  const clientDefinition = __home_grpc_method_definition(this.__home_client_definition || __home_grpc_test_service_definition, method) || {};
     \\  const serverDefinition = __home_grpc_method_definition(server && server.__home_service_definition, method) || __home_grpc_method_definition(__home_grpc_test_service_definition, method) || {};
     \\  const finishFailure = (error, fallbackCode, metadata) => { const failure = __home_grpc_server_failure(error, method, this.__home_target, metadata, fallbackCode); clientCall.__home_finish(failure.code, undefined, failure.details, failure, failure.metadata); };
@@ -58381,12 +58389,12 @@ const harness_prelude =
     \\  serverCall.write = value => { if (clientCall.__home_terminal) return false; try { clientCall.emit("data", transformResponse(value)); return true; } catch (error) { finishFailure(error, __home_grpc_status.INTERNAL); return false; } };
     \\  serverCall.end = metadata => { if (clientCall.__home_terminal) return serverCall; clientCall.emit("end"); clientCall.__home_finish(__home_grpc_status.OK, undefined, undefined, undefined, metadata); return serverCall; };
     \\  const deliverInput = value => { if (clientCall.__home_terminal) return; try { serverCall.emit("data", transformRequest(value)); } catch (error) { finishFailure(error, __home_grpc_status.INTERNAL); } };
-    \\  clientCall.write = value => { if (clientCall.__home_terminal) return false; if (started) deliverInput(value); else pendingInput.push(value); return true; };
+    \\  clientCall.write = (value, encoding, writeCallback) => { const callback = typeof encoding === "function" ? encoding : writeCallback; if (clientCall.__home_terminal) { if (typeof callback === "function") callback(__home_grpc_status_error(__home_grpc_status.CANCELLED, method)); return false; } if (started) deliverInput(value); else pendingInput.push(value); if (typeof callback === "function") callback(null); return true; };
     \\  clientCall.end = () => { if (clientCall.__home_terminal) return clientCall; if (started) serverCall.emit("end"); else pendingEnd = true; return clientCall; };
     \\  const startHandler = () => {
     \\    __home_grpc_trace("handler", String(method) + ",target=" + this.__home_target + ",present=" + String(typeof handler === "function"));
     \\    if (clientCall.__home_terminal) return;
-    \\    if (typeof handler !== "function") { clientCall.__home_finish(__home_grpc_status.UNIMPLEMENTED); return; }
+    \\    if (typeof handler !== "function") { clientCall.__home_finish(__home_grpc_status.UNIMPLEMENTED, undefined, "The server does not implement the method " + String(method)); return; }
     \\    if (!!clientDefinition.requestStream !== !!serverDefinition.requestStream || !!clientDefinition.responseStream !== !!serverDefinition.responseStream) { clientCall.__home_finish(__home_grpc_status.UNIMPLEMENTED); return; }
     \\    const callbackForServer = (error, value, metadata) => { if (clientCall.__home_terminal) return; if (error) { finishFailure(error, __home_grpc_status.UNKNOWN, metadata || error.metadata); return; } try { const response = transformResponse(value); clientCall.__home_finish(__home_grpc_status.OK, response, undefined, undefined, metadata); } catch (serializationError) { finishFailure(serializationError, __home_grpc_status.INTERNAL); } };
     \\    try {
@@ -58424,14 +58432,24 @@ const harness_prelude =
     \\  for (const method of Object.keys(definition || {})) {
     \\    if (method === "__home_name") continue;
     \\    const descriptor = definition[method] || {}, requestStream = !!descriptor.requestStream, responseStream = !!descriptor.responseStream;
-    \\    if (!requestStream && !responseStream) GenericServiceClient.prototype[method] = function(request, options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke(method, "unary", request, options || {}, callback); };
-    \\    else if (requestStream && !responseStream) GenericServiceClient.prototype[method] = function(options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke(method, "clientStream", {}, options || {}, callback); };
-    \\    else if (!requestStream && responseStream) GenericServiceClient.prototype[method] = function(request, options) { return this.__home_invoke(method, "serverStream", request, options || {}); };
-    \\    else GenericServiceClient.prototype[method] = function(options) { return this.__home_invoke(method, "bidiStream", {}, options || {}); };
-    \\    GenericServiceClient.prototype[method].path = descriptor.path || "/" + String(serviceName || "Service") + "/" + method;
+    \\    let invoke;
+    \\    if (!requestStream && !responseStream) invoke = function(request, options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke(method, "unary", request, options || {}, callback); };
+    \\    else if (requestStream && !responseStream) invoke = function(options, callback) { if (typeof options === "function") { callback = options; options = {}; } return this.__home_invoke(method, "clientStream", {}, options || {}, callback); };
+    \\    else if (!requestStream && responseStream) invoke = function(request, options) { return this.__home_invoke(method, "serverStream", request, options || {}); };
+    \\    else invoke = function(options) { return this.__home_invoke(method, "bidiStream", {}, options || {}); };
+    \\    invoke.path = descriptor.path || "/" + String(serviceName || "Service") + "/" + method;
+    \\    GenericServiceClient.prototype[method] = invoke;
+    \\    const lowerMethod = method.slice(0, 1).toLowerCase() + method.slice(1); if (!GenericServiceClient.prototype[lowerMethod]) GenericServiceClient.prototype[lowerMethod] = invoke;
     \\  }
     \\  return GenericServiceClient;
     \\}
+    \\const __home_grpc_math_service_definition = {
+    \\  Div: { path: "/math.Math/Div", requestStream: false, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  DivMany: { path: "/math.Math/DivMany", requestStream: true, responseStream: true, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  Fib: { path: "/math.Math/Fib", requestStream: false, responseStream: true, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  Sum: { path: "/math.Math/Sum", requestStream: true, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\};
+    \\const __home_grpc_MathService = __home_grpc_make_client_constructor(__home_grpc_math_service_definition, "math.Math");
     \\__home_grpc_TestService.prototype.close = function() {
     \\  const record = this.__home_channelz_record;
     \\  if (!record) return;
@@ -58505,6 +58523,7 @@ const harness_prelude =
     \\    const selected = attempt === 0 ? initialSelection : this.__home_pick_server();
     \\    const selectedServer = selected.server, handler = selectedServer && selectedServer.__home_services.echo;
     \\    this.__home_last_server = selectedServer;
+    \\    if (selectedServer && selectedServer.__home_credentials && selectedServer.__home_credentials.__home_enabled === false) { finish(__home_grpc_client_error(this.__home_target, "echo", __home_grpc_status.UNAVAILABLE, "Server credentials are disabled")); return; }
     \\    if (handler) this.__home_touch();
     \\    if (!handler) { finish(__home_grpc_attempt_error({ code: __home_grpc_status.UNIMPLEMENTED, details: "Method not implemented" }, this.__home_target, attempt, maxAttempts, mode)); return; }
     \\    const effectiveMetadata = metadata.clone();
@@ -58606,12 +58625,22 @@ const harness_prelude =
     \\  else handler(serverCall);
     \\  return clientStream;
     \\};
+    \\function __home_grpc_server_lifecycle_error(error, operation, address, phase, method) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error(String(cause.message || cause)); failure.code = "ERR_GRPC_SERVER_LIFECYCLE"; failure.operation = String(operation); failure.address = String(address || ""); failure.phase = String(phase || operation); failure.method = String(method || ""); failure.cause = cause;
+    \\  const nativeStack = String(failure.stack || failure), contextualStack = nativeStack.includes(failure.message) ? nativeStack : "Error: " + failure.message + "\n" + nativeStack;
+    \\  failure.stack = contextualStack + "\n    at Server." + failure.operation + " (phase " + failure.phase + ", address " + (failure.address || "<unbound>") + (failure.method ? ", method " + failure.method : "") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\function __home_grpc_Server(options) {
-    \\  this.__home_services = {};
-    \\  this.__home_service_definition = {};
+    \\  this.__home_services = Object.create(null);
+    \\  this.__home_service_definition = Object.create(null);
+    \\  this.__home_method_records = new Map();
     \\  this.__home_port = 0;
+    \\  this.__home_bindings = [];
     \\  this.__home_bound_ports = [];
     \\  this.__home_bound_targets = [];
+    \\  this.__home_started = false;
     \\  this.__home_options = Object.assign({}, options || {});
     \\  if (this.__home_options["grpc.enable_channelz"] === 0) this.__home_channelz_record = null;
     \\  else {
@@ -58621,38 +58650,48 @@ const harness_prelude =
     \\  }
     \\}
     \\__home_grpc_Server.prototype.addService = function(service, implementation) {
-    \\  this.__home_service_definition = service && typeof service === "object" ? service : {};
-    \\  this.__home_services = Object.assign({}, implementation || {});
+    \\  if (!service || typeof service !== "object" || Array.isArray(service)) throw __home_grpc_server_lifecycle_error(new TypeError("service definition must be an object"), "addService", this.__home_target, "validation");
+    \\  const methods = Object.keys(service).filter(name => name !== "__home_name" && service[name] && typeof service[name] === "object");
+    \\  if (methods.length === 0) throw __home_grpc_server_lifecycle_error(new Error("Cannot add an empty service to a server"), "addService", this.__home_target, "registration");
+    \\  const handlers = implementation && typeof implementation === "object" ? implementation : {};
+    \\  for (const method of methods) {
+    \\    const descriptor = service[method], path = String(descriptor.path || "/" + String(service.__home_name || "Service") + "/" + method);
+    \\    if (this.__home_method_records.has(path)) throw __home_grpc_server_lifecycle_error(new Error("Method handler for " + path + " already provided"), "addService", this.__home_target, "registration", method);
+    \\    const lowerMethod = method.slice(0, 1).toLowerCase() + method.slice(1), upperMethod = method.slice(0, 1).toUpperCase() + method.slice(1), handler = handlers[method] || handlers[lowerMethod] || handlers[upperMethod] || null;
+    \\    this.__home_service_definition[method] = descriptor; this.__home_service_definition[lowerMethod] = descriptor;
+    \\    if (typeof handler === "function") { this.__home_services[method] = handler; this.__home_services[lowerMethod] = handler; }
+    \\    this.__home_method_records.set(path, { method, lowerMethod, descriptor, handler });
+    \\  }
     \\};
-    \\__home_grpc_Server.prototype.removeService = function(service) { this.__home_services = {}; return true; };
-    \\__home_grpc_Server.prototype.start = function() {};
+    \\__home_grpc_Server.prototype.removeService = function(service) {
+    \\  if (!service || typeof service !== "object" || Array.isArray(service)) throw __home_grpc_server_lifecycle_error(new TypeError("removeService requires object as argument"), "removeService", this.__home_target, "validation");
+    \\  for (const method of Object.keys(service).filter(name => name !== "__home_name")) { const descriptor = service[method] || {}, path = String(descriptor.path || ""); const record = this.__home_method_records.get(path); if (record) { delete this.__home_services[record.method]; delete this.__home_services[record.lowerMethod]; delete this.__home_service_definition[record.method]; delete this.__home_service_definition[record.lowerMethod]; this.__home_method_records.delete(path); } }
+    \\  return true;
+    \\};
+    \\__home_grpc_Server.prototype.unregister = function(path) { const record = this.__home_method_records.get(String(path)); if (!record || typeof record.handler !== "function") return false; delete this.__home_services[record.method]; delete this.__home_services[record.lowerMethod]; record.handler = null; return true; };
+    \\__home_grpc_Server.prototype.start = function() { if (this.__home_started) throw __home_grpc_server_lifecycle_error(new Error("server is already started"), "start", this.__home_target, "start"); if (this.__home_bindings.length === 0) throw __home_grpc_server_lifecycle_error(new Error("server must be bound in order to start"), "start", "", "start"); this.__home_started = true; };
+    \\__home_grpc_Server.prototype.addProtoService = function() { throw __home_grpc_server_lifecycle_error(new Error("Not implemented. Use addService() instead"), "addProtoService", this.__home_target, "legacy-api"); };
+    \\__home_grpc_Server.prototype.addHttp2Port = function() { throw __home_grpc_server_lifecycle_error(new Error("Not yet implemented"), "addHttp2Port", this.__home_target, "legacy-api"); };
+    \\__home_grpc_Server.prototype.bind = function() { throw __home_grpc_server_lifecycle_error(new Error("Not implemented. Use bindAsync() instead"), "bind", arguments[0], "legacy-api"); };
     \\__home_grpc_Server.prototype.getChannelzRef = function() { return { id: this.__home_channelz_record ? this.__home_channelz_record.id : 0 }; };
     \\__home_grpc_Server.prototype.bindAsync = function(address, credentials, callback) {
-    \\  this.__home_credentials = credentials || null;
-    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") {
-    \\    try { this.__home_credentials.__home_activate(); }
-    \\    catch (error) { if (typeof callback === "function") Promise.resolve().then(() => callback(error, 0)); return; }
-    \\  }
-    \\  this.__home_port = __home_grpc_next_port++;
-    \\  this.__home_target = String(address || "");
-    \\  this.__home_bound_ports.push(this.__home_port);
-    \\  this.__home_bound_targets.push(this.__home_target);
-    \\  __home_grpc_servers[this.__home_port] = this;
-    \\  __home_grpc_servers_by_target[this.__home_target] = this;
-    \\  __home_grpc_servers_by_target["localhost:" + String(this.__home_port)] = this;
-    \\  __home_grpc_servers_by_target["127.0.0.1:" + String(this.__home_port)] = this;
-    \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_port));
+    \\  if (typeof address !== "string") throw __home_grpc_server_lifecycle_error(new TypeError("port must be a string"), "bindAsync", address, "validation");
+    \\  if (!credentials || credentials.__home_server_credentials !== true) throw __home_grpc_server_lifecycle_error(new TypeError("creds must be a ServerCredentials object"), "bindAsync", address, "validation");
+    \\  if (typeof callback !== "function") throw __home_grpc_server_lifecycle_error(new TypeError("callback must be a function"), "bindAsync", address, "validation");
+    \\  const requestedPort = __home_grpc_port(address), existing = requestedPort ? this.__home_bindings.find(binding => binding.port === requestedPort && !binding.cancelled) : null;
+    \\  if (existing) { const equal = typeof existing.credentials._equals === "function" ? existing.credentials._equals(credentials) : existing.credentials === credentials; Promise.resolve().then(() => equal ? callback(null, existing.port) : callback(__home_grpc_server_lifecycle_error(new Error("server is already bound with different credentials"), "bindAsync", address, "credentials"), 0)); return; }
+    \\  if (requestedPort && __home_grpc_servers[requestedPort] && __home_grpc_servers[requestedPort] !== this) { Promise.resolve().then(() => callback(__home_grpc_server_lifecycle_error(new Error("address is already in use"), "bindAsync", address, "listen"), 0)); return; }
+    \\  if (!this.__home_bindings.some(binding => binding.credentials === credentials) && typeof credentials.__home_activate === "function") { try { credentials.__home_activate(); } catch (error) { Promise.resolve().then(() => callback(error, 0)); return; } }
+    \\  const port = requestedPort || __home_grpc_next_port++, target = String(address), binding = { target, port, credentials, cancelled: false, callbackPending: true };
+    \\  this.__home_credentials = credentials; this.__home_port = port; this.__home_target = target; this.__home_bindings.push(binding); this.__home_bound_ports.push(port); this.__home_bound_targets.push(target);
+    \\  __home_grpc_servers[port] = this; __home_grpc_servers_by_target[target] = this; __home_grpc_servers_by_target["localhost:" + String(port)] = this; __home_grpc_servers_by_target["127.0.0.1:" + String(port)] = this;
+    \\  Promise.resolve().then(() => { binding.callbackPending = false; if (binding.cancelled) callback(__home_grpc_server_lifecycle_error(new Error("bindAsync cancelled by unbind"), "bindAsync", address, "cancelled"), 0); else callback(null, port); });
     \\};
+    \\__home_grpc_Server.prototype.unbind = function(address) { if (typeof address !== "string") throw __home_grpc_server_lifecycle_error(new TypeError("address must be a string"), "unbind", address, "validation"); const port = __home_grpc_port(address); if (port === 0) throw __home_grpc_server_lifecycle_error(new Error("Cannot unbind port 0"), "unbind", address, "validation"); const binding = this.__home_bindings.find(entry => !entry.cancelled && (entry.target === address || entry.port === port)); if (!binding) return; binding.cancelled = true; delete __home_grpc_servers[binding.port]; delete __home_grpc_servers_by_target[binding.target]; delete __home_grpc_servers_by_target["localhost:" + String(binding.port)]; delete __home_grpc_servers_by_target["127.0.0.1:" + String(binding.port)]; this.__home_bindings = this.__home_bindings.filter(entry => entry !== binding); if (!this.__home_bindings.some(entry => entry.credentials === binding.credentials) && typeof binding.credentials.__home_deactivate === "function") binding.credentials.__home_deactivate(); this.__home_bound_ports = this.__home_bindings.map(entry => entry.port); this.__home_bound_targets = this.__home_bindings.map(entry => entry.target); if (this.__home_bindings.length === 0) this.__home_credentials = null; };
     \\__home_grpc_Server.prototype.forceShutdown = function() {
-    \\  for (const port of this.__home_bound_ports) {
-    \\    delete __home_grpc_servers[port];
-    \\    delete __home_grpc_servers_by_target["localhost:" + String(port)];
-    \\    delete __home_grpc_servers_by_target["127.0.0.1:" + String(port)];
-    \\  }
-    \\  for (const target of this.__home_bound_targets) delete __home_grpc_servers_by_target[String(target || "")];
-    \\  this.__home_bound_ports = [];
-    \\  this.__home_bound_targets = [];
-    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate();
+    \\  const boundCredentials = new Set(); for (const binding of this.__home_bindings.slice()) { binding.cancelled = true; boundCredentials.add(binding.credentials); delete __home_grpc_servers[binding.port]; delete __home_grpc_servers_by_target[binding.target]; delete __home_grpc_servers_by_target["localhost:" + String(binding.port)]; delete __home_grpc_servers_by_target["127.0.0.1:" + String(binding.port)]; }
+    \\  this.__home_bindings = []; this.__home_bound_ports = []; this.__home_bound_targets = []; this.__home_started = false; this.__home_credentials = null;
+    \\  for (const credentials of boundCredentials) if (credentials && typeof credentials.__home_deactivate === "function") credentials.__home_deactivate();
     \\  if (this.__home_channelz_record) {
     \\    __home_grpc_channelz_servers.delete(this.__home_channelz_record.id);
     \\    for (const id of this.__home_channelz_record.socketIds) __home_grpc_channelz_sockets.delete(id);
@@ -58730,7 +58769,7 @@ const harness_prelude =
     \\    if (typeof callback === "function") callback(error, undefined);
     \\  };
     \\  this.__home_pending_calls.add(finish);
-    \\  Promise.resolve().then(() => finish(__home_grpc_client_error(this.__home_target, "makeUnaryRequest", __home_grpc_status.UNAVAILABLE, "No connection established for " + String(path))));
+    \\  Promise.resolve().then(() => { const server = __home_grpc_find_server(this.__home_target, this.__home_port); const method = String(path || "").split("/").filter(Boolean).pop() || "unknown"; finish(__home_grpc_client_error(this.__home_target, "makeUnaryRequest", server ? __home_grpc_status.UNIMPLEMENTED : __home_grpc_status.UNAVAILABLE, server ? "The server does not implement the method " + method : "No connection established for " + String(path))); });
     \\  return call;
     \\};
     \\__home_grpc_Client.prototype.close = function() {
@@ -58909,7 +58948,7 @@ const harness_prelude =
     \\function __home_grpc_create_provider_server_credentials(caProvider, identityProvider, requireClientCertificate) {
     \\  __home_grpc_validate_certificate_provider(caProvider, "ca", false);
     \\  __home_grpc_validate_certificate_provider(identityProvider, "identity", true);
-    \\  const credentials = { type: "certificate-provider-server", requireClientCertificate: !!requireClientCertificate, _isSecure() { return true; } };
+    \\  const credentials = { type: "certificate-provider-server", __home_server_credentials: true, __home_enabled: true, requireClientCertificate: !!requireClientCertificate, _isSecure() { return true; }, _equals(other) { return this === other; } };
     \\  return __home_grpc_attach_certificate_providers(credentials, caProvider, identityProvider);
     \\}
     \\const __home_grpc_credentials = {
@@ -58923,11 +58962,12 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at ServerCredentials.createSsl (field " + failure.field + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
-    \\function __home_grpc_ServerCredentialsImpl(secure, settings) { this.type = secure ? "ssl-server" : "insecure-server"; this.__home_secure = !!secure; this.__home_settings = settings; }
-    \\__home_grpc_ServerCredentialsImpl.prototype._isSecure = function() { return this.__home_secure; };
-    \\__home_grpc_ServerCredentialsImpl.prototype._getSettings = function() { return this.__home_settings; };
-    \\const __home_grpc_ServerCredentials = {
-    \\  createSsl(rootCerts, keyCertPairs, checkClientCertificate) {
+    \\function __home_grpc_ServerCredentials(secure, settings) { this.type = secure ? "ssl-server" : "insecure-server"; this.__home_server_credentials = true; this.__home_secure = !!secure; this.__home_settings = settings || null; this.__home_enabled = true; }
+    \\__home_grpc_ServerCredentials.prototype._isSecure = function() { return this.__home_secure; };
+    \\__home_grpc_ServerCredentials.prototype._getSettings = function() { return this.__home_settings; };
+    \\__home_grpc_ServerCredentials.prototype._equals = function(other) { return !!other && other.__home_server_credentials === true && !!other._isSecure() === !!this._isSecure(); };
+    \\__home_grpc_ServerCredentials.prototype.updateSecureContextOptions = function(options) { this.__home_settings = options || null; this.__home_enabled = options !== null; };
+    \\__home_grpc_ServerCredentials.createSsl = function(rootCerts, keyCertPairs, checkClientCertificate) {
     \\    if (rootCerts !== null && rootCerts !== undefined && !Buffer.isBuffer(rootCerts)) throw __home_grpc_server_credentials_error("rootCerts must be null or a Buffer", "rootCerts");
     \\    if (!Array.isArray(keyCertPairs)) throw __home_grpc_server_credentials_error("keyCertPairs must be an array", "keyCertPairs");
     \\    if (checkClientCertificate !== undefined && typeof checkClientCertificate !== "boolean") throw __home_grpc_server_credentials_error("checkClientCertificate must be a boolean", "checkClientCertificate");
@@ -58939,10 +58979,9 @@ const harness_prelude =
     \\      if (!Buffer.isBuffer(pair.cert_chain)) throw __home_grpc_server_credentials_error(prefix + ".cert_chain must be a Buffer", prefix + ".cert_chain");
     \\      keys.push(pair.private_key); certificates.push(pair.cert_chain);
     \\    }
-    \\    return new __home_grpc_ServerCredentialsImpl(true, { ca: rootCerts || null, cert: certificates, key: keys, requestCert: checkClientCertificate === true, rejectUnauthorized: checkClientCertificate === true });
-    \\  },
-    \\  createInsecure() { return new __home_grpc_ServerCredentialsImpl(false, null); },
+    \\    return new __home_grpc_ServerCredentials(true, { ca: rootCerts || null, cert: certificates, key: keys, requestCert: checkClientCertificate === true, rejectUnauthorized: checkClientCertificate === true });
     \\};
+    \\__home_grpc_ServerCredentials.createInsecure = function() { return new __home_grpc_ServerCredentials(false, null); };
     \\function __home_grpc_ChannelzClient(target, credentials, options) { this.__home_target = String(target || ""); this.__home_closed = false; }
     \\__home_grpc_ChannelzClient.prototype.close = function() { this.__home_closed = true; };
     \\__home_grpc_ChannelzClient.prototype.__home_reply = function(operation, entity, id, callback, createResult) {
@@ -59411,11 +59450,12 @@ const harness_prelude =
     \\    createCertificateProviderServerCredentials: __home_grpc_create_provider_server_credentials,
     \\    parseLoadBalancingConfig: __home_grpc_parse_load_balancing_config,
     \\  },
-    \\  getChannelzServiceDefinition() { return { __home_name: "Channelz" }; },
+    \\  getChannelzServiceDefinition() { return { __home_name: "Channelz", GetTopChannels: { path: "/grpc.channelz.v1.Channelz/GetTopChannels", requestStream: false, responseStream: false } }; },
     \\  getChannelzHandlers() { return {}; },
     \\  loadPackageDefinition(definition) {
     \\    const file = String(definition && definition.__home_proto_file || "");
     \\    if (file.includes("channelz.proto")) return __home_grpc_channelz_package;
+    \\    if (file.includes("math.proto")) return { math: { Math: __home_grpc_MathService } };
     \\    if (file.includes("test_service.proto")) return { TestService: __home_grpc_TestService };
     \\    if (file) return { EchoService: __home_grpc_EchoService };
     \\    return __home_grpc_safe_package_definition(definition);
@@ -72038,6 +72078,33 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const testLoggingInterceptor: grpc.ServerInterceptor =", .replacement = "const testLoggingInterceptor =" },
         .{ .needle = "const testHeaderInjectionInterceptor: grpc.ServerInterceptor =", .replacement = "const testHeaderInjectionInterceptor =" },
         .{ .needle = "const authListener: grpc.ServerListener =", .replacement = "const authListener =" },
+        .{ .needle = "import * as protoLoader from \"@grpc/proto-loader\";", .replacement = "const protoLoader = globalThis.__home_import(\"@grpc/proto-loader\");" },
+        .{ .needle = "import { sendUnaryData, ServerDuplexStream, ServerUnaryCall } from \"@grpc/grpc-js/build/src/server-call\";", .replacement = "" },
+        .{ .needle = "import { afterEach as after, afterEach, beforeEach as before, beforeEach, describe, it } from \"bun:test\";", .replacement = "const { afterEach: after, afterEach, beforeEach: before, beforeEach, describe, it } = globalThis.__home_import(\"bun:test\");" },
+        .{ .needle = "import { SecureContextOptions } from \"tls\";", .replacement = "" },
+        .{ .needle = "import { assert2, loadProtoFile } from \"./common\";", .replacement = "const assert2 = { mustCall(fn) { return fn; }, afterMustCallsSatisfied(done) { done(); } };\nconst loadProtoFile = file => grpc.loadPackageDefinition(protoLoader.loadSync(file));" },
+        .{ .needle = "import { Request__Output } from \"./generated/Request\";", .replacement = "" },
+        .{ .needle = "import { TestServiceClient, TestServiceHandlers } from \"./generated/TestService\";", .replacement = "" },
+        .{ .needle = "import { ProtoGrpcType as TestServiceGrpcType } from \"./generated/test_service\";", .replacement = "" },
+        .{ .needle = "const testServiceGrpcObject = grpc.loadPackageDefinition(loadedTestServiceProto) as unknown as TestServiceGrpcType;", .replacement = "const testServiceGrpcObject = grpc.loadPackageDefinition(loadedTestServiceProto);" },
+        .{ .needle = "function noop(): void", .replacement = "function noop()" },
+        .{ .needle = "let client: grpc.Client | null = null;", .replacement = "let client = null;" },
+        .{ .needle = "portNumber!", .replacement = "portNumber" },
+        .{ .needle = "(value: any) =>", .replacement = "value =>" },
+        .{ .needle = "function toString(val: any)", .replacement = "function toString(val)" },
+        .{ .needle = "function toBuffer(str: string)", .replacement = "function toBuffer(str)" },
+        .{ .needle = "function capitalize(str: string)", .replacement = "function capitalize(str)" },
+        .{ .needle = "private contextOptions: SecureContextOptions;", .replacement = "contextOptions;" },
+        .{ .needle = "constructor(key: Buffer, cert: Buffer)", .replacement = "constructor(key, cert)" },
+        .{ .needle = "_isSecure(): boolean", .replacement = "_isSecure()" },
+        .{ .needle = "_equals(other: grpc.ServerCredentials): boolean", .replacement = "_equals(other)" },
+        .{ .needle = "(err: ServiceError, response: string) =>", .replacement = "(err, response) =>" },
+        .{ .needle = "function makeRequest(headers: http2.IncomingHttpHeaders)", .replacement = "function makeRequest(headers)" },
+        .{ .needle = "let statusCode: string;", .replacement = "let statusCode;" },
+        .{ .needle = "const testServiceHandlers: TestServiceHandlers =", .replacement = "const testServiceHandlers =" },
+        .{ .needle = "let client: TestServiceClient;", .replacement = "let client;" },
+        .{ .needle = "let assignedPort: number;", .replacement = "let assignedPort;" },
+        .{ .needle = "(data: Request__Output) =>", .replacement = "data =>" },
         .{ .needle = "import { ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
         .{ .needle = "import { Server, ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { Server, ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
         .{ .needle = "import { ServiceError } from \"@grpc/grpc-js/build/src/call\";", .replacement = "" },
@@ -88814,6 +88881,35 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\    });
         \\  });
         \\});
+        \\
+        \\test("server lifecycle validation retains operation context and causes", () => {
+        \\  const server = new grpc.Server();
+        \\  let startError;
+        \\  try { server.start(); } catch (error) { startError = error; }
+        \\  assert.strictEqual(startError.code, "ERR_GRPC_SERVER_LIFECYCLE");
+        \\  assert.strictEqual(startError.operation, "start");
+        \\  assert.strictEqual(startError.phase, "start");
+        \\  assert.ok(startError.cause instanceof Error);
+        \\  assert.ok(String(startError.stack).includes("Server.start"));
+        \\  assert.ok(String(startError.stack).includes("Caused by:"));
+        \\  let bindError;
+        \\  try { server.bindAsync(null, grpc.ServerCredentials.createInsecure(), () => {}); } catch (error) { bindError = error; }
+        \\  assert.strictEqual(bindError.code, "ERR_GRPC_SERVER_LIFECYCLE");
+        \\  assert.strictEqual(bindError.operation, "bindAsync");
+        \\  assert.strictEqual(bindError.phase, "validation");
+        \\  assert.ok(bindError.cause instanceof TypeError);
+        \\  assert.ok(String(bindError.stack).includes("Server.bindAsync"));
+        \\  assert.ok(String(bindError.stack).includes("Caused by:"));
+        \\  let serviceError;
+        \\  try { server.addService({}, {}); } catch (error) { serviceError = error; }
+        \\  assert.strictEqual(serviceError.code, "ERR_GRPC_SERVER_LIFECYCLE");
+        \\  assert.strictEqual(serviceError.operation, "addService");
+        \\  assert.strictEqual(serviceError.phase, "registration");
+        \\  assert.ok(serviceError.cause instanceof Error);
+        \\  assert.ok(String(serviceError.stack).includes("Server.addService"));
+        \\  assert.ok(String(serviceError.stack).includes("Caused by:"));
+        \\  server.forceShutdown();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88831,7 +88927,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 22), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -103340,6 +103436,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-server-deadlines.test.ts", .passed = 3 },
         .{ .path = "js/third_party/grpc-js/test-server-errors.test.ts", .passed = 34 },
         .{ .path = "js/third_party/grpc-js/test-server-interceptors.test.ts", .passed = 6 },
+        .{ .path = "js/third_party/grpc-js/test-server.test.ts", .passed = 45, .todo = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
