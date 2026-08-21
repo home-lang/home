@@ -65677,24 +65677,86 @@ const harness_prelude =
     \\    socket.on("close", () => reject(new Error("closed unexpectedly")));
     \\  });
     \\}
+    \\function __home_fetch_argument_error(phase, property, cause, input) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid fetch argument"));
+    \\  const failure = new TypeError(String(underlying.message || underlying));
+    \\  failure.code = "ERR_FETCH_INPUT";
+    \\  failure.operation = "fetch.arguments.normalize";
+    \\  failure.phase = String(phase || "input");
+    \\  failure.property = property === undefined ? null : String(property);
+    \\  failure.inputType = input === null ? "null" : typeof input;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + (failure.property === null ? "" : "." + failure.property) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\const __home_fetch_option_names = ["body", "decompression", "headers", "keepalive", "method", "proxy", "redirect", "signal", "timeout", "tls", "unix", "verbose", "protocol", "compress", "__home_http2_enabled", "__home_formdata"];
+    \\function __home_fetch_read_argument_options(source, phase) {
+    \\  const options = {};
+    \\  if (source === undefined || source === null) return options;
+    \\  for (const property of __home_fetch_option_names) {
+    \\    let value;
+    \\    try { value = source[property]; } catch (cause) { throw __home_fetch_argument_error(phase, property, cause, source); }
+    \\    if (value !== undefined) options[property] = value;
+    \\  }
+    \\  return options;
+    \\}
+    \\function __home_fetch_resolve_arguments(input, init) {
+    \\  let href;
+    \\  let shorthand = false;
+    \\  try {
+    \\    if (typeof Request === "function" && input instanceof Request) {
+    \\      href = String(input.url);
+    \\    } else if (input !== null && (typeof input === "object" || typeof input === "function") && !(typeof URL === "function" && input instanceof URL) && "url" in input) {
+    \\      shorthand = true;
+    \\      const url = input.url;
+    \\      href = String(url && typeof url.href === "string" ? url.href : url);
+    \\    } else {
+    \\      href = String(input && typeof input.href === "string" ? input.href : input);
+    \\    }
+    \\  } catch (cause) {
+    \\    throw __home_fetch_argument_error("input", "url", cause, input);
+    \\  }
+    \\  let options = {};
+    \\  if (typeof Request === "function" && input instanceof Request) {
+    \\    options = {
+    \\      method: input.method,
+    \\      headers: input.headers,
+    \\      redirect: input.redirect,
+    \\    };
+    \\    if (input.body !== null) options.body = input.body;
+    \\    if (input.signal !== undefined) options.signal = input.signal;
+    \\  } else if (shorthand) {
+    \\    options = __home_fetch_read_argument_options(input, "input");
+    \\  }
+    \\  if (init !== undefined) Object.assign(options, __home_fetch_read_argument_options(init, "init"));
+    \\  return { href, options };
+    \\}
+    \\function __home_fetch_validate_arguments(href, options) {
+    \\  if (options.headers !== undefined) {
+    \\    try { options.headers = new Headers(options.headers); } catch (cause) { throw __home_fetch_argument_error("init", "headers", cause, options.headers); }
+    \\  }
+    \\  if (options.redirect !== undefined && !["follow", "error", "manual"].includes(String(options.redirect))) {
+    \\    throw __home_fetch_argument_error("init", "redirect", new TypeError("fetch redirect must be one of follow, error, or manual"), options.redirect);
+    \\  }
+    \\  if (options.proxy !== undefined && options.proxy !== null && options.unix !== undefined && options.unix !== null) {
+    \\    throw __home_fetch_argument_error("init", "proxy", new TypeError("fetch proxy and unix options cannot be used together"), href);
+    \\  }
+    \\  const ca = options.tls && options.tls.ca;
+    \\  if (ca !== undefined && typeof ca !== "string" && !(typeof Buffer === "function" && Buffer.isBuffer(ca)) && !(ca instanceof Uint8Array) && !Array.isArray(ca)) {
+    \\    throw __home_fetch_argument_error("init", "tls.ca", new TypeError("fetch tls.ca must be a string, Buffer, typed array, or array"), ca);
+    \\  }
+    \\  return options;
+    \\}
     \\function fetch(input) {
     \\  const init = arguments[1];
     \\  if (arguments.length === 0) return __home_fetch_thenable(null, __home_fetch_input_error(undefined, "input", new TypeError("fetch requires an input URL or Request")));
     \\  if (typeof Request === "function" && input instanceof Request && input.body !== null && (input.bodyUsed || input.body.locked)) throw new TypeError("Body already used");
-    \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
+    \\  const resolvedArguments = __home_fetch_resolve_arguments(input, init);
+    \\  const href = resolvedArguments.href;
     \\  if (/^ftp:/i.test(href)) return __home_fetch_thenable(null, __home_fetch_input_error(href, "protocol", new TypeError("Unsupported URL protocol: ftp:")));
-    \\  const fetchOptions = (() => {
-    \\    if (typeof Request === "function" && input instanceof Request) {
-    \\      const options = Object.assign({}, init || {});
-    \\      if (options.method === undefined) options.method = input.method;
-    \\      if (options.headers === undefined) options.headers = input.headers;
-    \\      if (options.body === undefined && input.body !== null) options.body = input.body;
-    \\      if (options.redirect === undefined) options.redirect = input.redirect;
-    \\      if (options.signal === undefined && input.signal !== undefined) options.signal = input.signal;
-    \\      return options;
-    \\    }
-    \\    return init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
-    \\  })();
+    \\  const fetchOptions = __home_fetch_validate_arguments(href, resolvedArguments.options);
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
     \\  const requestedTransportValue = fetchOptions && fetchOptions.protocol !== undefined ? String(fetchOptions.protocol).toLowerCase() : "";
     \\  const requestedTransport = requestedTransportValue === "h3" ? "http3" : (requestedTransportValue === "h2" ? "http2" : requestedTransportValue);
@@ -65832,7 +65894,7 @@ const harness_prelude =
     \\  if (typeof handle.fetch === "function") {
     \\    let requestSignalLink = null;
     \\    try {
-    \\      let requestInit = init || {};
+    \\      let requestInit = fetchOptions || {};
     \\      if (fetchOptions && fetchOptions.compress === "gzip" && fetchOptions.body !== undefined && fetchOptions.body !== null) {
     \\        const compressedBody = __home_gzip_sync(fetchOptions.body);
     \\        const compressedHeaders = new Headers(fetchOptions.headers || {});
@@ -65844,7 +65906,7 @@ const harness_prelude =
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
-    \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
+    \\      const redirectMode = fetchOptions && Object.prototype.hasOwnProperty.call(fetchOptions, "redirect") ? String(fetchOptions.redirect) : String(request.redirect || "follow");
     \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
     \\      if (maxRequestBodySize > 0) {
     \\        let bodyLength = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? __home_fixed_body_byte_length(fetchOptions.body) : __home_fixed_body_byte_length(request.body);
@@ -108846,6 +108908,42 @@ test "bootstrap runner mirrors fetch cookies corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors fetch argument normalization corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-args.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_resolve_arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_read_argument_options") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.arguments.normalize\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.property = property === undefined ? null : String(property)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: ") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 47 or summary.todo != 0) {
+        std.debug.print(
+            "fetch argument normalization corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 47), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 47), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108879,6 +108977,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/client-fetch.test.ts", .passed = 29, .todo = 2 },
         .{ .path = "js/web/fetch/content-length.test.js", .passed = 1 },
         .{ .path = "js/web/fetch/cookies.test.ts", .passed = 3, .todo = 1 },
+        .{ .path = "js/web/fetch/fetch-args.test.ts", .passed = 47 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
