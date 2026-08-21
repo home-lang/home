@@ -57857,8 +57857,9 @@ const harness_prelude =
     \\  }));
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
-    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, UNIMPLEMENTED: 12 };
+    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, UNIMPLEMENTED: 12, UNAVAILABLE: 14 };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
+    \\const __home_grpc_connectivity_state = { IDLE: 0, CONNECTING: 1, READY: 2, TRANSIENT_FAILURE: 3, SHUTDOWN: 4 };
     \\let __home_grpc_channelz_next_id = 1;
     \\const __home_grpc_channelz_channels = new Map();
     \\const __home_grpc_channelz_subchannels = new Map();
@@ -58084,6 +58085,59 @@ const harness_prelude =
     \\    for (const id of this.__home_channelz_record.socketIds) __home_grpc_channelz_sockets.delete(id);
     \\  }
     \\};
+    \\__home_grpc_Server.prototype.tryShutdown = function(callback) {
+    \\  this.forceShutdown();
+    \\  if (typeof callback === "function") Promise.resolve().then(() => callback());
+    \\};
+    \\function __home_grpc_client_error(target, operation, code, message) {
+    \\  const cause = new Error(message || "No connection established for target " + String(target));
+    \\  cause.code = code;
+    \\  const failure = new Error("Client." + operation + " failed for '" + String(target) + "': " + cause.message);
+    \\  failure.code = code; failure.details = cause.message; failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Client." + operation + " (target " + String(target) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_Client(target, credentials, options) {
+    \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target); this.__home_closed = false; this.__home_pending_calls = new Set();
+    \\  const self = this;
+    \\  this.__home_channel = {
+    \\    getConnectivityState(tryToConnect) {
+    \\      void tryToConnect;
+    \\      if (self.__home_closed) return __home_grpc_connectivity_state.SHUTDOWN;
+    \\      return __home_grpc_servers[self.__home_port] ? __home_grpc_connectivity_state.READY : __home_grpc_connectivity_state.TRANSIENT_FAILURE;
+    \\    },
+    \\  };
+    \\}
+    \\__home_grpc_Client.prototype.getChannel = function() { return this.__home_channel; };
+    \\__home_grpc_Client.prototype.waitForReady = function(deadline, callback) {
+    \\  let settled = false;
+    \\  const finish = error => { if (settled) return; settled = true; callback(error || null); };
+    \\  Promise.resolve().then(() => {
+    \\    if (this.__home_closed) finish(__home_grpc_client_error(this.__home_target, "waitForReady", __home_grpc_status.UNAVAILABLE, "The client is closed"));
+    \\    else if (__home_grpc_servers[this.__home_port]) finish(null);
+    \\    else {
+    \\      const delay = Math.max(0, Number(deadline) - Date.now());
+    \\      setTimeout(() => finish(__home_grpc_client_error(this.__home_target, "waitForReady", __home_grpc_status.UNAVAILABLE)), delay);
+    \\    }
+    \\  });
+    \\};
+    \\__home_grpc_Client.prototype.makeUnaryRequest = function(path, serialize, deserialize, argument) {
+    \\  void serialize; void deserialize; void argument;
+    \\  const callback = arguments[arguments.length - 1];
+    \\  const call = __home_grpc_stream();
+    \\  let settled = false;
+    \\  const finish = error => {
+    \\    if (settled) return; settled = true; this.__home_pending_calls.delete(finish);
+    \\    if (typeof callback === "function") callback(error, undefined);
+    \\  };
+    \\  this.__home_pending_calls.add(finish);
+    \\  Promise.resolve().then(() => finish(__home_grpc_client_error(this.__home_target, "makeUnaryRequest", __home_grpc_status.UNAVAILABLE, "No connection established for " + String(path))));
+    \\  return call;
+    \\};
+    \\__home_grpc_Client.prototype.close = function() {
+    \\  if (this.__home_closed) return; this.__home_closed = true;
+    \\  for (const finish of Array.from(this.__home_pending_calls)) finish(__home_grpc_client_error(this.__home_target, "close", __home_grpc_status.UNAVAILABLE, "The client is closed"));
+    \\};
     \\function __home_grpc_certificate_error(error, operation, path) {
     \\  const cause = error instanceof Error ? error : new Error(String(error));
     \\  const failure = new Error(operation + " failed for '" + String(path || "") + "': " + String(cause.message || cause));
@@ -58276,6 +58330,7 @@ const harness_prelude =
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
+    \\  Client: __home_grpc_Client,
     \\  Metadata: __home_grpc_Metadata,
     \\  Server: __home_grpc_Server,
     \\  ServerCredentials: __home_grpc_ServerCredentials,
@@ -58297,6 +58352,8 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/call-credentials"] = { CallCredentials: __home_grpc_CallCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/channel-credentials"] = { ChannelCredentials: __home_grpc_ChannelCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/make-client"] = { ServiceClient: __home_grpc_EchoService, ServiceClientConstructor: __home_grpc_EchoService };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
     \\globalThis.__home_modules["@grpc/proto-loader"] = {
     \\  loadSync(file, options) { return { __home_proto_file: String(file), options: options || {} }; },
     \\};
@@ -70873,6 +70930,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ".TestService as ServiceClientConstructor;", .replacement = ".TestService;" },
         .{ .needle = "const testServiceImpl: grpc.UntypedServiceImplementation =", .replacement = "const testServiceImpl =" },
         .{ .needle = "let channelzClient: ChannelzClient;", .replacement = "let channelzClient;" },
+        .{ .needle = "import { Client, Server, ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { Client, Server, ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
+        .{ .needle = "import { ConnectivityState } from \"@grpc/grpc-js/build/src/connectivity-state\";", .replacement = "const { ConnectivityState } = globalThis.__home_import(\"@grpc/grpc-js/build/src/connectivity-state\");" },
+        .{ .needle = "let server: Server;", .replacement = "let server;" },
+        .{ .needle = "let client: Client;", .replacement = "let client;" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -87146,6 +87207,17 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(error.stack).includes("Caused by:"));
         \\  client.close();
         \\});
+        \\
+        \\test("base client diagnostics", async () => {
+        \\  const client = new grpc.Client("host.invalid", grpc.credentials.createInsecure());
+        \\  const error = await new Promise(resolve => client.makeUnaryRequest("/service/method", value => value, value => value, Buffer.from([]), failure => resolve(failure)));
+        \\  assert.strictEqual(error.code, grpc.status.UNAVAILABLE, "unavailable status");
+        \\  assert.ok(error.cause instanceof Error, "preserved cause");
+        \\  assert.ok(String(error.stack).includes("Client.makeUnaryRequest"), "operation frame");
+        \\  assert.ok(String(error.stack).includes("host.invalid"), "target context");
+        \\  assert.ok(String(error.stack).includes("Caused by:"), "cause stack");
+        \\  client.close();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87163,7 +87235,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101652,6 +101724,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-certificate-provider.test.ts", .passed = 9 },
         .{ .path = "js/third_party/grpc-js/test-channel-credentials.test.ts", .passed = 9, .todo = 1 },
         .{ .path = "js/third_party/grpc-js/test-channelz.test.ts", .passed = 5 },
+        .{ .path = "js/third_party/grpc-js/test-client.test.ts", .passed = 5 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
