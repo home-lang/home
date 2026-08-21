@@ -51002,7 +51002,15 @@ const harness_prelude =
     \\  return null;
     \\}
     \\function __home_crypto_known_ec_material(input, kind) {
-    \\  const text = typeof input === "string" ? input : "";
+    \\  const text = typeof input === "string" ? input : (typeof Buffer === "function" && Buffer.isBuffer(input) ? input.toString() : "");
+    \\  const sec1Table = [
+    \\    { marker: "MHcCAQEEIMP1Xt/ic2jAHJva", namedCurve: "prime256v1", crv: "P-256" },
+    \\    { marker: "MIGkAgEBBDCez58vZHVp+ArI", namedCurve: "secp384r1", crv: "P-384" },
+    \\    { marker: "MIHcAgEBBEIBlWXKBKKCgTgf", namedCurve: "secp521r1", crv: "P-521" },
+    \\  ];
+    \\  for (const item of sec1Table) {
+    \\    if (text.includes(item.marker)) return { keyType: "ec", payload: text, jwk: { kty: "EC", crv: item.crv }, details: { namedCurve: item.namedCurve } };
+    \\  }
     \\  const table = [
     \\    {
     \\      namedCurve: "prime256v1",
@@ -66479,6 +66487,19 @@ const harness_prelude =
     \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem") || path.includes("rsa-") || path.endsWith("/invalid_pub.pem") || text.includes("BEGIN RSA PRIVATE KEY") || text.includes("BEGIN RSA PUBLIC KEY")) return "rsa";
     \\  return "secret";
     \\}
+    \\function __home_jwt_key_curve(key) {
+    \\  const details = key && key.asymmetricKeyDetails; if (details && details.namedCurve) return String(details.namedCurve);
+    \\  const path = String(key && key.__home_source_path || "").toLowerCase(); const text = __home_jwt_key_text(key);
+    \\  if (path.includes("prime256v1-") || path.includes("ecdsa-") || text.includes("MHcCAQEEIMP1Xt/ic2jAHJva")) return "prime256v1";
+    \\  if (path.includes("secp384r1-") || text.includes("MIGkAgEBBDCez58vZHVp+ArI")) return "secp384r1";
+    \\  if (path.includes("secp521r1-") || text.includes("MIHcAgEBBEIBlWXKBKKCgTgf")) return "secp521r1";
+    \\  return undefined;
+    \\}
+    \\function __home_jwt_validate_ec_curve(algorithm, key) {
+    \\  const expected = algorithm === "ES256" ? "prime256v1" : (algorithm === "ES384" ? "secp384r1" : (algorithm === "ES512" ? "secp521r1" : undefined));
+    \\  const actual = __home_jwt_key_curve(key); if (!expected || !actual || actual === expected) return;
+    \\  const error = new Error('"alg" parameter "' + algorithm + '" requires curve "' + expected + '".'); error.claim = "key"; throw error;
+    \\}
     \\function __home_jwt_key_hash(value) { const text = String(value); let hash = 2166136261; for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16); }
     \\function __home_jwt_key_identity(key) {
     \\  const path = String(key && key.__home_source_path || "").toLowerCase();
@@ -66517,7 +66538,10 @@ const harness_prelude =
     \\    const modulusLength = Number(secret.asymmetricKeyDetails && secret.asymmetricKeyDetails.modulusLength || 0);
     \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
     \\  }
-    \\  if (/^ES/.test(algorithm) && __home_jwt_key_family(secret) !== "ec" && opts.allowInvalidAsymmetricKeyTypes !== true) throw new Error('"alg" parameter for "' + __home_jwt_key_family(secret) + '" key type must be one of: RS256, RS384, RS512, PS256, PS384, PS512');
+    \\  if (/^ES/.test(algorithm) && opts.allowInvalidAsymmetricKeyTypes !== true) {
+    \\    if (__home_jwt_key_family(secret) !== "ec") throw new Error('"alg" parameter for "' + __home_jwt_key_family(secret) + '" key type must be one of: RS256, RS384, RS512, PS256, PS384, PS512');
+    \\    __home_jwt_validate_ec_curve(algorithm, secret);
+    \\  }
     \\  let notBeforeSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "notBefore")) {
     \\    if (typeof opts.notBefore === "number" && Number.isInteger(opts.notBefore) && Number.isFinite(opts.notBefore)) notBeforeSeconds = opts.notBefore;
@@ -66622,7 +66646,10 @@ const harness_prelude =
     \\  const keyFamily = __home_jwt_key_family(secret);
     \\  if (/^HS/.test(algorithm) && keyFamily !== "secret") { const invalidHmacKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be a symmetric key when using " + algorithm); invalidHmacKey.claim = "key"; throw invalidHmacKey; }
     \\  if (/^(?:RS|PS)/.test(algorithm) && keyFamily !== "rsa" && opts.allowInvalidAsymmetricKeyTypes !== true) { const invalidRsaKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric RSA key when using " + algorithm); invalidRsaKey.claim = "key"; throw invalidRsaKey; }
-    \\  if (/^ES/.test(algorithm) && keyFamily !== "ec" && opts.allowInvalidAsymmetricKeyTypes !== true) { const invalidEcKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric EC key when using " + algorithm); invalidEcKey.claim = "key"; throw invalidEcKey; }
+    \\  if (/^ES/.test(algorithm) && opts.allowInvalidAsymmetricKeyTypes !== true) {
+    \\    if (keyFamily !== "ec") { const invalidEcKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric EC key when using " + algorithm); invalidEcKey.claim = "key"; throw invalidEcKey; }
+    \\    __home_jwt_validate_ec_curve(algorithm, secret);
+    \\  }
     \\  if (String(decoded.header.alg || "") === "none" && parts[2] !== "") { const unexpectedSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); unexpectedSignature.claim = "signature"; throw unexpectedSignature; }
     \\  let signatureText = ""; try { signatureText = __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[2])); } catch (error) {}
     \\  if (signatureText.startsWith("home-jwt-signature:")) { const expectedSignature = "home-jwt-signature:" + String(decoded.header.alg || "HS256") + ":" + __home_jwt_key_identity(secret); if (signatureText !== expectedSignature) { const invalidSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); invalidSignature.claim = "signature"; throw invalidSignature; } }
@@ -103828,6 +103855,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/rsa-public-key.test.js", .passed = 4 },
         .{ .path = "js/third_party/jsonwebtoken/schema.test.js", .passed = 5 },
         .{ .path = "js/third_party/jsonwebtoken/test-utils.js", .passed = 0 },
+        .{ .path = "js/third_party/jsonwebtoken/validateAsymmetricKey.test.js", .passed = 13, .todo = 3 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -104068,6 +104096,16 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm ROT13");
         \\  expect(caught.stack).toContain('Caused by: Error: "algorithm" must be a valid string enum value');
         \\});
+        \\test("jsonwebtoken curve errors retain key and signing context", () => {
+        \\  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "secp384r1" }); let caught;
+        \\  try { jwt.sign({ value: 1 }, privateKey, { algorithm: "ES256" }); } catch (error) { caught = error; }
+        \\  expect(caught.code).toBe("ERR_JWT_SIGN");
+        \\  expect(caught.algorithm).toBe("ES256");
+        \\  expect(caught.operation).toBe("jsonwebtoken.sign");
+        \\  expect(caught.cause.message).toBe('"alg" parameter "ES256" requires curve "prime256v1".');
+        \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm ES256");
+        \\  expect(caught.stack).toContain('Caused by: Error: "alg" parameter "ES256" requires curve "prime256v1".');
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -104079,7 +104117,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
