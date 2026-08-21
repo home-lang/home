@@ -66501,6 +66501,10 @@ const harness_prelude =
     \\  if (options !== undefined && options !== null && (typeof options !== "object" || Array.isArray(options) || (Object.getPrototypeOf(options) !== Object.prototype && Object.getPrototypeOf(options) !== null))) throw new Error('Expected "options" to be a plain object');
     \\  if (payload === undefined) throw new Error("payload is required");
     \\  const opts = options || {}; const algorithm = String(opts.algorithm || "HS256");
+    \\  if (!["none", "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"].includes(algorithm)) throw new Error('"algorithm" must be a valid string enum value');
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "header") && (opts.header === null || typeof opts.header !== "object" || Array.isArray(opts.header))) throw new Error('"header" must be an object');
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "encoding") && typeof opts.encoding !== "string") throw new Error('"encoding" must be a string');
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "noTimestamp") && typeof opts.noTimestamp !== "boolean") throw new Error('"noTimestamp" must be a boolean');
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresInSeconds")) throw new Error('"expiresInSeconds" is not allowed');
     \\  if (Object.prototype.hasOwnProperty.call(opts, "keyid") && typeof opts.keyid !== "string") throw new Error('"keyid" must be a string');
     \\  if (!secret && algorithm !== "none") throw new Error("secretOrPrivateKey must have a value");
@@ -103794,6 +103798,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/option-maxAge.test.js", .passed = 10 },
         .{ .path = "js/third_party/jsonwebtoken/option-nonce.test.js", .passed = 18 },
         .{ .path = "js/third_party/jsonwebtoken/rsa-public-key.test.js", .passed = 4 },
+        .{ .path = "js/third_party/jsonwebtoken/schema.test.js", .passed = 5 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -104024,6 +104029,16 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim nonce");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt nonce invalid. expected: expected");
         \\});
+        \\test("jsonwebtoken schema errors retain signing context", () => {
+        \\  let caught;
+        \\  try { jwt.sign({ value: 1 }, "secret", { algorithm: "ROT13" }); } catch (error) { caught = error; }
+        \\  expect(caught.code).toBe("ERR_JWT_SIGN");
+        \\  expect(caught.algorithm).toBe("ROT13");
+        \\  expect(caught.operation).toBe("jsonwebtoken.sign");
+        \\  expect(caught.cause.message).toBe('"algorithm" must be a valid string enum value');
+        \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm ROT13");
+        \\  expect(caught.stack).toContain('Caused by: Error: "algorithm" must be a valid string enum value');
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -104035,7 +104050,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
