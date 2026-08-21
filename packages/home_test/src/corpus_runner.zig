@@ -66492,6 +66492,12 @@ const harness_prelude =
     \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid audience option for object payload");
     \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "aud")) throw new Error('Bad "options.audience" option. The payload already has an "aud" property.');
     \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "issuer")) {
+    \\    if (typeof opts.issuer !== "string") throw new Error('"issuer" must be a string');
+    \\    if (typeof payload === "string") throw new Error("invalid issuer option for string payload");
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid issuer option for object payload");
+    \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "iss")) throw new Error('Bad "options.issuer" option. The payload already has an "iss" property.');
+    \\  }
     \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "iat") && typeof payload.iat !== "number") throw new Error('"iat" should be a number of seconds');
     \\  let expiresInSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresIn")) {
@@ -66508,6 +66514,7 @@ const harness_prelude =
     \\    body = opts.mutatePayload === true ? body : Object.assign({}, body); const now = Math.floor(Date.now() / 1000);
     \\    const timestamp = typeof body.iat === "number" && body.iat ? body.iat : now;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
+    \\    if (Object.prototype.hasOwnProperty.call(opts, "issuer")) body.iss = opts.issuer;
     \\    if (typeof opts.notBefore === "number") body.nbf = timestamp + opts.notBefore;
     \\    if (expiresInSeconds !== undefined) body.exp = timestamp + expiresInSeconds;
     \\    if (opts.noTimestamp === true) delete body.iat; else if (!body.iat) body.iat = timestamp;
@@ -66551,6 +66558,10 @@ const harness_prelude =
     \\    if (!opts.ignoreExpiration && clockTimestamp >= payload.exp + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "jwt expired"); expired.expiredAt = new Date(payload.exp * 1000); expired.claim = "exp"; throw expired; }
     \\  }
     \\  if (opts.audience !== undefined && (!payload || typeof payload !== "object" || !__home_jwt_audience_matches(payload.aud, opts.audience))) throw __home_jwt_error("JsonWebTokenError", "jwt audience invalid. expected: " + __home_jwt_audience_text(opts.audience));
+    \\  if (opts.issuer !== undefined) {
+    \\    const issuers = Array.isArray(opts.issuer) ? opts.issuer : [opts.issuer];
+    \\    if (!payload || typeof payload !== "object" || !Object.prototype.hasOwnProperty.call(payload, "iss") || !issuers.some(issuer => issuer === payload.iss)) { const invalidIssuer = __home_jwt_error("JsonWebTokenError", "jwt issuer invalid. expected: " + String(opts.issuer)); invalidIssuer.claim = "iss"; throw invalidIssuer; }
+    \\  }
     \\  if (opts.maxAge !== undefined) {
     \\    if (!payload || typeof payload !== "object" || typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) { const missingIssuedAt = __home_jwt_error("JsonWebTokenError", "iat required when maxAge is specified"); missingIssuedAt.claim = "iat"; throw missingIssuedAt; }
     \\    const maxAgeSeconds = __home_jwt_timespan_seconds(opts.maxAge); if (maxAgeSeconds === undefined) { const invalidMaxAge = __home_jwt_error("JsonWebTokenError", '"maxAge" should be a number of seconds or string representing a timespan'); invalidMaxAge.claim = "iat"; throw invalidMaxAge; }
@@ -103686,6 +103697,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
         .{ .path = "js/third_party/jsonwebtoken/claim-iat.test.js", .passed = 39 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-iss.test.js", .passed = 28 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103800,6 +103812,17 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim iat");
         \\  expect(caught.stack).toContain("Caused by: TokenExpiredError: maxAge exceeded");
         \\});
+        \\test("jsonwebtoken issuer errors retain claim context", async () => {
+        \\  const token = jwt.sign({ iss: "actual" }, "secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", { issuer: ["first", "second"] }, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("iss");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("jwt issuer invalid. expected: first,second");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim iss");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt issuer invalid. expected: first,second");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103811,7 +103834,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
