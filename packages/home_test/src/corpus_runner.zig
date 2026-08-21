@@ -26781,6 +26781,14 @@ const harness_prelude =
     \\  file(path, options) {
     \\    const filePath = typeof path === "number" ? __home_fd_path(path) : (path instanceof URL && path.protocol === "file:" ? __home_url_file_url_to_path(path) : String(path));
     \\    let cachedSize = null;
+    \\    function syntheticAllocationFailure(operation, requestedSize, message) {
+    \\      try {
+    \\        __home_blob_check_allocation(operation, requestedSize, message || "Out of memory");
+    \\        return null;
+    \\      } catch (error) {
+    \\        return Promise.reject(error);
+    \\      }
+    \\    }
     \\    function executableMagicBytes() {
     \\      return process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
     \\    }
@@ -26806,12 +26814,17 @@ const harness_prelude =
     \\      },
     \\      text() {
     \\        const nativeText = __home_build_read_text(filePath);
-    \\        if (nativeText !== null) return Promise.resolve(nativeText);
+    \\        if (nativeText !== null) {
+    \\          const failure = syntheticAllocationFailure("bun.file.text", __home_utf8_byte_length(nativeText), "Out of memory");
+    \\          return failure || Promise.resolve(nativeText);
+    \\        }
     \\        if (!__home_build_file_exists(filePath) && ((filePath.startsWith("/") && !filePath.startsWith("/home-bake-virtual/")) || typeof __home_bake_read_virtual_file !== "function")) return Promise.reject(__home_bun_file_read_error("open", filePath));
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(filePath));
     \\      },
     \\      json() {
+    \\        const failure = syntheticAllocationFailure("bun.file.json", this.size, "Out of memory");
+    \\        if (failure) return failure;
     \\        return this.text().then(text => JSON.parse(String(text || "null")));
     \\      },
     \\      arrayBuffer() {
@@ -26841,6 +26854,8 @@ const harness_prelude =
     \\        return Promise.resolve(buffer);
     \\      },
     \\      bytes() {
+    \\        const failure = syntheticAllocationFailure("bun.file.bytes", this.size, "Out of memory");
+    \\        if (failure) return failure;
     \\        return this.arrayBuffer().then(buffer => new Uint8Array(buffer));
     \\      },
     \\      get readable() {
@@ -64058,6 +64073,7 @@ const harness_prelude =
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
     \\  if (body instanceof ArrayBuffer) return new Uint8Array(body);
     \\  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    \\  if (body && Array.isArray(body.__home_blob_sparse_parts)) return __home_sparse_blob_slice_bytes(body.__home_blob_sparse_parts, 0, body.size || 0, "body.bytes", true, "Out of memory");
     \\  if (body && Array.isArray(body.__home_blob_bytes)) return body.__home_blob_bytes.slice();
     \\  if (body && body.__home_blob_typed_bytes) return new Uint8Array(body.__home_blob_typed_bytes);
     \\  if (Array.isArray(body)) {
@@ -64224,6 +64240,7 @@ const harness_prelude =
     \\  if (body && body.__home_file_ref) return Number(body.size) || 0;
     \\  if (body && body.__home_logical_buffer) return body.byteLength || body.length || 0;
     \\  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
+    \\  if (body && Array.isArray(body.__home_blob_sparse_parts)) return Number(body.size) || 0;
     \\  if (body && typeof body.getReader === "function") return null;
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_fixed_body_byte_length(body.__home_body_value);
     \\  if (body && Array.isArray(body.__home_chunks) && !body.__home_closed) return null;
@@ -64519,16 +64536,25 @@ const harness_prelude =
     \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata_bytes(bytes || [], contentType);
     \\  return __home_parse_formdata_text(__home_utf8_bytes_to_text(bytes || []), contentType);
     \\}
-    \\function __home_consume_body(owner) {
+    \\function __home_sparse_body_blob(body) {
+    \\  let value = body;
+    \\  while (value && Object.prototype.hasOwnProperty.call(value, "__home_body_value")) value = value.__home_body_value;
+    \\  return value && Array.isArray(value.__home_blob_sparse_parts) ? value : null;
+    \\}
+    \\function __home_consume_body(owner, operation, enforceSyntheticLimit, limitMessage) {
     \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
     \\  if (owner.body == null) return Promise.resolve([]);
     \\  owner.bodyUsed = true;
+    \\  const sparseBlob = __home_sparse_body_blob(owner.body);
+    \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.bytes", enforceSyntheticLimit !== false, limitMessage || "Out of memory");
     \\  return __home_body_bytes(owner.body);
     \\}
-    \\function __home_consume_body_text(owner) {
+    \\function __home_consume_body_text(owner, operation, limitMessage) {
     \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
     \\  if (owner.body == null) return Promise.resolve("");
     \\  owner.bodyUsed = true;
+    \\  const sparseBlob = __home_sparse_body_blob(owner.body);
+    \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.text", true, limitMessage || "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_utf8_bytes_to_text(bytes));
     \\  return __home_body_text(owner.body);
     \\}
     \\function __home_parse_json_body_text(text) {
@@ -64632,8 +64658,8 @@ const harness_prelude =
     \\  }
     \\  return bytes;
     \\}
-    \\function __home_consume_response_bytes(response) {
-    \\  return __home_consume_body(response).then(bytes => __home_unframe_response_body(response.headers, bytes));
+    \\function __home_consume_response_bytes(response, operation, enforceSyntheticLimit, limitMessage) {
+    \\  return __home_consume_body(response, operation || "response.bytes", enforceSyntheticLimit, limitMessage).then(bytes => __home_unframe_response_body(response.headers, bytes));
     \\}
     \\function __home_static_response_cached_value(response, method) {
     \\  const source = response && response.__home_static_response_source;
@@ -64665,13 +64691,13 @@ const harness_prelude =
     \\Response.prototype.text = function() {
     \\  const cached = __home_consume_static_response(this, "text");
     \\  if (cached) return cached;
-    \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
-    \\  return __home_consume_body_text(this).then(text => __home_strip_utf8_bom_text(text));
+    \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this, "response.text", true, "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\  return __home_consume_body_text(this, "response.text", "Cannot create a string longer than 2^32-1 characters").then(text => __home_strip_utf8_bom_text(text));
     \\};
     \\Response.prototype.json = function() {
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
     \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value") && typeof this.body.__home_body_value === "string") return Promise.resolve(__home_parse_json_body_text(this.body.__home_body_value));
-    \\  return this.text().then(text => __home_parse_json_body_text(text));
+    \\  return __home_consume_body_text(this, "response.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
     \\};
     \\function __home_response_direct_body_view(response) {
     \\  if (!response || !response.body || !Object.prototype.hasOwnProperty.call(response.body, "__home_body_value")) return null;
@@ -64689,7 +64715,7 @@ const harness_prelude =
     \\    this.bodyUsed = true;
     \\    return Promise.resolve(new Uint8Array(direct).buffer);
     \\  }
-    \\  return __home_consume_response_bytes(this).then(bytes => new Uint8Array(bytes).buffer);
+    \\  return __home_consume_response_bytes(this, "response.arrayBuffer", false, "Out of memory").then(bytes => new Uint8Array(bytes).buffer);
     \\};
     \\Response.prototype.blob = function() {
     \\  const cached = __home_consume_static_response(this, "blob");
@@ -64725,7 +64751,7 @@ const harness_prelude =
     \\    this.bodyUsed = true;
     \\    return Promise.resolve(new Uint8Array(direct));
     \\  }
-    \\  return __home_consume_response_bytes(this).then(bytes => new Uint8Array(bytes));
+    \\  return __home_consume_response_bytes(this, "response.bytes", true, "Out of memory").then(bytes => new Uint8Array(bytes));
     \\};
     \\Response.prototype.formData = function() {
     \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
@@ -66428,6 +66454,27 @@ const harness_prelude =
     \\const __home_ws_module = { WebSocket: __home_ws_WebSocket, WebSocketServer: __home_ws_WebSocketServer, Server: __home_ws_WebSocketServer };
     \\__home_ws_module.default = __home_ws_WebSocket;
     \\globalThis.__home_modules["ws"] = __home_ws_module;
+    \\function __home_allocation_limit() {
+    \\  const value = Number(globalThis.__home_synthetic_allocation_limit);
+    \\  return Number.isFinite(value) && value >= 0 ? value : Infinity;
+    \\}
+    \\function __home_blob_allocation_error(operation, requestedSize, allocationLimit, message, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new RangeError(message || "Out of memory");
+    \\  const failure = new RangeError(message || "Out of memory");
+    \\  failure.code = "ERR_BLOB_ALLOCATION";
+    \\  failure.operation = String(operation || "blob.materialize");
+    \\  failure.requestedSize = Number(requestedSize) || 0;
+    \\  failure.allocationLimit = Number(allocationLimit);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (requested " + String(failure.requestedSize) + " bytes, limit " + String(failure.allocationLimit) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_blob_check_allocation(operation, requestedSize, message) {
+    \\  const limit = __home_allocation_limit();
+    \\  if (Number(requestedSize) > limit) throw __home_blob_allocation_error(operation, requestedSize, limit, message, new RangeError("synthetic allocation limit exceeded"));
+    \\}
     \\function __home_blob_part_to_bytes(part) {
     \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
     \\  if (part && part.__home_blob_typed_bytes) return new Uint8Array(part.__home_blob_typed_bytes);
@@ -66439,21 +66486,40 @@ const harness_prelude =
     \\function __home_sparse_blob_part(length, fill) {
     \\  return { __home_sparse_blob_part: true, length: Math.max(0, Number(length) || 0), fill: Number(fill) & 0xff };
     \\}
-    \\function __home_blob_part_to_sparse(part) {
+    \\function __home_blob_part_to_sparse(part, copiedLargeParts) {
     \\  if (part && part.__home_sparse_blob_part) return { length: Math.max(0, Number(part.length) || 0), fill: Number(part.fill) & 0xff };
     \\  if (part && Array.isArray(part.__home_blob_sparse_parts)) return { nested: part.__home_blob_sparse_parts.slice(), size: part.size || 0 };
+    \\  const largePartThreshold = 16 * 1024 * 1024;
+    \\  if (part instanceof ArrayBuffer && part.byteLength >= largePartThreshold) {
+    \\    let bytes = copiedLargeParts.get(part);
+    \\    if (!bytes) {
+    \\      bytes = new Uint8Array(part.slice(0));
+    \\      copiedLargeParts.set(part, bytes);
+    \\    }
+    \\    return { length: bytes.byteLength, bytes, offset: 0 };
+    \\  }
+    \\  if (ArrayBuffer.isView(part) && part.byteLength >= largePartThreshold) {
+    \\    let bytes = copiedLargeParts.get(part);
+    \\    if (!bytes) {
+    \\      bytes = new Uint8Array(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+    \\      copiedLargeParts.set(part, bytes);
+    \\    }
+    \\    return { length: bytes.byteLength, bytes, offset: 0 };
+    \\  }
     \\  return null;
     \\}
     \\function __home_blob_sparse_parts(source) {
     \\  let size = 0;
     \\  const parts = [];
+    \\  const copiedLargeParts = new Map();
     \\  for (const part of source) {
-    \\    const sparse = __home_blob_part_to_sparse(part);
+    \\    const sparse = __home_blob_part_to_sparse(part, copiedLargeParts);
     \\    if (!sparse) return null;
     \\    if (sparse.nested) {
     \\      for (const nested of sparse.nested) {
     \\        const length = Math.max(0, Number(nested.length) || 0);
-    \\        __home_array_append(parts, { length, fill: Number(nested.fill) & 0xff });
+    \\        if (nested.bytes) __home_array_append(parts, { length, bytes: nested.bytes, offset: Math.max(0, Number(nested.offset) || 0) });
+    \\        else __home_array_append(parts, { length, fill: Number(nested.fill) & 0xff });
     \\        size += length;
     \\      }
     \\    } else {
@@ -66471,17 +66537,31 @@ const harness_prelude =
     \\    const partStart = offset;
     \\    const partEnd = offset + length;
     \\    if (end <= partStart) break;
-    \\    if (start < partEnd && end > partStart) __home_array_append(out, { length: Math.min(partEnd, end) - Math.max(partStart, start), fill: Number(part.fill) & 0xff });
+    \\    if (start < partEnd && end > partStart) {
+    \\      const overlapStart = Math.max(partStart, start);
+    \\      const overlapEnd = Math.min(partEnd, end);
+    \\      const sliceLength = overlapEnd - overlapStart;
+    \\      if (part.bytes) __home_array_append(out, { length: sliceLength, bytes: part.bytes, offset: Math.max(0, Number(part.offset) || 0) + overlapStart - partStart });
+    \\      else __home_array_append(out, { length: sliceLength, fill: Number(part.fill) & 0xff });
+    \\    }
     \\    offset = partEnd;
     \\  }
     \\  return out;
     \\}
-    \\function __home_sparse_blob_slice_bytes(parts, start, end) {
+    \\function __home_sparse_blob_slice_bytes(parts, start, end, operation, enforceSyntheticLimit, limitMessage) {
     \\  const length = Math.max(0, end - start);
-    \\  if (length > 64 * 1024 * 1024) __home_unsupported("Sparse Blob slice materialization is too large");
-    \\  const out = [];
+    \\  if (enforceSyntheticLimit !== false) __home_blob_check_allocation(operation || "blob.bytes", length, limitMessage || "Out of memory");
+    \\  let out;
+    \\  try {
+    \\    out = new Uint8Array(length);
+    \\  } catch (cause) {
+    \\    throw __home_blob_allocation_error(operation || "blob.materialize", length, __home_allocation_limit(), limitMessage || "Out of memory", cause);
+    \\  }
+    \\  let cursor = 0;
     \\  for (const part of __home_sparse_blob_slice_parts(parts, start, end)) {
-    \\    for (let i = 0; i < part.length; i++) __home_array_append(out, part.fill);
+    \\    if (part.bytes) out.set(new Uint8Array(part.bytes.buffer, part.bytes.byteOffset + (Number(part.offset) || 0), part.length), cursor);
+    \\    else out.fill(Number(part.fill) & 0xff, cursor, cursor + part.length);
+    \\    cursor += part.length;
     \\  }
     \\  return out;
     \\}
@@ -66561,22 +66641,30 @@ const harness_prelude =
     \\  this.size = bytes.length;
     \\  this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
     \\};
+    \\function __home_blob_sparse_result(blob, operation, enforceSyntheticLimit, limitMessage) {
+    \\  try {
+    \\    return Promise.resolve(__home_sparse_blob_slice_bytes(blob.__home_blob_sparse_parts, 0, blob.size || 0, operation, enforceSyntheticLimit, limitMessage));
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\}
     \\Blob.prototype.arrayBuffer = function() {
-    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)).buffer);
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.arrayBuffer", false, "Out of memory").then(bytes => bytes.buffer);
     \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes).buffer);
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
     \\};
     \\Blob.prototype.bytes = function() {
-    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)));
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.bytes", true, "Out of memory");
     \\  if (this.__home_blob_typed_bytes) return Promise.resolve(new Uint8Array(this.__home_blob_typed_bytes));
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.text = function() {
-    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return this.bytes().then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(Array.from(bytes))));
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.text", true, "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  if (this.__home_blob_typed_bytes) return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_typed_bytes)));
     \\  return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_bytes || [])));
     \\};
     \\Blob.prototype.json = function() {
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_blob_sparse_result(this, "blob.json", true, "Cannot parse a JSON string longer than 2^32-1 characters").then(bytes => __home_parse_json_body_text(__home_utf8_bytes_to_text(bytes)));
     \\  return this.text().then(text => __home_parse_json_body_text(text));
     \\};
     \\Blob.prototype.formData = function() {
@@ -67203,17 +67291,17 @@ const harness_prelude =
     \\  Request.prototype.text = function() {
     \\    "use strict";
     \\    __home_request_check_this(this);
-    \\    return __home_consume_body_text(this).then(text => __home_strip_utf8_bom_text(text));
+    \\    return __home_consume_body_text(this, "request.text", "Cannot create a string longer than 2^32-1 characters").then(text => __home_strip_utf8_bom_text(text));
     \\  };
     \\  Request.prototype.arrayBuffer = function() {
     \\    "use strict";
     \\    __home_request_check_this(this);
-    \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
+    \\    return __home_consume_body(this, "request.arrayBuffer", false, "Out of memory").then(bytes => new Uint8Array(bytes).buffer);
     \\  };
     \\  Request.prototype.bytes = function() {
     \\    "use strict";
     \\    __home_request_check_this(this);
-    \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes));
+    \\    return __home_consume_body(this, "request.bytes", true, "Out of memory").then(bytes => new Uint8Array(bytes));
     \\  };
     \\  Request.prototype.blob = function() {
     \\    "use strict";
@@ -67259,6 +67347,7 @@ const harness_prelude =
     \\Request.prototype.json = function() {
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
     \\  if (typeof this.__home_text === "string" && this.__home_text.length > 0) return Promise.resolve(__home_parse_json_body_text(this.__home_text));
+    \\  if (__home_sparse_body_blob(this.body)) return __home_consume_body_text(this, "request.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
     \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
     \\};
     \\globalThis.Request = Request;
@@ -107479,6 +107568,94 @@ test "bootstrap local fetch gives server requests linked AbortSignals and struct
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap Blob allocation errors preserve operation limits causes and stacks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { setSyntheticAllocationLimitForTesting } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("large segments retain bytes while arrayBuffer bypasses the synthetic limit", async () => {
+        \\  const previous = setSyntheticAllocationLimitForTesting(1024);
+        \\  try {
+        \\    const blob = new Blob([__home_sparse_blob_part(2048, 0x61)]);
+        \\    const buffer = await blob.arrayBuffer();
+        \\    expect(buffer.byteLength).toBe(2048);
+        \\    const bytes = new Uint8Array(buffer);
+        \\    expect(bytes[0]).toBe(0x61);
+        \\    expect(bytes[2047]).toBe(0x61);
+        \\  } finally {
+        \\    setSyntheticAllocationLimitForTesting(previous);
+        \\  }
+        \\});
+        \\
+        \\test("repeated large ArrayBuffer parts snapshot arbitrary bytes once", async () => {
+        \\  const source = new Uint8Array(16 * 1024 * 1024);
+        \\  source[0] = 0x11;
+        \\  source[source.length - 1] = 0x22;
+        \\  const blob = new Blob([source.buffer, source.buffer]);
+        \\  source[0] = 0x99;
+        \\  source[source.length - 1] = 0x99;
+        \\  const bytes = new Uint8Array(await blob.arrayBuffer());
+        \\  expect(bytes.byteLength).toBe(32 * 1024 * 1024);
+        \\  expect(bytes[0]).toBe(0x11);
+        \\  expect(bytes[16 * 1024 * 1024 - 1]).toBe(0x22);
+        \\  expect(bytes[16 * 1024 * 1024]).toBe(0x11);
+        \\  expect(bytes[bytes.length - 1]).toBe(0x22);
+        \\  const seam = new Uint8Array(await blob.slice(16 * 1024 * 1024 - 1, 16 * 1024 * 1024 + 1).arrayBuffer());
+        \\  expect(Array.from(seam)).toEqual([0x22, 0x11]);
+        \\});
+        \\
+        \\test("Blob and body OOM errors carry structured allocation context", async () => {
+        \\  const previous = setSyntheticAllocationLimitForTesting(1024);
+        \\  try {
+        \\    const blobError = await new Blob([__home_sparse_blob_part(2048, 0)]).bytes().catch(error => error);
+        \\    expect(blobError).toBeInstanceOf(RangeError);
+        \\    expect(blobError.code).toBe("ERR_BLOB_ALLOCATION");
+        \\    expect(blobError.operation).toBe("blob.bytes");
+        \\    expect(blobError.requestedSize).toBe(2048);
+        \\    expect(blobError.allocationLimit).toBe(1024);
+        \\    expect(blobError.cause).toBeInstanceOf(RangeError);
+        \\    expect(blobError.stack).toContain("blob.bytes (requested 2048 bytes, limit 1024");
+        \\    expect(blobError.stack).toContain("regression/blob-allocation-errors.test.js");
+        \\
+        \\    const responseError = await new Response(new Blob([__home_sparse_blob_part(2048, 0)])).json().catch(error => error);
+        \\    expect(responseError.operation).toBe("response.json");
+        \\    expect(responseError.message).toBe("Cannot parse a JSON string longer than 2^32-1 characters");
+        \\
+        \\    const request = new Request("http://localhost/", { body: new Blob([__home_sparse_blob_part(2048, 0)]) });
+        \\    const requestError = await request.text().catch(error => error);
+        \\    expect(requestError.operation).toBe("request.text");
+        \\    expect(requestError.message).toBe("Cannot create a string longer than 2^32-1 characters");
+        \\  } finally {
+        \\    setSyntheticAllocationLimitForTesting(previous);
+        \\  }
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/blob-allocation-errors.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_BLOB_ALLOCATION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestedSize") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allocationLimit") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed or file_run.result.passed != 3) {
+        std.debug.print(
+            "Blob allocation error regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -107607,6 +107784,8 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/timers/performance-entries.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/blob-cow.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/blob-array-fast-path.test.ts", .passed = 11 },
+        .{ .path = "js/web/fetch/blob-file-name-ownership.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/blob-oom.test.ts", .passed = 16 },
         .{ .path = "regression/issue/02368.test.ts", .passed = 2 },
         .{ .path = "js/web/request/request.test.ts", .passed = 4 },
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
