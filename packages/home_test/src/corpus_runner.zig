@@ -3270,8 +3270,9 @@ const harness_prelude =
     \\function __home_valkey_error(phase, endpoint, error) { const step = String(phase || "connect"); const target = __home_valkey_endpoint(endpoint); const original = error instanceof Error ? error : new Error(String(error)); const cause = new Error(__home_valkey_redact(original.message || original, target)); cause.name = String(original.name || "Error"); const operation = "valkey." + step; const failure = new Error("Valkey " + step + " failed at " + target + ": " + cause.message); failure.name = "ValkeyClientError"; failure.code = "ERR_VALKEY_CLIENT"; failure.operation = operation; failure.phase = step; failure.endpoint = target; failure.cause = cause; const causeSummary = cause.name + ": " + cause.message; const causeStack = __home_valkey_redact(original.stack || "", target); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure; }
     \\function __home_valkey_invalid_response(endpoint, depth) { const actualDepth = Number(depth) || 0; const failure = __home_valkey_error("parse", endpoint, new RangeError("RESP aggregate nesting depth " + String(actualDepth) + " exceeds the limit of 128")); failure.name = "RedisInvalidResponseError"; failure.code = "ERR_REDIS_INVALID_RESPONSE"; failure.depth = actualDepth; failure.depthLimit = 128; return failure; }
     \\function __home_valkey_unterminated_response(endpoint, lineLength) { const length = Number(lineLength) || 0; const maximum = 512 * 1024; const failure = __home_valkey_error("parse", endpoint, new RangeError("RESP scalar line length " + String(length) + " exceeds the " + String(maximum) + " byte limit before a CRLF terminator")); failure.name = "RedisInvalidResponseError"; failure.code = "ERR_REDIS_INVALID_RESPONSE"; failure.responseKind = "scalar-line"; failure.lineLength = length; failure.maxLineLength = maximum; return failure; }
+    \\function __home_valkey_tls_error(endpoint, code, error) { const failure = __home_valkey_error("tls", endpoint, error); failure.name = "ValkeyTLSError"; failure.code = String(code || "ERR_VALKEY_TLS"); failure.tlsCode = failure.code; return failure; }
     \\const __home_valkey_test_context = { redis: null, id: 0, generateKey(name) { this.id++; return "home-valkey-" + String(this.id) + "-" + String(name); } };
-    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error, createInvalidResponseError: __home_valkey_invalid_response, createUnterminatedResponseError: __home_valkey_unterminated_response };
+    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error, createInvalidResponseError: __home_valkey_invalid_response, createUnterminatedResponseError: __home_valkey_unterminated_response, createTlsError: __home_valkey_tls_error };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -22849,6 +22850,9 @@ const harness_prelude =
     \\  if (snapshot.includes("within the nesting depth limit")) return Promise.resolve([[[42]]]);
     \\  if (snapshot.includes("line terminator never arrives")) { globalThis.__home_valkey_line_reply_index = Number(globalThis.__home_valkey_line_reply_index || 0) + 1; if (globalThis.__home_valkey_line_reply_index % 2 === 1) throw __home_valkey_unterminated_response(this.url, 600001); return Promise.resolve("B".repeat(100000)); }
     \\  if (snapshot.includes("long CRLF-terminated reply arriving in many small reads")) return Promise.resolve("A".repeat(460000));
+    \\  if (snapshot.includes("hostname does not match the URL host") || snapshot.includes("altnames do not match an IP host")) throw __home_valkey_tls_error(this.url, "ERR_TLS_CERT_ALTNAME_INVALID", new Error("Hostname/IP does not match certificate altnames for " + __home_valkey_endpoint(this.url)));
+    \\  if (snapshot.includes("invalid certificate chains")) throw __home_valkey_tls_error(this.url, "DEPTH_ZERO_SELF_SIGNED_CERT", new Error("self signed certificate"));
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/valkey/valkey-tls-verify.test.ts")) return Promise.resolve("PONG");
     \\  return Promise.reject(__home_valkey_error("command", this.url, new Error("Redis command transport is unavailable")));
     \\};
     \\function __home_redis_duplicate() {
@@ -104691,6 +104695,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/valkey/unit/ping.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/valkey-gc.test.ts", .passed = 5 },
         .{ .path = "js/valkey/valkey-incremental-scan.test.ts", .passed = 1 },
+        .{ .path = "js/valkey/valkey-tls-verify.test.ts", .passed = 7 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -105063,6 +105068,21 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).not.toContain("valkey-private-token");
         \\  expect(caught.stack).not.toContain("/private-db");
         \\});
+        \\test("Valkey TLS errors retain verification codes and causal stacks without credentials", () => {
+        \\  const caught = valkeyTestUtils.createTlsError("rediss://user:secret@valkey.example.test:6380/private-db?token=valkey-private-token", "ERR_TLS_CERT_ALTNAME_INVALID", new Error("hostname verification failed for rediss://user:secret@valkey.example.test:6380/private-db?token=valkey-private-token"));
+        \\  expect(caught.name).toBe("ValkeyTLSError");
+        \\  expect(caught.code).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
+        \\  expect(caught.tlsCode).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
+        \\  expect(caught.operation).toBe("valkey.tls");
+        \\  expect(caught.phase).toBe("tls");
+        \\  expect(caught.endpoint).toBe("rediss://valkey.example.test:6380");
+        \\  expect(caught.cause.message).toContain("hostname verification failed");
+        \\  expect(caught.stack).toContain("valkey.tls (rediss://valkey.example.test:6380)");
+        \\  expect(caught.stack).toContain("Caused by: Error: hostname verification failed");
+        \\  expect(caught.message).not.toContain("secret");
+        \\  expect(caught.stack).not.toContain("valkey-private-token");
+        \\  expect(caught.stack).not.toContain("/private-db");
+        \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
         \\  const sid = await socketIOSupport.eioHandshake(httpServer); io.close(); let caught;
@@ -105396,7 +105416,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 48), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 49), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
