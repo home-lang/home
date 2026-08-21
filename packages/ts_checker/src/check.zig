@@ -6698,6 +6698,21 @@ pub const Checker = struct {
         return false;
     }
 
+    fn jsDocHasAliasLikeDeclaration(body: []const u8) bool {
+        var scan: usize = 0;
+        while (jsDocNextLineTagStart(body, scan)) |tag_start| {
+            const name_start = tag_start + 1;
+            var name_end = name_start;
+            while (name_end < body.len and isJsDocIdentChar(body[name_end])) : (name_end += 1) {}
+            const name = body[name_start..name_end];
+            if (std.mem.eql(u8, name, "typedef") or
+                std.mem.eql(u8, name, "callback") or
+                std.mem.eql(u8, name, "overload")) return true;
+            scan = name_end;
+        }
+        return false;
+    }
+
     fn jsDocHasTemplateTypeTagCombination(tags: []const ts_parser.jsdoc.Tag) bool {
         var has_template = false;
         var has_type = false;
@@ -38155,6 +38170,9 @@ pub const Checker = struct {
         defer if (class_jsdoc_template_scope) self.popNarrowScope();
         if (class_jsdoc_template_scope) {
             try self.recordJsDocTemplateTypeParams(node, &class_param_ids);
+            const src = self.source orelse unreachable;
+            const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse "";
+            if (jsDocHasAliasLikeDeclaration(body)) class_param_ids.clearRetainingCapacity();
         }
 
         // Two-pass type-parameter binding so `class C<T extends List<T>>`
@@ -217076,6 +217094,36 @@ test "checker: checkjs class template implements generic JSDoc import alias" {
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.class_incorrectly_implements_interface));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+}
+
+test "checker: JSDoc callback template does not make attached class generic" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\// @strict: false
+        \\/**
+        \\ * @template S
+        \\ * @callback SharedId
+        \\ * @param {S} value
+        \\ * @returns {S}
+        \\ */
+        \\class SharedClass {
+        \\  constructor() {
+        \\    /** @type {SharedId<S>} */
+        \\    this.id;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expectEqualStrings(
+            "Property 'id' does not exist on type 'SharedClass'.",
+            diagnostic.message,
+        );
+    }
 }
 
 test "checker: checkjs JSDoc typedef reports lowercase unresolved generic argument" {
