@@ -79236,6 +79236,31 @@ fn rewriteWorkerThreadsCorpus(allocator: std.mem.Allocator, source: []const u8) 
     return rewritten;
 }
 
+fn rewriteJsonWebTokenTestUtilsCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_named_exports = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "export { asyncCheck, base64UrlEncode, signJWTHelper, verifyJWTHelper };",
+        "const __home_jwt_test_utils_named = { asyncCheck, base64UrlEncode, signJWTHelper, verifyJWTHelper };",
+    );
+    defer allocator.free(with_named_exports);
+
+    const with_default_export = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_named_exports,
+        "export default {",
+        "const __home_jwt_test_utils_default = {",
+    );
+    defer allocator.free(with_default_export);
+
+    return std.mem.concat(allocator, u8, &.{
+        with_default_export,
+        "\nglobalThis.__home_modules[\"./test-utils\"] = Object.assign({}, __home_jwt_test_utils_named, __home_jwt_test_utils_default, { default: __home_jwt_test_utils_default });\n",
+    });
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -79268,6 +79293,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteSqlPrepareFalseCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/sql/sql.test.ts"))
         try rewriteSqlMainCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/third_party/jsonwebtoken/test-utils.js"))
+        try rewriteJsonWebTokenTestUtilsCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "napi/uv.test.ts") or
         std.mem.eql(u8, relative_path, "napi/uv_stub.test.ts"))
         try rewriteUvNapiCorpus(allocator, module_source, relative_path)
@@ -79931,6 +79958,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         (std.mem.endsWith(u8, relative_path, ".js") or std.mem.endsWith(u8, relative_path, ".mjs"))) return true;
 
     return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
+        std.mem.eql(u8, relative_path, "js/third_party/jsonwebtoken/test-utils.js") or
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/napi-exception-pending-crash/test-original-crash.js") or
@@ -103799,6 +103827,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/option-nonce.test.js", .passed = 18 },
         .{ .path = "js/third_party/jsonwebtoken/rsa-public-key.test.js", .passed = 4 },
         .{ .path = "js/third_party/jsonwebtoken/schema.test.js", .passed = 5 },
+        .{ .path = "js/third_party/jsonwebtoken/test-utils.js", .passed = 0 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
