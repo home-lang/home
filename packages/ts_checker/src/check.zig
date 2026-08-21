@@ -28706,10 +28706,13 @@ pub const Checker = struct {
                     const setter = hir_mod.fnDeclOf(self.hir, setter_prop.value);
                     if (!setter.flags.is_setter) continue;
                     const params = hir_mod.fnParams(self.hir, setter_prop.value);
-                    if (params.len == 0 or self.hir.kindOf(params[0]) != .parameter) return null;
-                    const parameter = hir_mod.parameterOf(self.hir, params[0]);
-                    if (parameter.type_annotation == hir_mod.none_node_id) return null;
-                    return self.lowererLowerWithTypeParams(parameter.type_annotation) catch null;
+                    for (params) |param| {
+                        if (self.hir.kindOf(param) != .parameter or self.isThisParameter(param)) continue;
+                        const parameter = hir_mod.parameterOf(self.hir, param);
+                        if (parameter.type_annotation == hir_mod.none_node_id) return null;
+                        return self.lowererLowerWithTypeParams(parameter.type_annotation) catch null;
+                    }
+                    return null;
                 }
                 return null;
             }
@@ -53219,6 +53222,7 @@ pub const Checker = struct {
             var options_t = self.hir.typeOf(options_node);
             if (options_t == types.Primitive.none) options_t = try self.checkExpression(options_node);
             options_t = try self.expressionLiteralType(options_node, options_t);
+            if (self.typeIsAny(options_t)) return;
             const source_name = (try self.allocAssignmentDiagnosticTypeName(options_t)) orelse return;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -160324,8 +160328,20 @@ pub const Checker = struct {
             return;
         }
 
+        const diag_start = self.diagnostics.items.len;
         try self.checkExcessProperties(expr, target_t);
-        _ = try self.tryReportObjectLiteralPropertyMismatch(expr, target_t);
+        if (self.diagnostics.items.len != diag_start) return;
+        if (try self.tryReportObjectLiteralPropertyMismatch(expr, target_t)) return;
+        const parent = self.hir.parentOf(expr);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .satisfies_expr) return;
+        const missing_start = self.diagnostics.items.len;
+        if (try self.tryReportSinglePropertyMissing(expr, expr, expr_t, target_t)) {
+            if (self.satisfiesKeywordPos(parent)) |pos| {
+                for (self.diagnostics.items[missing_start..]) |*diagnostic| {
+                    if (diagnostic.code == TsCodes.property_missing_required) diagnostic.pos = pos;
+                }
+            }
+        }
     }
 
     fn checkSatisfiesArrayLiteral(self: *Checker, expr: NodeId, target_t: TypeId) CheckError!void {
@@ -217466,6 +217482,28 @@ test "checker: tsgo parity residual checkjs JSDoc satisfies reports missing requ
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.satisfies_constraint));
 }
 
+test "checker: TypeScript satisfies elaborates one missing property" {
+    const source =
+        \\interface Foo { a: number; }
+        \\const local = {} satisfies Foo;
+        \\export default {} satisfies Foo;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.satisfies_constraint));
+    const first_pos = std.mem.indexOf(u8, source, "satisfies") orelse return error.TestUnexpectedResult;
+    const second_pos = std.mem.indexOfPos(u8, source, first_pos + 1, "satisfies") orelse return error.TestUnexpectedResult;
+    var missing_index: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_missing_required) continue;
+        const expected_pos: u32 = @intCast(if (missing_index == 0) first_pos else second_pos);
+        try T.expectEqual(expected_pos, diagnostic.pos);
+        missing_index += 1;
+    }
+}
+
 test "checker: tsgo parity residual checkjs JSDoc missing property anchors on the tag" {
     const source =
         \\// @allowJs: true
@@ -221922,6 +221960,23 @@ test "checker: dynamic import invalid options retain type and resolution diagnos
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.dynamic_import_second_argument_bad_module));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_module));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.no_properties_in_common,
+        "Type '\"invalid-options\"' has no properties in common with type 'ImportCallOptions'.",
+    ));
+}
+
+test "checker: dynamic import accepts any options without TS2559" {
+    const s = try newSetup(
+        \\// @module: esnext
+        \\declare const anyOptions: any;
+        \\import("./x", anyOptions);
+        \\import("./x", "invalid-options");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.no_properties_in_common,
@@ -248282,6 +248337,7 @@ test "checker: invalid accessor this parameters do not leak into sibling objects
 
     try T.expect(checkerCountCode(s, TsCodes.accessors_cannot_declare_this) >= 2);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: repeated callable arrays compare structural call signatures" {
