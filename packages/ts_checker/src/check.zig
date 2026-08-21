@@ -15871,8 +15871,14 @@ pub const Checker = struct {
             break :blk self.hir.kindOf(m.object) == .identifier;
         };
         const is_ident_narrowable = self.hir.kindOf(sw.discriminant) == .identifier;
+        const loop_alias_declared_t = if (is_ident_narrowable)
+            self.loopAliasSwitchDeclaredSourceType(sw.discriminant)
+        else
+            null;
         const ident_discriminant_diag_t = if (is_ident_narrowable)
-            self.visibleAnnotatedIdentifierType(sw.discriminant) orelse self.typeOfIdentifierDeclared(sw.discriminant)
+            self.visibleAnnotatedIdentifierType(sw.discriminant) orelse
+                loop_alias_declared_t orelse
+                self.typeOfIdentifierDeclared(sw.discriminant)
         else
             types.Primitive.none;
         const ident_discriminant_diag_name = if (is_ident_narrowable)
@@ -15928,8 +15934,9 @@ pub const Checker = struct {
                     try fallthrough_case_types.append(self.gpa, case_narrow_t);
                 }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
-                const case_is_comparable = self.intersectionReducesToNeverForAssignability(discriminant_lit_t) or
-                    try self.typesHaveComparableOverlap(discriminant_lit_t, case_t);
+                const comparable_discriminant_t = loop_alias_declared_t orelse discriminant_lit_t;
+                const case_is_comparable = self.intersectionReducesToNeverForAssignability(comparable_discriminant_t) or
+                    try self.typesHaveComparableOverlap(comparable_discriminant_t, case_t);
                 if (!case_is_comparable) {
                     const discriminant_diag_t = if (ident_discriminant_diag_t != types.Primitive.none) ident_discriminant_diag_t else discriminant_lit_t;
                     try self.reportSwitchCaseNotComparable(
@@ -15971,6 +15978,13 @@ pub const Checker = struct {
                     if (other_p.value == hir_mod.none_node_id) continue;
                     try self.applyDiscriminatedNarrow(sw.discriminant, other_p.value, false);
                 }
+                if (try self.switchCasesCoverLiteralType(discriminant_lit_t, cases) or
+                    try self.discriminatedSwitchCasesCoverObject(sw.discriminant, cases))
+                {
+                    const member = hir_mod.memberOf(self.hir, sw.discriminant);
+                    const object_id = hir_mod.identifierOf(self.hir, member.object);
+                    try self.recordNarrow(object_id.name, types.Primitive.never);
+                }
             } else if (is_ident_narrowable) {
                 has_default = true;
                 // `default:` for `switch (x)` ÃÂ¢ÃÂÃÂ subtract every
@@ -16009,12 +16023,19 @@ pub const Checker = struct {
             }
         }
 
+        if (is_ident_narrowable) {
+            try self.applyPostSwitchIdentifierFlow(sw.discriminant, discriminant_t, cases, has_default);
+        }
+
         if (case_literal_types.items.len > 0) {
             var remaining = discriminant_lit_t;
             for (case_literal_types.items) |lit_t| {
                 remaining = self.subtractTypeByPredicate(remaining, lit_t) catch remaining;
             }
-            if (remaining == types.Primitive.never) {
+            if (remaining == types.Primitive.never or
+                self.switchLiteralUnionIsCovered(discriminant_lit_t, case_literal_types.items) or
+                self.switchEnumMembersAreCovered(discriminant_t, cases))
+            {
                 try self.exhaustive_switches.put(self.gpa, node, {});
             }
         }
@@ -16037,6 +16058,242 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn switchLiteralUnionIsCovered(self: *Checker, discriminant_t: TypeId, case_types: []const TypeId) bool {
+        if (discriminant_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(discriminant_t).is_union) return false;
+        const members = self.interner.unionMembers(discriminant_t);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            var covered = false;
+            for (case_types) |case_t| {
+                if (self.switchLiteralUnitsAreEqual(member, case_t)) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered) return false;
+        }
+        return true;
+    }
+
+    fn switchCasesCoverLiteralType(self: *Checker, discriminant_t: TypeId, cases: []const NodeId) CheckError!bool {
+        var case_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer case_types.deinit(self.gpa);
+        for (cases) |case_node| {
+            const case_value = hir_mod.switchCaseOf(self.hir, case_node).value;
+            if (case_value == hir_mod.none_node_id) continue;
+            const case_t = (try self.expressionNarrowLiteralType(case_value)) orelse return false;
+            try case_types.append(self.gpa, case_t);
+        }
+        return self.switchLiteralUnionIsCovered(discriminant_t, case_types.items);
+    }
+
+    fn discriminatedSwitchCasesCoverObject(self: *Checker, discriminant: NodeId, cases: []const NodeId) CheckError!bool {
+        if (self.hir.kindOf(discriminant) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, discriminant);
+        if (self.hir.kindOf(member.object) != .identifier) return false;
+        const object_t = self.typeOfIdentifierDeclared(member.object);
+        if (object_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(object_t).is_union) return false;
+
+        var case_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer case_types.deinit(self.gpa);
+        for (cases) |case_node| {
+            const case_value = hir_mod.switchCaseOf(self.hir, case_node).value;
+            if (case_value == hir_mod.none_node_id) continue;
+            const case_t = (try self.expressionNarrowLiteralType(case_value)) orelse return false;
+            try case_types.append(self.gpa, case_t);
+        }
+        if (case_types.items.len == 0) return false;
+
+        for (self.interner.unionMembers(object_t)) |variant_t| {
+            const discriminant_t = (try self.lookupObjectMember(variant_t, member.name)) orelse return false;
+            var covered = false;
+            for (case_types.items) |case_t| {
+                if (self.switchLiteralUnitsAreEqual(discriminant_t, case_t)) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered) return false;
+        }
+        return true;
+    }
+
+    fn loopAliasSwitchDeclaredSourceType(self: *Checker, discriminant: NodeId) ?TypeId {
+        if (!self.nodeIsInsideSameFunctionLoop(discriminant) or self.hir.kindOf(discriminant) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, discriminant).name;
+        const declaration = self.visibleVariableDeclarationBefore(discriminant, name) orelse return null;
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        if (variable.type_annotation != hir_mod.none_node_id or
+            variable.init == hir_mod.none_node_id or
+            self.hir.kindOf(variable.init) != .identifier)
+        {
+            return null;
+        }
+        return self.visibleAnnotatedIdentifierType(variable.init) orelse
+            self.typeOfIdentifierDeclared(variable.init);
+    }
+
+    fn applyPostSwitchIdentifierFlow(
+        self: *Checker,
+        discriminant: NodeId,
+        discriminant_t: TypeId,
+        cases: []const NodeId,
+        has_default: bool,
+    ) CheckError!void {
+        const id = hir_mod.identifierOf(self.hir, discriminant);
+        var remaining = discriminant_t;
+        for (cases) |case_node| {
+            const case_value = hir_mod.switchCaseOf(self.hir, case_node).value;
+            if (case_value == hir_mod.none_node_id) continue;
+            if (try self.expressionNarrowLiteralType(case_value)) |case_t| {
+                remaining = self.subtractTypeByPredicate(remaining, case_t) catch remaining;
+            }
+        }
+
+        for (cases, 0..) |case_node, index| {
+            const statements = hir_mod.switchCaseStmts(self.hir, case_node);
+            if (index + 1 < cases.len and !self.caseClauseStatementsExit(statements)) return;
+            if (!self.switchCaseIdentifierFlowIsSupported(statements, id.name)) return;
+        }
+
+        var joined: ?TypeId = if (!has_default and remaining != types.Primitive.never) remaining else null;
+        for (cases) |case_node| {
+            const case_value = hir_mod.switchCaseOf(self.hir, case_node).value;
+            const incoming = if (case_value == hir_mod.none_node_id)
+                remaining
+            else
+                (try self.expressionNarrowLiteralType(case_value)) orelse continue;
+            const branch_t = (try self.switchCaseIdentifierResultType(
+                hir_mod.switchCaseStmts(self.hir, case_node),
+                id.name,
+                incoming,
+            )) orelse continue;
+            joined = if (joined) |current| try self.joinSwitchIdentifierFlowTypes(current, branch_t) else branch_t;
+        }
+        if (joined) |flow_t| try self.recordNarrow(id.name, flow_t);
+    }
+
+    fn switchCaseIdentifierFlowIsSupported(self: *Checker, statements: []const NodeId, name: hir_mod.StringId) bool {
+        for (statements) |statement| {
+            if (!self.statementMayAssignIdentifier(statement, name)) continue;
+            if (self.hir.kindOf(statement) != .assignment) return false;
+            const assignment = hir_mod.assignmentOf(self.hir, statement);
+            if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier or
+                hir_mod.identifierOf(self.hir, assignment.target).name != name)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn switchCaseIdentifierResultType(
+        self: *Checker,
+        statements: []const NodeId,
+        name: hir_mod.StringId,
+        incoming: TypeId,
+    ) CheckError!?TypeId {
+        var flow = incoming;
+        for (statements) |statement| {
+            switch (self.hir.kindOf(statement)) {
+                .assignment => {
+                    const assignment = hir_mod.assignmentOf(self.hir, statement);
+                    if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier or
+                        hir_mod.identifierOf(self.hir, assignment.target).name != name)
+                    {
+                        continue;
+                    }
+                    var value_t = self.hir.typeOf(assignment.value);
+                    if (value_t == types.Primitive.none) value_t = try self.checkExpression(assignment.value);
+                    flow = try self.flowTypeForAssignmentValue(assignment.value, value_t);
+                },
+                .break_stmt => return flow,
+                .return_stmt, .throw_stmt, .continue_stmt => return null,
+                else => if (self.statementDefinitelyExits(statement)) return null,
+            }
+        }
+        return flow;
+    }
+
+    fn joinSwitchIdentifierFlowTypes(self: *Checker, left: TypeId, right: TypeId) CheckError!TypeId {
+        if (left == right or right == types.Primitive.never) return left;
+        if (left == types.Primitive.never) return right;
+        if (self.engine.isAssignableTo(right, left) catch false) return left;
+        if (self.engine.isAssignableTo(left, right) catch false) return right;
+        return self.interner.internUnion(&.{ left, right }) catch return error.OutOfMemory;
+    }
+
+    fn switchLiteralUnitsAreEqual(self: *Checker, left: TypeId, right: TypeId) bool {
+        if (left == right) return true;
+        if (left >= self.interner.pool.typeCount() or right >= self.interner.pool.typeCount()) return false;
+        const left_flags = self.interner.pool.flagsOf(left);
+        const right_flags = self.interner.pool.flagsOf(right);
+        if (!left_flags.is_literal or !right_flags.is_literal) return false;
+        const left_literal = self.interner.literalOfOrNull(left) orelse return false;
+        const right_literal = self.interner.literalOfOrNull(right) orelse return false;
+        return switch (left_literal) {
+            .string_lit => |value| switch (right_literal) {
+                .string_lit => |other| value == other,
+                else => false,
+            },
+            .number_lit => |value| switch (right_literal) {
+                .number_lit => |other| value == other,
+                else => false,
+            },
+            .boolean_lit => |value| switch (right_literal) {
+                .boolean_lit => |other| value == other,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn switchEnumMembersAreCovered(self: *Checker, discriminant_t: TypeId, cases: []const NodeId) bool {
+        const enum_name = self.enumNameForSwitchType(discriminant_t) orelse return false;
+        var saw_member = false;
+        var numeric = self.enum_member_values.iterator();
+        while (numeric.next()) |entry| {
+            if (entry.key_ptr.obj_name != enum_name) continue;
+            saw_member = true;
+            if (!self.switchCasesContainEnumMember(cases, entry.key_ptr.*)) return false;
+        }
+        var strings = self.enum_member_string_values.iterator();
+        while (strings.next()) |entry| {
+            if (entry.key_ptr.obj_name != enum_name) continue;
+            saw_member = true;
+            if (!self.switchCasesContainEnumMember(cases, entry.key_ptr.*)) return false;
+        }
+        return saw_member;
+    }
+
+    fn enumNameForSwitchType(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.enumNameFromNominal(t)) |name| return name;
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return null;
+        var enum_name: ?hir_mod.StringId = null;
+        for (self.interner.unionMembers(t)) |member| {
+            const member_name = self.enumNameFromNominal(member) orelse
+                (if (self.interner.enumLiteralInfo(member)) |info| info.enum_name else return null);
+            if (enum_name) |existing| {
+                if (existing != member_name) return null;
+            } else {
+                enum_name = member_name;
+            }
+        }
+        return enum_name;
+    }
+
+    fn switchCasesContainEnumMember(self: *Checker, cases: []const NodeId, key: MemberKey) bool {
+        for (cases) |case_node| {
+            const case_value = hir_mod.switchCaseOf(self.hir, case_node).value;
+            if (case_value == hir_mod.none_node_id or self.hir.kindOf(case_value) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, case_value);
+            if (member.name != key.prop_name or self.hir.kindOf(member.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, member.object).name == key.obj_name) return true;
+        }
+        return false;
     }
 
     fn checkSwitchTrueGuardStatement(
@@ -17873,7 +18130,8 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
             .return_stmt, .throw_stmt => true,
-            .expression_stmt, .call_expr => self.hir.typeOf(node) == types.Primitive.never,
+            .expression_stmt => self.hir.typeOf(node) == types.Primitive.never,
+            .call_expr => self.callExpressionDefinitelyExits(node),
             .block_stmt => blk: {
                 const stmts = hir_mod.blockStmts(self.hir, node);
                 var i = stmts.len;
@@ -17881,7 +18139,7 @@ pub const Checker = struct {
                     i -= 1;
                     switch (self.hir.kindOf(stmts[i])) {
                         .type_alias_decl, .interface_decl => continue,
-                        else => break :blk self.statementDefinitelyExits(stmts[i]),
+                        else => if (self.statementDefinitelyExits(stmts[i])) break :blk true,
                     }
                 }
                 break :blk false;
@@ -17900,8 +18158,49 @@ pub const Checker = struct {
                 break :blk self.expressionIsLiteralTrue(w.cond) and !self.nodeContainsBreak(w.body);
             },
             .switch_stmt => self.switchDefinitelyExits(node),
+            .try_stmt => blk: {
+                const statement = hir_mod.tryOf(self.hir, node);
+                if (statement.finally_block != hir_mod.none_node_id and
+                    self.statementDefinitelyExits(statement.finally_block))
+                {
+                    break :blk true;
+                }
+                if (!self.statementDefinitelyExits(statement.block)) break :blk false;
+                break :blk statement.catch_block == hir_mod.none_node_id or
+                    self.statementDefinitelyExits(statement.catch_block);
+            },
             else => false,
         };
+    }
+
+    fn callExpressionDefinitelyExits(self: *Checker, node: NodeId) bool {
+        const call = hir_mod.callOf(self.hir, node);
+        const returns_never = self.hir.typeOf(node) == types.Primitive.never or
+            self.thisMethodCallHasExplicitNeverReturn(call.callee);
+        if (!returns_never) return false;
+        if (!self.assertionCallTargetIsQualifiedName(call.callee)) return false;
+        return self.assertionCallTargetUnannotatedName(call.callee) == null;
+    }
+
+    fn thisMethodCallHasExplicitNeverReturn(self: *Checker, callee: NodeId) bool {
+        if (self.hir.kindOf(callee) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, callee);
+        const object_is_this = switch (self.hir.kindOf(member.object)) {
+            .this_expr => true,
+            .identifier => std.mem.eql(
+                u8,
+                self.string_interner.get(hir_mod.identifierOf(self.hir, member.object).name),
+                "this",
+            ),
+            else => false,
+        };
+        if (!object_is_this) return false;
+        const class_node = self.enclosingClassNode(callee);
+        if (class_node == hir_mod.none_node_id) return false;
+        const method_node = self.classMethodDeclNode(class_node, member.name) orelse return false;
+        const method = hir_mod.fnDeclOf(self.hir, method_node);
+        if (method.return_type == hir_mod.none_node_id) return false;
+        return std.mem.eql(u8, std.mem.trim(u8, self.nodeSourceTextOrEmpty(method.return_type), " \t\r\n"), "never");
     }
 
     fn switchDefinitelyExits(self: *Checker, node: NodeId) bool {
@@ -22668,6 +22967,11 @@ pub const Checker = struct {
                 const f = hir_mod.fnDeclOf(self.hir, node);
                 if (f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) {
                     try self.scanUnreachableStatements(hir_mod.blockStmts(self.hir, f.body));
+                }
+            },
+            .class_decl, .class_expr => {
+                for (hir_mod.classMembers(self.hir, node)) |member| {
+                    try self.scanNestedUnreachableStatements(member);
                 }
             },
             .if_stmt => {
@@ -101381,14 +101685,12 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
-                if (obj_t == types.Primitive.never and
-                    self.hir.kindOf(m.object) == .identifier and
-                    (self.memberNameIsEcmaPrivate(m.name) or
-                        std.mem.eql(u8, self.string_interner.get(m.name), "toString") or
-                        std.mem.eql(u8, self.string_interner.get(m.name), "toFixed") or
-                        std.mem.eql(u8, self.string_interner.get(m.name), "isArray") or
-                        std.mem.eql(u8, self.string_interner.get(m.name), "item")))
-                {
+                if (obj_t == types.Primitive.never and self.hir.kindOf(m.object) == .identifier) {
+                    if (try self.jsDocTypeForPreviousIdentifierDecl(m.object)) |declared_t| {
+                        obj_t = declared_t;
+                    }
+                }
+                if (obj_t == types.Primitive.never) {
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
                     break :blk types.Primitive.any;
                 }
@@ -166784,6 +167086,9 @@ pub const Checker = struct {
         if (try self.objectLiteralUnionAnnotationContainsDisplayType(operand, display_t)) {
             return try self.normalizedTypeAnnotationText(source_name);
         }
+        if (try self.narrowedAliasConstituentName(operand, display_t)) |constituent_name| {
+            return constituent_name;
+        }
         // A union type referred to through a simple type-alias name renders
         // by that alias name — tsc's typeToString prefers the alias for a
         // union (`type B = 2 | 3` -> `B`, `type YesNo = Choice.Yes |
@@ -166793,9 +167098,32 @@ pub const Checker = struct {
         // falls through to the structural renderer.
         if (display_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(display_t).is_union and
-            isSimpleTypeAliasName(source_name))
+            isSimpleTypeAliasName(source_name) and
+            self.visibleAnnotatedIdentifierType(operand) == display_t)
         {
             return source_name;
+        }
+        return null;
+    }
+
+    fn narrowedAliasConstituentName(self: *Checker, operand: NodeId, display_t: TypeId) CheckError!?[]const u8 {
+        const type_node = self.visibleAnnotatedIdentifierTypeNode(operand) orelse return null;
+        const alias_name: hir_mod.StringId = switch (self.hir.kindOf(type_node)) {
+            .identifier => hir_mod.identifierOf(self.hir, type_node).name,
+            .type_ref => blk: {
+                const reference = hir_mod.typeRefOf(self.hir, type_node);
+                if (reference.qualifier_len != 0 or reference.args_len != 0) return null;
+                break :blk reference.name;
+            },
+            else => return null,
+        };
+        const declaration = self.findTypeAliasDeclInScope(type_node, alias_name) orelse return null;
+        const body = hir_mod.typeAliasOf(self.hir, declaration).aliased;
+        if (self.hir.kindOf(body) != .union_type) return null;
+        for (hir_mod.unionTypeMembers(self.hir, body)) |member_node| {
+            const member_t = self.lowererLowerWithTypeParams(member_node) catch continue;
+            if (member_t != display_t and !(self.engine.isIdenticalTo(member_t, display_t) catch false)) continue;
+            return try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(member_node));
         }
         return null;
     }
@@ -178996,6 +179324,93 @@ test "checker: unreachable JS after never call and exhaustive boolean switch" {
         if (d.code == TsCodes.unreachable_code_detected) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: explicit never tails and finite switches terminate control flow" {
+    const s = try newSetup(
+        \\// @allowUnreachableCode: false
+        \\function fail(): never { throw new Error(); }
+        \\function direct(): number {
+        \\    fail();
+        \\    1;
+        \\}
+        \\class Failure {
+        \\    fail(): never { throw new Error(); }
+        \\    method(): number {
+        \\        this.fail();
+        \\        2;
+        \\    }
+        \\}
+        \\function throughFinally(): number {
+        \\    try { return 1; }
+        \\    finally {
+        \\        fail();
+        \\        3;
+        \\    }
+        \\    4;
+        \\}
+        \\function inferredLocalDoesNotTerminate() {
+        \\    const local = (): never => { throw new Error(); };
+        \\    local();
+        \\    5;
+        \\}
+        \\function numeric(value: 1 | 2): string {
+        \\    switch (value) {
+        \\        case 1: return "one";
+        \\        case 2: return "two";
+        \\    }
+        \\}
+        \\enum Choice { One, Two }
+        \\function enumerated(value: Choice): string {
+        \\    switch (value) {
+        \\        case Choice.One: return "one";
+        \\        case Choice.Two: return "two";
+        \\    }
+        \\}
+        \\function loopAlias() {
+        \\    const source: number | undefined = 0;
+        \\    while (true) {
+        \\        const value = source;
+        \\        switch (value) {
+        \\            case 1: break;
+        \\            case 2: break;
+        \\        }
+        \\    }
+        \\}
+        \\type Obj = { a: number, b: number };
+        \\type Key = keyof Obj | "c";
+        \\function postSwitch(object: Obj, key: Key) {
+        \\    switch (key) {
+        \\        case "c": key = "a";
+        \\    }
+        \\    key === "c";
+        \\    return object[key];
+        \\}
+        \\type Variant = { kind: "abc" } | { kind: "def" };
+        \\function exhaustiveDefault(value: Variant) {
+        \\    switch (value.kind) {
+        \\        case "abc":
+        \\        case "def": return;
+        \\        default: value!.kind;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.fn_lacks_ending_return));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.fn_must_return_value));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.unreachable_code_detected));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.switch_case_not_comparable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overlap_comparison));
+    const comparison_message = checkerFirstMessageForCode(s, TsCodes.no_overlap_comparison) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "This comparison appears to be unintentional because the types 'keyof Obj' and '\"c\"' have no overlap.",
+        comparison_message,
+    );
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: TS1503 fires for named capture groups below ES2018 target" {
