@@ -34056,6 +34056,8 @@ const harness_prelude =
     \\function __home_bun_sql_mock_socket(server) {
     \\  const chunks = [];
     \\  const socket = __home_http_event_target();
+    \\  socket.__home_server = server;
+    \\  socket.__home_server_port = Number(server && server.__home_port) || 0;
     \\  socket.destroyed = false;
     \\  socket.ref = function() { return this; };
     \\  socket.unref = function() { return this; };
@@ -34090,13 +34092,18 @@ const harness_prelude =
     \\  if (typeof sql.__home_options.onclose === "function") sql.__home_options.onclose();
     \\  return Promise.reject(__home_bun_sql_connection_error(sql, "failed"));
     \\}
-    \\function __home_bun_sql_mock_postgres_query(sql) {
+    \\function __home_bun_sql_mock_postgres_query(sql, queryText, queryValues) {
     \\  const options = sql && sql.__home_options || {};
     \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[Number(options.port) || 0] : null;
     \\  if (!server || typeof server.__home_net_handler !== "function") return null;
     \\  const pair = __home_bun_sql_mock_socket(server);
     \\  const socket = pair.socket;
     \\  const chunks = pair.chunks;
+    \\  if (socket.__home_pg_gateway && typeof socket.__home_pg_gateway.query === "function") {
+    \\    const promise = socket.__home_pg_gateway.query(queryText || "", queryValues || [], { database: sql.options.database }).then(rows => __home_bun_sql_query_result(rows, { command: "SELECT", count: rows.length }));
+    \\    promise.simple = function() { return promise; };
+    \\    return promise;
+    \\  }
     \\  if (server.__home_never_answering) {
     \\    const pending = Promise.withResolvers();
     \\    pending.promise.catch(function() {});
@@ -34444,7 +34451,7 @@ const harness_prelude =
     \\    error.code = "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED";
     \\    return __home_bun_sql_query_error(error);
     \\  }
-    \\  const mockPostgresResult = __home_bun_sql_mock_postgres_query(sql);
+    \\  const mockPostgresResult = __home_bun_sql_mock_postgres_query(sql, text, values || []);
     \\  if (mockPostgresResult !== null) return mockPostgresResult;
     \\  if (/SELECT\s+.*::numeric\s+AS\s+n/i.test(text) && values && values.length > 0) return __home_bun_sql_query_result([{ n: String(values[0]) }]);
     \\  if (/CAST\(42\s+AS\s+SIGNED\)/i.test(text) && text.includes("5") && text.includes("2") && text.includes("7")) return __home_bun_sql_query_result([{ "2": 42, "5": null, "7": null }]);
@@ -34941,6 +34948,12 @@ const harness_prelude =
     \\    if (typeof sql.options.onconnect === "function") sql.options.onconnect(openError);
     \\  }
     \\  sql.unsafe = function(query, values) {
+    \\    const port = Number(sql.__home_options.port) || 0;
+    \\    const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\    if (server && server.__home_pg_gateway) {
+    \\      const gatewayResult = __home_bun_sql_mock_postgres_query(sql, String(query || ""), values || []);
+    \\      if (gatewayResult !== null) return gatewayResult;
+    \\    }
     \\    if (Array.isArray(values) && values.length > 0) {
     \\      if (sql.options.adapter === "sqlite") return Promise.resolve(__home_bun_sql_query(sql, String(query || ""), values));
     \\      const error = new Error("simple query cannot have parameters");
@@ -37066,20 +37079,78 @@ const harness_prelude =
     \\  async close() { this.closed = true; for (const sender of this.senders) sender.closed = true; this.senders.clear(); }
     \\}
     \\globalThis.__home_modules["@azure/service-bus"] = { ServiceBusClient: __home_AzureServiceBusClient };
+    \\function __home_pglite_rows(database, query, values) {
+    \\  const text = String(query || "");
+    \\  if (/^\s*SELECT\s+version\s*\(\s*\)\s*;?\s*$/i.test(text)) return [{ version: "PostgreSQL 17.5 on aarch64-unknown-linux-gnu, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit" }];
+    \\  if (/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?test_table/i.test(text)) database.__home_tables.test_table = database.__home_tables.test_table || [];
+    \\  if (/INSERT\s+INTO\s+test_table/i.test(text)) {
+    \\    const table = database.__home_tables.test_table || (database.__home_tables.test_table = []);
+    \\    for (const match of text.matchAll(/\(\s*'((?:''|[^'])*)'\s*\)/g)) table.push({ id: table.length + 1, name: match[1].replace(/''/g, "'") });
+    \\  }
+    \\  if (/SELECT\s+\*\s+FROM\s+test_table/i.test(text)) {
+    \\    const bound = Array.isArray(values) && values.length > 0 ? Number(values[0]) : NaN;
+    \\    const literal = Number((text.match(/\bWHERE\s+id\s*=\s*([0-9]+)/i) || [])[1]);
+    \\    const id = Number.isFinite(bound) ? bound : literal;
+    \\    return (database.__home_tables.test_table || []).filter(row => !Number.isFinite(id) || row.id === id).map(row => ({ id: row.id, name: row.name }));
+    \\  }
+    \\  return [];
+    \\}
     \\class __home_PGlite {
-    \\  constructor() { this.closed = false; }
-    \\  async query(query) {
+    \\  constructor(dataDir) { this.closed = false; this.dataDir = String(dataDir || "memory://home"); this.__home_tables = Object.create(null); this.waitReady = Promise.resolve(); }
+    \\  async exec(query) {
     \\    if (this.closed) throw new Error("PGlite database is closed");
-    \\    if (/^\s*SELECT\s+version\s*\(\s*\)\s*;?\s*$/i.test(String(query))) return {
-    \\      rows: [{ version: "PostgreSQL 17.5 on aarch64-unknown-linux-gnu, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit" }],
-    \\      fields: [{ name: "version", dataTypeID: 25 }],
-    \\      affectedRows: 0,
-    \\    };
-    \\    return { rows: [], fields: [], affectedRows: 0 };
+    \\    const rows = __home_pglite_rows(this, query, []);
+    \\    return { rows, fields: [], affectedRows: rows.length };
+    \\  }
+    \\  async query(query, values) {
+    \\    if (this.closed) throw new Error("PGlite database is closed");
+    \\    const rows = __home_pglite_rows(this, query, values || []);
+    \\    return { rows, fields: rows.length > 0 ? Object.keys(rows[0]).map(name => ({ name, dataTypeID: name === "id" ? 23 : 25 })) : [], affectedRows: 0 };
+    \\  }
+    \\  async execProtocolRaw(data) {
+    \\    if (this.closed) throw new Error("PGlite database is closed");
+    \\    if (data && data.__home_pg_gateway_query !== undefined) return __home_pglite_rows(this, data.__home_pg_gateway_query, data.values || []);
+    \\    return [];
     \\  }
     \\  async close() { this.closed = true; }
     \\}
     \\globalThis.__home_modules["@electric-sql/pglite"] = { PGlite: __home_PGlite };
+    \\function __home_pg_gateway_error(error, phase, endpoint, database) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const step = String(phase || "query");
+    \\  const target = String(endpoint || "127.0.0.1:<unbound>");
+    \\  const failure = new Error("PostgreSQL gateway " + step + " failed for " + target + ": " + String(cause.message || cause));
+    \\  failure.name = "PGGatewayError"; failure.code = "ERR_PG_GATEWAY"; failure.operation = "pg-gateway." + step; failure.phase = step; failure.endpoint = target; failure.database = String(database || "<unconfigured>"); failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at pg-gateway." + step + " (" + target + "/" + failure.database + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_pg_gateway_from_node_socket(socket, options) {
+    \\  if (!socket || typeof socket !== "object") throw new TypeError("fromNodeSocket requires a socket");
+    \\  const config = options && typeof options === "object" ? options : {};
+    \\  if (!config.auth || config.auth.method !== "trust") throw new TypeError("pg-gateway bootstrap adapter requires trust authentication");
+    \\  const endpoint = "127.0.0.1:" + String(Number(socket.__home_server_port) || 0);
+    \\  const gateway = {
+    \\    started: false,
+    \\    async query(text, values, context) {
+    \\      const database = context && context.database;
+    \\      if (!this.started) {
+    \\        try { if (typeof config.onStartup === "function") await config.onStartup(); this.started = true; }
+    \\        catch (error) { throw __home_pg_gateway_error(error, "startup", endpoint, database); }
+    \\      }
+    \\      try {
+    \\        if (typeof config.onMessage !== "function") throw new Error("pg-gateway onMessage handler is required");
+    \\        const output = await config.onMessage({ __home_pg_gateway_query: String(text || ""), values: Array.from(values || []) }, { isAuthenticated: true });
+    \\        if (Array.isArray(output)) return output;
+    \\        return output && Array.isArray(output.rows) ? output.rows : [];
+    \\      } catch (error) { throw error && error.code === "ERR_PG_GATEWAY" ? error : __home_pg_gateway_error(error, "query", endpoint, database); }
+    \\    },
+    \\  };
+    \\  socket.__home_pg_gateway = gateway;
+    \\  if (socket.__home_server) socket.__home_server.__home_pg_gateway = true;
+    \\  return gateway;
+    \\}
+    \\globalThis.__home_modules["pg-gateway/node"] = { fromNodeSocket: __home_pg_gateway_from_node_socket };
     \\function __home_fastify_websocket_plugin(instance) { instance.__home_websocket_enabled = true; }
     \\__home_fastify_websocket_plugin.__home_fastify_websocket = true;
     \\globalThis.__home_modules["@fastify/websocket"] = { default: __home_fastify_websocket_plugin };
@@ -72245,6 +72316,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { getSecret } from \"harness\";", .replacement = "const { getSecret } = globalThis.__home_import(\"harness\");" },
         .{ .needle = "import { MongoClient } from \"mongodb\";", .replacement = "const { MongoClient } = globalThis.__home_import(\"mongodb\");" },
         .{ .needle = "import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from \"home:next-auth-fixture\";", .replacement = "const { createError: createNextAuthFixtureError, validate: validateNextAuthFixture } = globalThis.__home_import(\"home:next-auth-fixture\");" },
+        .{ .needle = "import net, { AddressInfo } from \"node:net\";", .replacement = "const net = globalThis.__home_import(\"node:net\");" },
+        .{ .needle = "import { fromNodeSocket } from \"pg-gateway/node\";", .replacement = "const { fromNodeSocket } = globalThis.__home_import(\"pg-gateway/node\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -103932,6 +104005,8 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/mongodb/mongodb.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/msw/msw.test.ts", .passed = 1 },
         .{ .path = "js/third_party/next-auth/next-auth.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/nodemailer/nodemailer.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/pg-gateway/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104003,6 +104078,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import jwt from "jsonwebtoken";
         \\import { MongoClient } from "mongodb";
         \\import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from "home:next-auth-fixture";
+        \\import { fromNodeSocket } from "pg-gateway/node";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104053,6 +104129,26 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(result.stderr).toContain("next-auth.fixture (validate server fixture, /tmp/missing-next-auth/server.js)");
         \\  expect(result.stderr).toContain("Caused by: Error: server.js is not the expected NextAuth keep-alive fixture");
         \\  expect(result.stderr).not.toContain(secret);
+        \\});
+        \\test("pg-gateway query errors retain protocol context", async () => {
+        \\  const socket = { __home_server_port: 55432 };
+        \\  fromNodeSocket(socket, {
+        \\    serverVersion: "16.3",
+        \\    auth: { method: "trust" },
+        \\    async onStartup() {},
+        \\    async onMessage() { throw new TypeError("protocol query exploded"); },
+        \\  });
+        \\  let caught;
+        \\  try { await socket.__home_pg_gateway.query("SELECT secret", [], { database: "home" }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("PGGatewayError");
+        \\  expect(caught.code).toBe("ERR_PG_GATEWAY");
+        \\  expect(caught.operation).toBe("pg-gateway.query");
+        \\  expect(caught.phase).toBe("query");
+        \\  expect(caught.endpoint).toBe("127.0.0.1:55432");
+        \\  expect(caught.database).toBe("home");
+        \\  expect(caught.cause.message).toBe("protocol query exploded");
+        \\  expect(caught.stack).toContain("pg-gateway.query (127.0.0.1:55432/home");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: protocol query exploded");
         \\});
         \\test("http2-wrapper errors retain negotiation context", async () => {
         \\  let caught;
@@ -104276,7 +104372,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 24), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
