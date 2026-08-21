@@ -5376,6 +5376,7 @@ pub const Checker = struct {
         try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyCircularInference(stmts);
         try self.checkUnsupportedJsPrototypeReplacementMembers();
+        try self.checkOutOfOrderJsConstructorThisDiagnostics();
         try self.checkJsDocTemplateConstructorFunctionThisDiagnostics();
         try self.checkJsDocConstructTargetAssignments();
         try self.checkIsolatedDeclarationsExpandoFunctions(stmts);
@@ -5491,6 +5492,62 @@ pub const Checker = struct {
             object_t = try self.prototypeReplacementDiagnosticType(assignment.value, object_t);
             try self.reportObjectLiteralThisMembersMissingFromExplicitShape(assignment.value, object_t);
         }
+    }
+
+    fn checkOutOfOrderJsConstructorThisDiagnostics(self: *Checker) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        var function_node: NodeId = 1;
+        while (function_node < self.hir.nodeCount()) : (function_node += 1) {
+            if (self.hir.kindOf(function_node) != .fn_decl or
+                !self.nodeIsDirectSourceFileStatement(function_node) or
+                !self.virtualSectionIsJsLike(function_node))
+            {
+                continue;
+            }
+            const function = hir_mod.fnDeclOf(self.hir, function_node);
+            if (function.flags.is_method or function.flags.is_constructor or
+                function.name == hir_mod.none_node_id or
+                self.hir.kindOf(function.name) != .identifier or
+                self.functionDeclHasExplicitThisParam(function_node) or
+                !self.checkJsFunctionHasConstructThisAssignment(function_node))
+            {
+                continue;
+            }
+            const name = hir_mod.identifierOf(self.hir, function.name).name;
+            if (!self.hasPriorCheckJsPrototypeAssignment(function_node, name)) continue;
+            try self.reportDirectFunctionThisImplicitAny(function_node);
+        }
+    }
+
+    fn hasPriorCheckJsPrototypeAssignment(
+        self: *Checker,
+        function_node: NodeId,
+        function_name: hir_mod.StringId,
+    ) bool {
+        const function_start = self.hir.spanOf(function_node).start;
+        const section = self.virtualSectionStartForNode(function_node);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment or
+                self.hir.spanOf(candidate).start >= function_start or
+                self.virtualSectionStartForNode(candidate) != section)
+            {
+                continue;
+            }
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null) continue;
+            var target = assignment.target;
+            if (self.ctorPrototypeOwnerName(target)) |owner| {
+                if (owner == function_name) return true;
+            }
+            target = switch (self.hir.kindOf(target)) {
+                .member_access => hir_mod.memberOf(self.hir, target).object,
+                .element_access => hir_mod.elementOf(self.hir, target).object,
+                else => continue,
+            };
+            if ((self.ctorPrototypeOwnerName(target) orelse continue) == function_name) return true;
+        }
+        return false;
     }
 
     fn prototypeReplacementDiagnosticType(self: *Checker, object_node: NodeId, object_t: TypeId) CheckError!TypeId {
@@ -243223,6 +243280,21 @@ test "checker: plain function without this-parameter still implicit-any (TS2683)
     b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCode(b, TsCodes.this_implicitly_any));
+}
+
+test "checker: checked JS constructor declared after its prototype use keeps TS2683" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\OOOrder.prototype.m = function () { this.p = 1; };
+        \\function OOOrder() { this.x = 1; }
+        \\function InOrder() { this.y = 1; }
+        \\InOrder.prototype.m = function () { this.p = 1; };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
 }
 
 test "checker: class lexical this bindings do not report TS2683" {
