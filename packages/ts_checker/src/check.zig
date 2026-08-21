@@ -5329,7 +5329,6 @@ pub const Checker = struct {
         try self.checkJSDocTagTokensInTypeExpressions(root);
         try self.checkJSDocUnsupportedTypedefWrapping(root);
         try self.checkJSDocMalformedSatisfiesTags(root);
-        try self.checkJSDocMalformedParamTags(root);
         try self.checkJSDocParamTagsOnVariableFunctionLists(root);
         try self.checkMultipleAttachedJsDocExtendsTags();
         try self.checkDefaultExportMerges(stmts);
@@ -7286,59 +7285,6 @@ pub const Checker = struct {
                     }
                     diagnostic_index += 1;
                 }
-            }
-        }
-    }
-
-    fn checkJSDocMalformedParamTags(self: *Checker, root: NodeId) CheckError!void {
-        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
-        const src = self.source orelse return;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
-            const body_start = comment_start + 3;
-            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
-            const comment_end = body_start + close_rel;
-            search_start = comment_end + 2;
-            if (!self.sourcePositionIsJsLike(comment_start)) continue;
-            const body = src[body_start..comment_end];
-            var line_start: usize = 0;
-            var i: usize = 0;
-            while (i <= body.len) : (i += 1) {
-                const at_end = i == body.len;
-                if (!at_end and body[i] != '\n') continue;
-                const raw_line = body[line_start..i];
-                var trim_start: usize = 0;
-                while (trim_start < raw_line.len and (raw_line[trim_start] == ' ' or raw_line[trim_start] == '\t' or raw_line[trim_start] == '\r')) : (trim_start += 1) {}
-                if (trim_start < raw_line.len and raw_line[trim_start] == '*') {
-                    trim_start += 1;
-                    while (trim_start < raw_line.len and (raw_line[trim_start] == ' ' or raw_line[trim_start] == '\t')) : (trim_start += 1) {}
-                }
-                const line = raw_line[trim_start..];
-                if (std.mem.startsWith(u8, line, "@param")) {
-                    var rest_offset = trim_start + "@param".len;
-                    var rest = raw_line[rest_offset..];
-                    while (rest.len > 0 and (rest[0] == ' ' or rest[0] == '\t')) {
-                        rest_offset += 1;
-                        rest = rest[1..];
-                    }
-                    if (rest.len > 0 and rest[0] == '*') {
-                        try self.reportAt(root, @intCast(body_start + line_start + rest_offset), 1003, "Identifier expected.");
-                    } else if (rest.len > 0 and rest[0] == '{') {
-                        const type_len = jsDocBalancedBraceLen(rest);
-                        if (type_len > 0) {
-                            rest_offset += type_len;
-                            rest = raw_line[rest_offset..];
-                            while (rest.len > 0 and (rest[0] == ' ' or rest[0] == '\t')) {
-                                rest_offset += 1;
-                                rest = rest[1..];
-                            }
-                            if (rest.len > 0 and rest[0] == '*') {
-                                try self.reportAt(root, @intCast(body_start + line_start + rest_offset), 1003, "Identifier expected.");
-                            }
-                        }
-                    }
-                }
-                line_start = i + 1;
             }
         }
     }
@@ -84431,7 +84377,6 @@ pub const Checker = struct {
     fn functionOrOwnerHasLeadingJsDocParamOrTypeTag(self: *Checker, fn_node: NodeId) bool {
         const src = self.source orelse return false;
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
-        if (std.mem.indexOf(u8, body, "@param") != null) return true;
         var has_type_marker = false;
         var marker_start: usize = 0;
         while (std.mem.indexOfPos(u8, body, marker_start, "@type")) |marker| {
@@ -84447,7 +84392,6 @@ pub const Checker = struct {
         if (jsDocHasTemplateTypeTagCombination(tags)) return false;
         var saw_type_tag = false;
         for (tags) |tag| {
-            if (tag.kind == .param_tag) return true;
             if (tag.kind != .type_tag) continue;
             saw_type_tag = true;
             const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
@@ -218648,7 +218592,7 @@ test "checker: optional mapped property mismatch displays write type" {
     }
 }
 
-test "checker: checkjs malformed JSDoc @param star reports identifier expected" {
+test "checker: checkjs wrapped JSDoc params recover after malformed star" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -218660,12 +218604,10 @@ test "checker: checkjs malformed JSDoc @param star reports identifier expected" 
         \\function bad(x, z) {}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    var found: usize = 0;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == 1003) found += 1;
-    }
-    try T.expect(found >= 2);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.identifier_expected));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: checkjs inline JSDoc @satisfies checks without widening" {

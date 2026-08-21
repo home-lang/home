@@ -104,7 +104,15 @@ pub fn parse(gpa: std.mem.Allocator, body: []const u8) ![]Tag {
         const stripped = stripLeadingStar(line);
         if (stripped.len == 0) continue;
         if (stripped[0] != '@') continue;
-        const tag = parseLine(stripped) orelse continue;
+        var tag = parseLine(stripped) orelse continue;
+        if (tag.kind == .param_tag and tag.name.len == 0 and tag.description.len == 0 and i < body.len) {
+            const continuation_start = i + 1;
+            const continuation_end = std.mem.indexOfScalarPos(u8, body, continuation_start, '\n') orelse body.len;
+            const continuation = stripLeadingStar(body[continuation_start..continuation_end]);
+            if (continuation.len > 0 and continuation[0] != '@') {
+                applyParamContinuation(&tag, continuation);
+            }
+        }
         try tags.append(gpa, tag);
     }
     return tags.toOwnedSlice(gpa);
@@ -202,6 +210,13 @@ fn parseLine(line: []const u8) ?Tag {
             name_text = rest[0..m];
             rest = std.mem.trimStart(u8, rest[m..], " \t");
         }
+        if (kind == .param_tag and type_text.len > 0 and name_text.len == 0 and rest.len > 0 and rest[0] == '*') {
+            rest = std.mem.trimStart(u8, rest[1..], " \t");
+            var m: usize = 0;
+            while (m < rest.len and (isIdentChar(rest[m]) or rest[m] == '.')) m += 1;
+            name_text = rest[0..m];
+            rest = std.mem.trimStart(u8, rest[m..], " \t");
+        }
         if (kind == .param_tag and type_text.len == 0 and rest.len > 0 and rest[0] == '{') {
             const parsed = parseTypeExpression(rest) orelse return null;
             type_text = parsed.type_text;
@@ -226,6 +241,26 @@ fn parseLine(line: []const u8) ?Tag {
         .template_variance = template_variance,
         .is_name_first = is_name_first,
     };
+}
+
+fn applyParamContinuation(tag: *Tag, line: []const u8) void {
+    var rest = std.mem.trim(u8, line, " \t\r");
+    if (rest.len > 0 and rest[0] == '*') {
+        rest = std.mem.trimStart(u8, rest[1..], " \t");
+    }
+    if (tag.type_text.len == 0 and rest.len > 0 and rest[0] == '{') {
+        const parsed = parseTypeExpression(rest) orelse return;
+        tag.type_text = parsed.type_text;
+        tag.optional = parsed.optional_from_type_suffix;
+        tag.optional_from_type_suffix = parsed.optional_from_type_suffix;
+        rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+    }
+    if (tag.name.len != 0 or rest.len == 0) return;
+    var name_len: usize = 0;
+    while (name_len < rest.len and (isIdentChar(rest[name_len]) or rest[name_len] == '.')) name_len += 1;
+    if (name_len == 0) return;
+    tag.name = rest[0..name_len];
+    tag.description = std.mem.trimStart(u8, rest[name_len..], " \t");
 }
 
 fn consumeWordPrefix(rest: *[]const u8, word: []const u8) bool {
@@ -473,6 +508,46 @@ test "jsdoc: multi-tag block" {
     try T.expectEqualStrings("x", tags[0].name);
     try T.expectEqualStrings("y", tags[1].name);
     try T.expectEqual(TagKind.returns_tag, tags[2].kind);
+}
+
+test "jsdoc: param type and name continue across starred lines" {
+    const body =
+        \\ * @param
+        \\ * {number} x description
+        \\ * @param {string}
+        \\ * * y another description
+        \\ * @param {boolean} * z
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 3), tags.len);
+    try T.expectEqualStrings("number", tags[0].type_text);
+    try T.expectEqualStrings("x", tags[0].name);
+    try T.expectEqualStrings("description", tags[0].description);
+    try T.expectEqualStrings("string", tags[1].type_text);
+    try T.expectEqualStrings("y", tags[1].name);
+    try T.expectEqualStrings("another description", tags[1].description);
+    try T.expectEqualStrings("boolean", tags[2].type_text);
+    try T.expectEqualStrings("z", tags[2].name);
+}
+
+test "jsdoc: malformed star param does not absorb a following type line" {
+    const body =
+        \\ * @param *
+        \\ * {number} x
+        \\ * @param {number}
+        \\ * * y
+        \\ * @param {number} * z
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 3), tags.len);
+    try T.expectEqualStrings("", tags[0].type_text);
+    try T.expectEqualStrings("", tags[0].name);
+    try T.expectEqualStrings("number", tags[1].type_text);
+    try T.expectEqualStrings("y", tags[1].name);
+    try T.expectEqualStrings("number", tags[2].type_text);
+    try T.expectEqualStrings("z", tags[2].name);
 }
 
 test "jsdoc: unrecognized tag preserved as .other" {
