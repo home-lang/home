@@ -34859,6 +34859,31 @@ pub const Checker = struct {
         );
     }
 
+    fn dynamicImportSpecifierDiagnosticName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 2) {
+                var string_literal: ?TypeId = null;
+                var has_boolean = false;
+                for (members) |member| {
+                    if (member == types.Primitive.boolean_t) {
+                        has_boolean = true;
+                        continue;
+                    }
+                    if (member < self.interner.pool.typeCount()) {
+                        const flags = self.interner.pool.flagsOf(member);
+                        if (flags.is_string and flags.is_literal) string_literal = member;
+                    }
+                }
+                if (string_literal != null and has_boolean) {
+                    const literal_name = (try self.simpleDiagnosticTypeName(string_literal.?)) orelse return null;
+                    return try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | boolean", .{literal_name});
+                }
+            }
+        }
+        return (try self.allocAssignmentDiagnosticTypeName(t)) orelse try self.simpleDiagnosticTypeName(t);
+    }
+
     fn rootHasTopLevelGlobalTypeDecl(self: *Checker, anchor: NodeId, name: []const u8) bool {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -100300,7 +100325,12 @@ pub const Checker = struct {
                             (self.strict_flags.strict_null_checks and
                                 (self.typeIncludesNull(spec_t) or self.typeIncludesUndefined(spec_t))))
                         {
-                            const spec_name = (try self.simpleDiagnosticTypeName(spec_t)) orelse "any";
+                            const diagnostic_spec_t = if (self.hir.kindOf(args[0]) == .conditional)
+                                try self.valueNodeLiteralType(args[0], spec_t)
+                            else
+                                spec_t;
+                            const spec_name = (try self.dynamicImportSpecifierDiagnosticName(diagnostic_spec_t)) orelse
+                                "any";
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Dynamic import's specifier must be of type 'string', but here has type '{s}'.",
@@ -219928,6 +219958,34 @@ test "checker: dynamic import returns Promise<any> and validates specifier" {
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
     try T.expect(found_bad_specifier);
+}
+
+test "checker: dynamic import specifier diagnostics preserve literals and callables" {
+    const s = try newSetup(
+        \\declare function flag(): boolean;
+        \\import(flag() ? "./module" : null);
+        \\import(flag() ? flag() : "./fallback");
+        \\import(() => "./module");
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.dynamic_import_specifier_must_be_string));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.dynamic_import_specifier_must_be_string,
+        "Dynamic import's specifier must be of type 'string', but here has type '\"./module\" | null'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.dynamic_import_specifier_must_be_string,
+        "Dynamic import's specifier must be of type 'string', but here has type '\"./fallback\" | boolean'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.dynamic_import_specifier_must_be_string,
+        "Dynamic import's specifier must be of type 'string', but here has type '() => string'.",
+    ));
 }
 
 test "checker: dynamic import grammar owns invalid arity diagnostics" {
