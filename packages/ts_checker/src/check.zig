@@ -100369,7 +100369,11 @@ pub const Checker = struct {
                             const has_future_value = (try self.futureCommonJsExportAssignmentValue(node, key)) != null;
                             commonjs_declaration_placeholder = has_future_value and
                                 self.sourceDirectiveIsTrue("@declaration");
-                            if (!has_future_value and self.strict_flags.no_implicit_any) {
+                            const direct_value_kind = self.hir.kindOf(a.value);
+                            const direct_value_is_alias = self.exprIsEntityNameExpression(a.value) or
+                                direct_value_kind == .literal_undefined or
+                                direct_value_kind == .class_expr;
+                            if (!has_future_value and !direct_value_is_alias and self.strict_flags.no_implicit_any) {
                                 try self.reportCheckJsVoidExpandoImplicitAny(a.target, key.prop_name);
                             }
                         }
@@ -220335,7 +220339,7 @@ test "checker: current tsgo program-routed CommonJS void export is implicit-any"
     ));
 }
 
-test "checker: checkjs CommonJS chained undefined export declarations report implicit-any members" {
+test "checker: checkjs CommonJS chained undefined export aliases preserve the final symbol" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -220346,9 +220350,9 @@ test "checker: checkjs CommonJS chained undefined export declarations report imp
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.member_implicitly_any));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'a' implicitly has an 'any' type."));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'b' implicitly has an 'any' type."));
+    try T.expect(!hasDiagnosticCodeMessage(s, TsCodes.member_implicitly_any, "Member 'b' implicitly has an 'any' type."));
 }
 
 test "checker: tsgo parity batch treats nullish JS this initializers as non-constructable" {
