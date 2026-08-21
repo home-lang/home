@@ -12952,6 +12952,9 @@ pub const Parser = struct {
     /// (`{ [K in T]: V }`) are still parsed via the dedicated path.
     fn parseObjectOrMappedType(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_brace, "'{' to start object type");
+        const saved_in_iface = self.parsing_interface_body;
+        self.parsing_interface_body = false;
+        defer self.parsing_interface_body = saved_in_iface;
         // Detect mapped type. The leading shape is one of:
         //   { [K in T]: V }
         //   { readonly [K in T]: V }
@@ -13091,7 +13094,9 @@ pub const Parser = struct {
         defer method_optionality.deinit(self.gpa);
         var first_member_token: ?Token = null;
         var reported_mapped_member = false;
-        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+        while (!self.type_member_list_leave_close and
+            self.peek().kind != .close_brace and self.peek().kind != .eof)
+        {
             const t = self.peek();
             if (first_member_token == null) first_member_token = t;
             // A statement in an anonymous object type used as a return
@@ -13124,6 +13129,7 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
                 _ = self.match(.semicolon);
+                self.type_member_list_leave_close = true;
                 return true;
             }
             // With no trivia between the tokens, `private[k: K]: V` in a
@@ -13621,7 +13627,7 @@ pub const Parser = struct {
                 );
             }
         }
-        return false;
+        return self.type_member_list_leave_close;
     }
 
     fn parseTypeSignatureMember(self: *Parser, is_constructor: bool) ParseError!NodeId {
@@ -29270,6 +29276,41 @@ test "parser: statement in predicate object type leaves outer brace for recovery
     }
     try T.expect(saw_type_member);
     try T.expect(saw_unmatched_brace);
+}
+
+test "parser: statement in nested interface object type propagates brace recovery" {
+    const source =
+        \\interface I {
+        \\    a: {
+        \\        toString: () => {
+        \\            return 1;
+        \\        };
+        \\    }
+    ;
+    var s = try newTestSetup(source);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqualSlices(u32, &.{ 1131, 1128, 1128 }, &.{
+        s.parser.diagnostics.items[0].code,
+        s.parser.diagnostics.items[1].code,
+        s.parser.diagnostics.items[2].code,
+    });
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "return").?)), s.parser.diagnostics.items[0].pos);
+    const first_close = std.mem.indexOf(u8, source, "        };").? + 8;
+    const second_close = std.mem.indexOfPos(u8, source, first_close + 1, "    }").? + 4;
+    try T.expectEqual(@as(u32, @intCast(first_close)), s.parser.diagnostics.items[1].pos);
+    try T.expectEqual(@as(u32, @intCast(second_close)), s.parser.diagnostics.items[2].pos);
+
+    const iface = hir_mod.blockStmts(&s.hir, root)[0];
+    const outer_member = hir_mod.interfaceMemberOf(&s.hir, hir_mod.interfaceMembers(&s.hir, iface)[0]);
+    const object_members = hir_mod.objectTypeMembers(&s.hir, outer_member.type_node);
+    try T.expectEqual(@as(usize, 1), object_members.len);
+    const fn_member = hir_mod.interfaceMemberOf(&s.hir, object_members[0]);
+    const return_type = hir_mod.fnTypeOf(&s.hir, fn_member.type_node).return_type;
+    try T.expectEqual(hir_mod.NodeKind.object_type, s.hir.kindOf(return_type));
+    try T.expectEqual(@as(usize, 0), hir_mod.objectTypeMembers(&s.hir, return_type).len);
 }
 
 test "parser: predicates on constructors and accessors prefer TS1228" {
