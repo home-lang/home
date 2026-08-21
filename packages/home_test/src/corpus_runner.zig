@@ -72715,6 +72715,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { eioHandshake, eioPoll, eioPush, fail, success, waitFor } from \"./support/util.ts\";", .replacement = "const { eioHandshake, eioPoll, eioPush, fail, success, waitFor } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "import { fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "import { createClient, createPartialDone, fail, success, waitFor } from \"./support/util\";", .replacement = "const { createClient, createPartialDone, fail, success, waitFor } = globalThis.__home_import(\"home:socket-io-support\");" },
+        .{ .needle = "import { createClient, createPartialDone, fail, success } from \"./support/util.ts\";", .replacement = "const { createClient, createPartialDone, fail, success } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "const request = require(\"superagent\");", .replacement = "const request = globalThis.__home_import(\"superagent\");" },
         .{ .needle = "let process: ChildProcess;", .replacement = "let process;" },
         .{ .needle = "async function init(httpServer: HttpServer, io: Server)", .replacement = "async function init(httpServer, io)" },
@@ -104502,6 +104503,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io-connection-state-recovery.test.ts", .passed = 7 },
         .{ .path = "js/third_party/socket.io/socket.io-handshake.test.ts", .passed = 4 },
         .{ .path = "js/third_party/socket.io/socket.io-messaging-many.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/socket.io/socket.io-middleware.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104734,6 +104736,20 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: TypeError: request policy failed");
         \\  expect(publicError.message).not.toContain("request policy failed");
         \\  expect(publicError.stack).not.toContain("request policy failed");
+        \\});
+        \\test("Socket.IO middleware errors retain causal session context without packet data", async () => {
+        \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); io.use((_socket, next) => next(new TypeError("authentication pipeline failed"))); httpServer.listen(0); const sid = await socketIOSupport.eioHandshake(httpServer); let caught;
+        \\  try { await socketIOSupport.eioPush(httpServer, sid, '40{"auth":"private-middleware-token"}'); } catch (error) { caught = error; } io.close();
+        \\  expect(caught.name).toBe("SocketIOProtocolError");
+        \\  expect(caught.code).toBe("ERR_SOCKET_IO_PROTOCOL");
+        \\  expect(caught.operation).toBe("socket.io.middleware");
+        \\  expect(caught.phase).toBe("middleware");
+        \\  expect(caught.sid).toContain("home-socket-");
+        \\  expect(caught.cause.message).toBe("authentication pipeline failed");
+        \\  expect(caught.stack).toContain("socket.io.middleware (session " + caught.sid);
+        \\  expect(caught.stack).toContain("Caused by: TypeError: authentication pipeline failed");
+        \\  expect(caught.message).not.toContain("private-middleware-token");
+        \\  expect(caught.stack).not.toContain("private-middleware-token");
         \\});
         \\test("positive watchdog timers yield to resolved promise chains", async () => {
         \\  let fired = false; const timer = setTimeout(() => { fired = true; }, 20);
@@ -105023,7 +105039,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 35), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 36), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
