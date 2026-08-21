@@ -58247,9 +58247,15 @@ const harness_prelude =
     \\  emit(event, ...args) { if (event === "error" || event === "disconnect") return __home_EventEmitter.prototype.emit.call(this, event, ...args); this.io.__home_broadcast(String(event), args, record => record.socket === this); return true; }
     \\}
     \\class __home_SocketIOAdapter { constructor(namespace) { this.nsp = namespace; } persistSession() { return Promise.resolve(); } restoreSession() { return Promise.resolve(null); } }
+    \\class __home_SocketIONamespace extends __home_EventEmitter {
+    \\  constructor(server, name) { super(); this.server = server; this.name = String(name || "/"); this.sockets = new Map(); this.adapter = new __home_SocketIOAdapter(this); }
+    \\  use(middleware) { this.server.use(middleware); return this; }
+    \\  to(room) { return this.server.to(room); }
+    \\  emit(event, ...args) { if (event === "connection" || event === "connect" || event === "error" || event === "newListener" || event === "removeListener") return __home_EventEmitter.prototype.emit.call(this, event, ...args); return this.server.emit(event, ...args); }
+    \\}
     \\class __home_SocketIOServer extends __home_EventEmitter {
     \\  constructor(serverOrPort, options) {
-    \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.__home_recovery = new Map(); this.__home_middlewares = []; this.__home_connection_waiters = []; this.__home_offset = 1; this.sockets = { sockets: new Map() }; this.closed = false;
+    \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.__home_recovery = new Map(); this.__home_middlewares = []; this.__home_connection_waiters = []; this.__home_offset = 1; this.sockets = new __home_SocketIONamespace(this, "/"); this.closed = false;
     \\    this.httpServer = serverOrPort && typeof serverOrPort.listen === "function" ? serverOrPort : __home_http_create_server(); this.httpServer.__home_socket_io = this;
     \\    this.__home_fallback_http_handler = this.httpServer.__home_handler; this.httpServer.__home_handler = (request, response) => this.__home_handle_http(request, response);
     \\    if (typeof serverOrPort === "number") this.httpServer.listen(serverOrPort);
@@ -58284,7 +58290,7 @@ const harness_prelude =
     \\  eioPoll(httpServer, sid) { try { const io = __home_socket_io_server_for_http(httpServer, "poll", sid); const session = io.__home_sessions.get(String(sid)); if (!session) throw new Error("Engine.IO session was not found"); if (session.queue.length === 0) throw new Error("No Engine.IO packet is pending"); return Promise.resolve(session.queue.shift()); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("poll", sid, error)); } },
     \\  waitFor(emitter, event) { if (event === "connection" && emitter instanceof __home_SocketIOServer) return new Promise(resolve => emitter.__home_connection_waiters.push(resolve)); return new Promise(resolve => emitter.once(event, resolve)); },
     \\};
-    \\globalThis.__home_modules["socket.io"] = { Server: __home_SocketIOServer, Socket: __home_SocketIOSocket };
+    \\globalThis.__home_modules["socket.io"] = { Namespace: __home_SocketIONamespace, Server: __home_SocketIOServer, Socket: __home_SocketIOSocket };
     \\globalThis.__home_modules["socket.io-adapter"] = { Adapter: __home_SocketIOAdapter };
     \\globalThis.__home_modules["socket.io-client"] = { io(url, options) { const parsed = new URL(String(url)); const server = __home_http_servers[Number(parsed.port)]; const io = server && server.__home_socket_io; return __home_socket_io_support.createClient(io, parsed.pathname, options); } };
     \\globalThis.__home_modules["home:socket-io-support"] = __home_socket_io_support;
@@ -72708,8 +72714,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { createServer, Server as HttpServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
         .{ .needle = "import { join } from \"path\";", .replacement = "const { join } = globalThis.__home_import(\"path\");" },
         .{ .needle = "import { Server } from \"socket.io\";", .replacement = "const { Server } = globalThis.__home_import(\"socket.io\");" },
-        .{ .needle = "import { Server, Socket } from \"socket.io\";", .replacement = "const { Server } = globalThis.__home_import(\"socket.io\");" },
+        .{ .needle = "import { Server, Socket } from \"socket.io\";", .replacement = "const { Server, Socket } = globalThis.__home_import(\"socket.io\");" },
+        .{ .needle = "import { Namespace, Server, Socket } from \"socket.io\";", .replacement = "const { Namespace, Server, Socket } = globalThis.__home_import(\"socket.io\");" },
         .{ .needle = "import { Adapter } from \"socket.io-adapter\";", .replacement = "const { Adapter } = globalThis.__home_import(\"socket.io-adapter\");" },
+        .{ .needle = "import type { SocketId } from \"socket.io-adapter\";", .replacement = "" },
         .{ .needle = "import { io as ioc } from \"socket.io-client\";", .replacement = "const { io: ioc } = globalThis.__home_import(\"socket.io-client\");" },
         .{ .needle = "import { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "import { eioHandshake, eioPoll, eioPush, fail, success, waitFor } from \"./support/util.ts\";", .replacement = "const { eioHandshake, eioPoll, eioPush, fail, success, waitFor } = globalThis.__home_import(\"home:socket-io-support\");" },
@@ -104504,6 +104512,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io-handshake.test.ts", .passed = 4 },
         .{ .path = "js/third_party/socket.io/socket.io-messaging-many.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-middleware.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/socket.io/socket.io-namespaces.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
