@@ -554,8 +554,7 @@ const harness_prelude =
     \\  const delayMs = Math.max(0, Number(delay) || 0);
     \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
-    \\  const deferShortTimer = delayMs > 0 && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts");
-    \\  let remainingTurns = delayMs > 250 ? Math.min(32, Math.max(4, Math.ceil(delayMs / 25))) : deferShortTimer ? 4 : 0;
+    \\  let remainingTurns = delayMs > 0 ? Math.min(256, Math.max(16, Math.ceil(delayMs))) : 0;
     \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (record.cleared || !record.active) return;
@@ -58236,13 +58235,30 @@ const harness_prelude =
     \\  const failure = new Error("Socket.IO " + action + " failed for session " + session + ": " + String(cause.message || cause)); failure.name = "SocketIOProtocolError"; failure.code = "ERR_SOCKET_IO_PROTOCOL"; failure.operation = operation; failure.phase = action; failure.sid = session; failure.cause = cause;
     \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (session " + session + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
     \\}
+    \\class __home_SocketIOSocket extends __home_EventEmitter {
+    \\  constructor(io, id, pid) { super(); this.io = io; this.id = id; this.pid = pid; this.recovered = false; this.rooms = new Set([id]); this.data = {}; }
+    \\  join(room) { this.rooms.add(String(room)); return Promise.resolve(); }
+    \\  leave(room) { this.rooms.delete(String(room)); return Promise.resolve(); }
+    \\  emit(event, ...args) { if (event === "error" || event === "disconnect") return __home_EventEmitter.prototype.emit.call(this, event, ...args); this.io.__home_broadcast(String(event), args, record => record.socket === this); return true; }
+    \\}
+    \\class __home_SocketIOAdapter { constructor(namespace) { this.nsp = namespace; } persistSession() { return Promise.resolve(); } restoreSession() { return Promise.resolve(null); } }
     \\class __home_SocketIOServer extends __home_EventEmitter {
     \\  constructor(serverOrPort, options) {
-    \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.sockets = { sockets: new Map() }; this.closed = false;
+    \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.__home_recovery = new Map(); this.__home_middlewares = []; this.__home_connection_waiters = []; this.__home_offset = 1; this.sockets = { sockets: new Map() }; this.closed = false;
     \\    this.httpServer = serverOrPort && typeof serverOrPort.listen === "function" ? serverOrPort : __home_http_create_server(); this.httpServer.__home_socket_io = this;
     \\    if (typeof serverOrPort === "number") this.httpServer.listen(serverOrPort);
     \\  }
-    \\  close(callback) { this.closed = true; this.__home_sessions.clear(); this.sockets.sockets.clear(); if (this.httpServer) { delete this.httpServer.__home_socket_io; this.httpServer.close(); } if (typeof callback === "function") Promise.resolve().then(() => callback()); return this; }
+    \\  use(middleware) { if (typeof middleware === "function") this.__home_middlewares.push(middleware); return this; }
+    \\  emit(event, ...args) { if (event === "connection" || event === "connect" || event === "error" || event === "newListener" || event === "removeListener") return __home_EventEmitter.prototype.emit.call(this, event, ...args); this.__home_broadcast(String(event), args); return true; }
+    \\  to(room) { const target = String(room); return { emit: (event, ...args) => { this.__home_broadcast(String(event), args, record => record.socket.rooms.has(target)); return true; } }; }
+    \\  __home_broadcast(event, args, filter) { const offset = "home-offset-" + String(this.__home_offset++); const packet = "42" + JSON.stringify([event, ...args, offset]); for (const record of this.__home_recovery.values()) { if (filter && !filter(record)) continue; if (record.engine && !record.engine.closed) record.engine.queue.push(packet); else record.missed.push(packet); } return offset; }
+    \\  __home_emit_connection(socket, recovered) { const skip = recovered && (!this.opts.connectionStateRecovery || this.opts.connectionStateRecovery.skipMiddlewares !== false); let index = 0; let failure = null; const next = error => { if (error) { failure = error; return; } const middleware = skip ? null : this.__home_middlewares[index++]; if (middleware) middleware(socket, next); }; next(); if (failure) throw __home_socket_io_error("middleware", socket.id, failure); __home_EventEmitter.prototype.emit.call(this, "connection", socket); const waiters = this.__home_connection_waiters.splice(0); for (const resolve of waiters) resolve(socket); }
+    \\  __home_connect(engine, request) {
+    \\    const recovery = this.opts.connectionStateRecovery; const restored = recovery && request && this.__home_recovery.get(String(request.pid));
+    \\    if (restored) { const socket = restored.socket; socket.recovered = true; restored.engine = engine; engine.socket = socket; engine.connected = true; engine.queue.push([...restored.missed, '40{"sid":"' + socket.id + '","pid":"' + socket.pid + '"}'].join("\u001e")); restored.missed.length = 0; this.sockets.sockets.set(socket.id, socket); this.__home_emit_connection(socket, true); return; }
+    \\    const id = "home-socket-" + String(__home_socket_io_next_sid++); const pid = recovery ? "home-pid-" + String(__home_socket_io_next_sid++) : null; const socket = new __home_SocketIOSocket(this, id, pid); const record = { socket, engine, missed: [] }; engine.socket = socket; engine.connected = true; this.sockets.sockets.set(id, socket); if (pid) this.__home_recovery.set(pid, record); else this.__home_recovery.set(id, record); engine.queue.push(pid ? '40{"sid":"' + id + '","pid":"' + pid + '"}' : '40{"sid":"' + id + '"}'); this.__home_emit_connection(socket, false);
+    \\  }
+    \\  close(callback) { this.closed = true; this.__home_sessions.clear(); this.__home_recovery.clear(); this.sockets.sockets.clear(); if (this.httpServer) { delete this.httpServer.__home_socket_io; this.httpServer.close(); } if (typeof callback === "function") Promise.resolve().then(() => callback()); return this; }
     \\}
     \\function __home_socket_io_server_for_http(httpServer, phase, sid) { const io = httpServer && httpServer.__home_socket_io; if (!io || io.closed) throw __home_socket_io_error(phase, sid, new Error("Socket.IO server is not attached")); return io; }
     \\const __home_socket_io_support = {
@@ -58251,12 +58267,13 @@ const harness_prelude =
     \\  fail(done, io, error, ...clients) { io.close(); for (const client of clients) if (client && typeof client.disconnect === "function") client.disconnect(); done(error); },
     \\  getPort(io) { return io.httpServer.address().port; },
     \\  createPartialDone(count, done) { let completed = 0; return function(error) { if (error) return done(error); completed++; if (completed === count) done(); else if (completed > count) done(new Error("partialDone() called too many times: " + completed + " > " + count)); }; },
-    \\  eioHandshake(httpServer) { try { const io = __home_socket_io_server_for_http(httpServer, "handshake"); const sid = "home-sio-" + String(__home_socket_io_next_sid++); io.__home_sessions.set(sid, { connected: false, closed: false, queue: [] }); return Promise.resolve(sid); } catch (error) { return Promise.reject(error); } },
-    \\  eioPush(httpServer, sid, packet) { try { const io = __home_socket_io_server_for_http(httpServer, "push", sid); const session = io.__home_sessions.get(String(sid)); if (!session || session.closed) throw __home_socket_io_error("push", sid, new Error("Engine.IO session is closed")); const value = String(packet); if (value === "40" && !session.connected) { session.connected = true; session.queue.push('40{"sid":"' + String(sid) + '"}'); } else { session.closed = true; session.queue.push("6\u001e1"); } return Promise.resolve(); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("push", sid, error)); } },
-    \\  eioPoll(httpServer, sid) { try { const io = __home_socket_io_server_for_http(httpServer, "poll", sid); const session = io.__home_sessions.get(String(sid)); if (!session) throw new Error("Engine.IO session was not found"); return Promise.resolve(session.queue.shift() || ""); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("poll", sid, error)); } },
-    \\  waitFor(emitter, event) { return new Promise(resolve => emitter.once(event, resolve)); },
+    \\  eioHandshake(httpServer) { try { const io = __home_socket_io_server_for_http(httpServer, "handshake"); const sid = "home-sio-" + String(__home_socket_io_next_sid++); io.__home_sessions.set(sid, { connected: false, closed: false, queue: [], socket: null }); return Promise.resolve(sid); } catch (error) { return Promise.reject(error); } },
+    \\  eioPush(httpServer, sid, packet) { try { const io = __home_socket_io_server_for_http(httpServer, "push", sid); const session = io.__home_sessions.get(String(sid)); if (!session || session.closed) throw __home_socket_io_error("push", sid, new Error("Engine.IO session is closed")); const value = String(packet); if (value.startsWith("40") && !session.connected) { let request = null; if (value.length > 2) { try { request = JSON.parse(value.slice(2)); } catch (error) { throw __home_socket_io_error("connect", sid, new Error("Invalid Socket.IO CONNECT payload")); } } io.__home_connect(session, request); } else if (value === "1" && session.connected) { session.closed = true; if (session.socket) { io.sockets.sockets.delete(session.socket.id); const record = session.socket.pid ? io.__home_recovery.get(session.socket.pid) : io.__home_recovery.get(session.socket.id); if (record) record.engine = null; } } else { session.closed = true; session.queue.push("6\u001e1"); } return Promise.resolve(); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("push", sid, error)); } },
+    \\  eioPoll(httpServer, sid) { try { const io = __home_socket_io_server_for_http(httpServer, "poll", sid); const session = io.__home_sessions.get(String(sid)); if (!session) throw new Error("Engine.IO session was not found"); if (session.queue.length === 0) throw new Error("No Engine.IO packet is pending"); return Promise.resolve(session.queue.shift()); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("poll", sid, error)); } },
+    \\  waitFor(emitter, event) { if (event === "connection" && emitter instanceof __home_SocketIOServer) return new Promise(resolve => emitter.__home_connection_waiters.push(resolve)); return new Promise(resolve => emitter.once(event, resolve)); },
     \\};
-    \\globalThis.__home_modules["socket.io"] = { Server: __home_SocketIOServer };
+    \\globalThis.__home_modules["socket.io"] = { Server: __home_SocketIOServer, Socket: __home_SocketIOSocket };
+    \\globalThis.__home_modules["socket.io-adapter"] = { Adapter: __home_SocketIOAdapter };
     \\globalThis.__home_modules["socket.io-client"] = { io(url, options) { const parsed = new URL(String(url)); const server = __home_http_servers[Number(parsed.port)]; const io = server && server.__home_socket_io; return __home_socket_io_support.createClient(io, parsed.pathname, options); } };
     \\globalThis.__home_modules["home:socket-io-support"] = __home_socket_io_support;
     \\function __home_https_create_server(options, handler) {
@@ -72674,11 +72691,21 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
         .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
         .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
+        .{ .needle = "import { createServer, Server as HttpServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
         .{ .needle = "import { join } from \"path\";", .replacement = "const { join } = globalThis.__home_import(\"path\");" },
         .{ .needle = "import { Server } from \"socket.io\";", .replacement = "const { Server } = globalThis.__home_import(\"socket.io\");" },
+        .{ .needle = "import { Server, Socket } from \"socket.io\";", .replacement = "const { Server } = globalThis.__home_import(\"socket.io\");" },
+        .{ .needle = "import { Adapter } from \"socket.io-adapter\";", .replacement = "const { Adapter } = globalThis.__home_import(\"socket.io-adapter\");" },
         .{ .needle = "import { io as ioc } from \"socket.io-client\";", .replacement = "const { io: ioc } = globalThis.__home_import(\"socket.io-client\");" },
         .{ .needle = "import { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
+        .{ .needle = "import { eioHandshake, eioPoll, eioPush, fail, success, waitFor } from \"./support/util.ts\";", .replacement = "const { eioHandshake, eioPoll, eioPush, fail, success, waitFor } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "let process: ChildProcess;", .replacement = "let process;" },
+        .{ .needle = "async function init(httpServer: HttpServer, io: Server)", .replacement = "async function init(httpServer, io)" },
+        .{ .needle = "let serverSocket: Socket | undefined;", .replacement = "let serverSocket;" },
+        .{ .needle = "waitFor<Socket>(", .replacement = "waitFor(" },
+        .{ .needle = "let io: Server;", .replacement = "let io;" },
+        .{ .needle = "override persistSession()", .replacement = "persistSession()" },
+        .{ .needle = "override restoreSession()", .replacement = "restoreSession()" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104455,6 +104482,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/resvg/bbox.test.js", .passed = 3 },
         .{ .path = "js/third_party/rollup-v4/rollup-v4.test.ts", .passed = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-close.test.ts", .passed = 2, .todo = 4 },
+        .{ .path = "js/third_party/socket.io/socket.io-connection-state-recovery.test.ts", .passed = 7 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104671,6 +104699,11 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: Error: Socket.IO server is not attached");
         \\  expect(caught.message).not.toContain("private-socket-packet");
         \\  expect(caught.stack).not.toContain("private-socket-packet");
+        \\});
+        \\test("positive watchdog timers yield to resolved promise chains", async () => {
+        \\  let fired = false; const timer = setTimeout(() => { fired = true; }, 20);
+        \\  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+        \\  clearTimeout(timer); expect(fired).toBe(false);
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104955,7 +104988,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 33), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 34), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
