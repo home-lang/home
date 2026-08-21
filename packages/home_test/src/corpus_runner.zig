@@ -66479,6 +66479,7 @@ const harness_prelude =
     \\function __home_jwt_sign_core(payload, secret, options) {
     \\  const opts = options || {}; const algorithm = String(opts.algorithm || "HS256");
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresInSeconds")) throw new Error('"expiresInSeconds" is not allowed');
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "keyid") && typeof opts.keyid !== "string") throw new Error('"keyid" must be a string');
     \\  if (!secret && algorithm !== "none") throw new Error("secretOrPrivateKey must have a value");
     \\  if (/^(?:RS|PS)/.test(algorithm)) {
     \\    if (!secret || !secret.__home_key_object || String(secret.asymmetricKeyType || "").toLowerCase() !== "rsa") throw new Error("secretOrPrivateKey must be an asymmetric RSA key");
@@ -66543,7 +66544,8 @@ const harness_prelude =
     \\    if (expiresInSeconds !== undefined) body.exp = timestamp + expiresInSeconds;
     \\    if (opts.noTimestamp === true) delete body.iat; else if (!body.iat) body.iat = timestamp;
     \\  }
-    \\  const header = Object.assign({ alg: algorithm, typ: "JWT" }, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
+    \\  const baseHeader = { alg: algorithm, typ: "JWT" }; if (Object.prototype.hasOwnProperty.call(opts, "keyid")) baseHeader.kid = opts.keyid;
+    \\  const header = Object.assign(baseHeader, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
     \\}
     \\function __home_jwt_sign(payload, secret, options, callback) {
@@ -103735,6 +103737,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-nbf.test.js", .passed = 58 },
         .{ .path = "js/third_party/jsonwebtoken/claim-private.test.js", .passed = 19 },
         .{ .path = "js/third_party/jsonwebtoken/claim-sub.test.js", .passed = 24 },
+        .{ .path = "js/third_party/jsonwebtoken/header-kid.test.js", .passed = 20 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103896,6 +103899,16 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim sub");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt subject invalid. expected: expected");
         \\});
+        \\test("jsonwebtoken key-ID errors retain signing context", async () => {
+        \\  let caught;
+        \\  await new Promise(resolve => jwt.sign({ value: 1 }, "secret", { keyid: 42 }, error => { caught = error; resolve(); }));
+        \\  expect(caught.code).toBe("ERR_JWT_SIGN");
+        \\  expect(caught.algorithm).toBe("HS256");
+        \\  expect(caught.operation).toBe("jsonwebtoken.sign");
+        \\  expect(caught.cause.message).toBe('"keyid" must be a string');
+        \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm HS256");
+        \\  expect(caught.stack).toContain('Caused by: Error: "keyid" must be a string');
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103907,7 +103920,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
