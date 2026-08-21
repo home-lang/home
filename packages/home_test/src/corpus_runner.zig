@@ -33433,6 +33433,21 @@ const harness_prelude =
     \\  }
     \\  return value;
     \\}
+    \\function __home_wrap_disposal_error(error, phase, cause) {
+    \\  if (error === null || (typeof error !== "object" && typeof error !== "function")) return error;
+    \\  const define = (name, value) => {
+    \\    try { if (error[name] === undefined) Object.defineProperty(error, name, { configurable: true, value }); } catch (ignored) {}
+    \\  };
+    \\  define("code", "ERR_EXPLICIT_RESOURCE_DISPOSAL");
+    \\  define("operation", "explicit-resource-management.dispose");
+    \\  define("phase", String(phase || "dispose"));
+    \\  if (cause !== undefined) define("cause", cause);
+    \\  try {
+    \\    const frame = "    at explicit-resource-management.dispose (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\    if (typeof error.stack === "string" && !error.stack.includes(frame)) error.stack += "\\n" + frame;
+    \\  } catch (ignored) {}
+    \\  return error;
+    \\}
     \\function __home_wrap_call_dispose(stack, error, hasError) {
     \\  const ErrorCtor = typeof SuppressedError === "function" ? SuppressedError : function(e, suppressed, message) {
     \\    const err = Error(message);
@@ -33441,7 +33456,11 @@ const harness_prelude =
     \\    err.suppressed = suppressed;
     \\    return err;
     \\  };
-    \\  const fail = e => error = hasError ? new ErrorCtor(e, error, "An error was suppressed during disposal") : (hasError = true, e);
+    \\  const fail = e => {
+    \\    const disposalError = __home_wrap_disposal_error(e, "dispose");
+    \\    if (hasError) error = __home_wrap_disposal_error(new ErrorCtor(disposalError, error, "An error was suppressed during disposal"), "suppress", disposalError);
+    \\    else { hasError = true; error = disposalError; }
+    \\  };
     \\  const next = it => {
     \\    while (it = stack.pop()) {
     \\      try {
@@ -73954,6 +73973,114 @@ fn rewriteBootstrapUsingDeclarationLines(allocator: std.mem.Allocator, source: [
     return try out.toOwnedSlice(allocator);
 }
 
+fn sourceHasExplicitResourceManagementSyntax(source: []const u8) bool {
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (std.mem.startsWith(u8, source[i..], "using") and
+                    (i == 0 or !isJsIdentifierContinue(source[i - 1])) and
+                    (i + "using".len == source.len or !isJsIdentifierContinue(source[i + "using".len])))
+                {
+                    return true;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 2;
+                    continue;
+                }
+                if (byte == terminator) mode = .code;
+                i += 1;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    mode = .code;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    return false;
+}
+
+test "explicit resource management detector ignores prose and recognizes code" {
+    try std.testing.expect(!sourceHasExplicitResourceManagementSyntax(
+        "test(\"using resources\", () => {}); // using declaration\n/* await using resource */",
+    ));
+    try std.testing.expect(sourceHasExplicitResourceManagementSyntax(
+        "{ using resource = acquire(); }",
+    ));
+    try std.testing.expect(sourceHasExplicitResourceManagementSyntax(
+        "async function run() { await using resource = acquire(); }",
+    ));
+}
+
+test "explicit resource management chains structured disposal errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("structured disposal errors", () => {
+        \\  const bodyError = new Error("body failed");
+        \\  const disposalError = new Error("dispose failed");
+        \\  try {
+        \\    {
+        \\      using resource = { [Symbol.dispose]() { throw disposalError; } };
+        \\      throw bodyError;
+        \\    }
+        \\  } catch (error) {
+        \\    expect(error.name).toBe("SuppressedError");
+        \\    expect(error.error).toBe(disposalError);
+        \\    expect(error.suppressed).toBe(bodyError);
+        \\    expect(error.cause).toBe(disposalError);
+        \\    expect(error.code).toBe("ERR_EXPLICIT_RESOURCE_DISPOSAL");
+        \\    expect(error.operation).toBe("explicit-resource-management.dispose");
+        \\    expect(error.phase).toBe("suppress");
+        \\    expect(error.stack).toContain("explicit-resource-management.dispose");
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(
+        std.testing.allocator,
+        source,
+        "internal/explicit-resource-management-structured-errors.test.ts",
+    );
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured disposal error mismatch: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 fn isBootstrapLineStatementStart(source: []const u8, idx: usize) bool {
     var cursor = idx;
     while (cursor > 0 and source[cursor - 1] != '\n' and source[cursor - 1] != '\r') : (cursor -= 1) {}
@@ -81040,7 +81167,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
     const rewritten_module_source = owned_module_source orelse module_source;
-    const diagnosed_module_source = try std.mem.replaceOwned(u8, allocator, rewritten_module_source, "const { test, assert_equals, assert_throws } = require('../common/wpt').harness;",
+    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source))
+        try jsc_bootstrap.transpileCorpusSourceWithBunParser(allocator, rewritten_module_source, relative_path)
+    else
+        null;
+    defer if (production_lowered_source) |buffer| allocator.free(buffer);
+    const lowered_module_source = production_lowered_source orelse rewritten_module_source;
+    const diagnosed_module_source = try std.mem.replaceOwned(u8, allocator, lowered_module_source, "const { test, assert_equals, assert_throws } = require('../common/wpt').harness;",
         \\const __home_wpt_harness = require('../common/wpt').harness;
         \\const { assert_equals, assert_throws } = __home_wpt_harness;
         \\const test = (fn, description) => __home_wpt_harness.test(() => {
@@ -107329,6 +107462,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/crypto/web-crypto.test.ts", .passed = 10 },
         .{ .path = "js/web/encoding/encode-bad-chunks.test.ts", .passed = 6 },
         .{ .path = "js/web/encoding/text-encoder.test.js", .passed = 42 },
+        .{ .path = "js/web/explicit-resource-management.test.ts", .passed = 4 },
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
         .{ .path = "js/web/encoding/text-decoder-stream.test.ts", .passed = 39 },

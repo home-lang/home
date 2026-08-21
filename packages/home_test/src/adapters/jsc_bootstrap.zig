@@ -1262,6 +1262,23 @@ fn transpileSourceWithBunParser(
     return printed;
 }
 
+/// Lower a copied Bun corpus module through Home's production Bun parser.
+/// Browser targeting intentionally enables Bun's explicit-resource-management
+/// lowering instead of relying on the linked JavaScriptCore version to parse
+/// `using` / `await using` declarations natively.
+pub fn transpileCorpusSourceWithBunParser(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    relative_path: []const u8,
+) ![]u8 {
+    const loader = corpusLoaderFromPath(relative_path);
+    const handle = TranspilerHandle{
+        .loader = loader,
+        .platform = .browser,
+    };
+    return transpileSourceWithBunParser(allocator, &handle, source_text, loader);
+}
+
 fn stripWrappedDefaultRawTemplateParens(allocator: std.mem.Allocator, printed: []const u8) !?[]u8 {
     const prefix = "export default (String.raw`";
     const suffix = "`);\n";
