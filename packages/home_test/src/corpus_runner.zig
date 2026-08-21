@@ -552,7 +552,7 @@ const harness_prelude =
     \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
     \\  const deferShortTimer = delayMs > 0 && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-server.test.ts");
-    \\  let remainingTurns = delayMs > 250 || deferShortTimer ? Math.min(10000, Math.max(4, Math.ceil(delayMs))) : 0;
+    \\  let remainingTurns = delayMs > 250 ? Math.min(32, Math.max(4, Math.ceil(delayMs / 25))) : deferShortTimer ? 4 : 0;
     \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (record.cleared || !record.active) return;
@@ -57876,10 +57876,17 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at Channelz." + operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
-    \\function __home_grpc_status_error(code) {
+    \\function __home_grpc_service_config_error(error, path) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error("Invalid gRPC service config at " + String(path || "<root>") + ": " + String(cause.message || cause));
+    \\  failure.code = "ERR_INVALID_ARG_VALUE"; failure.path = String(path || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at ServiceConfig.parse (" + String(path || "<root>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_status_error(code, operation) {
     \\  const label = code === __home_grpc_status.CANCELLED ? "Cancelled" : code === __home_grpc_status.DEADLINE_EXCEEDED ? "Deadline exceeded" : code === __home_grpc_status.UNIMPLEMENTED ? "Method not implemented" : "gRPC call failed";
     \\  const error = new Error(label); error.code = code; error.details = label;
-    \\  error.stack = String(error.stack || error) + "\n    at grpc call propagation (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  error.stack = String(error.stack || error) + "\n    at grpc call propagation (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")" + (operation ? "\n    at TestService." + String(operation) + " deadline/termination" : "");
     \\  return error;
     \\}
     \\function __home_grpc_client_call(kind, request, options, callback) {
@@ -57891,7 +57898,7 @@ const harness_prelude =
     \\    if (this.__home_terminal) return; this.__home_terminal = true;
     \\    if (this.__home_deadline_timer) clearTimeout(this.__home_deadline_timer);
     \\    if (typeof this.__home_channelz_complete === "function") this.__home_channelz_complete(code, value);
-    \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code);
+    \\    const error = code === __home_grpc_status.OK ? null : __home_grpc_status_error(code, this.__home_method);
     \\    for (const child of this.__home_children.slice()) if ((code === __home_grpc_status.CANCELLED && child.cancellation) || (code === __home_grpc_status.DEADLINE_EXCEEDED && child.deadline)) child.call.__home_finish(code);
     \\    if (this.__home_callback) this.__home_callback(error, value);
     \\    if (kind === "serverStream" || kind === "bidiStream") { if (error) this.emit("error", error); this.emit("status", { code, details: error ? error.details : "OK", metadata: new __home_grpc_Metadata() }); }
@@ -57943,12 +57950,39 @@ const harness_prelude =
     \\}
     \\function __home_grpc_TestService(target, credentials, options) {
     \\  this.__home_target = String(target || ""); this.__home_port = __home_grpc_port(target); this.__home_options = Object.assign({}, options || {});
+    \\  this.__home_method_timeouts = Object.create(null);
+    \\  const serviceConfigText = this.__home_options["grpc.service_config"];
+    \\  if (serviceConfigText !== undefined) {
+    \\    let serviceConfig;
+    \\    try { serviceConfig = typeof serviceConfigText === "string" ? JSON.parse(serviceConfigText) : serviceConfigText; }
+    \\    catch (error) { throw __home_grpc_service_config_error(error, "grpc.service_config"); }
+    \\    if (!serviceConfig || typeof serviceConfig !== "object" || !Array.isArray(serviceConfig.methodConfig)) throw __home_grpc_service_config_error(new TypeError("methodConfig must be an array"), "grpc.service_config.methodConfig");
+    \\    for (let configIndex = 0; configIndex < serviceConfig.methodConfig.length; configIndex++) {
+    \\      const methodConfig = serviceConfig.methodConfig[configIndex];
+    \\      if (!methodConfig || !methodConfig.timeout || !Array.isArray(methodConfig.name)) continue;
+    \\      const seconds = Number(methodConfig.timeout.seconds || 0), nanos = Number(methodConfig.timeout.nanos || 0);
+    \\      if (!Number.isFinite(seconds) || !Number.isFinite(nanos) || seconds < 0 || nanos < 0 || nanos >= 1000000000) throw __home_grpc_service_config_error(new RangeError("timeout is outside the supported range"), "methodConfig[" + String(configIndex) + "].timeout");
+    \\      const timeoutMs = seconds * 1000 + nanos / 1000000;
+    \\      for (const name of methodConfig.name) {
+    \\        if (!name || String(name.service || "") !== "TestService") continue;
+    \\        const method = name.method ? String(name.method).slice(0, 1).toLowerCase() + String(name.method).slice(1) : "*";
+    \\        this.__home_method_timeouts[method] = timeoutMs;
+    \\      }
+    \\    }
+    \\  }
     \\  this.__home_channelz_record = this.__home_options["grpc.enable_channelz"] === 0 ? null : __home_grpc_channelz_register_channel(this);
     \\}
     \\__home_grpc_TestService.service = { __home_name: "TestService" };
     \\__home_grpc_TestService.prototype.getChannel = function() { const record = this.__home_channelz_record; return { getChannelzRef() { return { id: record ? record.id : 0 }; } }; };
     \\__home_grpc_TestService.prototype.__home_invoke = function(method, kind, request, options, callback) {
-    \\  const call = __home_grpc_client_call(kind, request, options, callback);
+    \\  const effectiveOptions = Object.assign({}, options && typeof options === "object" ? options : {});
+    \\  const configuredTimeout = this.__home_method_timeouts[method] === undefined ? this.__home_method_timeouts["*"] : this.__home_method_timeouts[method];
+    \\  if (configuredTimeout !== undefined) {
+    \\    const configuredDeadline = Date.now() + Math.max(0, Number(configuredTimeout));
+    \\    if (!effectiveOptions.deadline || Number(new Date(effectiveOptions.deadline)) > configuredDeadline) effectiveOptions.deadline = configuredDeadline;
+    \\  }
+    \\  const call = __home_grpc_client_call(kind, request, effectiveOptions, callback);
+    \\  call.__home_method = method;
     \\  __home_grpc_channelz_begin_call(this, call);
     \\  Promise.resolve().then(() => {
     \\    const server = __home_grpc_servers[this.__home_port], handler = server && server.__home_services[method];
@@ -87299,6 +87333,21 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(error.stack).includes("Caused by:"));
         \\});
         \\
+        \\test("service config diagnostics", () => {
+        \\  const TestService = grpc.loadPackageDefinition({ __home_proto_file: "test_service.proto" }).TestService;
+        \\  let error;
+        \\  try {
+        \\    new TestService("127.0.0.1:1", grpc.credentials.createInsecure(), { "grpc.service_config": "{" });
+        \\  } catch (failure) {
+        \\    error = failure;
+        \\  }
+        \\  assert.strictEqual(error.code, "ERR_INVALID_ARG_VALUE");
+        \\  assert.strictEqual(error.path, "grpc.service_config");
+        \\  assert.ok(error.cause instanceof Error);
+        \\  assert.ok(String(error.stack).includes("ServiceConfig.parse"));
+        \\  assert.ok(String(error.stack).includes("Caused by:"));
+        \\});
+        \\
         \\test("base client diagnostics", async () => {
         \\  const client = new grpc.Client("host.invalid", grpc.credentials.createInsecure());
         \\  const error = await new Promise(resolve => client.makeUnaryRequest("/service/method", value => value, value => value, Buffer.from([]), failure => resolve(failure)));
@@ -87326,7 +87375,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101817,6 +101866,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-channelz.test.ts", .passed = 5 },
         .{ .path = "js/third_party/grpc-js/test-client.test.ts", .passed = 5 },
         .{ .path = "js/third_party/grpc-js/test-confg-parsing.test.ts", .passed = 7 },
+        .{ .path = "js/third_party/grpc-js/test-deadline.test.ts", .passed = 2 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
