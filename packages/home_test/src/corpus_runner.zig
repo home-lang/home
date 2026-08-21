@@ -66484,7 +66484,7 @@ const harness_prelude =
     \\  const path = String(key && key.__home_source_path || "").toLowerCase(); const text = __home_jwt_key_text(key);
     \\  if (path.includes("ecdsa-") || text.includes("BEGIN EC PRIVATE KEY")) return "ec";
     \\  if (path.includes("dsa-") || text.includes("BEGIN DSA PRIVATE KEY")) return "dsa";
-    \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem") || path.includes("rsa-") || path.endsWith("/invalid_pub.pem") || text.includes("BEGIN RSA PRIVATE KEY") || text.includes("BEGIN RSA PUBLIC KEY")) return "rsa";
+    \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem") || path.includes("rsa-") || path.endsWith("/invalid_pub.pem") || text.includes("BEGIN RSA PRIVATE KEY") || text.includes("BEGIN RSA PUBLIC KEY") || text.includes("BEGIN CERTIFICATE")) return "rsa";
     \\  return "secret";
     \\}
     \\function __home_jwt_key_curve(key) {
@@ -66653,8 +66653,9 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(opts, "clockTimestamp") && typeof opts.clockTimestamp !== "number") { const invalidClock = __home_jwt_error("JsonWebTokenError", "clockTimestamp must be a number"); invalidClock.claim = "clockTimestamp"; throw invalidClock; }
     \\  const validKeyMaterial = !hasSignature && algorithm === "none" || typeof secret === "string" || (typeof Buffer === "function" && Buffer.isBuffer(secret)) || !!(secret && secret.__home_key_object);
     \\  if (!validKeyMaterial) { const invalidKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey is not valid key material"); invalidKey.claim = "key"; throw invalidKey; }
-    \\  if (Array.isArray(opts.algorithms) && !opts.algorithms.includes(algorithm)) { const invalidAlgorithm = __home_jwt_error("JsonWebTokenError", "invalid algorithm"); invalidAlgorithm.claim = "algorithm"; throw invalidAlgorithm; }
     \\  const keyFamily = __home_jwt_key_family(secret);
+    \\  const effectiveAlgorithms = Array.isArray(opts.algorithms) ? opts.algorithms : (algorithm === "none" && !hasSignature ? ["none"] : (keyFamily === "secret" ? ["HS256", "HS384", "HS512"] : (keyFamily === "rsa" ? ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512"] : (keyFamily === "ec" ? ["ES256", "ES384", "ES512"] : []))));
+    \\  if (!effectiveAlgorithms.includes(algorithm)) { const invalidAlgorithm = __home_jwt_error("JsonWebTokenError", "invalid algorithm"); invalidAlgorithm.claim = "algorithm"; throw invalidAlgorithm; }
     \\  if (/^HS/.test(algorithm) && keyFamily !== "secret") { const invalidHmacKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be a symmetric key when using " + algorithm); invalidHmacKey.claim = "key"; throw invalidHmacKey; }
     \\  if (/^(?:RS|PS)/.test(algorithm) && keyFamily !== "rsa" && opts.allowInvalidAsymmetricKeyTypes !== true) { const algorithmError = __home_jwt_asymmetric_algorithm_error(keyFamily); if (algorithmError) throw algorithmError; const invalidRsaKey = __home_jwt_error("JsonWebTokenError", "secretOrPublicKey must be an asymmetric RSA key when using " + algorithm); invalidRsaKey.claim = "key"; throw invalidRsaKey; }
     \\  if (/^ES/.test(algorithm) && opts.allowInvalidAsymmetricKeyTypes !== true) {
@@ -103884,6 +103885,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/test-utils.js", .passed = 0 },
         .{ .path = "js/third_party/jsonwebtoken/validateAsymmetricKey.test.js", .passed = 13, .todo = 3 },
         .{ .path = "js/third_party/jsonwebtoken/verify.test.js", .passed = 19, .todo = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/wrong_alg.test.js", .passed = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
