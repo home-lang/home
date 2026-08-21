@@ -137205,8 +137205,8 @@ pub const Checker = struct {
             // (TS2365) when both operand types render as simple names.
             // Mirrors `symbolType12.ts(9,1)` / `(10,1)` for `s += s`
             // and `s += 0`.
-            if (try self.simpleDiagnosticTypeName(target_t)) |t_name| {
-                if (try self.simpleDiagnosticTypeName(value_t)) |v_name| {
+            if (try self.addOperatorDiagnosticTypeName(target, target_t)) |t_name| {
+                if (try self.addOperatorDiagnosticTypeName(value, value_t)) |v_name| {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Operator '+=' cannot be applied to types '{s}' and '{s}'.",
@@ -137247,8 +137247,8 @@ pub const Checker = struct {
             // when both endpoints have a simple display name; fall
             // back to the generic `ÃÂ¢ÃÂÃÂ¦to these operand types.` form.
             // Mirrors `compoundAdditionAssignmentWithInvalidOperands.ts`.
-            if (try self.simpleDiagnosticTypeName(target_t)) |t_name| {
-                if (try self.simpleDiagnosticTypeName(value_t)) |v_name| {
+            if (try self.addOperatorDiagnosticTypeName(target, target_t)) |t_name| {
+                if (try self.addOperatorDiagnosticTypeName(value, value_t)) |v_name| {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Operator '+=' cannot be applied to types '{s}' and '{s}'.",
@@ -229021,12 +229021,18 @@ test "checker: compound addition assignment rejects invalid operand matrix" {
     try s.checker.checkSourceFile(s.root);
     var operator_count: usize = 0;
     var nullish_count: usize = 0;
+    var enum_rhs_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.operator_cannot_be_applied) operator_count += 1;
+        if (d.code == TsCodes.operator_cannot_be_applied) {
+            operator_count += 1;
+            if (std.mem.indexOf(u8, d.message, "and 'E'.") != null) enum_rhs_count += 1;
+            try T.expect(std.mem.indexOf(u8, d.message, "E.a") == null);
+        }
         if (d.code == TsCodes.nullish_relational_operand) nullish_count += 1;
     }
     try T.expectEqual(@as(usize, 21), operator_count);
     try T.expectEqual(@as(usize, 6), nullish_count);
+    try T.expectEqual(@as(usize, 3), enum_rhs_count);
 }
 
 test "checker: Array constructor type arguments produce nested array result" {
