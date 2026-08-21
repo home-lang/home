@@ -58715,13 +58715,32 @@ const harness_prelude =
     \\  createSsl(rootCerts, privateKey, certChain, verifyOptions) { return __home_grpc_ChannelCredentials.createSsl(rootCerts, privateKey, certChain, verifyOptions); },
     \\  createInsecure() { return __home_grpc_ChannelCredentials.createInsecure(); },
     \\};
+    \\function __home_grpc_server_credentials_error(message, field) {
+    \\  const cause = new TypeError(message);
+    \\  const failure = new TypeError(message);
+    \\  failure.code = "ERR_GRPC_SERVER_CREDENTIALS"; failure.field = String(field || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at ServerCredentials.createSsl (field " + failure.field + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_ServerCredentialsImpl(secure, settings) { this.type = secure ? "ssl-server" : "insecure-server"; this.__home_secure = !!secure; this.__home_settings = settings; }
+    \\__home_grpc_ServerCredentialsImpl.prototype._isSecure = function() { return this.__home_secure; };
+    \\__home_grpc_ServerCredentialsImpl.prototype._getSettings = function() { return this.__home_settings; };
     \\const __home_grpc_ServerCredentials = {
     \\  createSsl(rootCerts, keyCertPairs, checkClientCertificate) {
-    \\    if (!Array.isArray(keyCertPairs) || keyCertPairs.length === 0) throw __home_grpc_channel_error(new TypeError("keyCertPairs must contain at least one private key and certificate chain"), "createSsl", "ServerCredentials");
-    \\    for (const pair of keyCertPairs) if (!pair || pair.private_key == null || pair.cert_chain == null) throw __home_grpc_channel_error(new TypeError("each keyCertPair must include private_key and cert_chain"), "createSsl", "ServerCredentials");
-    \\    return { type: "ssl-server", rootCerts: rootCerts || null, keyCertPairs: keyCertPairs.slice(), checkClientCertificate: !!checkClientCertificate };
+    \\    if (rootCerts !== null && rootCerts !== undefined && !Buffer.isBuffer(rootCerts)) throw __home_grpc_server_credentials_error("rootCerts must be null or a Buffer", "rootCerts");
+    \\    if (!Array.isArray(keyCertPairs)) throw __home_grpc_server_credentials_error("keyCertPairs must be an array", "keyCertPairs");
+    \\    if (checkClientCertificate !== undefined && typeof checkClientCertificate !== "boolean") throw __home_grpc_server_credentials_error("checkClientCertificate must be a boolean", "checkClientCertificate");
+    \\    const keys = [], certificates = [];
+    \\    for (let index = 0; index < keyCertPairs.length; index++) {
+    \\      const pair = keyCertPairs[index], prefix = "keyCertPair[" + String(index) + "]";
+    \\      if (!pair || typeof pair !== "object" || Array.isArray(pair)) throw __home_grpc_server_credentials_error(prefix + " must be an object", prefix);
+    \\      if (!Buffer.isBuffer(pair.private_key)) throw __home_grpc_server_credentials_error(prefix + ".private_key must be a Buffer", prefix + ".private_key");
+    \\      if (!Buffer.isBuffer(pair.cert_chain)) throw __home_grpc_server_credentials_error(prefix + ".cert_chain must be a Buffer", prefix + ".cert_chain");
+    \\      keys.push(pair.private_key); certificates.push(pair.cert_chain);
+    \\    }
+    \\    return new __home_grpc_ServerCredentialsImpl(true, { ca: rootCerts || null, cert: certificates, key: keys, requestCert: checkClientCertificate === true, rejectUnauthorized: checkClientCertificate === true });
     \\  },
-    \\  createInsecure() { return { type: "insecure-server" }; },
+    \\  createInsecure() { return new __home_grpc_ServerCredentialsImpl(false, null); },
     \\};
     \\function __home_grpc_ChannelzClient(target, credentials, options) { this.__home_target = String(target || ""); this.__home_closed = false; }
     \\__home_grpc_ChannelzClient.prototype.close = function() { this.__home_closed = true; };
@@ -71806,6 +71825,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import {\n  PickFirstLoadBalancer,\n  PickFirstLoadBalancingConfig,\n  shuffled,\n} from \"@grpc/grpc-js/build/src/load-balancer-pick-first\";", .replacement = "const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig, shuffled } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-pick-first\");" },
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
         .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import { ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
         .{ .needle = "let client: InstanceType<grpc.ServiceClientConstructor>;", .replacement = "let client;" },
         .{ .needle = "import { Picker } from \"@grpc/grpc-js/build/src/picker\";", .replacement = "" },
         .{ .needle = "import { Endpoint, subchannelAddressToString } from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { subchannelAddressToString } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
@@ -88491,6 +88511,18 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\    });
         \\  });
         \\});
+        \\
+        \\test("server credential validation identifies fields and causes", () => {
+        \\  let credentialError;
+        \\  try { grpc.ServerCredentials.createSsl(null, [{ private_key: "not-a-buffer", cert_chain: Buffer.from("cert") }]); } catch (error) { credentialError = error; }
+        \\  assert.strictEqual(credentialError.code, "ERR_GRPC_SERVER_CREDENTIALS");
+        \\  assert.strictEqual(credentialError.field, "keyCertPair[0].private_key");
+        \\  assert.ok(credentialError instanceof TypeError);
+        \\  assert.ok(credentialError.cause instanceof TypeError);
+        \\  assert.ok(String(credentialError.stack).includes("ServerCredentials.createSsl"));
+        \\  assert.ok(String(credentialError.stack).includes("field keyCertPair[0].private_key"));
+        \\  assert.ok(String(credentialError.stack).includes("Caused by:"));
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88508,7 +88540,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -103013,6 +103045,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-resolver.test.ts", .passed = 20, .todo = 4 },
         .{ .path = "js/third_party/grpc-js/test-retry-config.test.ts", .passed = 28 },
         .{ .path = "js/third_party/grpc-js/test-retry.test.ts", .passed = 15 },
+        .{ .path = "js/third_party/grpc-js/test-server-credentials.test.ts", .passed = 11 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
