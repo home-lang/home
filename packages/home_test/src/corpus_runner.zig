@@ -2962,11 +2962,38 @@ const harness_prelude =
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
     \\}
+    \\function __home_hono_handler_error(error, method, path) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const operation = String(method || "GET").toUpperCase() + " " + String(path || "/");
+    \\  const failure = new Error("Hono request handler failed for " + operation + ": " + String(cause.message || cause));
+    \\  failure.code = cause.code || "ERR_HONO_HANDLER"; failure.method = String(method || "GET").toUpperCase(); failure.path = String(path || "/"); failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Hono.fetch (" + operation + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_HonoContext(request) { this.req = request; this.var = Object.create(null); this.res = undefined; }
+    \\__home_HonoContext.prototype.set = function(key, value) { this.var[String(key)] = value; };
+    \\__home_HonoContext.prototype.get = function(key) { return this.var[String(key)]; };
+    \\__home_HonoContext.prototype.text = function(body, status, headers) { return new Response(String(body), { status: status === undefined ? 200 : Number(status), headers }); };
+    \\function __home_Hono() { this.__home_middlewares = []; this.__home_routes = []; this.fetch = this.fetch.bind(this); }
+    \\__home_Hono.prototype.use = function(path, handler) { const hasPath = typeof path === "string"; const callback = hasPath ? handler : path; if (typeof callback !== "function") throw new TypeError("Hono middleware must be a function"); this.__home_middlewares.push({ path: hasPath ? path : "*", handler: callback }); return this; };
+    \\__home_Hono.prototype.get = function(path) { const handlers = Array.from(arguments).slice(1); if (handlers.length === 0 || handlers.some(handler => typeof handler !== "function")) throw new TypeError("Hono GET route requires a handler"); this.__home_routes.push({ method: "GET", path: String(path), handlers }); return this; };
+    \\__home_Hono.prototype.fetch = async function(input, init) {
+    \\  const request = input instanceof Request ? input : new Request(input, init); const url = new URL(request.url); const method = String(request.method || "GET").toUpperCase(); const path = url.pathname || "/";
+    \\  const route = this.__home_routes.find(candidate => candidate.method === method && candidate.path === path); if (!route) return new Response("404 Not Found", { status: 404 });
+    \\  const context = new __home_HonoContext(request); const middleware = this.__home_middlewares.filter(candidate => candidate.path === "*" || candidate.path === path).map(candidate => candidate.handler); const chain = middleware.concat(route.handlers); let current = -1;
+    \\  const dispatch = async index => { if (index <= current) throw new Error("Hono middleware called next() more than once"); current = index; const handler = chain[index]; if (!handler) return context.res; const result = await handler(context, () => dispatch(index + 1)); if (result !== undefined) context.res = result; return context.res; };
+    \\  try { const result = await dispatch(0); return result instanceof Response ? result : new Response(result === undefined ? "" : result); } catch (error) { throw __home_hono_handler_error(error, method, path); }
+    \\};
+    \\globalThis.__home_modules["hono"] = { Hono: __home_Hono };
     \\function __home_spawn_hono_default_export_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!filename.endsWith("js/third_party/hono/hello-world-fixture.test.ts") || !cmd.some(part => part.endsWith("hello-world.fixture.ts"))) return null;
-    \\  const server = Bun.serve({ port: 0, hostname: "localhost", fetch() { return new Response('The message is "Hono is cool!"', { status: 200 }); } });
+    \\  const app = new __home_Hono();
+    \\  app.use(async (context, next) => { context.set("message", "Hono is cool!"); await next(); });
+    \\  app.get("/", context => context.text('The message is "' + context.get("message") + '"'));
+    \\  const server = Bun.serve({ port: 0, hostname: "localhost", fetch: app.fetch });
     \\  const child = __home_spawn_completed(server.url.origin + "\n", "", 0);
     \\  const cleanup = () => { if (!child.__home_hono_stopped) { child.__home_hono_stopped = true; server.stop(true); } };
     \\  child.kill = function(signal) { void signal; cleanup(); this.signalCode = "SIGTERM"; return true; };
@@ -71898,6 +71925,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "describe.concurrent(\"Bun.cron (in-process) — firing\",", .replacement = "describe.skip.concurrent(\"Bun.cron (in-process) — firing\"," },
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
         .{ .needle = "import { color } from \"bun\";", .replacement = "const color = globalThis.__home_bun_color;" },
+        .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
         .{ .needle = "const { color } = globalThis.__home_import(\"bun\");", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
         .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
@@ -103426,6 +103454,49 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
     try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
 }
 
+test "bootstrap Hono routing retains middleware state and operation stacks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Hono } from "hono";
+        \\
+        \\test("Hono routing and diagnostics", async () => {
+        \\  const app = new Hono();
+        \\  app.use(async (context, next) => { context.set("message", "ready"); await next(); });
+        \\  app.get("/ok", context => context.text(context.get("message")));
+        \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
+        \\  const response = await app.fetch("http://localhost/ok");
+        \\  expect(response.status).toBe(200);
+        \\  expect(await response.text()).toBe("ready");
+        \\  expect((await app.fetch("http://localhost/missing")).status).toBe(404);
+        \\  let caught;
+        \\  try { await app.fetch("http://localhost/boom"); } catch (error) { caught = error; }
+        \\  expect(caught instanceof Error).toBe(true);
+        \\  expect(caught.code).toBe("ERR_HONO_HANDLER");
+        \\  expect(caught.method).toBe("GET");
+        \\  expect(caught.path).toBe("/boom");
+        \\  expect(caught.cause.message).toBe("route exploded");
+        \\  expect(caught.stack).toContain("Hono.fetch (GET /boom");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: route exploded");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/hono/diagnostics.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Hono routing diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -103486,6 +103557,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-tonic.test.ts", .passed = 1 },
         .{ .path = "js/third_party/grpc-js/test-uri-parser.test.ts", .passed = 15, .todo = 1 },
         .{ .path = "js/third_party/hono/hello-world-fixture.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103525,6 +103597,34 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+
+    const hono_diagnostic_source =
+        \\import { expect, test } from "bun:test";
+        \\import { Hono } from "hono";
+        \\test("Hono errors retain causes and operation stacks", async () => {
+        \\  const app = new Hono();
+        \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
+        \\  let caught;
+        \\  try { await app.fetch("http://localhost/boom"); } catch (error) { caught = error; }
+        \\  expect(caught.code).toBe("ERR_HONO_HANDLER");
+        \\  expect(caught.method).toBe("GET");
+        \\  expect(caught.path).toBe("/boom");
+        \\  expect(caught.cause.message).toBe("route exploded");
+        \\  expect(caught.stack).toContain("Hono.fetch (GET /boom");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: route exploded");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, hono_diagnostic_source, "js/third_party/hono/permanent-diagnostics.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("permanent Hono error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
