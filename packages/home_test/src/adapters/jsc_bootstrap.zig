@@ -163,6 +163,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_textDecodeNative",
+            textDecodeNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_normalizeTextEncodingLabelNative",
+            normalizeTextEncodingLabelNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_shellLexNative",
             shellLexNative,
         );
@@ -4380,6 +4392,134 @@ fn cleanupNativeBridge() void {
     loaded_native_node_modules = .empty;
     pending_napi_modules.deinit(allocator);
     pending_napi_modules = .empty;
+}
+
+/// Keep corpus label canonicalization on Home's production WHATWG alias map.
+fn normalizeTextEncodingLabelNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx orelse return null;
+    if (argument_count < 1 or arguments[0] == null) return extern_fns.JSValueMakeNull(actual_ctx);
+
+    const allocator = std.heap.smp_allocator;
+    const input = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    defer allocator.free(input);
+    const label = home_rt.jsc.WebCore.EncodingLabel.which(input) orelse
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    return makeStringValue(actual_ctx, label.getLabel()) catch
+        return extern_fns.JSValueMakeNull(actual_ctx);
+}
+
+/// Decode corpus TextDecoder input through Home's production WebKit codec
+/// registry. This keeps the harness on the same WHATWG single-byte tables as
+/// the runtime instead of maintaining a second JavaScript copy of those maps.
+fn textDecodeNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx orelse return null;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    }
+
+    const encoding = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch {
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    };
+    defer allocator.free(encoding);
+
+    if (extern_fns.JSValueGetTypedArrayType(actual_ctx, arguments[1].?, exception) == .kJSTypedArrayTypeNone) {
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    }
+    const input_object = extern_fns.JSValueToObject(actual_ctx, arguments[1].?, exception) orelse
+        return extern_fns.JSValueMakeNull(actual_ctx);
+    const input_len = extern_fns.JSObjectGetTypedArrayByteLength(actual_ctx, input_object, exception);
+    const input: []const u8 = if (input_len == 0)
+        &.{}
+    else blk: {
+        const input_ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(actual_ctx, input_object, exception) orelse
+            return extern_fns.JSValueMakeNull(actual_ctx);
+        break :blk @as([*]const u8, @ptrCast(input_ptr))[0..input_len];
+    };
+
+    const flush = argument_count < 3 or arguments[2] == null or extern_fns.JSValueToBoolean(actual_ctx, arguments[2]);
+    const fatal = argument_count >= 4 and arguments[3] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[3]);
+    const ignore_bom = argument_count >= 5 and arguments[4] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[4]);
+
+    const result = extern_fns.JSObjectMake(actual_ctx, null, null) orelse
+        return extern_fns.JSValueMakeNull(actual_ctx);
+
+    if (std.mem.eql(u8, encoding, "windows-1252")) {
+        const output_len = home_rt.strings.elementLengthCP1252IntoUTF16(input);
+        const output = allocator.alloc(u16, output_len) catch
+            return extern_fns.JSValueMakeNull(actual_ctx);
+        defer allocator.free(output);
+        const converted = home_rt.strings.copyCP1252IntoUTF16(output, input);
+        const decoded_value = makeUTF16StringValue(actual_ctx, output[0..converted.written]) catch
+            return extern_fns.JSValueMakeNull(actual_ctx);
+        setProperty(actual_ctx, result, "text", decoded_value);
+        setBoolProperty(actual_ctx, result, "sawError", false);
+    } else {
+        const codec = home_rt.jsc.TextCodec.create(encoding) orelse
+            return extern_fns.JSValueMakeNull(actual_ctx);
+        defer codec.deinit();
+        if (!ignore_bom) codec.stripBOM();
+
+        const decoded = codec.decode(input, flush, fatal);
+        defer decoded.result.deref();
+        const decoded_value = makeTextCodecStringValue(actual_ctx, allocator, decoded.result) catch
+            return extern_fns.JSValueMakeNull(actual_ctx);
+        setProperty(actual_ctx, result, "text", decoded_value);
+        setBoolProperty(actual_ctx, result, "sawError", decoded.sawError);
+    }
+    return @ptrCast(result);
+}
+
+fn makeUTF16StringValue(ctx: *JSContextRef, value: []const u16) !*JSValue {
+    if (value.len == 0) return makeStringValue(ctx, "");
+    const js_string = extern_fns.JSStringCreateWithCharacters(value.ptr, value.len) orelse
+        return error.MakeStringFailed;
+    defer extern_fns.JSStringRelease(js_string);
+    return extern_fns.JSValueMakeString(ctx, js_string) orelse error.MakeStringFailed;
+}
+
+/// Preserve embedded NULs and every UTF-16 code unit produced by WebKit.
+/// JSStringCreateWithUTF8CString cannot be used here because decoded byte 0 is
+/// U+0000 and would truncate a complete 0..255 WHATWG index probe.
+fn makeTextCodecStringValue(
+    ctx: *JSContextRef,
+    allocator: std.mem.Allocator,
+    value: home_rt.String,
+) !*JSValue {
+    if (value.isEmpty()) return makeStringValue(ctx, "");
+
+    var owned_utf16: ?[]u16 = null;
+    defer if (owned_utf16) |buffer| allocator.free(buffer);
+    const utf16 = if (value.isUTF16())
+        value.utf16()
+    else blk: {
+        const latin1 = value.latin1();
+        const buffer = try allocator.alloc(u16, latin1.len);
+        for (latin1, buffer) |byte, *code_unit| code_unit.* = byte;
+        owned_utf16 = buffer;
+        break :blk buffer;
+    };
+    return makeUTF16StringValue(ctx, utf16);
 }
 
 fn writeFileSyncNative(

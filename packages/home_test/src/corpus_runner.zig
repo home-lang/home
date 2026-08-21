@@ -69370,6 +69370,10 @@ const harness_prelude =
     \\}
     \\function __home_normalize_text_encoding_label(label) {
     \\  const raw = label === undefined ? "utf-8" : String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "").toLowerCase();
+    \\  if (typeof globalThis.__home_normalizeTextEncodingLabelNative === "function") {
+    \\    const native = globalThis.__home_normalizeTextEncodingLabelNative(raw);
+    \\    if (typeof native === "string") return native;
+    \\  }
     \\  const labels = {
     \\    "unicode-1-1-utf-8": "utf-8", "utf8": "utf-8", "utf-8": "utf-8",
     \\    "866": "ibm866", "cp866": "ibm866", "csibm866": "ibm866", "ibm866": "ibm866",
@@ -69516,8 +69520,27 @@ const harness_prelude =
     \\  function __home_text_decoder_invalid_data(encoding) {
     \\    const error = new TypeError("The encoded data was not valid for encoding " + encoding);
     \\    error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
+    \\    error.operation = "TextDecoder.decode";
+    \\    error.encoding = encoding;
     \\    return error;
     \\  }
+    \\  function __home_text_decoder_native_error(encoding, cause) {
+    \\    const detail = cause instanceof Error ? cause : new Error(String(cause || "native codec returned no result"));
+    \\    const error = new Error("TextDecoder native codec failed for " + encoding + ": " + String(detail.message || detail));
+    \\    error.name = "TextDecoderError";
+    \\    error.code = "ERR_TEXT_DECODER_NATIVE";
+    \\    error.operation = "TextDecoder.decode";
+    \\    error.encoding = encoding;
+    \\    error.cause = detail;
+    \\    const causeSummary = String(detail.name || "Error") + ": " + String(detail.message || detail);
+    \\    const causeStack = String(detail.stack || "");
+    \\    error.stack = String(error.stack || error) + "\n    at " + error.operation + " (" + encoding + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\    return error;
+    \\  }
+    \\  const __home_single_byte_text_encodings = new Set([
+    \\    "ibm866", "iso-8859-3", "iso-8859-6", "iso-8859-7", "iso-8859-8", "iso-8859-8-i",
+    \\    "koi8-u", "windows-874", "windows-1252", "windows-1253", "windows-1255", "windows-1257",
+    \\  ]);
     \\  function __home_decode_utf16_stateful(decoder, bytes, stream) {
     \\    const encoding = decoder.__home_encoding || decoder.encoding || "utf-16le";
     \\    const fatal = decoder.__home_fatal === undefined ? !!decoder.fatal : decoder.__home_fatal;
@@ -69646,6 +69669,18 @@ const harness_prelude =
     \\      return decoded;
     \\    }
     \\    if (encoding === "utf-16le" || encoding === "utf-16be") return __home_decode_utf16_stateful(this, bytes, stream);
+    \\    if (__home_single_byte_text_encodings.has(encoding) && typeof globalThis.__home_textDecodeNative === "function") {
+    \\      let result;
+    \\      try {
+    \\        result = globalThis.__home_textDecodeNative(encoding, new Uint8Array(bytes), !stream, fatal, ignoreBOM);
+    \\      } catch (cause) {
+    \\        throw __home_text_decoder_native_error(encoding, cause);
+    \\      }
+    \\      if (!result || typeof result.text !== "string") throw __home_text_decoder_native_error(encoding);
+    \\      if (fatal && result.sawError) throw __home_text_decoder_invalid_data(encoding);
+    \\      this.__home_pending_bytes = [];
+    \\      return result.text;
+    \\    }
     \\    const cjkFixture = __home_cjk_fixture_decode(this, bytes, stream);
     \\    if (cjkFixture !== null) return cjkFixture;
     \\    this.__home_pending_bytes = [];
@@ -107212,6 +107247,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
         .{ .path = "js/web/encoding/text-decoder-stream.test.ts", .passed = 39 },
+        .{ .path = "js/web/encoding/text-decoder-wpt.test.ts", .passed = 2207 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },

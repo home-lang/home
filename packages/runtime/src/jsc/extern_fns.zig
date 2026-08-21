@@ -108,6 +108,7 @@ pub extern "c" fn JSValueGetTypedArrayType(ctx: ?*JSContextRef, value: ?*JSValue
 // ---- JSString lifecycle ----------------------------------------------
 
 pub extern "c" fn JSStringCreateWithUTF8CString(utf8: [*:0]const u8) ?*JSString;
+pub extern "c" fn JSStringCreateWithCharacters(chars: [*]const u16, num_chars: usize) ?*JSString;
 pub extern "c" fn JSStringRetain(str: ?*JSString) ?*JSString;
 pub extern "c" fn JSStringRelease(str: ?*JSString) void;
 pub extern "c" fn JSStringGetLength(str: ?*JSString) usize;
