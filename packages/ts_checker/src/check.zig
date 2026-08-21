@@ -59470,6 +59470,7 @@ pub const Checker = struct {
 
     fn reportClosedCommonJsElementExportMemberAssignmentIfNeeded(self: *Checker, target: NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(target) != .member_access) return;
+        if (try self.commonJsWholeExportRejectsMemberReceiver(target)) return;
         const member = hir_mod.memberOf(self.hir, target);
         if (member.object == hir_mod.none_node_id) return;
         const key = (try self.commonJsExportMemberKey(member.object)) orelse return;
@@ -59482,12 +59483,27 @@ pub const Checker = struct {
         try self.reportPropertyDoesNotExistOnType(target, member.name, object_t);
     }
 
+    fn commonJsWholeExportRejectsMemberReceiver(self: *Checker, node: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(node) != .member_access) return false;
+        const outer = hir_mod.memberOf(self.hir, node);
+        if (outer.object == hir_mod.none_node_id or self.hir.kindOf(outer.object) != .member_access) return false;
+        const receiver = hir_mod.memberOf(self.hir, outer.object);
+        if (!self.nodeIsExactModuleExportsAccess(receiver.object)) return false;
+        const direct_key = try self.commonJsModuleExportsDirectKey();
+        const whole_t = (try self.priorCommonJsExportInitializerType(node, direct_key)) orelse return false;
+        if ((try self.lookupObjectMember(whole_t, receiver.name)) != null) return false;
+        _ = try self.checkExpression(outer.object);
+        return true;
+    }
+
     fn priorCommonJsExportInitializerType(self: *Checker, anchor: NodeId, key: MemberKey) CheckError!?TypeId {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
         const section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
         const anchor_start = self.hir.spanOf(anchor).start;
+        const direct_key = try self.commonJsModuleExportsDirectKey();
+        const wants_whole_export = key.obj_name == direct_key.obj_name and key.prop_name == direct_key.prop_name;
         var initializer_t: ?TypeId = null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.spanOf(stmt).start >= anchor_start) continue;
@@ -59495,6 +59511,10 @@ pub const Checker = struct {
             if (has_sections and self.virtualSectionStartForNode(stmt) != section) continue;
             const assignment = hir_mod.assignmentOf(self.hir, stmt);
             if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            if (wants_whole_export and self.nodeIsExactModuleExportsAccess(assignment.target)) {
+                initializer_t = try self.checkExpression(assignment.value);
+                continue;
+            }
             const candidate = (try self.commonJsExportMemberKey(assignment.target)) orelse continue;
             if (candidate.obj_name != key.obj_name or candidate.prop_name != key.prop_name) continue;
             initializer_t = try self.checkExpression(assignment.value);
@@ -101558,7 +101578,9 @@ pub const Checker = struct {
                     // signature and receives TS7009 in current tsgo.
                     const looks_like_js_ctor = self.calleeLooksLikeJsConstructor(c.callee);
                     if (!looks_like_js_ctor) {
-                        try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                        if (!self.diagnosticExists(node, TsCodes.new_expression_implicitly_any)) {
+                            try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                        }
                         // When TS7009 fires we've already told the user the
                         // construct signature is missing entirely, so TS2350
                         // ("Only a void function can be called with the 'new'
@@ -102653,6 +102675,13 @@ pub const Checker = struct {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 _ = try self.reportAmbientConstEnumMemberAccessIfNeeded(node);
+                if (try self.commonJsWholeExportRejectsMemberReceiver(node)) break :blk types.Primitive.any;
+                if (self.sourceHasCheckJsDirective() and self.nodeIsExactModuleExportsAccess(node)) {
+                    const direct_key = try self.commonJsModuleExportsDirectKey();
+                    if (try self.priorCommonJsExportInitializerType(node, direct_key)) |prior_t| {
+                        break :blk prior_t;
+                    }
+                }
                 if (self.memberAccessHasDirectImportKeywordObject(node)) {
                     const parent = self.hir.parentOf(node);
                     const is_dynamic_defer = std.mem.eql(u8, self.string_interner.get(m.name), "defer") and
@@ -102833,6 +102862,7 @@ pub const Checker = struct {
                 if (self.sourceHasCheckJsDirective() and
                     self.nodeIsThisReference(m.object) and
                     self.thisInsideCheckJsConstructorFunction(m.object) and
+                    self.assignedFunctionExpressionEffectiveThis(m.object) == null and
                     !self.memberNameIsEcmaPrivate(m.name))
                 {
                     break :blk types.Primitive.any;
@@ -135572,7 +135602,8 @@ pub const Checker = struct {
     ) CheckError!void {
         if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(assignment.target) != .member_access) return;
         const target = hir_mod.memberOf(self.hir, assignment.target);
-        if (self.commonJsExportsObjectPropertyName(target.object) == null) return;
+        if (!self.nodeIsExactModuleExportsAccess(target.object) and
+            self.commonJsExportsObjectPropertyName(target.object) == null) return;
         const value_kind = self.hir.kindOf(assignment.value);
         if (value_kind != .fn_decl and value_kind != .fn_expr) return;
         const receiver_t = try self.checkExpression(target.object);
@@ -138191,6 +138222,17 @@ pub const Checker = struct {
         if (try self.commonJsWholeExportArrowDisplayFromSource(node)) |display| {
             try self.reportPropertyDoesNotExistOnTypeText(node, name, display);
             return;
+        }
+        if (self.hir.kindOf(node) == .member_access) {
+            if (self.class_name_by_static.get(target_t)) |class_name| {
+                const member = hir_mod.memberOf(self.hir, node);
+                if (self.nodeIsExactModuleExportsAccess(member.object) and
+                    std.mem.startsWith(u8, self.string_interner.get(class_name), "(anonymous:"))
+                {
+                    try self.reportPropertyDoesNotExistOnTypeText(node, name, "typeof exports");
+                    return;
+                }
+            }
         }
         if (self.sourceHasCheckJsDirective() and self.assignmentTargetValueIsVoidExpression(node)) {
             if ((try self.commonJsExportMemberKey(node)) != null or
@@ -246345,6 +246387,55 @@ test "checker: CommonJS typedef export property conflicts with export assignment
         s,
         TsCodes.property_does_not_exist,
         "Property 'T' does not exist on type 'typeof ModuleGraphConnection'.",
+    ));
+}
+
+test "checker: anonymous CommonJS class exports use the exports symbol in missing expandos" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\module.exports = class {
+        \\  /** @param {number} p */
+        \\  constructor(p) { this.t = 12 + p; }
+        \\};
+        \\module.exports.Sub = class {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'Sub' does not exist on type 'typeof exports'.",
+    ));
+}
+
+test "checker: CommonJS sub-functions use the prior whole-export function type" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/** @param {number} p */
+        \\module.exports = function (p) {
+        \\  this.t = 12 + p;
+        \\};
+        \\module.exports.Sub = function () {
+        \\  this.instance = new module.exports(10);
+        \\};
+        \\module.exports.Sub.prototype = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'instance' does not exist on type '(p: number) => void'.",
     ));
 }
 
