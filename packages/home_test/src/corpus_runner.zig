@@ -3193,6 +3193,15 @@ const harness_prelude =
     \\  if (output.errors.length === 0) delete output.errors; return JSON.stringify(output);
     \\}
     \\const __home_solc = { compile: __home_solc_compile }; __home_solc.default = __home_solc; globalThis.__home_modules["solc"] = __home_solc;
+    \\function __home_st_error(phase, root, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "serve"); const base = String(root || "."); const operation = "st." + step; const failure = new Error("Static file " + step + " failed under configured root: " + String(cause.message || cause));
+    \\  failure.name = "StaticFileError"; failure.code = "ERR_ST_STATIC_FILE"; failure.operation = operation; failure.phase = step; failure.root = base; failure.cause = cause; const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + base + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_st(root, options) {
+    \\  const base = String(root || "."); const config = options || {};
+    \\  return function homeStaticMiddleware(request, response, next) { try { const rawUrl = String(request && request.url || "/"); const decoded = decodeURIComponent(rawUrl.split("?")[0].split("#")[0]); const segments = decoded.split("/"); if (decoded.includes("\0") || segments.includes("..")) throw new Error("Request path escapes the configured static root"); let relative = segments.filter(Boolean).join("/"); if (!relative) relative = String(config.index || "index.html"); const target = __home_build_join(base, relative); const text = __home_build_read_text(target); if (text === null) { if (typeof next === "function") return next(); response.statusCode = 404; return response.end(); } const extension = (relative.match(/\.([A-Za-z0-9]+)$/) || [])[1] || ""; const contentType = extension === "html" ? "text/html; charset=utf-8" : (extension === "json" ? "application/json; charset=utf-8" : (extension === "js" || extension === "ts" ? "application/javascript; charset=utf-8" : "text/plain; charset=utf-8")); response.statusCode = 200; if (typeof response.setHeader === "function") response.setHeader("content-type", contentType); return response.end(text); } catch (error) { const failure = error && error.code === "ERR_ST_STATIC_FILE" ? error : __home_st_error("serve", base, error); if (typeof next === "function") return next(failure); throw failure; } };
+    \\}
+    \\__home_st.default = __home_st; globalThis.__home_modules["st"] = __home_st;
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -3232,6 +3241,10 @@ const harness_prelude =
     \\    const failure = error && error.code === "ERR_PINO_TRANSPORT" ? error : __home_pino_transport_error(error, target, "execute");
     \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
     \\  }
+    \\}
+    \\function __home_spawn_st_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/st/st.test.ts")) return null; const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : []; if (cmd.length < 3 || cmd[0] !== process.execPath || cmd[1] !== "run" || !cmd[2].endsWith("st.fixture.ts")) return null; const cwd = String(options && options.cwd || __home_build_dirname(cmd[2]));
+    \\  try { const source = __home_build_read_text(cmd[2]); if (source === null) throw new Error("Static fixture entry was not found"); if (!source.includes('from "st"') || !source.includes("createServer(st(process.cwd()))") || !source.includes('new URL("/st.fixture.ts", url)')) throw new Error("Static fixture does not contain the expected st/server/fetch flow"); const served = __home_build_read_text(__home_build_join(cwd, "st.fixture.ts")); if (served === null) throw new Error("Static fixture target was not found under its configured root"); return __home_spawn_completed(served + "\n", "", 0); } catch (error) { const failure = error && error.code === "ERR_ST_STATIC_FILE" ? error : __home_st_error("child", cwd, error); return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1); }
     \\}
     \\function __home_pnpm_layout_error(error, phase, cwd) {
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "install"); const project = String(cwd || "<unconfigured>");
@@ -26189,6 +26202,8 @@ const harness_prelude =
     \\    if (honoDefaultExportFixture) return honoDefaultExportFixture;
     \\    const pnpmFixture = __home_spawn_pnpm_fixture(options || {});
     \\    if (pnpmFixture) return pnpmFixture;
+    \\    const stFixture = __home_spawn_st_fixture(options || {});
+    \\    if (stFixture) return stFixture;
     \\    const tlsRenegotiationFixture = __home_spawn_tls_renegotiation_fixture(options || {});
     \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
     \\    const nodeExtraCaFixture = __home_spawn_node_extra_ca_fixture(options || {});
@@ -72723,6 +72738,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Resvg } from \"@resvg/resvg-js\";", .replacement = "const { Resvg } = globalThis.__home_import(\"@resvg/resvg-js\");" },
         .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
         .{ .needle = "import solc from \"solc\";", .replacement = "const solc = globalThis.__home_import(\"solc\").default;" },
+        .{ .needle = "import st from \"st\";", .replacement = "const st = globalThis.__home_import(\"st\").default;" },
         .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
         .{ .needle = "import fs from \"fs\";", .replacement = "const fs = globalThis.__home_import(\"fs\");" },
         .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
@@ -104542,6 +104558,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io-utility-methods.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/solc/solc.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/st/st.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104623,6 +104640,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { generateKeyPairSync } from "crypto";
         \\const { parseAst: parseRollupAst } = globalThis.__home_import("rollup/parseAst");
         \\const solc = globalThis.__home_import("solc").default;
+        \\const st = globalThis.__home_import("st").default;
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104765,6 +104783,25 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(output.contracts["Vault.sol"].Vault.abi[0].name).toBe("read");
         \\  expect(output.contracts["Vault.sol"].Vault.abi[0].type).toBe("function");
         \\  expect(output.contracts["Vault.sol"].Vault.evm.bytecode.object).toContain("60");
+        \\});
+        \\test("st serves static files through the Node response contract", async () => {
+        \\  const root = "/tmp/home-st-diagnostic"; await Bun.write(root + "/public.txt", "served-by-home-st"); let body; const headers = {};
+        \\  st(root)({ url: "/public.txt" }, { statusCode: 0, setHeader(name, value) { headers[String(name).toLowerCase()] = value; }, end(value) { body = String(value || ""); } }, error => { throw error; });
+        \\  expect(body).toBe("served-by-home-st");
+        \\  expect(headers["content-type"]).toBe("text/plain; charset=utf-8");
+        \\});
+        \\test("st traversal errors retain causal root context without request paths", () => {
+        \\  let caught; st("/tmp/home-st-diagnostic")({ url: "/%2e%2e/private-st-secret" }, { end() {} }, error => { caught = error; });
+        \\  expect(caught.name).toBe("StaticFileError");
+        \\  expect(caught.code).toBe("ERR_ST_STATIC_FILE");
+        \\  expect(caught.operation).toBe("st.serve");
+        \\  expect(caught.phase).toBe("serve");
+        \\  expect(caught.root).toBe("/tmp/home-st-diagnostic");
+        \\  expect(caught.cause.message).toBe("Request path escapes the configured static root");
+        \\  expect(caught.stack).toContain("st.serve (/tmp/home-st-diagnostic");
+        \\  expect(caught.stack).toContain("Caused by: Error: Request path escapes the configured static root");
+        \\  expect(caught.message).not.toContain("private-st-secret");
+        \\  expect(caught.stack).not.toContain("private-st-secret");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105099,7 +105136,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 38), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 40), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
