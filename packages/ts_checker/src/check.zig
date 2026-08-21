@@ -5394,6 +5394,7 @@ pub const Checker = struct {
         try self.detectBigIntLiteralTargetDiagnostics();
         self.removeContextualReturnDiagnosticsFromDuplicateGetters();
         try self.checkUnusedTopLevelImports(stmts);
+        try self.checkUnusedTopLevelFunctions(root, stmts);
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
         self.removeJsDocObjectMethodTypeMismatchCascades();
@@ -10947,6 +10948,47 @@ pub const Checker = struct {
                 if (spec.is_type_only) continue;
                 try self.reportUnusedImportNameIfNeeded(spec_node, spec.local, spec.local_pos, &refs);
             }
+        }
+    }
+
+    fn checkUnusedTopLevelFunctions(self: *Checker, root: NodeId, stmts: []const NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_locals) return;
+        for (stmts) |raw| {
+            if (self.hir.kindOf(raw) == .export_decl) continue;
+            if (self.hir.kindOf(raw) != .fn_decl) continue;
+            if (self.virtualSectionIsDeclarationFile(raw)) continue;
+            const function = hir_mod.fnDeclOf(self.hir, raw);
+            if (function.body == hir_mod.none_node_id or function.name == hir_mod.none_node_id or
+                self.hir.kindOf(function.name) != .identifier) continue;
+            const section = self.virtualSectionStartForNode(raw);
+            if (!self.virtualSectionHasExternalModuleSyntax(root, section)) continue;
+
+            var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+            defer refs.deinit(self.gpa);
+            for (stmts) |statement| {
+                if (self.virtualSectionStartForNode(statement) != section) continue;
+                try self.collectIdentifierRefsAcrossNamespaceValueBodies(statement, &refs);
+                if (self.hir.kindOf(statement) != .export_decl) continue;
+                const export_decl = hir_mod.exportOf(self.hir, statement);
+                if (self.string_interner.get(export_decl.module).len != 0) continue;
+                for (hir_mod.exportNamed(self.hir, statement)) |specifier_node| {
+                    const specifier = hir_mod.importSpecifierOf(self.hir, specifier_node);
+                    try refs.put(self.gpa, specifier.imported, {});
+                }
+            }
+
+            const name = hir_mod.identifierOf(self.hir, function.name).name;
+            if (refs.contains(name)) continue;
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is declared but its value is never read.",
+                .{self.string_interner.get(name)},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = function.name,
+                .code = TsCodes.declared_but_not_read,
+                .message = message,
+            });
         }
     }
 
@@ -197193,6 +197235,28 @@ test "checker: noUnusedLocals emits TS6133 for unread let" {
     }
     try T.expect(has_unused);
     try T.expect(!has_used);
+}
+
+test "checker: noUnusedLocals reports unread functions in external modules" {
+    const s = try newSetup(
+        \\// @noUnusedLocals: true
+        \\// @filename: a.js
+        \\function first() {}
+        \\export function publicFn() {}
+        \\function second() {}
+        \\function namedExport() {}
+        \\export { namedExport };
+        \\function called() {}
+        \\called();
+        \\// @filename: script.js
+        \\function scriptGlobal() {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_locals = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.declared_but_not_read));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.declared_but_not_read, "'first' is declared but its value is never read."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.declared_but_not_read, "'second' is declared but its value is never read."));
 }
 
 test "checker: noUnusedLocals reports unread namespace-local class" {
