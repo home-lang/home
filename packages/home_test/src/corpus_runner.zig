@@ -46595,6 +46595,9 @@ const harness_prelude =
     \\  }
     \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to be strictly deep-equal to " + __home_format(expected)), actual, expected, operator: "deepStrictEqual" });
     \\};
+    \\__home_assert_module.notDeepStrictEqual = function(actual, expected, message) {
+    \\  if (__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " not to be strictly deep-equal to " + __home_format(expected)), actual, expected, operator: "notDeepStrictEqual" });
+    \\};
     \\__home_assert_module.deepEqual = function(actual, expected, message) {
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/assert/assert-typedarray-deepequal.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes(" should not equal ")) {
     \\    throw new __home_AssertionError({ message: message || "Expected values to be loosely deep-equal", actual, expected, operator: "deepEqual" });
@@ -57924,25 +57927,82 @@ const harness_prelude =
     \\  const value = largeResponse > 0 ? "x".repeat(largeResponse) : String(request && request.value !== undefined ? request.value : "");
     \\  Promise.resolve().then(() => callback(null, { value, value2: request && request.value2 !== undefined ? request.value2 : 0 }));
     \\}
-    \\function __home_grpc_Metadata() {
-    \\  this.__home_values = Object.create(null);
+    \\function __home_grpc_metadata_error(error, operation, key) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error(String(cause.message || cause));
+    \\  failure.code = "ERR_GRPC_METADATA"; failure.key = String(key || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Metadata." + operation + " (key " + String(key || "<none>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_metadata_key(name, operation) {
+    \\  const key = String(name || "").toLowerCase();
+    \\  if (!/^[0-9a-z_.-]+$/.test(key)) throw __home_grpc_metadata_error(new Error("Metadata key \"" + String(name || "") + "\" contains illegal characters"), operation, name);
+    \\  return key;
+    \\}
+    \\function __home_grpc_metadata_value_for_key(key, value, operation) {
+    \\  if (key.endsWith("-bin")) {
+    \\    if (!Buffer.isBuffer(value)) throw __home_grpc_metadata_error(new TypeError("Metadata value for \"" + key + "\" must be a Buffer"), operation, key);
+    \\    return value;
+    \\  }
+    \\  if (typeof value !== "string") throw __home_grpc_metadata_error(new TypeError("Metadata value for \"" + key + "\" must be a string"), operation, key);
+    \\  if (!/^[\x20-\x7e]*$/.test(value)) throw __home_grpc_metadata_error(new Error("Metadata value for \"" + key + "\" contains non-ASCII characters"), operation, key);
+    \\  return value;
+    \\}
+    \\function __home_grpc_Metadata(options) {
+    \\  this.internalRepr = new Map();
+    \\  this.__home_options = Object.assign({}, options || {});
     \\}
     \\__home_grpc_Metadata.prototype.add = function(name, value) {
-    \\  const key = String(name || "").toLowerCase();
-    \\  (this.__home_values[key] || (this.__home_values[key] = [])).push(String(value));
+    \\  const key = __home_grpc_metadata_key(name, "add");
+    \\  const stored = __home_grpc_metadata_value_for_key(key, value, "add");
+    \\  const values = this.internalRepr.get(key);
+    \\  if (values) values.push(stored); else this.internalRepr.set(key, [stored]);
     \\};
     \\__home_grpc_Metadata.prototype.get = function(name) {
-    \\  const key = String(name || "").toLowerCase();
-    \\  return (this.__home_values[key] || []).slice();
+    \\  const key = __home_grpc_metadata_key(name, "get");
+    \\  const values = this.internalRepr.get(key);
+    \\  return values ? values.slice() : [];
     \\};
     \\__home_grpc_Metadata.prototype.set = function(name, value) {
-    \\  const key = String(name || "").toLowerCase();
-    \\  this.__home_values[key] = [String(value)];
+    \\  const key = __home_grpc_metadata_key(name, "set");
+    \\  this.internalRepr.set(key, [__home_grpc_metadata_value_for_key(key, value, "set")]);
+    \\};
+    \\__home_grpc_Metadata.prototype.remove = function(name) {
+    \\  this.internalRepr.delete(__home_grpc_metadata_key(name, "remove"));
+    \\};
+    \\__home_grpc_Metadata.prototype.getMap = function() {
+    \\  const result = {};
+    \\  for (const entry of this.internalRepr) if (entry[1].length > 0) result[entry[0]] = entry[1][0];
+    \\  return result;
+    \\};
+    \\__home_grpc_Metadata.prototype.clone = function() {
+    \\  const copy = new __home_grpc_Metadata(this.__home_options);
+    \\  for (const entry of this.internalRepr) copy.internalRepr.set(entry[0], entry[1].map(value => Buffer.isBuffer(value) ? Buffer.from(value) : value));
+    \\  return copy;
     \\};
     \\__home_grpc_Metadata.prototype.merge = function(other) {
-    \\  if (!other || !other.__home_values) return this;
-    \\  for (const name of Object.keys(other.__home_values)) for (const value of other.__home_values[name]) this.add(name, value);
+    \\  if (!other || !(other.internalRepr instanceof Map)) throw __home_grpc_metadata_error(new TypeError("other must be a Metadata object"), "merge", "");
+    \\  for (const entry of other.internalRepr) for (const value of entry[1]) this.add(entry[0], value);
     \\  return this;
+    \\};
+    \\__home_grpc_Metadata.prototype.setOptions = function(options) { this.__home_options = Object.assign({}, this.__home_options, options || {}); };
+    \\__home_grpc_Metadata.prototype.getOptions = function() { return Object.assign({}, this.__home_options); };
+    \\__home_grpc_Metadata.prototype.toHttp2Headers = function() {
+    \\  const headers = {};
+    \\  for (const entry of this.internalRepr) headers[entry[0]] = entry[1].map(value => Buffer.isBuffer(value) ? value.toString("base64") : value);
+    \\  return headers;
+    \\};
+    \\__home_grpc_Metadata.fromHttp2Headers = function(headers) {
+    \\  const metadata = new __home_grpc_Metadata();
+    \\  for (const name of Object.keys(headers || {})) {
+    \\    const key = __home_grpc_metadata_key(name, "fromHttp2Headers");
+    \\    const rawValues = Array.isArray(headers[name]) ? headers[name] : [headers[name]];
+    \\    for (const rawValue of rawValues) {
+    \\      try { metadata.add(key, key.endsWith("-bin") ? Buffer.from(String(rawValue), "base64") : String(rawValue)); }
+    \\      catch (error) { throw __home_grpc_metadata_error(error, "fromHttp2Headers", key); }
+    \\    }
+    \\  }
+    \\  return metadata;
     \\};
     \\function __home_grpc_CallCredentials(generators) {
     \\  this.__home_generators = Array.isArray(generators) ? generators.slice() : [];
@@ -58678,6 +58738,7 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/logging"] = __home_grpc_logging;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/metadata"] = { Metadata: __home_grpc_Metadata };
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71252,6 +71313,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const logger: Partial<Console> =", .replacement = "const logger =" },
         .{ .needle = "const output: Array<string | string[]> = [];", .replacement = "const output = [];" },
         .{ .needle = "error(...args: string[]): void", .replacement = "error(...args)" },
+        .{ .needle = "import { Metadata, MetadataObject, MetadataValue } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
+        .{ .needle = "import http2 from \"http2\";", .replacement = "" },
+        .{ .needle = "import { range } from \"lodash\";", .replacement = "const range = (start, end) => Array.from({ length: Math.max(0, end - start) }, (_, index) => start + index);" },
+        .{ .needle = "static fromHttp2Headers(headers: http2.IncomingHttpHeaders): TestMetadata", .replacement = "static fromHttp2Headers(headers)" },
+        .{ .needle = " as TestMetadata", .replacement = "" },
+        .{ .needle = "let metadata: TestMetadata;", .replacement = "let metadata;" },
+        .{ .needle = " as Buffer", .replacement = "" },
+        .{ .needle = "const expected: MetadataObject = new Map<string, MetadataValue[]>([", .replacement = "const expected = new Map([" },
         .{ .needle = "import grpc, { sendUnaryData, ServerUnaryCall, ServiceError } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { CallCredentials } from \"@grpc/grpc-js/build/src/call-credentials\";", .replacement = "const { CallCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/call-credentials\");" },
         .{ .needle = "import { ChannelCredentials } from \"@grpc/grpc-js/build/src/channel-credentials\";", .replacement = "const { ChannelCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/channel-credentials\");" },
@@ -87721,6 +87790,27 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  grpc.setLogger(console);
         \\  grpc.setLogVerbosity(grpc.logVerbosity.DEBUG);
         \\});
+        \\
+        \\test("metadata validation and binary isolation diagnostics", () => {
+        \\  const metadata = new grpc.Metadata();
+        \\  let validationError;
+        \\  try { metadata.set("bad$key", "value"); } catch (error) { validationError = error; }
+        \\  assert.strictEqual(validationError.code, "ERR_GRPC_METADATA");
+        \\  assert.strictEqual(validationError.key, "bad$key");
+        \\  assert.ok(validationError.cause instanceof Error);
+        \\  assert.ok(String(validationError.stack).includes("Metadata.set"));
+        \\  assert.ok(String(validationError.stack).includes("bad$key"));
+        \\  assert.ok(String(validationError.stack).includes("Caused by:"));
+        \\
+        \\  const original = Buffer.from([0, 1, 2, 3]);
+        \\  metadata.add("payload-bin", original);
+        \\  const copy = metadata.clone();
+        \\  copy.get("payload-bin")[0].fill(9);
+        \\  assert.deepStrictEqual(metadata.get("payload-bin")[0], original);
+        \\  assert.notDeepStrictEqual(copy.get("payload-bin")[0], original);
+        \\  const decoded = grpc.Metadata.fromHttp2Headers(metadata.toHttp2Headers());
+        \\  assert.deepStrictEqual(decoded.get("payload-bin")[0], original);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87738,7 +87828,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102236,6 +102326,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-idle-timer.test.ts", .passed = 8 },
         .{ .path = "js/third_party/grpc-js/test-local-subchannel-pool.test.ts", .passed = 1 },
         .{ .path = "js/third_party/grpc-js/test-logging.test.ts", .passed = 2 },
+        .{ .path = "js/third_party/grpc-js/test-metadata.test.ts", .passed = 29 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
