@@ -104612,6 +104612,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/stripe/stripe.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/svelte/svelte.test.ts", .passed = 4 },
         .{ .path = "js/third_party/undici-h2/run.test.ts", .passed = 11 },
+        .{ .path = "js/third_party/webpack/webpack.test.ts", .passed = 0, .todo = 2 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
