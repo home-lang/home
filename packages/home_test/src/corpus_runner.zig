@@ -38595,8 +38595,8 @@ const harness_prelude =
     \\  return {
     \\    get now() { return Date.now(); },
     \\    uninstall() { vi.useRealTimers(); },
-    \\    tick(milliseconds) { vi.advanceTimersByTime(milliseconds); },
-    \\    tickAsync(milliseconds) { vi.advanceTimersByTime(milliseconds); return Promise.resolve(); },
+    \\    tick(milliseconds) { const delta = Number(milliseconds) || 0; if (delta < 0) { __home_fake_timers_now += delta; return; } vi.advanceTimersByTime(delta); },
+    \\    tickAsync(milliseconds) { this.tick(milliseconds); return Promise.resolve(); },
     \\    hrtime(previous) { return process.hrtime(previous); },
     \\    setTimeout(callback, delay) { return setTimeout.apply(undefined, arguments); },
     \\    setInterval(callback, delay) { return setInterval.apply(undefined, arguments); },
@@ -38637,7 +38637,9 @@ const harness_prelude =
     \\const __home_fake_timers_sinon = {
     \\  stub: __home_sinon_stub,
     \\  fake: __home_sinon_stub,
+    \\  useFakeTimers(options) { return __home_fake_timers_clock.install(options || {}); },
     \\};
+    \\globalThis.__home_modules["sinon"] = __home_fake_timers_sinon;
     \\globalThis.__home_modules["./helpers/setup-tests"] = { FakeTimers: __home_fake_timers_clock, NOOP() {}, assert: __home_fake_timers_assert, refute: __home_fake_timers_refute, sinon: __home_fake_timers_sinon, nextTickPresent: true, queueMicrotaskPresent: true, hrtimePresent: true, hrtimeBigintPresent: true, performanceNowPresent: true, performanceMarkPresent: true, setImmediatePresent: true, utilPromisify: __home_util_promisify, promisePresent: true, utilPromisifyAvailable: true, addTimerReturnsObject: true, globalObject: globalThis, GlobalDate: Date };
     \\let __home_temp_dir_counter = 0;
     \\globalThis.__home_temp_dir_roots = globalThis.__home_temp_dir_roots || Object.create(null);
@@ -66490,13 +66492,22 @@ const harness_prelude =
     \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid audience option for object payload");
     \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "aud")) throw new Error('Bad "options.audience" option. The payload already has an "aud" property.');
     \\  }
+    \\  let expiresInSeconds;
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresIn")) {
+    \\    if (typeof opts.expiresIn === "number" && Number.isInteger(opts.expiresIn) && Number.isFinite(opts.expiresIn)) expiresInSeconds = opts.expiresIn;
+    \\    else if (typeof opts.expiresIn === "string") { const match = opts.expiresIn.match(/^\s*(-?\d+)\s*(s|m)\s*$/); if (match) expiresInSeconds = Number(match[1]) * (match[2] === "m" ? 60 : 1); }
+    \\    if (expiresInSeconds === undefined) throw new Error('"expiresIn" should be a number of seconds or string representing a timespan');
+    \\    if (typeof payload === "string") throw new Error("invalid expiresIn option for string payload");
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid expiresIn option for object payload");
+    \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) throw new Error('Bad "options.expiresIn" option the payload already has an "exp" property.');
+    \\  }
+    \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "exp") && typeof payload.exp !== "number") throw new Error('"exp" should be a number of seconds');
     \\  let body = payload && typeof payload.toString === "function" && payload.constructor && payload.constructor.name === "Buffer" ? payload.toString() : payload;
     \\  if (body && typeof body === "object" && !Array.isArray(body)) {
     \\    body = opts.mutatePayload === true ? body : Object.assign({}, body); const now = Math.floor(Date.now() / 1000);
     \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
     \\    if (typeof opts.notBefore === "number") body.nbf = now + opts.notBefore;
-    \\    if (opts.expiresIn === "5m") body.exp = now + 5 * 60;
-    \\    else if (typeof opts.expiresIn === "number") body.exp = now + opts.expiresIn;
+    \\    if (expiresInSeconds !== undefined) body.exp = (typeof body.iat === "number" ? body.iat : now) + expiresInSeconds;
     \\  }
     \\  const header = Object.assign({ alg: algorithm, typ: "JWT" }, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
@@ -66509,6 +66520,7 @@ const harness_prelude =
     \\function __home_jwt_verify_failure(error, options, claim) {
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const failure = __home_jwt_error(cause.name || "JsonWebTokenError", String(cause.message || cause));
     \\  failure.code = cause.code || "ERR_JWT_VERIFY"; failure.operation = "jsonwebtoken.verify"; failure.claim = String(claim || "token"); failure.cause = cause;
+    \\  if (cause.expiredAt !== undefined) failure.expiredAt = cause.expiredAt;
     \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
     \\  failure.stack = String(failure.stack || failure) + "\n    at jsonwebtoken.verify (claim " + failure.claim + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
     \\}
@@ -66520,8 +66532,9 @@ const harness_prelude =
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
-    \\    if (payload.exp === 0) throw __home_jwt_error("TokenExpiredError", "jwt expired");
     \\    if (typeof payload.exp !== "number") throw __home_jwt_error("JsonWebTokenError", "invalid exp value");
+    \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0);
+    \\    if (!opts.ignoreExpiration && clockTimestamp >= payload.exp + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "jwt expired"); expired.expiredAt = new Date(payload.exp * 1000); throw expired; }
     \\  }
     \\  if (opts.audience !== undefined && (!payload || typeof payload !== "object" || !__home_jwt_audience_matches(payload.aud, opts.audience))) throw __home_jwt_error("JsonWebTokenError", "jwt audience invalid. expected: " + __home_jwt_audience_text(opts.audience));
     \\  return payload;
@@ -66529,7 +66542,7 @@ const harness_prelude =
     \\function __home_jwt_verify(token, secret, options, callback) {
     \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
     \\  try { const payload = __home_jwt_verify_core(token, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, payload)); return undefined; } return payload; }
-    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && error.name === "TokenExpiredError" ? "exp" : "token"); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
+    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && (error.name === "TokenExpiredError" || /(?:^|\\s)exp(?:\\s|$)/.test(String(error.message || ""))) ? "exp" : "token"); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
     \\}
     \\globalThis.__home_modules["jsonwebtoken"] = {
     \\  JsonWebTokenError: __home_jwt_JsonWebTokenError,
@@ -66538,7 +66551,7 @@ const harness_prelude =
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
     \\};
-    \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; } };
+    \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; }, sign(options) { options = options || {}; const header = options.header || { alg: "HS256" }; const payload = options.payload && typeof options.payload === "object" ? JSON.stringify(options.payload) : String(options.payload); return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payload, options.encoding) + ".home"; } };
     \\function __home_jwt_test_expect_error(actual, expected) { if (!actual && !expected) return; if (!actual || !expected || actual.message !== expected.message || actual.name !== expected.name || actual.code !== expected.code) throw new Error("jsonwebtoken sync/async errors differ"); }
     \\function __home_jwt_test_sign(payload, secret, options, callback) { const timestamp = Math.floor(Date.now() / 1000); if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && !payload.iat) payload = Object.assign({}, payload, { iat: timestamp }); __home_jwt_sign(payload, secret, options, (error, asyncToken) => { let syncError, syncToken; try { syncToken = __home_jwt_sign(payload, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && syncToken !== asyncToken) throw new Error("jsonwebtoken sync/async signatures differ"); callback(error || null, error ? undefined : syncToken); } catch (caught) { callback(caught); } }); }
     \\function __home_jwt_test_verify(token, secret, options, callback) { __home_jwt_verify(token, secret, options, (error, asyncPayload) => { let syncError, syncPayload; try { syncPayload = __home_jwt_verify(token, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && JSON.stringify(syncPayload) !== JSON.stringify(asyncPayload)) throw new Error("jsonwebtoken sync/async verification differs"); callback(error || null, error ? undefined : syncPayload); } catch (caught) { callback(caught); } }); }
@@ -76017,6 +76030,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import jws from \"jws\";",
             .replacement = "const jws = globalThis.__home_import(\"jws\");",
+        },
+        .{
+            .needle = "import sinon from \"sinon\";",
+            .replacement = "const sinon = globalThis.__home_import(\"sinon\");",
         },
         .{
             .needle = "import { generateKeyPairSync } from \"crypto\";",
@@ -103647,6 +103664,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103736,6 +103754,19 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim aud");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt audience invalid. expected: other");
         \\});
+        \\test("jsonwebtoken expiration errors retain claim and time context", async () => {
+        \\  const token = jwt.sign({ value: 1 }, "secret", { expiresIn: -1 }); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", {}, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.TokenExpiredError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("exp");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.expiredAt instanceof Date).toBe(true);
+        \\  expect(caught.cause.message).toBe("jwt expired");
+        \\  expect(caught.cause.expiredAt.getTime()).toBe(caught.expiredAt.getTime());
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim exp");
+        \\  expect(caught.stack).toContain("Caused by: TokenExpiredError: jwt expired");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103747,7 +103778,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
