@@ -102559,8 +102559,18 @@ pub const Checker = struct {
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
                 if (obj_t == types.Primitive.any) {
-                    if (self.explicitClassAnnotationName(m.object)) |class_name| {
-                        obj_t = (try self.resolveForwardClassInstanceType(m.object, class_name)) orelse obj_t;
+                    if (self.visibleActiveAnnotatedIdentifierType(m.object)) |declared_t| {
+                        if (declared_t != types.Primitive.any and
+                            declared_t != types.Primitive.unknown and
+                            declared_t != types.Primitive.none)
+                        {
+                            obj_t = declared_t;
+                        }
+                    }
+                    if (obj_t == types.Primitive.any) {
+                        if (self.explicitClassAnnotationName(m.object)) |class_name| {
+                            obj_t = (try self.resolveForwardClassInstanceType(m.object, class_name)) orelse obj_t;
+                        }
                     }
                 }
                 try self.reportPendingInstantiatedMappedCycleAtMemberAccess(node, m.object);
@@ -221147,6 +221157,22 @@ test "checker: TypeScript prototype object methods inherit constructor fields" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: annotated locals retain member contracts after any assignments" {
+    const s = try newSetup(
+        \\function inspect(source: any, flag: boolean) {
+        \\  var container: Symbol = null;
+        \\  if (flag) container = source.symbol;
+        \\  if (container && container.declAST && container.declAST.nodeType) {}
+        \\  if (container.getType()) {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs computed whole-object prototype assignment merges members" {
