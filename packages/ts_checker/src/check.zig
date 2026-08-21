@@ -7876,8 +7876,32 @@ pub const Checker = struct {
                 else
                     raw_ret_t;
                 if (self.current_generator_info) |gen| {
-                    if (!(self.engine.isAssignableTo(ret_t, gen.return_type) catch true)) {
-                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator return type.");
+                    const enclosing_generator = self.enclosingFunctionLike(node);
+                    const generator_is_async = if (enclosing_generator) |fn_node|
+                        hir_mod.fnDeclOf(self.hir, fn_node).flags.is_async
+                    else
+                        false;
+                    var return_value = r.value;
+                    var generator_ret_t = ret_t;
+                    if (generator_is_async) {
+                        if (self.promiseResolveCallArgument(r.value)) |resolved| {
+                            return_value = resolved;
+                            const resolved_t = self.hir.typeOf(resolved);
+                            if (resolved_t != types.Primitive.none) {
+                                generator_ret_t = try self.generatorReturnOperandType(resolved, resolved_t);
+                            }
+                        }
+                    }
+                    const object_literal_ok = return_value != hir_mod.none_node_id and
+                        self.hir.kindOf(return_value) == .object_literal and
+                        (self.objectLiteralAssignableToTarget(return_value, generator_ret_t, gen.return_type) catch false);
+                    if (!object_literal_ok and !(try self.checkerAssignableTo(generator_ret_t, gen.return_type))) {
+                        try self.reportTypeNotAssignable(
+                            node,
+                            self.widenLiteralType(generator_ret_t),
+                            gen.return_type,
+                            "Type is not assignable to generator return type.",
+                        );
                     }
                 } else if (self.current_constructor_instance_t) |instance_t| {
                     if (r.value != hir_mod.none_node_id and
@@ -30211,6 +30235,31 @@ pub const Checker = struct {
         }
     }
 
+    fn yieldExpressionResultIsUsed(self: *Checker, yield_node: NodeId) bool {
+        var child = yield_node;
+        var parent = self.hir.parentOf(child);
+        while (parent != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(parent)) {
+                .expression_stmt => return false,
+                .block_stmt => return false,
+                .binary_op => {
+                    const binary = hir_mod.binopOf(self.hir, parent);
+                    if (binary.op != .comma) return true;
+                    if (binary.lhs == child) return false;
+                    child = parent;
+                    parent = self.hir.parentOf(parent);
+                },
+                .unary_op => return hir_mod.unaryOf(self.hir, parent).op != .void_,
+                .for_stmt => {
+                    const for_stmt = hir_mod.forStmtOf(self.hir, parent);
+                    return child != for_stmt.init and child != for_stmt.update;
+                },
+                else => return true,
+            }
+        }
+        return false;
+    }
+
     fn inferredGeneratorTypeForFunction(
         self: *Checker,
         node: NodeId,
@@ -30272,7 +30321,28 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
-                if (y.expr != hir_mod.none_node_id) {
+                if (y.expr == hir_mod.none_node_id) {
+                    const contextual_t = self.contextualTargetTypeForExpression(node);
+                    const parent = self.hir.parentOf(node);
+                    const has_explicit_call_context = parent != hir_mod.none_node_id and
+                        (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
+                        hir_mod.callTypeArgs(self.hir, parent).len > 0;
+                    const lacks_concrete_context = if (contextual_t) |target_t|
+                        target_t == types.Primitive.none or
+                            target_t == types.Primitive.any or
+                            target_t == types.Primitive.unknown or
+                            (target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_type_parameter)
+                    else
+                        true;
+                    if (self.strict_flags.strict_null_checks and
+                        self.hir.typeOf(node) == types.Primitive.any and
+                        self.yieldExpressionResultIsUsed(node) and
+                        !has_explicit_call_context and
+                        lacks_concrete_context)
+                    {
+                        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                    }
+                } else {
                     var reported = false;
                     const parent = self.hir.parentOf(node);
                     if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .template_literal) {
@@ -30457,6 +30527,17 @@ pub const Checker = struct {
         } else {
             try self.report(fn_node, TsCodes.generator_implicit_yield_type_short, "Generator implicitly has yield type 'any'. Consider supplying a return type annotation.");
         }
+    }
+
+    fn generatorReturnOperandType(self: *Checker, operand: NodeId, fallback: TypeId) CheckError!TypeId {
+        if (self.hir.kindOf(operand) != .identifier) return fallback;
+        const name = hir_mod.identifierOf(self.hir, operand).name;
+        const declaration = self.findLocalValueDeclBeforeExpression(operand, name) orelse return fallback;
+        const kind = self.hir.kindOf(declaration);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return fallback;
+        const variable = hir_mod.varDeclOf(self.hir, declaration);
+        if (variable.type_annotation != hir_mod.none_node_id or self.hir.kindOf(variable.init) != .object_literal) return fallback;
+        return self.widenedMutableObjectLiteralInferenceType(variable.init, fallback);
     }
 
     fn reportImplicitAnyInferredReturn(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -30780,7 +30861,7 @@ pub const Checker = struct {
                 // yield itself, never TS7055/TS7025 on the enclosing
                 // function. Skip it here so we don't double-fire with
                 // the per-yield TS7057 pass.
-                if (y.expr == hir_mod.none_node_id) return false;
+                if (y.expr == hir_mod.none_node_id) return !self.strict_flags.strict_null_checks;
                 // `yield yield` ÃÂ¢ÃÂÃÂ same logic: the inner bare yield
                 // produces TS7057, the outer should NOT additionally
                 // claim the whole generator has implicit-any.
@@ -30799,6 +30880,13 @@ pub const Checker = struct {
                     // (`yield(foo)` where `foo` is undeclared) don't
                     // double-fire.
                     if (self.yieldOperandIsUnresolvedIdentifier(y.expr)) return false;
+                    return true;
+                }
+                if (y.type_node != hir_mod.none_node_id and
+                    !self.strict_flags.strict_null_checks and
+                    self.hir.kindOf(y.expr) == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, y.expr).len == 0)
+                {
                     return true;
                 }
                 if (y.type_node != hir_mod.none_node_id and
@@ -30946,6 +31034,13 @@ pub const Checker = struct {
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
                 if (y.expr == hir_mod.none_node_id) return false;
+                if (y.type_node != hir_mod.none_node_id and
+                    !self.strict_flags.strict_null_checks and
+                    self.hir.kindOf(y.expr) == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, y.expr).len == 0)
+                {
+                    return false;
+                }
                 if (self.expressionProvidesConcreteYieldType(y.expr)) return true;
                 return self.bodyHasNonAnyYield(y.expr);
             },
@@ -31630,6 +31725,7 @@ pub const Checker = struct {
 
     fn iteratorNextParameterType(self: *Checker, source_t: TypeId) CheckError!?TypeId {
         if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return null;
+        if (self.generator_type_info.get(source_t)) |generator| return generator.next_type;
         if (source_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(source_t);
         if (flags.is_union) {
@@ -201895,6 +201991,58 @@ test "checker: explicit Generator yield return and next slots are enforced" {
         if (d.code == TsCodes.type_not_assignable) found_2322 += 1;
     }
     try T.expect(found_2322 >= 5);
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'boolean'."));
+}
+
+test "checker: generator return object literals receive their protocol context" {
+    const s = try newSetup(
+        \\function* direct(): Generator<any, { value: "ok" }, any> {
+        \\  return { value: "ok" };
+        \\}
+        \\function* widened(): Generator<any, { value: "ok" }, any> {
+        \\  const result = { value: "ok" };
+        \\  return result;
+        \\}
+        \\async function* directAsync(): AsyncGenerator<any, { value: "ok" }, any> {
+        \\  return Promise.resolve({ value: "ok" });
+        \\}
+        \\async function* widenedAsync(): AsyncGenerator<any, { value: "ok" }, any> {
+        \\  const result = { value: "ok" };
+        \\  return Promise.resolve(result);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ value: string; }' is not assignable to type '{ value: \"ok\"; }'.",
+    ));
+}
+
+test "checker: generator metadata owns iterator next sent diagnostics" {
+    const s = try newSetup(
+        \\declare const source: Generator<number, void, string>;
+        \\[...source];
+        \\let [item] = source;
+        \\for (item of source) {}
+        \\function* outer(): Generator<number, void, boolean> {
+        \\  yield* source;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.iterator_next_array_spread_sent_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.iterator_next_array_destructuring_sent_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.iterator_next_for_of_sent_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.iterator_next_yield_star_sent_type));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.iterator_next_yield_star_sent_type,
+        "Cannot delegate iteration to value because the 'next' method of its iterator expects type 'string', but the containing generator will always send 'boolean'.",
+    ));
 }
 
 test "checker: generator return annotation accepts Generator or AsyncGenerator union" {
@@ -202094,6 +202242,33 @@ test "checker: nested yield without generator return annotation reports implicit
         if (d.code == TsCodes.yield_implicit_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: bare yield reports implicit any only when its result is consumed" {
+    const s = try newSetup(
+        \\declare function infer<T>(value: T): void;
+        \\function* used() { const value = yield; infer(yield); }
+        \\function* contextual() { const value: string = yield; infer<string>(yield); }
+        \\function* unused() { yield; yield, 0; for (yield; false; yield) {} void yield; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.yield_implicit_any));
+}
+
+test "checker: non-strict implicit generator yield types report on their owners" {
+    const s = try newSetup(
+        \\function* named() { yield; }
+        \\function* outer() {
+        \\  yield* (function* () { const value: string = yield; })();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generator_implicit_yield_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generator_implicit_yield_type_short));
 }
 
 test "checker: nested yield with typed operand avoids implicit any diagnostic" {
