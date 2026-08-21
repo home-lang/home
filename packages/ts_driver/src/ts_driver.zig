@@ -940,7 +940,7 @@ fn reportMissingCompilerTypeReferenceDiagnostics(
     defer threaded.deinit();
     const io = threaded.io();
     for (options.compiler_type_reference_names) |name| {
-        if (name.len == 0 or knownTypeReferenceName(options, name)) continue;
+        if (name.len == 0 or std.mem.eql(u8, name, "*") or knownTypeReferenceName(options, name)) continue;
         if (try compilerTypeReferenceExists(gpa, io, source, name)) continue;
         const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
         try c.diagnostics.append(gpa, .{
@@ -6370,6 +6370,21 @@ test "driver: missing compiler type library under custom typeRoots reports globa
         found = true;
     }
     try T.expect(found);
+}
+
+test "driver: wildcard compiler types do not report a literal missing package" {
+    const configured = [_][]const u8{"*"};
+    var c = try compileSource(T.allocator, "let x = 1;", .{
+        .no_emit = true,
+        .compiler_type_reference_names = &configured,
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2688);
+    }
 }
 
 test "driver: triple-slash type diagnostics honor suppression" {
