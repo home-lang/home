@@ -66486,7 +66486,7 @@ const harness_prelude =
     \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem")) return "rsa-primary";
     \\  if (path.endsWith("/ecdsa-public-invalid.pem")) return "ec-invalid";
     \\  if (path.endsWith("/ecdsa-private.pem") || path.endsWith("/ecdsa-public.pem")) return "ec-primary";
-    \\  if (path.endsWith("/rsa-private.pem") || path.endsWith("/rsa-public.pem")) return "rsa-issue70";
+    \\  if (path.endsWith("/rsa-private.pem") || path.endsWith("/rsa-public.pem") || path.endsWith("/rsa-public-key.pem")) return "rsa-issue70";
     \\  if (key && key.__home_pair_id) return String(key.__home_pair_id);
     \\  return __home_jwt_key_family(key) + ":" + __home_jwt_key_hash(__home_jwt_key_text(key));
     \\}
@@ -103793,6 +103793,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/option-complete.test.js", .passed = 2 },
         .{ .path = "js/third_party/jsonwebtoken/option-maxAge.test.js", .passed = 10 },
         .{ .path = "js/third_party/jsonwebtoken/option-nonce.test.js", .passed = 18 },
+        .{ .path = "js/third_party/jsonwebtoken/rsa-public-key.test.js", .passed = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
