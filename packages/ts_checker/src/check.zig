@@ -31002,6 +31002,7 @@ pub const Checker = struct {
                     const has_explicit_call_context = parent != hir_mod.none_node_id and
                         (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
                         hir_mod.callTypeArgs(self.hir, parent).len > 0;
+                    const has_binding_default_context = self.yieldHasBindingPatternDefaultContext(node);
                     const lacks_concrete_context = if (contextual_t) |target_t|
                         target_t == types.Primitive.none or
                             target_t == types.Primitive.any or
@@ -31013,6 +31014,7 @@ pub const Checker = struct {
                         self.hir.typeOf(node) == types.Primitive.any and
                         self.yieldExpressionResultIsUsed(node) and
                         !has_explicit_call_context and
+                        !has_binding_default_context and
                         lacks_concrete_context)
                     {
                         try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
@@ -31166,6 +31168,31 @@ pub const Checker = struct {
             return true;
         if (param_t == types.Primitive.none or param_t == types.Primitive.any) return true;
         return param_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param_t).is_type_parameter;
+    }
+
+    fn yieldHasBindingPatternDefaultContext(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .var_decl and parent_kind != .let_decl and parent_kind != .const_decl) return false;
+        const variable = hir_mod.varDeclOf(self.hir, parent);
+        return variable.init == node and self.bindingPatternContainsDefault(variable.name);
+    }
+
+    fn bindingPatternContainsDefault(self: *Checker, pattern: NodeId) bool {
+        if (pattern == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(pattern);
+        if (kind != .array_pattern and kind != .object_pattern) return false;
+        for (hir_mod.patternElements(self.hir, pattern)) |element| {
+            if (self.hir.kindOf(element) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, element);
+            if (parameter.default_value != hir_mod.none_node_id or
+                self.bindingPatternContainsDefault(parameter.name))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn reportImplicitAnyGeneratorYield(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -134941,7 +134968,15 @@ pub const Checker = struct {
                 if (member.is_method) {
                     try buf.appendSlice(arena, jsdoc_signature[0 .. arrow + 1]);
                     try buf.appendSlice(arena, ": ");
-                    try buf.appendSlice(arena, jsdoc_signature[arrow + 5 ..]);
+                    const return_text = std.mem.trim(u8, jsdoc_signature[arrow + 5 ..], " \t\r\n");
+                    if (constructor_has_templates and
+                        std.mem.eql(u8, return_text, "this") and
+                        !self.objectLiteralMethodOwnsJsDocTemplate(object_node, member.name))
+                    {
+                        try buf.appendSlice(arena, "any");
+                    } else {
+                        try buf.appendSlice(arena, return_text);
+                    }
                 } else {
                     try buf.appendSlice(arena, ": ");
                     try buf.appendSlice(arena, jsdoc_signature);
@@ -204185,6 +204220,7 @@ test "checker: bare yield reports implicit any only when its result is consumed"
         \\declare function infer<T>(value: T): void;
         \\function* used() { const value = yield; infer(yield); }
         \\function* contextual() { const value: string = yield; infer<string>(yield); }
+        \\function* destructuring() { const [a = 1, b = 2] = yield; }
         \\function* unused() { yield; yield, 0; for (yield; false; yield) {} void yield; }
     );
     defer destroySetup(s);
@@ -228048,6 +228084,36 @@ test "checker: Ctor.prototype assignment without JSDoc keeps structural shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: generic checkjs prototype this return degrades to any in missing-member diagnostics" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\/**
+        \\ * @class
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\function C(value) { this.value = value; }
+        \\C.prototype = {
+        \\  /** @return {this} */
+        \\  method() { this.extra = this.value; return this; }
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var matching_diagnostics: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, diagnostic.message, "{ method(): any; }") != null)
+        {
+            matching_diagnostics += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), matching_diagnostics);
 }
 
 test "checker: class prototype object assignment checks instance shape" {
