@@ -102555,6 +102555,11 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
+                if (obj_t == types.Primitive.any) {
+                    if (self.explicitClassAnnotationName(m.object)) |class_name| {
+                        obj_t = (try self.resolveForwardClassInstanceType(m.object, class_name)) orelse obj_t;
+                    }
+                }
                 try self.reportPendingInstantiatedMappedCycleAtMemberAccess(node, m.object);
                 if (try self.reportPrivateIdentifierOutsideClassBody(node, m.object, obj_t, m.name)) {
                     break :blk types.Primitive.any;
@@ -123377,6 +123382,7 @@ pub const Checker = struct {
         const sig_of = self.interner.internSignature(&[_]TypeId{string_t}, string_t, false) catch return error.OutOfMemory;
         const sig_resolved = try self.seedAnySig0(any_t);
         const sig_supported = self.interner.internSignature(&[_]TypeId{ any_t, any_t }, string_arr, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_supported, &.{ true, true });
         const m = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = sig_construct, .is_optional = false, .is_readonly = true, .is_method = true },
             .{ .name = self.string_interner.intern("of") catch return error.OutOfMemory, .type = sig_of, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -123412,7 +123418,7 @@ pub const Checker = struct {
         const string_t = types.Primitive.string_t;
         const boolean_t = types.Primitive.boolean_t;
         const string_arr = self.interner.internArrayType(self.string_interner, string_t) catch return error.OutOfMemory;
-        const sig_construct = self.interner.internSignature(&[_]TypeId{ any_t, any_t }, any_t, true) catch return error.OutOfMemory;
+        const sig_construct = self.interner.internSignature(&[_]TypeId{ string_t, any_t }, any_t, true) catch return error.OutOfMemory;
         try self.recordSignatureMinArgs(sig_construct, &.{ false, true });
         // toString(): string
         const sig_to_string = self.interner.internSignature(&[_]TypeId{}, string_t, false) catch return error.OutOfMemory;
@@ -143090,6 +143096,19 @@ pub const Checker = struct {
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(t)) |member| {
                 if (self.mappedTemplateIndexedAccessInner(member, require_type_parameter_object)) |hit| return hit;
+            }
+            return null;
+        }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            const parts = [_]TypeId{
+                conditional.check_type,
+                conditional.extends_type,
+                conditional.true_branch,
+                conditional.false_branch,
+            };
+            for (parts) |part| {
+                if (self.mappedTemplateIndexedAccessInner(part, require_type_parameter_object)) |hit| return hit;
             }
             return null;
         }
@@ -182958,6 +182977,20 @@ test "checker: Intl Segmenter constructor and locale options are optional" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: Intl Locale and DisplayNames preserve required arity" {
+    const s = try newSetup(
+        \\new Intl.Locale();
+        \\new Intl.Locale("en-US");
+        \\new Intl.DisplayNames();
+        \\new Intl.DisplayNames("en");
+        \\Intl.DisplayNames.supportedLocalesOf();
+        \\Intl.DisplayNames.supportedLocalesOf("en");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: string slice permits omitted start while substring requires it" {
@@ -226149,6 +226182,26 @@ test "checker: protected receivers retain explicit sibling subclass annotations"
     ));
 }
 
+test "checker: explicit class annotations govern members after any initializers" {
+    const s = try newSetup(
+        \\class Base { protected value = 1; }
+        \\class Left extends Base {
+        \\  read() {
+        \\    let base: Base = undefined as any;
+        \\    base.missing;
+        \\    let left: Left = undefined as any;
+        \\    left.missing;
+        \\    let right: Right = undefined as any;
+        \\    right.missing;
+        \\  }
+        \\}
+        \\class Right extends Base {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
 test "checker: TS2803 private methods are not writable" {
     const s = try newSetup(
         \\class C {
@@ -244053,6 +244106,28 @@ test "checker: getter return is contextually typed by paired setter" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'string' is not assignable to type 'number'."));
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'boolean' is not assignable to type 'number'."));
+}
+
+test "checker: accessor overrides reduce mapped conditional member types" {
+    const b = try newBoundSetup(
+        \\type Kind = "boolean" | "unknown" | "string";
+        \\type Properties<T extends { [key: string]: Kind }> = {
+        \\  readonly [K in keyof T]: T[K] extends "boolean" ? boolean : T[K] extends "string" ? string : unknown;
+        \\};
+        \\type Constructor<P extends object> = new (...args: any[]) => P;
+        \\declare function withProperties<T extends { [key: string]: Kind }, P extends object>(values: T, base: Constructor<P>): {
+        \\  new(): P & Properties<T>;
+        \\  prototype: P & Properties<T>;
+        \\};
+        \\const Base = withProperties({ x: "boolean" as const, y: "string" }, class {});
+        \\class Derived extends Base {
+        \\  get x() { return false; }
+        \\  get y() { return "value"; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_not_assignable_to_base));
 }
 
 test "checker: undefined assigned to a bare type parameter reports plain TS2322 (not TS5082)" {
