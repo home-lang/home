@@ -5371,6 +5371,7 @@ pub const Checker = struct {
         try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyCircularInference(stmts);
         try self.checkUnsupportedJsPrototypeReplacementMembers();
+        try self.checkJsDocTemplateConstructorFunctionThisDiagnostics();
         try self.checkJsDocConstructTargetAssignments();
         try self.checkIsolatedDeclarationsExpandoFunctions(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
@@ -5511,6 +5512,144 @@ pub const Checker = struct {
         }
         if (!changed) return object_t;
         return self.interner.internObjectType(members) catch return error.OutOfMemory;
+    }
+
+    fn checkJsDocTemplateConstructorFunctionThisDiagnostics(self: *Checker) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const kind = self.hir.kindOf(candidate);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                const declaration = hir_mod.varDeclOf(self.hir, candidate);
+                const fn_node = declaration.init;
+                if (fn_node == hir_mod.none_node_id) continue;
+                const fn_kind = self.hir.kindOf(fn_node);
+                if ((fn_kind != .fn_decl and fn_kind != .fn_expr) or
+                    !self.nodeOrFunctionHasJsDocConstructorTemplate(candidate, fn_node)) continue;
+                try self.reportDirectFunctionThisImplicitAny(fn_node);
+                continue;
+            }
+            if (kind != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id) continue;
+            const value_kind = self.hir.kindOf(assignment.value);
+            if ((value_kind != .fn_decl and value_kind != .fn_expr) or
+                self.hir.kindOf(assignment.target) != .member_access or
+                !self.nodeOrFunctionHasJsDocConstructorTemplate(candidate, assignment.value)) continue;
+            const target = hir_mod.memberOf(self.hir, assignment.target);
+            if (target.object == hir_mod.none_node_id or self.hir.kindOf(target.object) != .identifier) continue;
+            const receiver_name = self.string_interner.get(hir_mod.identifierOf(self.hir, target.object).name);
+            if (std.mem.eql(u8, receiver_name, "this") or
+                std.mem.eql(u8, receiver_name, "exports") or
+                std.mem.eql(u8, receiver_name, "module")) continue;
+            const receiver_text = (try self.allocQualifiedJsDocTemplateConstructorReceiverDisplay(
+                candidate,
+                assignment.target,
+                assignment.value,
+            )) orelse continue;
+            try self.reportFunctionThisMembersMissingFromTypeText(assignment.value, receiver_text);
+        }
+    }
+
+    fn allocQualifiedJsDocTemplateConstructorReceiverDisplay(
+        self: *Checker,
+        assignment_node: NodeId,
+        target_node: NodeId,
+        function_node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (self.hir.kindOf(target_node) != .member_access) return null;
+        const target = hir_mod.memberOf(self.hir, target_node);
+        const function_t = self.hir.typeOf(function_node);
+        const signature = self.firstSignatureType(function_t) orelse return null;
+        const signature_text = (try self.allocCallSignatureFnTypeName(signature, null)) orelse return null;
+        const receiver_name = self.string_interner.get(target.name);
+
+        var prototype_shape: ?[]const u8 = null;
+        const target_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target_node), " \t\r\n");
+        const assignment_start = self.hir.spanOf(assignment_node).start;
+        const section = self.virtualSectionStartForNode(assignment_node);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment or
+                self.virtualSectionStartForNode(candidate) != section or
+                self.hir.spanOf(candidate).start <= assignment_start) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.value == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.value) != .object_literal or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const prototype_target = hir_mod.memberOf(self.hir, assignment.target);
+            if (!std.mem.eql(u8, self.string_interner.get(prototype_target.name), "prototype")) continue;
+            const owner_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(prototype_target.object), " \t\r\n");
+            if (!std.mem.eql(u8, owner_text, target_text)) continue;
+            var object_t = self.hir.typeOf(assignment.value);
+            if (object_t == types.Primitive.none or object_t == types.Primitive.unknown) {
+                object_t = try self.checkExpression(assignment.value);
+            }
+            prototype_shape = try self.allocExplicitPrototypeDiagnosticTypeName(assignment.value, object_t);
+            break;
+        }
+
+        const arena = self.diag_arena.allocator();
+        if (prototype_shape) |shape| {
+            const arrow = std.mem.indexOf(u8, signature_text, ") => ") orelse return null;
+            return try std.fmt.allocPrint(
+                arena,
+                "{{ {s}: {{ {s}: {s}; prototype: {s}; }}; }}",
+                .{ receiver_name, signature_text[0 .. arrow + 1], signature_text[arrow + 5 ..], shape },
+            );
+        }
+        return try std.fmt.allocPrint(arena, "{{ {s}: {s}; }}", .{ receiver_name, signature_text });
+    }
+
+    fn reportFunctionThisMembersMissingFromTypeText(
+        self: *Checker,
+        function_node: NodeId,
+        receiver_text: []const u8,
+    ) CheckError!void {
+        const function_span = self.hir.spanOf(function_node);
+        const section = self.virtualSectionStartForNode(function_node);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .member_access) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start < function_span.start or span.end > function_span.end or
+                self.virtualSectionStartForNode(candidate) != section) continue;
+            const member = hir_mod.memberOf(self.hir, candidate);
+            if (!self.nodeIsThisReference(member.object) or
+                !self.thisReferenceBelongsToFunction(member.object, function_node) or
+                self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
+            try self.reportPropertyDoesNotExistOnTypeText(candidate, member.name, receiver_text);
+        }
+    }
+
+    fn nodeOrFunctionHasJsDocConstructorTemplate(
+        self: *Checker,
+        owner_node: NodeId,
+        function_node: NodeId,
+    ) bool {
+        if (self.fnHasJsDocClassOrConstructorTag(function_node) and
+            self.fnHasJsDocTemplateTags(function_node)) return true;
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBody(src, self.hir.spanOf(owner_node).start) orelse return false;
+        return std.mem.indexOf(u8, body, "@template") != null and
+            (std.mem.indexOf(u8, body, "@constructor") != null or
+                std.mem.indexOf(u8, body, "@class") != null);
+    }
+
+    fn reportDirectFunctionThisImplicitAny(self: *Checker, function_node: NodeId) CheckError!void {
+        const function_span = self.hir.spanOf(function_node);
+        const section = self.virtualSectionStartForNode(function_node);
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .member_access) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start < function_span.start or span.end > function_span.end or
+                self.virtualSectionStartForNode(candidate) != section) continue;
+            const member = hir_mod.memberOf(self.hir, candidate);
+            if (!self.nodeIsThisReference(member.object) or
+                !self.thisReferenceBelongsToFunction(member.object, function_node)) continue;
+            try self.reportThisImplicitlyAny(member.object);
+        }
     }
 
     fn checkJsDocConstructTargetAssignments(self: *Checker) CheckError!void {
@@ -133111,13 +133250,26 @@ pub const Checker = struct {
             if (self.checkJsPrototypeObjectLiteralUsesComputedTarget(candidate) and
                 (try self.checkJsPrototypeConstructorThisMemberType(candidate, member.name)) != null) continue;
             self.removeIndexedAccessCascadeForMissingPrototypeMember(candidate);
-            if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
+            if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) {
+                if (!try self.objectLiteralHasJsDocDiagnosticSignature(object_node)) continue;
+                self.removePriorDiagnosticForNode(candidate, TsCodes.property_does_not_exist);
+            }
             const target_text = (try self.allocExplicitPrototypeDiagnosticTypeName(object_node, object_t)) orelse {
                 try self.reportPropertyDoesNotExist(candidate, member.name);
                 continue;
             };
             try self.reportPropertyDoesNotExistOnTypeText(candidate, member.name, target_text);
         }
+    }
+
+    fn objectLiteralHasJsDocDiagnosticSignature(self: *Checker, object_node: NodeId) CheckError!bool {
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+            if ((try self.allocPrototypeMethodJsDocDiagnosticSignature(object_node, name)) != null) return true;
+        }
+        return false;
     }
 
     fn objectLiteralMethodOwnsJsDocTemplate(
@@ -133154,6 +133306,10 @@ pub const Checker = struct {
         const constructor_has_templates = self.prototypeReplacementConstructorHasTemplates(object_node);
         var has_inherited_template = false;
         for (members) |member| {
+            if ((try self.allocPrototypeMethodJsDocDiagnosticSignature(object_node, member.name)) != null) {
+                has_inherited_template = true;
+                break;
+            }
             if (member.is_method and self.interner.isSignature(member.type) and
                 (constructor_has_templates or self.generic_signature_params.contains(member.type)) and
                 !self.objectLiteralMethodOwnsJsDocTemplate(object_node, member.name))
@@ -133177,6 +133333,19 @@ pub const Checker = struct {
         for (members) |member| {
             if (!try self.appendObjectShapeMember(&buf, arena, member)) return null;
             if (member.is_optional) try buf.append(arena, '?');
+            if (try self.allocPrototypeMethodJsDocDiagnosticSignature(object_node, member.name)) |jsdoc_signature| {
+                const arrow = std.mem.indexOf(u8, jsdoc_signature, ") => ") orelse return null;
+                if (member.is_method) {
+                    try buf.appendSlice(arena, jsdoc_signature[0 .. arrow + 1]);
+                    try buf.appendSlice(arena, ": ");
+                    try buf.appendSlice(arena, jsdoc_signature[arrow + 5 ..]);
+                } else {
+                    try buf.appendSlice(arena, ": ");
+                    try buf.appendSlice(arena, jsdoc_signature);
+                }
+                try buf.appendSlice(arena, "; ");
+                continue;
+            }
             if (member.is_method and self.interner.isSignature(member.type)) {
                 const signature_text = (try self.allocCallSignatureFnTypeName(member.type, null)) orelse return null;
                 const params_start = std.mem.indexOfScalar(u8, signature_text, '(') orelse return null;
@@ -133200,6 +133369,97 @@ pub const Checker = struct {
         }
         try buf.append(arena, '}');
         return buf.items;
+    }
+
+    fn allocPrototypeMethodJsDocDiagnosticSignature(
+        self: *Checker,
+        object_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?[]const u8 {
+        const src = self.source orelse return null;
+        var function_node = hir_mod.none_node_id;
+        var matched_property = hir_mod.none_node_id;
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |property_node| {
+            if (self.hir.kindOf(property_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, property_node);
+            const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+            if (name != member_name) continue;
+            const kind = self.hir.kindOf(property.value);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
+            function_node = property.value;
+            matched_property = property_node;
+            break;
+        }
+        if (function_node == hir_mod.none_node_id) return null;
+        var body_opt = self.leadingJsDocBody(src, self.hir.spanOf(matched_property).start);
+        if (body_opt == null or !jsDocBodyHasParamOrReturnTag(body_opt.?)) {
+            body_opt = self.leadingJsDocBody(src, self.hir.spanOf(function_node).start);
+        }
+        if (body_opt == null or !jsDocBodyHasParamOrReturnTag(body_opt.?)) {
+            body_opt = self.leadingJsDocBodyForFunctionOrOwner(src, function_node);
+        }
+        if (body_opt == null or !jsDocBodyHasParamOrReturnTag(body_opt.?)) {
+            body_opt = firstJsDocParamOrReturnBody(self.nodeSourceTextOrEmpty(object_node));
+        }
+        const body = body_opt orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+        var has_typed_signature = false;
+        for (tags) |tag| {
+            if ((tag.kind == .param_tag or tag.kind == .returns_tag) and tag.type_text.len > 0) {
+                has_typed_signature = true;
+                break;
+            }
+        }
+        if (!has_typed_signature) return null;
+
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.append(arena, '(');
+        var rendered_params: usize = 0;
+        for (hir_mod.fnParams(self.hir, function_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, param_node);
+            if (parameter.name == hir_mod.none_node_id or self.hir.kindOf(parameter.name) != .identifier) continue;
+            const name = self.string_interner.get(hir_mod.identifierOf(self.hir, parameter.name).name);
+            var type_text: []const u8 = "any";
+            for (tags) |tag| {
+                if (tag.kind != .param_tag or !std.mem.eql(u8, tag.name, name) or tag.type_text.len == 0) continue;
+                type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+                break;
+            }
+            if (rendered_params != 0) try buf.appendSlice(arena, ", ");
+            try buf.appendSlice(arena, name);
+            try buf.appendSlice(arena, ": ");
+            try buf.appendSlice(arena, type_text);
+            rendered_params += 1;
+        }
+        try buf.appendSlice(arena, ") => ");
+        var return_text: []const u8 = "any";
+        for (tags) |tag| {
+            if (tag.kind != .returns_tag or tag.type_text.len == 0) continue;
+            return_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            break;
+        }
+        try buf.appendSlice(arena, return_text);
+        return buf.items;
+    }
+
+    fn jsDocBodyHasParamOrReturnTag(body: []const u8) bool {
+        return std.mem.indexOf(u8, body, "@param") != null or
+            std.mem.indexOf(u8, body, "@return") != null;
+    }
+
+    fn firstJsDocParamOrReturnBody(text: []const u8) ?[]const u8 {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, text, search_start, "/**")) |open| {
+            const body_start = open + 3;
+            const close = std.mem.indexOfPos(u8, text, body_start, "*/") orelse return null;
+            const body = text[body_start..close];
+            if (jsDocBodyHasParamOrReturnTag(body)) return body;
+            search_start = close + 2;
+        }
+        return null;
     }
 
     fn prototypeReplacementConstructorHasTemplates(self: *Checker, object_node: NodeId) bool {
@@ -217553,10 +217813,10 @@ test "checker: constructor templates stay outside separately declared prototype 
         \\ * @template {string} K
         \\ * @template V
         \\ */
-        \\function Multimap2() {
+        \\var Multimap2 = function() {
         \\  /** @type {Object<string, V>} */
         \\  this._map = {};
-        \\}
+        \\};
         \\Multimap2.prototype = {
         \\  /**
         \\   * @param {K} key
@@ -217589,6 +217849,17 @@ test "checker: constructor templates stay outside separately declared prototype 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    var prototype_shape_count: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.property_does_not_exist and
+            std.mem.eql(u8, diagnostic.message, "Property '_map' does not exist on type '{ get(key: K): V; }'."))
+        {
+            prototype_shape_count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), prototype_shape_count);
 }
 
 test "checker: unused ECMAScript #field reports TS6133; one read via `#x in v` does not" {
