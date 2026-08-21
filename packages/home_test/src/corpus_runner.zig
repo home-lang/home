@@ -62546,16 +62546,38 @@ const harness_prelude =
     \\  }
     \\  return text;
     \\}
+    \\function __home_cookie_header_error(name, value, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid Cookie header"));
+    \\  const failure = new TypeError(String(underlying.message || underlying));
+    \\  failure.code = "ERR_INVALID_HTTP_HEADER";
+    \\  failure.operation = "headers.cookie.validate";
+    \\  failure.header = String(name || "cookie").toLowerCase();
+    \\  failure.value = typeof value === "symbol" ? value.toString() : String(value);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_header_validate(name, value) {
-    \\  const key = __home_header_validate_name(name);
-    \\  return [key, __home_header_validate_value(value, key)];
+    \\  let key;
+    \\  try {
+    \\    key = __home_header_validate_name(name);
+    \\    return [key, __home_header_validate_value(value, key)];
+    \\  } catch (cause) {
+    \\    if ((key || (typeof name === "symbol" ? "" : String(name).toLowerCase())) === "cookie") throw __home_cookie_header_error(name, value, cause);
+    \\    throw cause;
+    \\  }
+    \\}
+    \\function __home_header_join_values(name, values) {
+    \\  return (values || []).join(String(name).toLowerCase() === "cookie" ? "; " : ", ");
     \\}
     \\function __home_header_entries_sorted(headers) {
     \\  const entries = [];
     \\  for (const key of Object.keys(headers.__home_headers).sort()) {
     \\    if (key === "set-cookie") continue;
     \\    const values = headers.__home_headers[key];
-    \\    entries.push([key, values.join(", ")]);
+    \\    entries.push([key, __home_header_join_values(key, values)]);
     \\  }
     \\  for (const value of headers.__home_headers["set-cookie"] || []) entries.push(["set-cookie", value]);
     \\  return entries;
@@ -62642,8 +62664,9 @@ const harness_prelude =
     \\Headers.prototype.get = function(name) {
     \\  __home_headers_assert_instance(this);
     \\  if (arguments.length < 1) throw new TypeError("get requires 1 argument");
-    \\  const values = this.__home_headers[__home_header_validate_name(name)];
-    \\  return values ? values.join(", ") : null;
+    \\  const key = __home_header_validate_name(name);
+    \\  const values = this.__home_headers[key];
+    \\  return values ? __home_header_join_values(key, values) : null;
     \\};
     \\Headers.prototype.getAll = function(name) {
     \\  __home_headers_assert_instance(this);
@@ -108788,6 +108811,41 @@ test "bootstrap runner mirrors FormData Content-Length corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors fetch cookies corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/cookies.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_header_join_values") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "=== \"cookie\" ? \"; \" : \", \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_INVALID_HTTP_HEADER\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"headers.cookie.validate\"") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 1) {
+        std.debug.print(
+            "fetch cookies corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 3), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108820,6 +108878,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/chunked-trailing.test.js", .passed = 23 },
         .{ .path = "js/web/fetch/client-fetch.test.ts", .passed = 29, .todo = 2 },
         .{ .path = "js/web/fetch/content-length.test.js", .passed = 1 },
+        .{ .path = "js/web/fetch/cookies.test.ts", .passed = 3, .todo = 1 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
