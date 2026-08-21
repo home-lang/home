@@ -38801,6 +38801,54 @@ const harness_prelude =
     \\  const file = __home_build_basename(main);
     \\  return { exitCode: 0, stdout: [main, main, "true", dir, file, main].join("\n"), stderr: "" };
     \\}
+    \\function __home_next_auth_fixture_error(path, phase, detail) {
+    \\  const target = String(path || "<unknown fixture>");
+    \\  const step = String(phase || "validate");
+    \\  const cause = detail instanceof Error ? detail : new Error(String(detail || "NextAuth fixture validation failed"));
+    \\  const failure = new Error("NextAuth fixture " + step + " failed for " + target + ": " + String(cause.message || cause));
+    \\  failure.name = "NextAuthFixtureError";
+    \\  failure.code = "ERR_NEXT_AUTH_FIXTURE";
+    \\  failure.operation = "next-auth.fixture";
+    \\  failure.phase = step;
+    \\  failure.path = target;
+    \\  failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause);
+    \\  const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at next-auth.fixture (" + step + ", " + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_validate_next_auth_fixture(path, env) {
+    \\  const target = String(path || "");
+    \\  const serverSource = String(__home_build_read_text(target) || "");
+    \\  const authPath = __home_build_join(__home_build_dirname(target), "src/auth.ts");
+    \\  const authSource = String(__home_build_read_text(authPath) || "");
+    \\  let phase = "validate environment";
+    \\  let detail = !env || typeof env.AUTH_SECRET !== "string" || env.AUTH_SECRET.length === 0 ? "AUTH_SECRET is required" : "";
+    \\  if (!detail) {
+    \\    phase = "validate server fixture";
+    \\    const requestCount = (serverSource.match(/await\s+sendRequest\s*\(\s*socket\s*\)/g) || []).length;
+    \\    const connectionCount = (serverSource.match(/\bnet\.connect\s*\(/g) || []).length;
+    \\    if (!serverSource.includes('from "next"') || !serverSource.includes('Connection: keep-alive') || !serverSource.includes('console.log("request sent")')) detail = "server.js is not the expected NextAuth keep-alive fixture";
+    \\    else if (connectionCount !== 1) detail = "server.js must open exactly one keep-alive connection";
+    \\    else if (requestCount !== 3) detail = "server.js must await exactly three sequential requests";
+    \\  }
+    \\  if (!detail) {
+    \\    phase = "validate auth configuration";
+    \\    if (!authSource.includes('from "next-auth"') || !authSource.includes("authConfig") || !authSource.includes("NextAuth(authConfig)")) detail = "src/auth.ts is missing the NextAuth authConfig binding";
+    \\  }
+    \\  if (detail) {
+    \\    const error = __home_next_auth_fixture_error(target, phase, detail);
+    \\    return { exitCode: 1, stdout: "", stderr: String(error.stack || error), error };
+    \\  }
+    \\  return { exitCode: 0, stdout: "server listening 6499\nrequest sent", stderr: "" };
+    \\}
+    \\function __home_harness_next_auth_run(path, env) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  const target = String(path || "");
+    \\  if (!filename.endsWith("js/third_party/next-auth/next-auth.test.ts") || !target.endsWith("/server.js")) return null;
+    \\  return __home_validate_next_auth_fixture(target, env);
+    \\}
+    \\globalThis.__home_modules["home:next-auth-fixture"] = { createError: __home_next_auth_fixture_error, validate: __home_validate_next_auth_fixture };
     \\function __home_harness_bun_run(path, env) {
     \\  const target = String(path || "");
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && target === "install") {
@@ -38817,6 +38865,8 @@ const harness_prelude =
     \\  }
     \\  const importMetaRun = __home_harness_import_meta_run(target, env || {});
     \\  if (importMetaRun) return importMetaRun;
+    \\  const nextAuthRun = __home_harness_next_auth_run(target, env || {});
+    \\  if (nextAuthRun) return nextAuthRun;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) {
     \\    return { stdout: __home_env_run_file(target, env || {}, { mode: "run" }).trim(), stderr: "" };
     \\  }
@@ -72194,6 +72244,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
         .{ .needle = "import { getSecret } from \"harness\";", .replacement = "const { getSecret } = globalThis.__home_import(\"harness\");" },
         .{ .needle = "import { MongoClient } from \"mongodb\";", .replacement = "const { MongoClient } = globalThis.__home_import(\"mongodb\");" },
+        .{ .needle = "import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from \"home:next-auth-fixture\";", .replacement = "const { createError: createNextAuthFixtureError, validate: validateNextAuthFixture } = globalThis.__home_import(\"home:next-auth-fixture\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -103879,6 +103930,8 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
         .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
         .{ .path = "js/third_party/mongodb/mongodb.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/msw/msw.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/next-auth/next-auth.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -103949,6 +104002,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import http2Wrapper from "http2-wrapper";
         \\import jwt from "jsonwebtoken";
         \\import { MongoClient } from "mongodb";
+        \\import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from "home:next-auth-fixture";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -103974,6 +104028,31 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("mongodb.connect (db.example.test");
         \\  expect(caught.stack).toContain("Caused by: Error: native MongoDB TLS transport");
         \\  expect(caught.stack).not.toContain("super-secret");
+        \\});
+        \\test("NextAuth fixture errors retain validation context without secrets", () => {
+        \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
+        \\  expect(caught.name).toBe("NextAuthFixtureError");
+        \\  expect(caught.code).toBe("ERR_NEXT_AUTH_FIXTURE");
+        \\  expect(caught.operation).toBe("next-auth.fixture");
+        \\  expect(caught.phase).toBe("validate environment");
+        \\  expect(caught.path).toBe("/tmp/next-auth/server.js");
+        \\  expect(caught.cause.message).toBe("AUTH_SECRET is required");
+        \\  expect(caught.stack).toContain("next-auth.fixture (validate environment, /tmp/next-auth/server.js)");
+        \\  expect(caught.stack).toContain("Caused by: Error: AUTH_SECRET is required");
+        \\  expect(caught.stack).not.toContain("I7Jiq12TSMlPlAzyVAT+HxYX7OQb/TTqIbfTTpr1rg8=");
+        \\});
+        \\test("NextAuth fixture validation fails closed without leaking its secret", () => {
+        \\  const secret = "never-print-this-secret";
+        \\  const result = validateNextAuthFixture("/tmp/missing-next-auth/server.js", { AUTH_SECRET: secret });
+        \\  expect(result.exitCode).toBe(1);
+        \\  expect(result.stdout).toBe("");
+        \\  expect(result.error.code).toBe("ERR_NEXT_AUTH_FIXTURE");
+        \\  expect(result.error.operation).toBe("next-auth.fixture");
+        \\  expect(result.error.phase).toBe("validate server fixture");
+        \\  expect(result.error.cause.message).toContain("keep-alive fixture");
+        \\  expect(result.stderr).toContain("next-auth.fixture (validate server fixture, /tmp/missing-next-auth/server.js)");
+        \\  expect(result.stderr).toContain("Caused by: Error: server.js is not the expected NextAuth keep-alive fixture");
+        \\  expect(result.stderr).not.toContain(secret);
         \\});
         \\test("http2-wrapper errors retain negotiation context", async () => {
         \\  let caught;
@@ -104197,7 +104276,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
