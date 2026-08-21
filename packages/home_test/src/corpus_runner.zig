@@ -65244,10 +65244,24 @@ const harness_prelude =
     \\  if (ports[key] === undefined) ports[key] = __home_fetch_next_client_port++;
     \\  return ports[key];
     \\}
-    \\function __home_fetch_proxy_response_text(text) {
+    \\function __home_fetch_response_framing_error(phase, text, cause, transportCode) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "Invalid HTTP/1 response framing"));
+    \\  const failure = new Error("HTTP/1 response framing failed during " + String(phase || "parse") + ": " + String(underlying.message || underlying));
+    \\  failure.code = String(transportCode || "InvalidHTTPResponse");
+    \\  failure.homeCode = "ERR_FETCH_RESPONSE_FRAMING";
+    \\  failure.operation = "fetch.http1.response.parse";
+    \\  failure.phase = String(phase || "parse");
+    \\  failure.receivedBytes = String(text || "").length;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + String(failure.receivedBytes) + " bytes, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_response_metadata(text) {
     \\  const headerEnd = text.indexOf("\r\n\r\n");
-    \\  const headerText = headerEnd === -1 ? text : text.slice(0, headerEnd);
-    \\  const body = headerEnd === -1 ? "" : text.slice(headerEnd + 4);
+    \\  if (headerEnd === -1) return null;
+    \\  const headerText = text.slice(0, headerEnd);
     \\  const lines = headerText.split("\r\n");
     \\  const statusLine = String(lines.shift() || "HTTP/1.1 200 OK").split(" ");
     \\  const status = Number(statusLine[1] || 200) || 200;
@@ -65257,7 +65271,71 @@ const harness_prelude =
     \\    if (colon === -1) continue;
     \\    headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
     \\  }
-    \\  return new Response(body, { status, headers });
+    \\  return { headerEnd, bodyOffset: headerEnd + 4, status, headers };
+    \\}
+    \\function __home_fetch_chunked_response_body(text, terminal) {
+    \\  let cursor = 0;
+    \\  let body = "";
+    \\  while (true) {
+    \\    const sizeEnd = text.indexOf("\r\n", cursor);
+    \\    if (sizeEnd === -1) {
+    \\      if (!terminal) return null;
+    \\      throw __home_fetch_response_framing_error("chunk-size", text, new Error("connection closed before a complete chunk-size line"), "ECONNRESET");
+    \\    }
+    \\    const sizeLine = text.slice(cursor, sizeEnd);
+    \\    const sizeToken = String(sizeLine.split(";", 1)[0] || "").trim();
+    \\    if (!/^[0-9a-f]+$/i.test(sizeToken)) throw __home_fetch_response_framing_error("chunk-size", text, new Error("invalid chunk size " + JSON.stringify(sizeLine)));
+    \\    const size = Number.parseInt(sizeToken, 16);
+    \\    if (!Number.isSafeInteger(size) || size < 0) throw __home_fetch_response_framing_error("chunk-size", text, new RangeError("chunk size exceeds the safe integer range"));
+    \\    cursor = sizeEnd + 2;
+    \\    if (size === 0) {
+    \\      while (true) {
+    \\        const trailerEnd = text.indexOf("\r\n", cursor);
+    \\        if (trailerEnd === -1) return { body, consumed: terminal ? text.length : cursor, trailersComplete: false };
+    \\        const trailerLine = text.slice(cursor, trailerEnd);
+    \\        cursor = trailerEnd + 2;
+    \\        if (trailerLine === "") return { body, consumed: cursor, trailersComplete: true };
+    \\      }
+    \\    }
+    \\    const chunkEnd = cursor + size;
+    \\    if (chunkEnd + 2 > text.length) {
+    \\      if (!terminal) return null;
+    \\      const transportCode = chunkEnd > text.length ? "ECONNRESET" : "InvalidHTTPResponse";
+    \\      throw __home_fetch_response_framing_error("chunk-data", text, new Error(chunkEnd > text.length ? "connection closed before the declared chunk payload completed" : "chunk payload is not followed by a complete CRLF"), transportCode);
+    \\    }
+    \\    if (text.slice(chunkEnd, chunkEnd + 2) !== "\r\n") throw __home_fetch_response_framing_error("chunk-data", text, new Error("chunk payload is not followed by CRLF"));
+    \\    body += text.slice(cursor, chunkEnd);
+    \\    cursor = chunkEnd + 2;
+    \\  }
+    \\}
+    \\function __home_fetch_response_ready(text, terminal) {
+    \\  const metadata = __home_fetch_response_metadata(text);
+    \\  if (!metadata) {
+    \\    if (terminal) throw __home_fetch_response_framing_error("headers", text, new Error("connection closed before response headers completed"), "ECONNRESET");
+    \\    return false;
+    \\  }
+    \\  const body = text.slice(metadata.bodyOffset);
+    \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
+    \\  if (transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) return __home_fetch_chunked_response_body(body, terminal) !== null;
+    \\  const contentLength = metadata.headers.get("content-length");
+    \\  if (contentLength !== null) {
+    \\    if (!/^\d+$/.test(String(contentLength).trim())) throw __home_fetch_response_framing_error("content-length", text, new Error("invalid Content-Length header"));
+    \\    return body.length >= Number(contentLength);
+    \\  }
+    \\  return !!terminal;
+    \\}
+    \\function __home_fetch_proxy_response_text(text) {
+    \\  const metadata = __home_fetch_response_metadata(text);
+    \\  if (!metadata) throw __home_fetch_response_framing_error("headers", text, new Error("response headers are incomplete"));
+    \\  let body = text.slice(metadata.bodyOffset);
+    \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
+    \\  if (transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) {
+    \\    const chunked = __home_fetch_chunked_response_body(body, true);
+    \\    body = chunked ? chunked.body : "";
+    \\  } else if (metadata.headers.get("content-length") !== null) {
+    \\    body = body.slice(0, Number(metadata.headers.get("content-length")) || 0);
+    \\  }
+    \\  return new Response(body, { status: metadata.status, headers: metadata.headers });
     \\}
     \\function __home_fetch_capped_request_headers(href, fetchOptions, body) {
     \\  const parsed = new URL(href);
@@ -65289,18 +65367,24 @@ const harness_prelude =
     \\    const socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
     \\    let responseText = "";
     \\    let settled = false;
-    \\    function finish() {
-    \\      if (settled || responseText.indexOf("\r\n\r\n") === -1) return;
-    \\      settled = true;
-    \\      resolve(__home_fetch_proxy_response_text(responseText));
+    \\    function finish(terminal) {
+    \\      if (settled) return;
+    \\      try {
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) return;
+    \\        settled = true;
+    \\        resolve(__home_fetch_proxy_response_text(responseText));
+    \\      } catch (error) {
+    \\        settled = true;
+    \\        reject(error && error.homeCode === "ERR_FETCH_RESPONSE_FRAMING" ? error : __home_fetch_response_framing_error("parse", responseText, error));
+    \\      }
     \\    }
     \\    socket.on("connect", () => socket.write(Buffer.from(requestText)));
     \\    socket.on("data", chunk => {
     \\      responseText += __home_net_latin1(__home_net_bytes(chunk));
-    \\      finish();
+    \\      finish(false);
     \\    });
-    \\    socket.on("end", finish);
-    \\    socket.on("close", finish);
+    \\    socket.on("end", () => finish(true));
+    \\    socket.on("close", () => finish(true));
     \\    socket.on("error", error => {
     \\      if (settled) return;
     \\      settled = true;
@@ -108422,6 +108506,42 @@ test "bootstrap runner mirrors Bun.file and multipart fetch upload corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors chunked response trailers corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/chunked-trailing.test.js";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "chunked response trailer integration") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_chunked_response_body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.homeCode = \"ERR_FETCH_RESPONSE_FRAMING\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.http1.response.parse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.receivedBytes") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 23 or summary.todo != 0) {
+        std.debug.print(
+            "chunked response trailer mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 23), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 23), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108451,6 +108571,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "cli/install/architecture-match.test.ts", .passed = 30 },
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
         .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
+        .{ .path = "js/web/fetch/chunked-trailing.test.js", .passed = 23 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
