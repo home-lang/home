@@ -45850,6 +45850,22 @@ pub const Checker = struct {
             }
             return;
         };
+        if (target_kind == .element_access and self.hir.kindOf(obj_node) == .identifier) {
+            const enum_name = hir_mod.identifierOf(self.hir, obj_node).name;
+            if (self.enumDeclForNameAt(enum_name, target) != null) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Index signature in type 'typeof {s}' only permits reading.",
+                    .{self.string_interner.get(enum_name)},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = target,
+                    .code = TsCodes.readonly_index_signature,
+                    .message = msg,
+                });
+                return;
+            }
+        }
         var obj_t = self.hir.typeOf(obj_node);
         if (obj_t == types.Primitive.none) return;
         if (!self.typeHasReadonlyIndexSignature(obj_t) and self.hir.kindOf(obj_node) == .identifier) {
@@ -248738,4 +248754,14 @@ test "checker: export-equals moves type-only import diagnostics to consumers" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+}
+
+test "checker: computed enum updates respect the readonly reverse index" {
+    const s = try newSetup(
+        \\enum E { A, B }
+        \\E[A]--;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_index_signature));
 }
