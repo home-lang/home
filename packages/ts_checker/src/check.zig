@@ -88717,6 +88717,7 @@ pub const Checker = struct {
             }
         }
         if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return types.Primitive.any;
+        if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
@@ -88834,6 +88835,54 @@ pub const Checker = struct {
         const init_kind = self.hir.kindOf(variable.init);
         if ((init_kind != .class_decl and init_kind != .class_expr) or
             !self.classNodeIsExpression(variable.init)) return false;
+
+        const pos = self.sliceStartPos(src, name_text);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == TsCodes.value_used_as_type_did_you_mean_typeof and diagnostic.pos == pos) return true;
+        }
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' refers to a value, but is being used as a type here. Did you mean 'typeof {s}'?",
+            .{ name_text, name_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = pos,
+            .code = TsCodes.value_used_as_type_did_you_mean_typeof,
+            .message = message,
+        });
+        return true;
+    }
+
+    fn reportJsDocRequireMemberAliasValueUsedAsType(
+        self: *Checker,
+        src: []const u8,
+        name_text: []const u8,
+    ) CheckError!bool {
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
+        const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        if (self.visibleJsDocTypedefNameExistsAt(anchor, name) or
+            self.visibleTypeDeclarationExistsAt(anchor, name)) return false;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(anchor);
+        var found = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) != section) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier or
+                hir_mod.identifierOf(self.hir, variable.name).name != name or
+                variable.init == hir_mod.none_node_id or self.hir.kindOf(variable.init) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, variable.init);
+            if (self.requireCallSpecifier(member.object) == null) continue;
+            found = true;
+            break;
+        }
+        if (!found) return false;
 
         const pos = self.sliceStartPos(src, name_text);
         for (self.diagnostics.items) |diagnostic| {
@@ -217370,9 +217419,13 @@ test "checker: checkjs optional require alias remains constructable without stri
         \\// @allowJs: true
         \\// @checkJs: true
         \\// @filename: jsdocTypeReferenceToImport.js
+        \\const C = require("./ex").C;
         \\const D = require("./ex")?.C;
+        \\/** @type {C} */
+        \\var c = new C();
         \\/** @type {D} */
         \\var d = new D();
+        \\c.start;
         \\d.start;
         \\// @filename: ex.d.ts
         \\export class C {
@@ -217381,6 +217434,7 @@ test "checker: checkjs optional require alias remains constructable without stri
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != 2351);
         try T.expect(d.code != TsCodes.property_does_not_exist);
