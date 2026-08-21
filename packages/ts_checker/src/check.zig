@@ -88832,6 +88832,16 @@ pub const Checker = struct {
         return type_pos == null or return_pos > type_pos.?;
     }
 
+    fn jsDocTypeTextComesFromTag(self: *Checker, src: []const u8, type_text: []const u8, tag: []const u8) bool {
+        const pos = self.sliceStartPos(src, type_text) orelse return false;
+        const line_start = if (std.mem.lastIndexOfScalar(u8, src[0..pos], '\n')) |newline| newline + 1 else 0;
+        const prefix = src[line_start..pos];
+        const tag_pos = std.mem.lastIndexOf(u8, prefix, tag) orelse return false;
+        const tag_end = tag_pos + tag.len;
+        return (tag_pos == 0 or !isJsDocIdentChar(prefix[tag_pos - 1])) and
+            (tag_end == prefix.len or !isJsDocIdentChar(prefix[tag_end]));
+    }
+
     fn reportJsDocThisTypeOutsideClass(self: *Checker, src: []const u8, type_text: []const u8) CheckError!void {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id) return;
@@ -91055,7 +91065,9 @@ pub const Checker = struct {
                 !self.importTypeModuleExportAssignmentHasTypeMeaning(anchor, spec_text))
             {
                 const pos = self.sliceStartPos(src, text) orelse self.hir.spanOf(anchor).start;
-                try self.reportImportTypeNotATypeAt(anchor, pos, spec_text);
+                if (!self.jsDocTypeTextComesFromTag(src, text, "@enum")) {
+                    try self.reportImportTypeNotATypeAt(anchor, pos, spec_text);
+                }
                 return types.Primitive.any;
             }
             if (space == .jsdoc_type) {
@@ -198115,6 +198127,25 @@ test "checker: TS1340 not emitted for qualified import-type member" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.module_does_not_refer_to_type);
     }
+}
+
+test "checker: JSDoc enum bare import keeps type-alias semantics" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: base.js
+        \\class Base {}
+        \\module.exports = () => new Base();
+        \\// @filename: file.js
+        \\/** @typedef {import('./base')} BaseFactory */
+        \\/** @param {import('./base')} factory */
+        \\const consume = (factory) => factory;
+        \\/** @enum {import('./base')} */
+        \\const values = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.module_does_not_refer_to_type));
 }
 
 test "checker: TS1340 suppressed when module uses export assignment" {
