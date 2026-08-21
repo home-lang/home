@@ -27787,6 +27787,21 @@ pub const Checker = struct {
         return null;
     }
 
+    fn localNamespaceValueTypeInVirtualSection(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) != section) continue;
+            const decl = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(decl) != .namespace_decl) continue;
+            if ((self.declarationName(decl) orelse continue) != name) continue;
+            if (!self.namespaceHasRuntimeValue(decl)) continue;
+            return try self.exportedValueTypeForNamespaceMember(decl, name);
+        }
+        return null;
+    }
+
     fn exportSpecifierExportedName(self: *Checker, spec_node: NodeId, sp: hir_mod.ImportSpecifierPayload) hir_mod.StringId {
         _ = self;
         _ = spec_node;
@@ -27800,6 +27815,11 @@ pub const Checker = struct {
     }
 
     fn exportedValueTypeForNamespaceMember(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!TypeId {
+        if (self.hir.kindOf(decl) == .namespace_decl) {
+            const namespace_t = try self.namespaceValueObjectType(decl);
+            try self.registerEnumNamespaceDisplayName(namespace_t, name);
+            return namespace_t;
+        }
         if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
             if (self.class_static_type_by_node.get(decl)) |static_t| return static_t;
             if (self.class_static_types.get(name)) |static_t| return static_t;
@@ -58270,6 +58290,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local != local_name) continue;
+                if (try self.localNamespaceValueTypeInVirtualSection(stmt, local_name)) |namespace_t| return namespace_t;
                 if (std.mem.startsWith(u8, spec_text, ".")) {
                     if (try self.virtualRelativeModuleExportValueType(anchor, imp.module, sp.imported)) |t| return t;
                     if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
@@ -249300,6 +249321,49 @@ test "checker: parity residual cluster keeps JSDoc enum value objects open" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: namespace merge conflicts preserve namespace callability" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /type-source.ts
+        \\function TypeA() {}
+        \\export type { TypeA };
+        \\// @filename: /type-merge.ts
+        \\import { TypeA } from "./type-source";
+        \\namespace TypeA { export const displayName = "TypeA"; }
+        \\export { TypeA };
+        \\// @filename: /type-use.ts
+        \\import { TypeA } from "./type-merge";
+        \\TypeA();
+        \\// @filename: /value-source.ts
+        \\function ValueA() {}
+        \\export { ValueA };
+        \\// @filename: /value-merge.ts
+        \\import { ValueA } from "./value-source";
+        \\type ValueA = 0;
+        \\export { ValueA };
+        \\// @filename: /value-use.ts
+        \\import { ValueA } from "./value-merge";
+        \\namespace ValueA { export const displayName = "ValueA"; }
+        \\ValueA();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.not_callable));
+    var saw_type_namespace = false;
+    var saw_value_namespace = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.not_callable) continue;
+        for (diagnostic.chain) |entry| {
+            if (entry.code != TsCodes.type_has_no_call_signatures) continue;
+            if (std.mem.eql(u8, entry.message, "Type 'typeof TypeA' has no call signatures.")) saw_type_namespace = true;
+            if (std.mem.eql(u8, entry.message, "Type 'typeof ValueA' has no call signatures.")) saw_value_namespace = true;
+        }
+    }
+    try T.expect(saw_type_namespace);
+    try T.expect(saw_value_namespace);
 }
 
 test "checker: type-only namespace value member used as a type reports TS2749" {
