@@ -32380,7 +32380,13 @@ const harness_prelude =
     \\    if (!desc || typeof desc.value !== "function") continue;
     \\    target[key] = function() {
     \\      const args = arguments;
-    \\      if (!__home_is_thenable(value)) __home_fail("Expected promise to resolve");
+    \\      if (!__home_is_thenable(value)) {
+    \\        if (key === "pass") {
+    \\          __home_make_expectation(value, isNot, label)[key].apply(undefined, args);
+    \\          return;
+    \\        }
+    \\        __home_fail("Expected promise to resolve");
+    \\      }
     \\      const state = __home_promise_states.get(value);
     \\      if (state) {
     \\        if (state.status === "rejected") __home_fail("Expected promise to resolve");
@@ -58251,6 +58257,18 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_http_fetch_response_headers(headers) {
+    \\  const out = __home_http_response_headers(headers);
+    \\  const raw = String(out.get("content-type") || "");
+    \\  if (raw !== "") {
+    \\    const parts = raw.split(";").map(value => String(value).trim()).filter(Boolean);
+    \\    const mediaType = String(parts.shift() || "").toLowerCase();
+    \\    const hasCharset = parts.some(value => /^charset\s*=/i.test(value));
+    \\    if (!hasCharset && ["application/json", "application/javascript", "text/css", "text/html", "text/javascript", "text/plain"].includes(mediaType)) parts.push("charset=utf-8");
+    \\    out.set("content-type", [mediaType].concat(parts).join(";"));
+    \\  }
+    \\  return out;
+    \\}
     \\function __home_http_body_text(chunks) {
     \\  return chunks.map(chunk => {
     \\    if (chunk === undefined || chunk === null) return "";
@@ -58259,6 +58277,14 @@ const harness_prelude =
     \\    if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
     \\    return String(chunk);
     \\  }).join("");
+    \\}
+    \\function __home_http_body_bytes(chunks) {
+    \\  const bytes = [];
+    \\  for (const chunk of chunks || []) {
+    \\    const part = __home_body_bytes_sync(chunk);
+    \\    for (let index = 0; index < part.length; index++) bytes.push(part[index] & 0xff);
+    \\  }
+    \\  return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
     \\}
     \\function __home_http_body_event_chunk(chunk) {
     \\  if (chunk === undefined || chunk === null) return chunk;
@@ -58386,6 +58412,11 @@ const harness_prelude =
     \\              __home_raw_body: request && request.__home_raw_body,
     \\              __home_web_request: request,
     \\              resume() { this.__home_resumed = true; return this; },
+    \\              pipe(destination) {
+    \\                this.on("data", chunk => { if (destination && typeof destination.write === "function") destination.write(chunk); });
+    \\                this.on("end", () => { if (destination && typeof destination.end === "function") destination.end(); });
+    \\                return destination;
+    \\              },
     \\            });
     \\            const responseEvents = __home_http_event_target();
     \\            const responseChunks = [];
@@ -58409,12 +58440,17 @@ const harness_prelude =
     \\              end(chunk, encoding, callback) {
     \\                const args = __home_http_end_arguments(chunk, encoding, callback);
     \\                if (args.chunk !== undefined) this.write(args.chunk, args.encoding);
-    \\                resolve(new Response(__home_http_body_text(responseChunks), { status: this.statusCode, headers: __home_http_response_headers(this.headers) }));
+    \\                resolve(new Response(__home_http_body_bytes(responseChunks), { status: this.statusCode, headers: __home_http_fetch_response_headers(this.headers) }));
     \\                __home_http_finish_outgoing(this, args.callback);
     \\                return this;
     \\              },
     \\            });
     \\            self.__home_handler(serverRequest, serverResponse);
+    \\            const requestBody = request && request.__home_raw_body !== undefined ? request.__home_raw_body : request && request.body;
+    \\            Promise.resolve(__home_body_bytes(requestBody)).then(bytes => {
+    \\              if (bytes && bytes.length > 0) serverRequest.emit("data", typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes));
+    \\              serverRequest.emit("end");
+    \\            }, error => serverRequest.emit("error", error));
     \\          });
     \\        },
     \\      };
@@ -58441,6 +58477,12 @@ const harness_prelude =
     \\    },
     \\    closeIdleConnections() {
     \\      return undefined;
+    \\    },
+    \\    [Symbol.dispose]() {
+    \\      this.close();
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      return new Promise(resolve => this.close(resolve));
     \\    },
     \\  });
     \\  return server;
@@ -64184,7 +64226,7 @@ const harness_prelude =
     \\  try {
     \\    Object.defineProperty(reader, "releaseLock", { configurable: true, writable: true, value: function() {
     \\      try { return releaseLock.apply(this, arguments); }
-    \\      finally { try { body.__home_logically_locked = false; } catch (error) {} }
+    \\      finally { try { body.__home_logically_locked = false; body.__home_external_reader_lock = false; } catch (error) {} }
     \\    } });
     \\  } catch (error) {}
     \\  return reader;
@@ -64195,7 +64237,10 @@ const harness_prelude =
     \\  try {
     \\    Object.defineProperty(body, "__home_body_reader_wrapped", { configurable: true, value: true });
     \\    Object.defineProperty(body, "getReader", { configurable: true, writable: true, value: function() {
-    \\      if (!globalThis.__home_suppress_body_used) __home_mark_body_used(this);
+    \\      if (!globalThis.__home_suppress_body_used) {
+    \\        __home_mark_body_used(this);
+    \\        try { Object.defineProperty(this, "__home_external_reader_lock", { configurable: true, writable: true, value: true }); } catch (error) {}
+    \\      }
     \\      return __home_track_body_reader(this, getReader.apply(this, arguments));
     \\    } });
     \\  } catch (error) {}
@@ -64226,7 +64271,10 @@ const harness_prelude =
     \\  __home_mark_body_used(body);
     \\  if (body.locked) return;
     \\  try {
-    \\    const reader = body.getReader();
+    \\    const previousSuppressBodyUsed = !!globalThis.__home_suppress_body_used;
+    \\    globalThis.__home_suppress_body_used = true;
+    \\    let reader;
+    \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
     \\    Object.defineProperty(body, "__home_consumption_reader", { configurable: true, value: reader });
     \\  } catch (error) {}
     \\}
@@ -64389,7 +64437,10 @@ const harness_prelude =
     \\}
     \\function __home_body_bytes_via_reader(body) {
     \\  if (body && typeof body.getReader === "function") {
-    \\    const reader = body.getReader();
+    \\    const previousSuppressBodyUsed = !!globalThis.__home_suppress_body_used;
+    \\    globalThis.__home_suppress_body_used = true;
+    \\    let reader;
+    \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
     \\    const chunks = [];
     \\    function pump() {
     \\      return __home_then(reader.read(), result => {
@@ -64436,7 +64487,10 @@ const harness_prelude =
     \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) { __home_lock_captured_body(body); return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body))); }
     \\  if (__home_stream_chunks_replayable(body)) { __home_lock_captured_body(body); return Promise.resolve(__home_body_bytes_sync(body)); }
     \\  if (body && typeof body.getReader === "function") {
-    \\    const reader = body.getReader();
+    \\    const previousSuppressBodyUsed = !!globalThis.__home_suppress_body_used;
+    \\    globalThis.__home_suppress_body_used = true;
+    \\    let reader;
+    \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
     \\    const chunks = [];
     \\    function pump() {
     \\      return __home_then(reader.read(), result => {
@@ -64519,6 +64573,16 @@ const harness_prelude =
     \\    return String(value || "").replace(/\+/g, " ");
     \\  }
     \\}
+    \\function __home_multipart_header_param(value) {
+    \\  const decoded = __home_formdata_param(value);
+    \\  const bytes = [];
+    \\  for (let index = 0; index < decoded.length; index++) {
+    \\    const code = decoded.charCodeAt(index);
+    \\    if (code > 0xff) return decoded;
+    \\    bytes.push(code);
+    \\  }
+    \\  return __home_utf8_bytes_to_text(bytes);
+    \\}
     \\function __home_latin1_text(bytes) {
     \\  let text = "";
     \\  for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i] & 0xff);
@@ -64540,12 +64604,26 @@ const harness_prelude =
     \\  }
     \\  return type.toLowerCase();
     \\}
+    \\function __home_formdata_parse_error(phase, contentType, cause) {
+    \\  const step = String(phase || "multipart");
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Malformed FormData body"));
+    \\  const failure = new TypeError(step === "final-boundary" ? "FormData parse error missing final boundary" : "FormData parse error: " + String(underlying.message || underlying));
+    \\  failure.code = "ERR_FORM_DATA_PARSE";
+    \\  failure.operation = "body.formData.parse";
+    \\  failure.phase = step;
+    \\  failure.contentType = String(contentType || "");
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_parse_multipart_formdata_bytes(bytes, contentType) {
     \\  const boundary = __home_multipart_boundary(contentType);
-    \\  if (!boundary) throw new TypeError("Failed to parse body as FormData: missing boundary in " + String(contentType || ""));
+    \\  if (!boundary) throw __home_formdata_parse_error("boundary-header", contentType, new TypeError("missing boundary in Content-Type"));
     \\  const marker = "--" + boundary;
     \\  const text = __home_latin1_text(bytes);
-    \\  if (String(text).indexOf(marker) === -1) throw new TypeError("Failed to parse body as FormData: boundary not found");
+    \\  if (String(text).indexOf(marker) === -1 || String(text).indexOf(marker + "--") === -1) throw __home_formdata_parse_error("final-boundary", contentType, new TypeError("multipart body ended before the closing boundary"));
     \\  const form = new FormData();
     \\  const parts = String(text).split(marker);
     \\  for (const rawPart of parts) {
@@ -64563,13 +64641,13 @@ const harness_prelude =
     \\    const disposition = (headerText.match(/^content-disposition:\s*([^\r\n]+)/im) || [])[1] || "";
     \\    const nameMatch = disposition.match(/(?:^|;)\s*name=(?:"([^"]*)"|([^;]*))/i);
     \\    if (!nameMatch) continue;
-    \\    const name = __home_formdata_param(nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]);
+    \\    const name = __home_multipart_header_param(nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]);
     \\    let filenameMatch = disposition.match(/(?:^|;)\s*filename=(?:"([^"]*)"|([^;]*))/i);
     \\    const filenameStarMatch = disposition.match(/(?:^|;)\s*filename\*UTF-8''([^;]*)/i);
     \\    if (!filenameMatch && filenameStarMatch) filenameMatch = [filenameStarMatch[0], filenameStarMatch[1], undefined];
     \\    if (filenameMatch) {
     \\      const type = __home_multipart_file_type(headerText);
-    \\      const filename = __home_formdata_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
+    \\      const filename = __home_multipart_header_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
     \\      const file = new File([new Uint8Array(bodyBytes)], filename, { type });
     \\      if (type && file.type !== type) file.type = type;
     \\      form.append(name, file);
@@ -64613,18 +64691,30 @@ const harness_prelude =
     \\  while (value && Object.prototype.hasOwnProperty.call(value, "__home_body_value")) value = value.__home_body_value;
     \\  return value && Array.isArray(value.__home_blob_sparse_parts) ? value : null;
     \\}
+    \\function __home_body_state_error(owner, operation) {
+    \\  const locked = !!(owner && owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner);
+    \\  const phase = locked ? "locked" : "disturbed";
+    \\  const failure = new TypeError(locked ? "ReadableStream is locked" : "Body already used");
+    \\  failure.code = "ERR_BODY_STREAM_STATE";
+    \\  failure.operation = String(operation || "body.consume");
+    \\  failure.phase = phase;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  return failure;
+    \\}
     \\function __home_consume_body(owner, operation, enforceSyntheticLimit, limitMessage) {
-    \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\  if ((owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner) || owner.bodyUsed) return Promise.reject(__home_body_state_error(owner, operation));
     \\  if (owner.body == null) return Promise.resolve([]);
     \\  owner.bodyUsed = true;
+    \\  try { Object.defineProperty(owner.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\  const sparseBlob = __home_sparse_body_blob(owner.body);
     \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.bytes", enforceSyntheticLimit !== false, limitMessage || "Out of memory");
     \\  return __home_body_bytes(owner.body);
     \\}
     \\function __home_consume_body_text(owner, operation, limitMessage) {
-    \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\  if ((owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner) || owner.bodyUsed) return Promise.reject(__home_body_state_error(owner, operation));
     \\  if (owner.body == null) return Promise.resolve("");
     \\  owner.bodyUsed = true;
+    \\  try { Object.defineProperty(owner.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\  const sparseBlob = __home_sparse_body_blob(owner.body);
     \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.text", true, limitMessage || "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_utf8_bytes_to_text(bytes));
     \\  return __home_body_text(owner.body);
@@ -64733,6 +64823,13 @@ const harness_prelude =
     \\function __home_consume_response_bytes(response, operation, enforceSyntheticLimit, limitMessage) {
     \\  return __home_consume_body(response, operation || "response.bytes", enforceSyntheticLimit, limitMessage).then(bytes => __home_unframe_response_body(response.headers, bytes));
     \\}
+    \\function __home_response_blob_type(headers) {
+    \\  const raw = headers && typeof headers.get === "function" ? String(headers.get("content-type") || "") : "";
+    \\  if (raw === "") return "";
+    \\  const parts = raw.split(";").map(value => String(value).trim().toLowerCase()).filter(Boolean);
+    \\  const mediaType = parts.shift() || "";
+    \\  return [mediaType].concat(parts).join(";");
+    \\}
     \\function __home_static_response_cached_value(response, method) {
     \\  const source = response && response.__home_static_response_source;
     \\  if (!source) return { found: false, value: undefined };
@@ -64744,7 +64841,7 @@ const harness_prelude =
     \\  let value;
     \\  if (method === "arrayBuffer") value = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : new Uint8Array(bytes).buffer;
     \\  else if (method === "blob") {
-    \\    const type = source.headers.get("content-type") || "";
+    \\    const type = __home_response_blob_type(source.headers);
     \\    value = direct ? __home_typed_blob_from_view(bytes, type, true) : new Blob([bytes], { type });
     \\    value.__home_content_type = type;
     \\  }
@@ -64783,8 +64880,9 @@ const harness_prelude =
     \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
-    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    if ((this.body && this.body.locked && !this.body.__home_consumed_by_owner) || this.bodyUsed) return Promise.reject(__home_body_state_error(this, "response.arrayBuffer"));
     \\    this.bodyUsed = true;
+    \\    try { Object.defineProperty(this.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\    return Promise.resolve(new Uint8Array(direct).buffer);
     \\  }
     \\  return __home_consume_response_bytes(this, "response.arrayBuffer", false, "Out of memory").then(bytes => new Uint8Array(bytes).buffer);
@@ -64792,11 +64890,12 @@ const harness_prelude =
     \\Response.prototype.blob = function() {
     \\  const cached = __home_consume_static_response(this, "blob");
     \\  if (cached) return cached;
-    \\  const type = this.headers.get("content-type") || "";
+    \\  const type = __home_response_blob_type(this.headers);
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
-    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    if ((this.body && this.body.locked && !this.body.__home_consumed_by_owner) || this.bodyUsed) return Promise.reject(__home_body_state_error(this, "response.blob"));
     \\    this.bodyUsed = true;
+    \\    try { Object.defineProperty(this.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\    return Promise.resolve(__home_typed_blob_from_view(direct, type));
     \\  }
     \\  return __home_consume_response_bytes(this).then(bytes => {
@@ -64806,7 +64905,7 @@ const harness_prelude =
     \\  });
     \\};
     \\function __home_response_blob_sync(response) {
-    \\  const type = response && response.headers && typeof response.headers.get === "function" ? response.headers.get("content-type") || "" : "";
+    \\  const type = __home_response_blob_type(response && response.headers);
     \\  const direct = __home_response_direct_body_view(response);
     \\  if (direct) return __home_typed_blob_from_view(direct, type);
     \\  const bytes = __home_body_bytes_sync(response && response.body);
@@ -64819,8 +64918,9 @@ const harness_prelude =
     \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
     \\  if (direct && String(this.headers.get("content-encoding") || "") === "") {
-    \\    if (this.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    if ((this.body && this.body.locked && !this.body.__home_consumed_by_owner) || this.bodyUsed) return Promise.reject(__home_body_state_error(this, "response.bytes"));
     \\    this.bodyUsed = true;
+    \\    try { Object.defineProperty(this.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\    return Promise.resolve(new Uint8Array(direct));
     \\  }
     \\  return __home_consume_response_bytes(this, "response.bytes", true, "Out of memory").then(bytes => new Uint8Array(bytes));
@@ -65108,6 +65208,47 @@ const harness_prelude =
     \\  };
     \\  __home_promise_states.set(thenable, { status: error ? "rejected" : "fulfilled", value: error || response });
     \\  return thenable;
+    \\}
+    \\function __home_fetch_input_error(input, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid fetch input"));
+    \\  const failure = new TypeError("fetch input validation failed during " + String(phase || "validate") + ": " + String(underlying.message || underlying));
+    \\  failure.code = "ERR_FETCH_INPUT";
+    \\  failure.operation = "fetch.request.validate";
+    \\  failure.phase = String(phase || "validate");
+    \\  failure.input = input === undefined ? null : String(input);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_connection_error(href, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "No matching local HTTP server"));
+    \\  let endpoint = String(href || "");
+    \\  try { endpoint = new URL(endpoint).origin; } catch (error) {}
+    \\  const failure = new Error("Unable to connect. Is the computer able to access the url?");
+    \\  failure.code = "ERR_FETCH_CONNECT";
+    \\  failure.operation = "fetch.connect";
+    \\  failure.endpoint = endpoint;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_redirect_error(request, response) {
+    \\  const status = Number(response && response.status) || 0;
+    \\  const url = String(request && request.url || "");
+    \\  const cause = new Error("redirect mode is set to error");
+    \\  const failure = new Error("UnexpectedRedirect: fetch rejected HTTP " + String(status) + " from " + url);
+    \\  failure.name = "UnexpectedRedirect";
+    \\  failure.code = "ERR_FETCH_REDIRECT";
+    \\  failure.operation = "fetch.redirect";
+    \\  failure.status = status;
+    \\  failure.url = url;
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (HTTP " + String(status) + ", " + url + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
     \\}
     \\function __home_fetch_missing_file_error(fetchOptions) {
     \\  const candidates = [];
@@ -65495,9 +65636,12 @@ const harness_prelude =
     \\    socket.on("close", () => reject(new Error("closed unexpectedly")));
     \\  });
     \\}
-    \\function fetch(input, init) {
+    \\function fetch(input) {
+    \\  const init = arguments[1];
+    \\  if (arguments.length === 0) return __home_fetch_thenable(null, __home_fetch_input_error(undefined, "input", new TypeError("fetch requires an input URL or Request")));
     \\  if (typeof Request === "function" && input instanceof Request && input.body !== null && (input.bodyUsed || input.body.locked)) throw new TypeError("Body already used");
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
+    \\  if (/^ftp:/i.test(href)) return __home_fetch_thenable(null, __home_fetch_input_error(href, "protocol", new TypeError("Unsupported URL protocol: ftp:")));
     \\  const fetchOptions = (() => {
     \\    if (typeof Request === "function" && input instanceof Request) {
     \\      const options = Object.assign({}, init || {});
@@ -65597,7 +65741,7 @@ const harness_prelude =
     \\      return __home_fetch_thenable(new Response(tlsBody, { status: 200 }), null);
     \\    }
     \\  }
-    \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, __home_fetch_connection_error(href, new Error("No active local HTTP server matched the requested origin")));
     \\  if (handle.__home_self_signed && (!fetchOptions.tls || fetchOptions.tls.rejectUnauthorized !== false)) {
     \\    return __home_fetch_thenable(null, __home_tls_renegotiation_error());
     \\  }
@@ -65656,6 +65800,7 @@ const harness_prelude =
     \\        requestInit = Object.assign({}, fetchOptions, { body: compressedBody, headers: compressedHeaders });
     \\      }
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
+    \\      request.__home_raw_body = fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null;
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
     \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
@@ -65697,10 +65842,14 @@ const harness_prelude =
     \\        if (response.headers && !usesHttp3 && response.headers.get("alt-svc") !== null) globalThis.__home_fetch_h3_state.altSvc[origin] = true;
     \\        response.url = request.url;
     \\        response.redirected = false;
+    \\        if (redirectMode === "error" && response.status >= 300 && response.status < 400) throw __home_fetch_redirect_error(request, response);
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
     \\          const redirectedUrl = new URL(location, request.url).href;
-    \\          const redirectedRequest = new Request(redirectedUrl, { method: request.method, headers: request.headers, redirect: "manual" });
+    \\          const redirectedInit = { method: request.method, headers: request.headers, redirect: "manual" };
+    \\          if (request.method !== "GET" && request.method !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
+    \\          const redirectedRequest = new Request(redirectedUrl, redirectedInit);
+    \\          redirectedRequest.__home_raw_body = request.__home_raw_body;
     \\          const redirectedResponse = handle.fetch(redirectedRequest, handle.server);
     \\          return Promise.resolve(redirectedResponse).then(nextResult => {
     \\            const nextResponse = nextResult instanceof Response ? nextResult : new Response(nextResult);
@@ -71070,7 +71219,10 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.getReader === "function" && !ReadableStream.prototype.getReader.__home_release_lock_compatible) {
     \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
     \\  ReadableStream.prototype.getReader = function() {
-    \\    if (this && !globalThis.__home_suppress_body_used) __home_mark_body_used(this);
+    \\    if (this && !globalThis.__home_suppress_body_used) {
+    \\      __home_mark_body_used(this);
+    \\      try { Object.defineProperty(this, "__home_external_reader_lock", { configurable: true, writable: true, value: true }); } catch (error) {}
+    \\    }
     \\    const stream = this;
     \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
     \\    if (reader) {
@@ -71090,7 +71242,7 @@ const harness_prelude =
     \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
     \\      reader.releaseLock = function() {
     \\        try { return releaseLock.apply(this, arguments); }
-    \\        finally { try { stream.__home_logically_locked = false; } catch (error) {} }
+    \\        finally { try { stream.__home_logically_locked = false; stream.__home_external_reader_lock = false; } catch (error) {} }
     \\      };
     \\    }
     \\    return reader;
@@ -108542,6 +108694,45 @@ test "bootstrap runner mirrors chunked response trailers corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors client fetch corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/client-fetch.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function fetch(input) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_INPUT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_CONNECT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_REDIRECT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FORM_DATA_PARSE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_BODY_STREAM_STATE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "[Symbol.asyncDispose]()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_body_bytes") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 29 or summary.todo != 2) {
+        std.debug.print(
+            "client fetch corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 29), summary.failed, summary.todo, @as(usize, 2), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 29), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108572,6 +108763,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
         .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
         .{ .path = "js/web/fetch/chunked-trailing.test.js", .passed = 23 },
+        .{ .path = "js/web/fetch/client-fetch.test.ts", .passed = 29, .todo = 2 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
