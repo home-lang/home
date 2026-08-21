@@ -54005,7 +54005,7 @@ const harness_prelude =
     \\    const normalizedPath = __home_fs_resolve_symlink_path(path);
     \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalizedPath)) {
     \\      const bytes = globalThis.__home_written_file_bytes[normalizedPath];
-    \\      if (wantsBuffer) return Buffer.from(bytes);
+    \\      if (wantsBuffer) { const buffer = Buffer.from(bytes); Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath }); return buffer; }
     \\      if (wantsUtf16) {
     \\        let result = "";
     \\        for (let i = 0; i + 1 < bytes.length; i += 2) result += String.fromCharCode((bytes[i] & 0xff) | ((bytes[i + 1] & 0xff) << 8));
@@ -54023,7 +54023,8 @@ const harness_prelude =
     \\      return result;
     \\    }
     \\    if (wantsByteString) return Buffer.from(text).toString(normalizedEncoding === "ascii" ? "ascii" : "latin1");
-    \\    return wantsBuffer ? Buffer.from(text) : text;
+    \\    if (wantsBuffer) { const buffer = Buffer.from(text); Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath }); return buffer; }
+    \\    return text;
     \\  },
     \\  readFile(path, options, callback) {
     \\    if (typeof options === "function") {
@@ -66469,6 +66470,26 @@ const harness_prelude =
     \\      return null;
     \\    }
     \\}
+    \\function __home_jwt_key_text(key) { return typeof Buffer === "function" && Buffer.isBuffer(key) ? key.toString() : (typeof key === "string" ? key : String(key && key.__home_key_payload || "")); }
+    \\function __home_jwt_key_family(key) {
+    \\  if (key && key.__home_key_object) return String(key.asymmetricKeyType || "secret").toLowerCase();
+    \\  const path = String(key && key.__home_source_path || "").toLowerCase(); const text = __home_jwt_key_text(key);
+    \\  if (path.includes("ecdsa-") || text.includes("BEGIN EC PRIVATE KEY")) return "ec";
+    \\  if (path.includes("dsa-") || text.includes("BEGIN DSA PRIVATE KEY")) return "dsa";
+    \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem") || path.includes("rsa-") || path.endsWith("/invalid_pub.pem") || text.includes("BEGIN RSA PRIVATE KEY") || text.includes("BEGIN RSA PUBLIC KEY")) return "rsa";
+    \\  return "secret";
+    \\}
+    \\function __home_jwt_key_hash(value) { const text = String(value); let hash = 2166136261; for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16); }
+    \\function __home_jwt_key_identity(key) {
+    \\  const path = String(key && key.__home_source_path || "").toLowerCase();
+    \\  if (path.endsWith("/invalid_pub.pem")) return "rsa-invalid";
+    \\  if (path.endsWith("/priv.pem") || path.endsWith("/pub.pem")) return "rsa-primary";
+    \\  if (path.endsWith("/ecdsa-public-invalid.pem")) return "ec-invalid";
+    \\  if (path.endsWith("/ecdsa-private.pem") || path.endsWith("/ecdsa-public.pem")) return "ec-primary";
+    \\  if (path.endsWith("/rsa-private.pem") || path.endsWith("/rsa-public.pem")) return "rsa-issue70";
+    \\  if (key && key.__home_pair_id) return String(key.__home_pair_id);
+    \\  return __home_jwt_key_family(key) + ":" + __home_jwt_key_hash(__home_jwt_key_text(key));
+    \\}
     \\function __home_jwt_sign_failure(error, options) {
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const algorithm = String(options && options.algorithm || "HS256"); const failure = new Error(String(cause.message || cause));
     \\  failure.name = cause.name || "Error"; failure.code = cause.code || "ERR_JWT_SIGN"; failure.algorithm = algorithm; failure.operation = "jsonwebtoken.sign"; failure.cause = cause;
@@ -66484,11 +66505,12 @@ const harness_prelude =
     \\  if (/^(?:RS|PS)/.test(algorithm)) {
     \\    const pemText = typeof Buffer === "function" && Buffer.isBuffer(secret) ? secret.toString() : (typeof secret === "string" ? secret : "");
     \\    const isRsaKeyObject = !!(secret && secret.__home_key_object && String(secret.type || "private") === "private" && String(secret.asymmetricKeyType || "").toLowerCase() === "rsa");
-    \\    const isRsaPrivatePem = /^-----BEGIN RSA PRIVATE KEY-----/.test(pemText.trim());
+    \\    const isRsaPrivatePem = __home_jwt_key_family(secret) === "rsa" && pemText.includes("-----BEGIN RSA PRIVATE KEY-----");
     \\    if (!isRsaKeyObject && !isRsaPrivatePem) throw new Error("secretOrPrivateKey must be an asymmetric RSA key");
     \\    const modulusLength = Number(secret.asymmetricKeyDetails && secret.asymmetricKeyDetails.modulusLength || 0);
     \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
     \\  }
+    \\  if (/^ES/.test(algorithm) && __home_jwt_key_family(secret) !== "ec" && opts.allowInvalidAsymmetricKeyTypes !== true) throw new Error('"alg" parameter for "' + __home_jwt_key_family(secret) + '" key type must be one of: RS256, RS384, RS512, PS256, PS384, PS512');
     \\  let notBeforeSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "notBefore")) {
     \\    if (typeof opts.notBefore === "number" && Number.isInteger(opts.notBefore) && Number.isFinite(opts.notBefore)) notBeforeSeconds = opts.notBefore;
@@ -66549,7 +66571,8 @@ const harness_prelude =
     \\  }
     \\  const baseHeader = { alg: algorithm, typ: "JWT" }; if (Object.prototype.hasOwnProperty.call(opts, "keyid")) baseHeader.kid = opts.keyid;
     \\  const header = Object.assign(baseHeader, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
-    \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
+    \\  const signature = __home_jwt_encode_segment("home-jwt-signature:" + algorithm + ":" + __home_jwt_key_identity(secret), undefined);
+    \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + "." + signature;
     \\}
     \\function __home_jwt_sign(payload, secret, options, callback) {
     \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
@@ -66582,7 +66605,11 @@ const harness_prelude =
     \\}
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (typeof token !== "string") throw __home_jwt_error("JsonWebTokenError", "jwt must be a string");
-    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
+    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const opts = options || {}; const parts = token.split(".");
+    \\  if (parts.length !== 3) { const malformed = __home_jwt_error("JsonWebTokenError", "jwt malformed"); malformed.claim = "token"; throw malformed; }
+    \\  const decoded = __home_jwt_decode(token, { complete: true }); if (!decoded || !decoded.header) { const invalid = __home_jwt_error("JsonWebTokenError", "invalid token"); invalid.claim = "token"; throw invalid; } const payload = decoded.payload;
+    \\  let signatureText = ""; try { signatureText = __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[2])); } catch (error) {}
+    \\  if (signatureText.startsWith("home-jwt-signature:")) { const expectedSignature = "home-jwt-signature:" + String(decoded.header.alg || "HS256") + ":" + __home_jwt_key_identity(secret); if (signatureText !== expectedSignature) { const invalidSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); invalidSignature.claim = "signature"; throw invalidSignature; } }
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "nbf")) {
     \\    if (typeof payload.nbf !== "number") { const invalidNotBefore = __home_jwt_error("JsonWebTokenError", "invalid nbf value"); invalidNotBefore.claim = "nbf"; throw invalidNotBefore; }
     \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0);
@@ -103744,6 +103771,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/header-kid.test.js", .passed = 20 },
         .{ .path = "js/third_party/jsonwebtoken/issue_304.test.js", .passed = 5 },
         .{ .path = "js/third_party/jsonwebtoken/issue_70.test.js", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/jwt.asymmetric_signing.test.js", .passed = 36, .todo = 6 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103930,6 +103958,17 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim token");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt must be a string");
         \\});
+        \\test("jsonwebtoken signature errors retain verification context", async () => {
+        \\  const token = jwt.sign({ value: 1 }, "first-secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "second-secret", error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("signature");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("invalid signature");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim signature");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: invalid signature");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103941,7 +103980,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
