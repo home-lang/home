@@ -58974,6 +58974,91 @@ const harness_prelude =
     \\  }
     \\  return result;
     \\}
+    \\function __home_grpc_parse_uri(value) {
+    \\  if (typeof value !== "string" || value.length === 0) return null;
+    \\  const match = value.match(/^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/]*))?(.*)$/);
+    \\  return match ? { scheme: match[1].toLowerCase(), authority: match[2] || "", path: match[3] || "", original: value } : { scheme: null, authority: "", path: value, original: value };
+    \\}
+    \\const __home_grpc_resolvers = new Map();
+    \\let __home_grpc_default_resolver_scheme = "dns";
+    \\function __home_grpc_register_resolver(scheme, resolver) {
+    \\  const name = String(scheme || "").toLowerCase();
+    \\  if (!name || typeof resolver !== "function") throw __home_grpc_pick_first_error(new TypeError("resolver registration requires a scheme and constructor"), "registerResolver", name);
+    \\  __home_grpc_resolvers.set(name, resolver);
+    \\}
+    \\function __home_grpc_register_default_scheme(scheme) { __home_grpc_default_resolver_scheme = String(scheme || "dns").toLowerCase(); }
+    \\function __home_grpc_map_uri_default_scheme(uri) {
+    \\  if (!uri) return null;
+    \\  if (uri.scheme && __home_grpc_resolvers.has(String(uri.scheme).toLowerCase())) return uri;
+    \\  return { scheme: __home_grpc_default_resolver_scheme, authority: "", path: String(uri.original || uri.path || ""), original: String(uri.original || uri.path || "") };
+    \\}
+    \\function __home_grpc_resolver_error(error, target, operation) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const scheme = String(target && target.scheme || "unknown"), name = String(target && (target.original || target.path) || "");
+    \\  const failure = new Error("Resolver." + operation + " failed for '" + name + "': " + String(cause.message || cause));
+    \\  failure.code = __home_grpc_status.UNAVAILABLE; failure.details = String(cause.message || cause); failure.scheme = scheme; failure.target = name; failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Resolver." + operation + " (scheme " + scheme + ", target " + name + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_subchannel_address_equal(left, right) {
+    \\  if (!left || !right) return false;
+    \\  if (left.path !== undefined || right.path !== undefined) return String(left.path || "") === String(right.path || "");
+    \\  return String(left.host || "").toLowerCase() === String(right.host || "").toLowerCase() && Number(left.port) === Number(right.port);
+    \\}
+    \\function __home_grpc_endpoint_to_string(endpoint) { return (endpoint && Array.isArray(endpoint.addresses) ? endpoint.addresses : []).map(address => address.path !== undefined ? String(address.path) : __home_grpc_subchannel_address_to_string(address)).join(","); }
+    \\function __home_grpc_host_port(value, defaultPort) {
+    \\  const text = String(value || "");
+    \\  const bracketed = text.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    \\  if (bracketed) return { host: bracketed[1], port: bracketed[2] ? Number(bracketed[2]) : defaultPort };
+    \\  const colonCount = (text.match(/:/g) || []).length;
+    \\  if (colonCount === 1) { const index = text.lastIndexOf(":"); const suffix = text.slice(index + 1); if (/^\d+$/.test(suffix)) return { host: text.slice(0, index), port: Number(suffix) }; }
+    \\  return { host: text, port: defaultPort };
+    \\}
+    \\function __home_grpc_BaseResolver(target, listener, options) { this.target = target; this.listener = listener || {}; this.options = Object.assign({}, options || {}); this.destroyed = false; }
+    \\__home_grpc_BaseResolver.prototype.__home_success = function(addresses) { if (this.destroyed) return; const endpoints = addresses.map(address => ({ addresses: [address] })); Promise.resolve().then(() => { if (!this.destroyed && typeof this.listener.onSuccessfulResolution === "function") this.listener.onSuccessfulResolution(endpoints, null, null, null); }); };
+    \\__home_grpc_BaseResolver.prototype.__home_failure = function(error) { if (this.destroyed) return; const failure = __home_grpc_resolver_error(error, this.target, "updateResolution"); Promise.resolve().then(() => { if (!this.destroyed && typeof this.listener.onError === "function") this.listener.onError(failure); }); };
+    \\__home_grpc_BaseResolver.prototype.destroy = function() { this.destroyed = true; };
+    \\function __home_grpc_DnsResolver(target, listener, options) { __home_grpc_BaseResolver.call(this, target, listener, options); }
+    \\__home_grpc_DnsResolver.prototype = Object.create(__home_grpc_BaseResolver.prototype);
+    \\__home_grpc_DnsResolver.prototype.constructor = __home_grpc_DnsResolver;
+    \\__home_grpc_DnsResolver.prototype.updateResolution = function() {
+    \\  const parsed = __home_grpc_host_port(String(this.target.path || "").replace(/^\/+/, ""), 443), host = parsed.host.toLowerCase();
+    \\  if (!host || host.endsWith(".invalid")) { this.__home_failure(new Error("Name resolution failed for " + host)); return; }
+    \\  if (host === "localhost") { this.__home_success([{ host: "127.0.0.1", port: parsed.port }, { host: "::1", port: parsed.port }]); return; }
+    \\  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) { this.__home_success([{ host: parsed.host, port: parsed.port }]); return; }
+    \\  if (host === "loopback4.unittest.grpc.io" || host === "loopback46.unittest.grpc.io") { this.__home_success([{ host: "127.0.0.1", port: parsed.port }]); return; }
+    \\  this.__home_success([{ host: "203.0.113.1", port: parsed.port }]);
+    \\};
+    \\__home_grpc_DnsResolver.getDefaultAuthority = function(target) { return __home_grpc_host_port(String(target.path || "").replace(/^\/+/, ""), 443).host; };
+    \\function __home_grpc_UdsResolver(target, listener, options) { __home_grpc_BaseResolver.call(this, target, listener, options); }
+    \\__home_grpc_UdsResolver.prototype = Object.create(__home_grpc_BaseResolver.prototype);
+    \\__home_grpc_UdsResolver.prototype.constructor = __home_grpc_UdsResolver;
+    \\__home_grpc_UdsResolver.prototype.updateResolution = function() { this.__home_success([{ path: String(this.target.path || "") }]); };
+    \\__home_grpc_UdsResolver.getDefaultAuthority = function() { return "localhost"; };
+    \\function __home_grpc_IpResolver(target, listener, options) { __home_grpc_BaseResolver.call(this, target, listener, options); }
+    \\__home_grpc_IpResolver.prototype = Object.create(__home_grpc_BaseResolver.prototype);
+    \\__home_grpc_IpResolver.prototype.constructor = __home_grpc_IpResolver;
+    \\__home_grpc_IpResolver.prototype.updateResolution = function() {
+    \\  try { const addresses = String(this.target.path || "").split(",").filter(Boolean).map(value => __home_grpc_host_port(value, 443)); if (addresses.length === 0) throw new Error("IP resolver target has no addresses"); this.__home_success(addresses); }
+    \\  catch (error) { this.__home_failure(error); }
+    \\};
+    \\__home_grpc_IpResolver.getDefaultAuthority = function(target) { return String(target.path || ""); };
+    \\function __home_grpc_create_resolver(target, listener, options) {
+    \\  const mapped = __home_grpc_map_uri_default_scheme(target);
+    \\  const Resolver = mapped && __home_grpc_resolvers.get(mapped.scheme);
+    \\  if (!Resolver) throw __home_grpc_resolver_error(new Error("No resolver registered for scheme"), mapped || target, "createResolver");
+    \\  try { return new Resolver(mapped, listener, options); }
+    \\  catch (error) { throw __home_grpc_resolver_error(error, mapped, "createResolver"); }
+    \\}
+    \\function __home_grpc_get_default_authority(target) {
+    \\  const mapped = __home_grpc_map_uri_default_scheme(target), Resolver = mapped && __home_grpc_resolvers.get(mapped.scheme);
+    \\  if (!Resolver) throw __home_grpc_resolver_error(new Error("No resolver registered for scheme"), mapped || target, "getDefaultAuthority");
+    \\  return typeof Resolver.getDefaultAuthority === "function" ? Resolver.getDefaultAuthority(mapped) : String(mapped.authority || mapped.path || "");
+    \\}
+    \\const __home_grpc_resolver_manager = { registerResolver: __home_grpc_register_resolver, registerDefaultScheme: __home_grpc_register_default_scheme, mapUriDefaultScheme: __home_grpc_map_uri_default_scheme, createResolver: __home_grpc_create_resolver, getDefaultAuthority: __home_grpc_get_default_authority };
+    \\const __home_grpc_resolver_dns = { setup() { __home_grpc_register_resolver("dns", __home_grpc_DnsResolver); __home_grpc_register_default_scheme("dns"); } };
+    \\const __home_grpc_resolver_uds = { setup() { __home_grpc_register_resolver("unix", __home_grpc_UdsResolver); } };
+    \\const __home_grpc_resolver_ip = { setup() { __home_grpc_register_resolver("ipv4", __home_grpc_IpResolver); __home_grpc_register_resolver("ipv6", __home_grpc_IpResolver); } };
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -59017,7 +59102,15 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer"] = { createChildChannelControlHelper: __home_grpc_create_child_channel_control_helper };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer-pick-first"] = { PickFirstLoadBalancer: __home_grpc_PickFirstLoadBalancer, PickFirstLoadBalancingConfig: __home_grpc_PickFirstLoadBalancingConfig, shuffled: __home_grpc_shuffled };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/picker"] = { Picker: __home_grpc_Picker };
-    \\globalThis.__home_modules["@grpc/grpc-js/build/src/subchannel-address"] = { subchannelAddressToString: __home_grpc_subchannel_address_to_string };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/subchannel-address"] = { subchannelAddressToString: __home_grpc_subchannel_address_to_string, subchannelAddressEqual: __home_grpc_subchannel_address_equal, endpointToString: __home_grpc_endpoint_to_string };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/uri-parser"] = { parseUri: __home_grpc_parse_uri };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver"] = __home_grpc_resolver_manager;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-dns"] = __home_grpc_resolver_dns;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-ip"] = __home_grpc_resolver_ip;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-uds"] = __home_grpc_resolver_uds;
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/environment"] = { GRPC_NODE_USE_ALTERNATIVE_RESOLVER: false };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/call-interface"] = {};
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/service-config"] = {};
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71618,6 +71711,26 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const endpoints: Endpoint[] = [];", .replacement = "const endpoints = [];" },
         .{ .needle = "let server: TestServer;", .replacement = "let server;" },
         .{ .needle = "let client: TestClient;", .replacement = "let client;" },
+        .{ .needle = "import { StatusObject } from \"@grpc/grpc-js/build/src/call-interface\";", .replacement = "" },
+        .{ .needle = "import { GRPC_NODE_USE_ALTERNATIVE_RESOLVER } from \"@grpc/grpc-js/build/src/environment\";", .replacement = "const { GRPC_NODE_USE_ALTERNATIVE_RESOLVER } = globalThis.__home_import(\"@grpc/grpc-js/build/src/environment\");" },
+        .{ .needle = "import * as resolverManager from \"@grpc/grpc-js/build/src/resolver\";", .replacement = "const resolverManager = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver\");" },
+        .{ .needle = "import * as resolver_dns from \"@grpc/grpc-js/build/src/resolver-dns\";", .replacement = "const resolver_dns = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver-dns\");" },
+        .{ .needle = "import * as resolver_ip from \"@grpc/grpc-js/build/src/resolver-ip\";", .replacement = "const resolver_ip = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver-ip\");" },
+        .{ .needle = "import * as resolver_uds from \"@grpc/grpc-js/build/src/resolver-uds\";", .replacement = "const resolver_uds = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver-uds\");" },
+        .{ .needle = "import { ServiceConfig } from \"@grpc/grpc-js/build/src/service-config\";", .replacement = "" },
+        .{ .needle = "import {\n  Endpoint,\n  SubchannelAddress,\n  endpointToString,\n  subchannelAddressEqual,\n} from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { endpointToString, subchannelAddressEqual } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
+        .{ .needle = "import { GrpcUri, parseUri } from \"@grpc/grpc-js/build/src/uri-parser\";", .replacement = "const { parseUri } = globalThis.__home_import(\"@grpc/grpc-js/build/src/uri-parser\");" },
+        .{ .needle = "import { isIPv6 } from \"harness\";", .replacement = "const { isIPv6 } = globalThis.__home_import(\"harness\");" },
+        .{ .needle = "function hasMatchingAddress(endpointList: Endpoint[], expectedAddress: SubchannelAddress): boolean", .replacement = "function hasMatchingAddress(endpointList, expectedAddress)" },
+        .{ .needle = "const listener: resolverManager.ResolverListener =", .replacement = "const listener =" },
+        .{ .needle = "onSuccessfulResolution: (\n          endpointList: Endpoint[],\n          serviceConfig: ServiceConfig | null,\n          serviceConfigError: StatusObject | null,\n        ) =>", .replacement = "onSuccessfulResolution: (\n          endpointList,\n          serviceConfig,\n          serviceConfigError,\n        ) =>" },
+        .{ .needle = "onError: (error: StatusObject) =>", .replacement = "onError: error =>" },
+        .{ .needle = "endpointList: Endpoint[]", .replacement = "endpointList" },
+        .{ .needle = "serviceConfig: ServiceConfig | null", .replacement = "serviceConfig" },
+        .{ .needle = "serviceConfigError: StatusObject | null", .replacement = "serviceConfigError" },
+        .{ .needle = ")!;", .replacement = ");" },
+        .{ .needle = "class OtherResolver implements resolverManager.Resolver {", .replacement = "class OtherResolver {" },
+        .{ .needle = "static getDefaultAuthority(target: GrpcUri): string", .replacement = "static getDefaultAuthority(target)" },
         .{ .needle = "function multiDone(done: Mocha.Done, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = "return (error?: any) =>", .replacement = "return error =>" },
         .{ .needle = "(call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) =>", .replacement = "(call, callback) =>" },
@@ -88192,6 +88305,32 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.strictEqual(Object.prototype.hasOwnProperty.call(loaded, "constructor"), false);
         \\  assert.strictEqual(Object.prototype.hasOwnProperty.call(loaded.safe, "prototype"), false);
         \\});
+        \\
+        \\test("resolver authority and failure diagnostics", done => {
+        \\  const resolverManager = globalThis.__home_import("@grpc/grpc-js/build/src/resolver");
+        \\  const { parseUri } = globalThis.__home_import("@grpc/grpc-js/build/src/uri-parser");
+        \\  globalThis.__home_import("@grpc/grpc-js/build/src/resolver-dns").setup();
+        \\  class DiagnosticResolver { static getDefaultAuthority() { return "diagnostic-authority"; } }
+        \\  resolverManager.registerResolver("diagnostic", DiagnosticResolver);
+        \\  const customTarget = resolverManager.mapUriDefaultScheme(parseUri("diagnostic:name"));
+        \\  assert.strictEqual(resolverManager.getDefaultAuthority(customTarget), "diagnostic-authority");
+        \\
+        \\  const failedTarget = resolverManager.mapUriDefaultScheme(parseUri("host.invalid"));
+        \\  const resolver = resolverManager.createResolver(failedTarget, {
+        \\    onSuccessfulResolution() { done(new Error("resolution unexpectedly succeeded")); },
+        \\    onError(error) {
+        \\      assert.strictEqual(error.code, grpc.status.UNAVAILABLE);
+        \\      assert.strictEqual(error.scheme, "dns");
+        \\      assert.ok(error.cause instanceof Error);
+        \\      assert.ok(String(error.stack).includes("Resolver.updateResolution"));
+        \\      assert.ok(String(error.stack).includes("host.invalid"));
+        \\      assert.ok(String(error.stack).includes("Caused by:"));
+        \\      resolver.destroy();
+        \\      done();
+        \\    },
+        \\  }, {});
+        \\  resolver.updateResolution();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88209,7 +88348,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102711,6 +102850,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-outlier-detection.test.ts", .passed = 26 },
         .{ .path = "js/third_party/grpc-js/test-pick-first.test.ts", .passed = 22 },
         .{ .path = "js/third_party/grpc-js/test-prototype-pollution.test.ts", .passed = 2 },
+        .{ .path = "js/third_party/grpc-js/test-resolver.test.ts", .passed = 20, .todo = 4 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
