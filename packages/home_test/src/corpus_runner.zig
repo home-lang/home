@@ -57795,12 +57795,13 @@ const harness_prelude =
     \\  this.__home_port = __home_grpc_port(target);
     \\  this.__home_credentials = credentials || null;
     \\  this.__home_options = Object.assign({}, options || {});
+    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") this.__home_credentials.__home_activate();
     \\}
     \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
     \\__home_grpc_EchoService.prototype.__home_server = function() {
     \\  return __home_grpc_servers[this.__home_port];
     \\};
-    \\__home_grpc_EchoService.prototype.close = function() {};
+    \\__home_grpc_EchoService.prototype.close = function() { if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate(); };
     \\function __home_grpc_metadata_value(metadata, name) {
     \\  if (!metadata || typeof metadata.get !== "function") return null;
     \\  const values = metadata.get(name);
@@ -58016,13 +58017,18 @@ const harness_prelude =
     \\  return failure;
     \\}
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
-    \\  if (typeof options === "function") {
+    \\  let callOptions = {};
+    \\  if (arguments.length >= 4) {
+    \\    callback = arguments[3];
+    \\    callOptions = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
+    \\  } else if (typeof options === "function") {
     \\    callback = options;
     \\    options = new __home_grpc_Metadata();
     \\  }
     \\  const clientCall = __home_grpc_stream();
     \\  const metadata = options instanceof __home_grpc_Metadata ? options : new __home_grpc_Metadata();
     \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
+    \\  if (callOptions.deadline && Number(new Date(callOptions.deadline)) <= Date.now()) { Promise.resolve().then(() => callback(__home_grpc_status_error(__home_grpc_status.DEADLINE_EXCEEDED, "echo"))); return clientCall; }
     \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
     \\    __home_grpc_synthetic_echo(request, metadata, callback);
     \\    return clientCall;
@@ -58108,12 +58114,18 @@ const harness_prelude =
     \\__home_grpc_Server.prototype.start = function() {};
     \\__home_grpc_Server.prototype.getChannelzRef = function() { return { id: this.__home_channelz_record ? this.__home_channelz_record.id : 0 }; };
     \\__home_grpc_Server.prototype.bindAsync = function(address, credentials, callback) {
+    \\  this.__home_credentials = credentials || null;
+    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") {
+    \\    try { this.__home_credentials.__home_activate(); }
+    \\    catch (error) { if (typeof callback === "function") Promise.resolve().then(() => callback(error, 0)); return; }
+    \\  }
     \\  this.__home_port = __home_grpc_next_port++;
     \\  __home_grpc_servers[this.__home_port] = this;
     \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_port));
     \\};
     \\__home_grpc_Server.prototype.forceShutdown = function() {
     \\  delete __home_grpc_servers[this.__home_port];
+    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate();
     \\  if (this.__home_channelz_record) {
     \\    __home_grpc_channelz_servers.delete(this.__home_channelz_record.id);
     \\    for (const id of this.__home_channelz_record.socketIds) __home_grpc_channelz_sockets.delete(id);
@@ -58278,6 +58290,38 @@ const harness_prelude =
     \\  if (this.latestIdentityUpdate !== undefined) Promise.resolve().then(() => { if (this.identityListeners.has(listener)) this.__home_notify_listener(listener, this.latestIdentityUpdate, "notifyIdentityListener", this.config.certificateFile); });
     \\};
     \\__home_grpc_FileWatcherCertificateProvider.prototype.removeIdentityCertificateListener = function(listener) { this.identityListeners.delete(listener); this.__home_maybe_stop(); };
+    \\function __home_grpc_certificate_credential_error(error, operation, role) {
+    \\  const cause = error instanceof Error ? error : new TypeError(String(error));
+    \\  const failure = new Error("CertificateProviderCredentials." + operation + " failed for " + String(role) + ": " + String(cause.message || cause));
+    \\  failure.code = cause.code || "ERR_INVALID_ARG_VALUE"; failure.role = String(role); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at CertificateProviderCredentials." + operation + " (" + String(role) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_validate_certificate_provider(provider, kind, nullable) {
+    \\  if (provider === null && nullable) return;
+    \\  const addName = kind === "ca" ? "addCaCertificateListener" : "addIdentityCertificateListener";
+    \\  const removeName = kind === "ca" ? "removeCaCertificateListener" : "removeIdentityCertificateListener";
+    \\  if (!provider || typeof provider[addName] !== "function" || typeof provider[removeName] !== "function") throw __home_grpc_certificate_credential_error(new TypeError("provider must implement " + addName + " and " + removeName), "validateProvider", kind);
+    \\}
+    \\function __home_grpc_attach_certificate_providers(credentials, caProvider, identityProvider) {
+    \\  credentials.__home_ca_provider = caProvider; credentials.__home_identity_provider = identityProvider; credentials.__home_provider_active = false;
+    \\  credentials.__home_ca_update = undefined; credentials.__home_identity_update = undefined;
+    \\  credentials.__home_ca_listener = update => { credentials.__home_ca_update = update; };
+    \\  credentials.__home_identity_listener = update => { credentials.__home_identity_update = update; };
+    \\  credentials.__home_activate = function() {
+    \\    if (this.__home_provider_active) return; this.__home_provider_active = true;
+    \\    try {
+    \\      this.__home_ca_provider.addCaCertificateListener(this.__home_ca_listener);
+    \\      if (this.__home_identity_provider) this.__home_identity_provider.addIdentityCertificateListener(this.__home_identity_listener);
+    \\    } catch (error) { this.__home_provider_active = false; throw __home_grpc_certificate_credential_error(error, "activate", "provider"); }
+    \\  };
+    \\  credentials.__home_deactivate = function() {
+    \\    if (!this.__home_provider_active) return; this.__home_provider_active = false;
+    \\    this.__home_ca_provider.removeCaCertificateListener(this.__home_ca_listener);
+    \\    if (this.__home_identity_provider) this.__home_identity_provider.removeIdentityCertificateListener(this.__home_identity_listener);
+    \\  };
+    \\  return credentials;
+    \\}
     \\function __home_grpc_ChannelCredentials(connectionOptions, callCredentials, secure) {
     \\  this.__home_connection_options = Object.assign({}, connectionOptions || {});
     \\  this.__home_call_credentials = callCredentials || null;
@@ -58303,6 +58347,18 @@ const harness_prelude =
     \\__home_grpc_ChannelCredentials.prototype._getConnectionOptions = function() { return Object.assign({}, this.__home_connection_options); };
     \\__home_grpc_ChannelCredentials.prototype._getCallCredentials = function() { return this.__home_call_credentials; };
     \\__home_grpc_ChannelCredentials.prototype._isSecure = function() { return this.__home_secure; };
+    \\function __home_grpc_create_provider_channel_credentials(caProvider, identityProvider, verifyOptions) {
+    \\  __home_grpc_validate_certificate_provider(caProvider, "ca", false);
+    \\  __home_grpc_validate_certificate_provider(identityProvider, "identity", true);
+    \\  const credentials = new __home_grpc_ChannelCredentials({ secureContext: { certificateProvider: true }, checkServerIdentity: verifyOptions && verifyOptions.checkServerIdentity }, null, true);
+    \\  return __home_grpc_attach_certificate_providers(credentials, caProvider, identityProvider);
+    \\}
+    \\function __home_grpc_create_provider_server_credentials(caProvider, identityProvider, requireClientCertificate) {
+    \\  __home_grpc_validate_certificate_provider(caProvider, "ca", false);
+    \\  __home_grpc_validate_certificate_provider(identityProvider, "identity", true);
+    \\  const credentials = { type: "certificate-provider-server", requireClientCertificate: !!requireClientCertificate, _isSecure() { return true; } };
+    \\  return __home_grpc_attach_certificate_providers(credentials, caProvider, identityProvider);
+    \\}
     \\const __home_grpc_credentials = {
     \\  createSsl(rootCerts, privateKey, certChain, verifyOptions) { return __home_grpc_ChannelCredentials.createSsl(rootCerts, privateKey, certChain, verifyOptions); },
     \\  createInsecure() { return __home_grpc_ChannelCredentials.createInsecure(); },
@@ -58444,7 +58500,12 @@ const harness_prelude =
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  propagate: __home_grpc_propagate,
-    \\  experimental: { FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider, parseLoadBalancingConfig: __home_grpc_parse_load_balancing_config },
+    \\  experimental: {
+    \\    FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider,
+    \\    createCertificateProviderChannelCredentials: __home_grpc_create_provider_channel_credentials,
+    \\    createCertificateProviderServerCredentials: __home_grpc_create_provider_server_credentials,
+    \\    parseLoadBalancingConfig: __home_grpc_parse_load_balancing_config,
+    \\  },
     \\  getChannelzServiceDefinition() { return { __home_name: "Channelz" }; },
     \\  getChannelzHandlers() { return {}; },
     \\  loadPackageDefinition(definition) {
@@ -71029,7 +71090,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "catch (err: any)", .replacement = "catch (err)" },
         .{ .needle = "let compressed: Uint8Array;", .replacement = "let compressed;" },
         .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
-        .{ .needle = "import { loadProtoFile } from \"./common.ts\";", .replacement = "const loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "import { loadProtoFile } from \"./common.ts\";", .replacement = "const loadProtoFile = file => globalThis.__home_import(\"@grpc/grpc-js\").loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "import grpc, { sendUnaryData, ServerUnaryCall, ServiceError } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { CallCredentials } from \"@grpc/grpc-js/build/src/call-credentials\";", .replacement = "const { CallCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/call-credentials\");" },
         .{ .needle = "import { ChannelCredentials } from \"@grpc/grpc-js/build/src/channel-credentials\";", .replacement = "const { ChannelCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/channel-credentials\");" },
@@ -71051,7 +71112,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(metadata: grpc.Metadata) =>", .replacement = "(metadata) =>" },
         .{ .needle = "import { ProtoGrpcType } from \"@grpc/grpc-js/build/src/generated/channelz\";", .replacement = "" },
         .{ .needle = "import { ChannelzClient } from \"@grpc/grpc-js/build/src/generated/grpc/channelz/v1/Channelz\";", .replacement = "" },
-        .{ .needle = "import { loadProtoFile } from \"./common\";", .replacement = "const loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "import { loadProtoFile } from \"./common\";", .replacement = "const loadProtoFile = file => globalThis.__home_import(\"@grpc/grpc-js\").loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "const channelzGrpcObject = grpc.loadPackageDefinition(loadedChannelzProto) as unknown as ProtoGrpcType;", .replacement = "const channelzGrpcObject = grpc.loadPackageDefinition(loadedChannelzProto);" },
         .{ .needle = ".TestService as ServiceClientConstructor;", .replacement = ".TestService;" },
         .{ .needle = "const testServiceImpl: grpc.UntypedServiceImplementation =", .replacement = "const testServiceImpl =" },
@@ -87338,6 +87399,31 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  client.close();
         \\});
         \\
+        \\test("certificate provider credential round trip", async () => {
+        \\  const counts = { addCa: 0, removeCa: 0, addIdentity: 0, removeIdentity: 0 };
+        \\  const provider = {
+        \\    addCaCertificateListener(listener) { counts.addCa += 1; listener({ caCertificate: Buffer.from("ca") }); },
+        \\    removeCaCertificateListener(listener) { counts.removeCa += 1; },
+        \\    addIdentityCertificateListener(listener) { counts.addIdentity += 1; listener({ certificate: Buffer.from("cert"), privateKey: Buffer.from("key") }); },
+        \\    removeIdentityCertificateListener(listener) { counts.removeIdentity += 1; },
+        \\  };
+        \\  const serverCredentials = grpc.experimental.createCertificateProviderServerCredentials(provider, provider, true);
+        \\  const channelCredentials = grpc.experimental.createCertificateProviderChannelCredentials(provider, provider);
+        \\  assert.strictEqual(serverCredentials._isSecure(), true);
+        \\  assert.strictEqual(channelCredentials._isSecure(), true);
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const server = new grpc.Server();
+        \\  server.addService(EchoService.service, { echo(call, callback) { callback(null, call.request); } });
+        \\  const port = await new Promise((resolve, reject) => server.bindAsync("localhost:0", serverCredentials, (error, value) => error ? reject(error) : resolve(value)));
+        \\  const client = new EchoService("localhost:" + String(port), channelCredentials);
+        \\  const request = { value: "provider", value2: 3 };
+        \\  const response = await new Promise((resolve, reject) => client.echo(request, new grpc.Metadata({ waitForReady: true }), { deadline: Date.now() + 1000 }, (error, value) => error ? reject(error) : resolve(value)));
+        \\  assert.deepStrictEqual(response, request);
+        \\  client.close();
+        \\  server.forceShutdown();
+        \\  assert.deepStrictEqual(counts, { addCa: 2, removeCa: 2, addIdentity: 2, removeIdentity: 2 });
+        \\});
+        \\
         \\test("load balancing config diagnostics", () => {
         \\  let error;
         \\  try {
@@ -87396,7 +87482,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101889,6 +101975,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-confg-parsing.test.ts", .passed = 7 },
         .{ .path = "js/third_party/grpc-js/test-deadline.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-duration.test.ts", .passed = 4 },
+        .{ .path = "js/third_party/grpc-js/test-end-to-end.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
