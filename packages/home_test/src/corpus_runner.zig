@@ -57863,7 +57863,11 @@ const harness_prelude =
     \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") this.__home_credentials.__home_activate();
     \\  this.__home_subchannel_record = __home_grpc_subchannel_pool_acquire(this.__home_target, this.__home_options["grpc.use_local_subchannel_pool"] === 1);
     \\}
-    \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
+    \\const __home_grpc_echo_service_definition = {
+    \\  __home_name: "EchoService",
+    \\  echo: { path: "/EchoService/Echo", requestStream: false, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\};
+    \\__home_grpc_EchoService.service = __home_grpc_echo_service_definition;
     \\__home_grpc_EchoService.prototype.__home_outlier_clock = function() { return Number(globalThis.__home_performance_clock || 0); };
     \\__home_grpc_EchoService.prototype.__home_outlier_record = function(port) {
     \\  let record = this.__home_outlier_records.get(port);
@@ -58292,6 +58296,56 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at ServerHandler." + failure.operation + " (target " + failure.target + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
+    \\function __home_grpc_interceptor_failure(error, phase, method, target, interceptorIndex) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error("gRPC server interceptor failed during " + String(phase) + ": " + String(cause.message || cause));
+    \\  const numericCode = Number(cause.code); failure.code = Number.isFinite(numericCode) && numericCode !== 0 ? numericCode : __home_grpc_status.UNKNOWN; failure.details = failure.message; failure.diagnosticCode = "ERR_GRPC_SERVER_INTERCEPTOR"; failure.phase = String(phase); failure.operation = String(method); failure.target = String(target); failure.interceptorIndex = Number(interceptorIndex); failure.cause = cause;
+    \\  const nativeStack = String(failure.stack || failure), contextualStack = nativeStack.includes(failure.message) ? nativeStack : "Error: " + failure.message + "\n" + nativeStack;
+    \\  failure.stack = contextualStack + "\n    at ServerInterceptor." + failure.phase + " (method " + failure.operation + ", interceptor " + String(failure.interceptorIndex) + ", target " + failure.target + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_ServerListenerBuilder() { this.__home_listener = {}; }
+    \\__home_grpc_ServerListenerBuilder.prototype.withOnReceiveMetadata = function(listener) { this.__home_listener.onReceiveMetadata = listener; return this; };
+    \\__home_grpc_ServerListenerBuilder.prototype.withOnReceiveMessage = function(listener) { this.__home_listener.onReceiveMessage = listener; return this; };
+    \\__home_grpc_ServerListenerBuilder.prototype.withOnReceiveHalfClose = function(listener) { this.__home_listener.onReceiveHalfClose = listener; return this; };
+    \\__home_grpc_ServerListenerBuilder.prototype.withOnCancel = function(listener) { this.__home_listener.onCancel = listener; return this; };
+    \\__home_grpc_ServerListenerBuilder.prototype.build = function() { return Object.assign({}, this.__home_listener); };
+    \\function __home_grpc_ResponderBuilder() { this.__home_responder = {}; }
+    \\__home_grpc_ResponderBuilder.prototype.withStart = function(responder) { this.__home_responder.start = responder; return this; };
+    \\__home_grpc_ResponderBuilder.prototype.withSendMetadata = function(responder) { this.__home_responder.sendMetadata = responder; return this; };
+    \\__home_grpc_ResponderBuilder.prototype.withSendMessage = function(responder) { this.__home_responder.sendMessage = responder; return this; };
+    \\__home_grpc_ResponderBuilder.prototype.withSendStatus = function(responder) { this.__home_responder.sendStatus = responder; return this; };
+    \\__home_grpc_ResponderBuilder.prototype.build = function() { return Object.assign({}, this.__home_responder); };
+    \\function __home_grpc_chain_server_listener(interceptorListener, downstreamListener, owner) {
+    \\  const interceptor = interceptorListener && typeof interceptorListener === "object" ? interceptorListener : {}, downstream = downstreamListener && typeof downstreamListener === "object" ? downstreamListener : {};
+    \\  const invoke = (phase, value, terminalNext) => {
+    \\    const interceptorHandler = interceptor[phase], downstreamHandler = downstream[phase];
+    \\    const forward = nextValue => { const forwarded = nextValue === undefined ? value : nextValue; if (typeof downstreamHandler === "function") downstreamHandler(forwarded, terminalNext); else if (typeof terminalNext === "function") terminalNext(forwarded); };
+    \\    try { if (typeof interceptorHandler === "function") interceptorHandler(value, forward); else forward(value); }
+    \\    catch (error) { owner.__home_fail(error, phase); }
+    \\  };
+    \\  return {
+    \\    onReceiveMetadata(metadata, next) { invoke("onReceiveMetadata", metadata, next); },
+    \\    onReceiveMessage(message, next) { invoke("onReceiveMessage", message, next); },
+    \\    onReceiveHalfClose(next) {
+    \\      const interceptorHandler = interceptor.onReceiveHalfClose, downstreamHandler = downstream.onReceiveHalfClose;
+    \\      const forward = () => { if (typeof downstreamHandler === "function") downstreamHandler(next); else if (typeof next === "function") next(); };
+    \\      try { if (typeof interceptorHandler === "function") interceptorHandler(forward); else forward(); } catch (error) { owner.__home_fail(error, "onReceiveHalfClose"); }
+    \\    },
+    \\    onCancel(next) {
+    \\      const interceptorHandler = interceptor.onCancel, downstreamHandler = downstream.onCancel;
+    \\      const forward = () => { if (typeof downstreamHandler === "function") downstreamHandler(next); else if (typeof next === "function") next(); };
+    \\      try { if (typeof interceptorHandler === "function") interceptorHandler(forward); else forward(); } catch (error) { owner.__home_fail(error, "onCancel"); }
+    \\    },
+    \\  };
+    \\}
+    \\function __home_grpc_ServerInterceptingCall(nextCall, responder) { this.__home_next_call = nextCall; this.__home_responder = responder && typeof responder === "object" ? responder : {}; this.__home_method = nextCall && nextCall.__home_method; this.__home_target = nextCall && nextCall.__home_target; this.__home_interceptor_index = nextCall && Number.isFinite(nextCall.__home_interceptor_index) ? nextCall.__home_interceptor_index + 1 : 0; }
+    \\__home_grpc_ServerInterceptingCall.prototype.__home_fail = function(error, phase, interceptorIndex) { this.__home_next_call.__home_fail(error, phase, Number.isFinite(interceptorIndex) ? interceptorIndex : this.__home_interceptor_index); };
+    \\__home_grpc_ServerInterceptingCall.prototype.start = function(listener) { const next = interceptorListener => this.__home_next_call.start(__home_grpc_chain_server_listener(interceptorListener, listener, this)); try { if (typeof this.__home_responder.start === "function") this.__home_responder.start(next); else next({}); } catch (error) { this.__home_fail(error, "start"); } };
+    \\__home_grpc_ServerInterceptingCall.prototype.__home_send = function(phase, value) { const next = forwarded => this.__home_next_call[phase](forwarded === undefined ? value : forwarded); try { const responder = this.__home_responder[phase]; if (typeof responder === "function") responder(value, next); else next(value); } catch (error) { this.__home_fail(error, phase); } };
+    \\__home_grpc_ServerInterceptingCall.prototype.sendMetadata = function(metadata) { this.__home_send("sendMetadata", metadata); };
+    \\__home_grpc_ServerInterceptingCall.prototype.sendMessage = function(message) { this.__home_send("sendMessage", message); };
+    \\__home_grpc_ServerInterceptingCall.prototype.sendStatus = function(status) { this.__home_send("sendStatus", status); };
     \\function __home_grpc_bad_wire_value(value) { return Buffer.isBuffer(value) && value.length > 0 && value[0] === 255; }
     \\function __home_grpc_message_size(value) { if (!value || typeof value !== "object") return Buffer.isBuffer(value) ? value.length : 0; return typeof value.message === "string" ? value.message.length : 0; }
     \\function __home_grpc_method_definition(definition, method) { return definition && definition[method] && typeof definition[method] === "object" ? definition[method] : null; }
@@ -58455,11 +58509,6 @@ const harness_prelude =
     \\    if (!handler) { finish(__home_grpc_attempt_error({ code: __home_grpc_status.UNIMPLEMENTED, details: "Method not implemented" }, this.__home_target, attempt, maxAttempts, mode)); return; }
     \\    const effectiveMetadata = metadata.clone();
     \\    if (attempt > 0) effectiveMetadata.set("grpc-previous-rpc-attempts", String(attempt));
-    \\    const serverCall = {
-    \\      request,
-    \\      metadata: effectiveMetadata,
-    \\      sendMetadata(value) { clientCall.emit("metadata", value); },
-    \\    };
     \\    let callbackInvoked = false;
     \\    const onAttempt = (error, value) => {
     \\      if (callbackInvoked || settled) return; callbackInvoked = true;
@@ -58470,8 +58519,41 @@ const harness_prelude =
     \\      const delay = mode === "retry" ? __home_grpc_backoff_millis(policy, attempt) : Math.max(0, Number.parseFloat(String(policy.hedgingDelay || "0s")) * 1000);
     \\      if (delay > 0) setTimeout(() => invokeAttempt(attempt + 1), delay); else Promise.resolve().then(() => invokeAttempt(attempt + 1));
     \\    };
-    \\    try { handler(serverCall, onAttempt); }
-    \\    catch (error) { if (callbackInvoked) throw error; onAttempt(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
+    \\    let interceptedCall, responseValue, metadataDelivered = false, messageDelivered = false;
+    \\    const baseCall = {
+    \\      __home_method: "echo", __home_target: this.__home_target, __home_interceptor_index: -1, __home_terminal: false, __home_listener: null,
+    \\      start(listener) { this.__home_listener = listener && typeof listener === "object" ? listener : {}; },
+    \\      sendMetadata(value) { if (!this.__home_terminal) clientCall.emit("metadata", value); },
+    \\      sendMessage(value) { if (!this.__home_terminal) responseValue = value; },
+    \\      sendStatus(statusValue) { if (this.__home_terminal) return; this.__home_terminal = true; const status = statusValue && typeof statusValue === "object" ? statusValue : {}; const numericCode = Number(status.code), code = Number.isFinite(numericCode) ? numericCode : __home_grpc_status.UNKNOWN; if (code === __home_grpc_status.OK) onAttempt(null, responseValue); else { const failure = status instanceof Error ? status : Object.assign(new Error(String(status.details || "gRPC call failed")), status); failure.code = code; failure.details = String(status.details || failure.message); onAttempt(failure); } },
+    \\      __home_fail(error, phase, interceptorIndex) { if (this.__home_terminal) return; const failure = __home_grpc_interceptor_failure(error, phase, "echo", this.__home_target, interceptorIndex); this.sendStatus(failure); },
+    \\    };
+    \\    const serverCall = { request, metadata: effectiveMetadata, sendMetadata(value) { interceptedCall.sendMetadata(value); } };
+    \\    const applicationListener = {
+    \\      onReceiveMetadata(value, next) { metadataDelivered = true; serverCall.metadata = value; if (typeof next === "function") next(value); },
+    \\      onReceiveMessage(value, next) { messageDelivered = true; serverCall.request = value; if (typeof next === "function") next(value); },
+    \\      onReceiveHalfClose(next) {
+    \\        try { handler(serverCall, (error, value, trailingMetadata) => { if (baseCall.__home_terminal) return; if (error) interceptedCall.sendStatus(Object.assign(error instanceof Error ? error : new Error(String(error && error.details || "gRPC call failed")), { code: Number(error && error.code) || __home_grpc_status.UNKNOWN, details: String(error && (error.details || error.message) || "gRPC call failed"), metadata: trailingMetadata || error.metadata })); else { interceptedCall.sendMessage(value); interceptedCall.sendStatus({ code: __home_grpc_status.OK, details: "OK", metadata: trailingMetadata }); } }); }
+    \\        catch (error) { interceptedCall.sendStatus(__home_grpc_server_failure(error, "echo", baseCall.__home_target, null, __home_grpc_status.UNKNOWN)); }
+    \\        if (typeof next === "function") next();
+    \\      },
+    \\    };
+    \\    interceptedCall = baseCall;
+    \\    const interceptors = Array.isArray(selectedServer.__home_options.interceptors) ? selectedServer.__home_options.interceptors : [];
+    \\    for (let interceptorIndex = 0; interceptorIndex < interceptors.length; interceptorIndex++) {
+    \\      try { const candidate = interceptors[interceptorIndex](selectedServer.__home_service_definition.echo || __home_grpc_echo_service_definition.echo, interceptedCall); if (!candidate || typeof candidate.start !== "function") throw new TypeError("server interceptor must return an intercepting call"); interceptedCall = candidate; if (!Number.isFinite(interceptedCall.__home_interceptor_index)) interceptedCall.__home_interceptor_index = interceptorIndex; }
+    \\      catch (error) { baseCall.__home_fail(error, "construct", interceptorIndex); return; }
+    \\    }
+    \\    try {
+    \\      interceptedCall.start(applicationListener);
+    \\      if (baseCall.__home_terminal || !baseCall.__home_listener) return;
+    \\      const listener = baseCall.__home_listener;
+    \\      if (typeof listener.onReceiveMetadata === "function") listener.onReceiveMetadata(effectiveMetadata, () => {}); else metadataDelivered = true;
+    \\      if (baseCall.__home_terminal || !metadataDelivered) return;
+    \\      if (typeof listener.onReceiveMessage === "function") listener.onReceiveMessage(request, () => {}); else messageDelivered = true;
+    \\      if (baseCall.__home_terminal || !messageDelivered) return;
+    \\      if (typeof listener.onReceiveHalfClose === "function") listener.onReceiveHalfClose(() => {}); else applicationListener.onReceiveHalfClose(() => {});
+    \\    } catch (error) { baseCall.__home_fail(error, "dispatch", interceptedCall.__home_interceptor_index); }
     \\  };
     \\  const callCredentials = this.__home_credentials && typeof this.__home_credentials._getCallCredentials === "function" ? this.__home_credentials._getCallCredentials() : null;
     \\  if (callCredentials && typeof callCredentials.generateMetadata === "function") {
@@ -59309,6 +59391,9 @@ const harness_prelude =
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
     \\  Client: __home_grpc_Client,
     \\  Metadata: __home_grpc_Metadata,
+    \\  ResponderBuilder: __home_grpc_ResponderBuilder,
+    \\  ServerInterceptingCall: __home_grpc_ServerInterceptingCall,
+    \\  ServerListenerBuilder: __home_grpc_ServerListenerBuilder,
     \\  makeClientConstructor: __home_grpc_make_client_constructor,
     \\  makeGenericClientConstructor: __home_grpc_make_client_constructor,
     \\  Server: __home_grpc_Server,
@@ -71947,6 +72032,12 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import {\n  PickFirstLoadBalancer,\n  PickFirstLoadBalancingConfig,\n  shuffled,\n} from \"@grpc/grpc-js/build/src/load-balancer-pick-first\";", .replacement = "const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig, shuffled } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-pick-first\");" },
         .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
         .{ .needle = "import * as grpc from \"@grpc/grpc-js/build/src\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import { afterAll as after, beforeAll as before, beforeEach, describe, it } from \"bun:test\";", .replacement = "const { afterAll: after, beforeAll: before, beforeEach, describe, it } = globalThis.__home_import(\"bun:test\");" },
+        .{ .needle = "import { TestClient, loadProtoFile } from \"./common\";", .replacement = "const TestClient = __home_grpc_TestClientFixture;\nconst loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
+        .{ .needle = "const testAuthInterceptor: grpc.ServerInterceptor =", .replacement = "const testAuthInterceptor =" },
+        .{ .needle = "const testLoggingInterceptor: grpc.ServerInterceptor =", .replacement = "const testLoggingInterceptor =" },
+        .{ .needle = "const testHeaderInjectionInterceptor: grpc.ServerInterceptor =", .replacement = "const testHeaderInjectionInterceptor =" },
+        .{ .needle = "const authListener: grpc.ServerListener =", .replacement = "const authListener =" },
         .{ .needle = "import { ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
         .{ .needle = "import { Server, ServerCredentials } from \"@grpc/grpc-js/build/src\";", .replacement = "const { Server, ServerCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src\");" },
         .{ .needle = "import { ServiceError } from \"@grpc/grpc-js/build/src/call\";", .replacement = "" },
@@ -88695,6 +88786,34 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(failure.stack).includes("errors.test:443"));
         \\  assert.ok(String(failure.stack).includes("Caused by:"));
         \\});
+        \\
+        \\test("server interceptor failures identify lifecycle phase and cause", done => {
+        \\  const underlying = new TypeError("metadata policy crashed");
+        \\  const server = new grpc.Server({ interceptors: [(_method, call) => new grpc.ServerInterceptingCall(call, { start() { throw underlying; } })] });
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  server.addService(EchoService.service, { echo(call, callback) { callback(null, call.request); } });
+        \\  server.bindAsync("localhost:0", grpc.ServerCredentials.createInsecure(), (bindError, port) => {
+        \\    assert.ifError(bindError);
+        \\    const client = new EchoService("localhost:" + String(port), grpc.credentials.createInsecure());
+        \\    client.echo({}, error => {
+        \\      try {
+        \\        const diagnostic = { hasError: !!error, code: error && error.code, diagnosticCode: error && error.cause && error.cause.diagnosticCode, phase: error && error.cause && error.cause.phase, operation: error && error.cause && error.cause.operation, target: error && error.cause && error.cause.target, interceptorIndex: error && error.cause && error.cause.interceptorIndex, sameCause: !!(error && error.cause && error.cause.cause === underlying), hasFrame: !!(error && String(error.stack).includes("ServerInterceptor.start")), hasMessage: !!(error && String(error.stack).includes("metadata policy crashed")), hasCause: !!(error && String(error.stack).includes("Caused by:")) };
+        \\        if (!diagnostic.hasError || diagnostic.code !== grpc.status.UNKNOWN || diagnostic.diagnosticCode !== "ERR_GRPC_SERVER_INTERCEPTOR" || diagnostic.phase !== "start" || diagnostic.operation !== "echo" || diagnostic.target !== "localhost:" + String(port) || diagnostic.interceptorIndex !== 0 || !diagnostic.sameCause || !diagnostic.hasFrame || !diagnostic.hasMessage || !diagnostic.hasCause) throw new Error("interceptor diagnostic mismatch: " + JSON.stringify(diagnostic));
+        \\        assert.strictEqual(error.code, grpc.status.UNKNOWN);
+        \\        assert.strictEqual(error.cause.diagnosticCode, "ERR_GRPC_SERVER_INTERCEPTOR");
+        \\        assert.strictEqual(error.cause.phase, "start");
+        \\        assert.strictEqual(error.cause.operation, "echo");
+        \\        assert.strictEqual(error.cause.target, "localhost:" + String(port));
+        \\        assert.strictEqual(error.cause.interceptorIndex, 0);
+        \\        assert.strictEqual(error.cause.cause, underlying);
+        \\        assert.ok(String(error.stack).includes("ServerInterceptor.start"));
+        \\        assert.ok(String(error.stack).includes("metadata policy crashed"));
+        \\        assert.ok(String(error.stack).includes("Caused by:"));
+        \\        client.close(); server.forceShutdown(); done();
+        \\      } catch (failure) { client.close(); server.forceShutdown(); done(failure); }
+        \\    });
+        \\  });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88712,7 +88831,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 20), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -103220,6 +103339,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-server-credentials.test.ts", .passed = 11 },
         .{ .path = "js/third_party/grpc-js/test-server-deadlines.test.ts", .passed = 3 },
         .{ .path = "js/third_party/grpc-js/test-server-errors.test.ts", .passed = 34 },
+        .{ .path = "js/third_party/grpc-js/test-server-interceptors.test.ts", .passed = 6 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
