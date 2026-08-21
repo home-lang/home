@@ -2986,6 +2986,20 @@ const harness_prelude =
     \\  try { const result = await dispatch(0); return result instanceof Response ? result : new Response(result === undefined ? "" : result); } catch (error) { throw __home_hono_handler_error(error, method, path); }
     \\};
     \\globalThis.__home_modules["hono"] = { Hono: __home_Hono };
+    \\function __home_mongodb_endpoint(value) {
+    \\  const match = String(value || "").match(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^@/?#]+@)?([^/?#]+)/);
+    \\  return match ? match[1] : "<unconfigured>";
+    \\}
+    \\function __home_mongodb_connect_error(value, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const endpoint = __home_mongodb_endpoint(value);
+    \\  const failure = new Error("MongoDB connection failed for " + endpoint + ": " + String(cause.message || cause)); failure.name = "MongoServerSelectionError";
+    \\  failure.code = "ERR_MONGODB_CONNECT"; failure.operation = "mongodb.connect"; failure.endpoint = endpoint; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at mongodb.connect (" + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_MongoClient(connectionString) { this.__home_connection_string = String(connectionString || ""); }
+    \\__home_MongoClient.prototype.connect = function() { return Promise.reject(__home_mongodb_connect_error(this.__home_connection_string, new Error("native MongoDB TLS transport is unavailable in the bootstrap runtime"))); };
+    \\globalThis.__home_modules["mongodb"] = { MongoClient: __home_MongoClient };
     \\function __home_spawn_hono_default_export_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -72178,6 +72192,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
         .{ .needle = "import { color } from \"bun\";", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
+        .{ .needle = "import { getSecret } from \"harness\";", .replacement = "const { getSecret } = globalThis.__home_import(\"harness\");" },
+        .{ .needle = "import { MongoClient } from \"mongodb\";", .replacement = "const { MongoClient } = globalThis.__home_import(\"mongodb\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -103862,6 +103878,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/hono/hello-world-fixture.test.ts", .passed = 1 },
         .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
         .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/mongodb/mongodb.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -103931,6 +103948,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { Hono } from "hono";
         \\import http2Wrapper from "http2-wrapper";
         \\import jwt from "jsonwebtoken";
+        \\import { MongoClient } from "mongodb";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -103943,6 +103961,19 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.cause.message).toBe("route exploded");
         \\  expect(caught.stack).toContain("Hono.fetch (GET /boom");
         \\  expect(caught.stack).toContain("Caused by: TypeError: route exploded");
+        \\});
+        \\test("MongoDB connection errors retain sanitized operation context", async () => {
+        \\  const client = new MongoClient("mongodb+srv://user:super-secret@db.example.test/home"); let caught;
+        \\  try { await client.connect(); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("MongoServerSelectionError");
+        \\  expect(caught.code).toBe("ERR_MONGODB_CONNECT");
+        \\  expect(caught.operation).toBe("mongodb.connect");
+        \\  expect(caught.endpoint).toBe("db.example.test");
+        \\  expect(caught.cause.message).toContain("native MongoDB TLS transport");
+        \\  expect(caught.message).not.toContain("super-secret");
+        \\  expect(caught.stack).toContain("mongodb.connect (db.example.test");
+        \\  expect(caught.stack).toContain("Caused by: Error: native MongoDB TLS transport");
+        \\  expect(caught.stack).not.toContain("super-secret");
         \\});
         \\test("http2-wrapper errors retain negotiation context", async () => {
         \\  let caught;
@@ -104166,7 +104197,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 20), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
