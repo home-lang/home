@@ -58956,6 +58956,24 @@ const harness_prelude =
     \\  for (const entry of this.activeEntries.concat(this.pendingEntries || [])) if (entry.subchannel && typeof entry.subchannel.removeConnectivityStateListener === "function") entry.subchannel.removeConnectivityStateListener(entry.listener);
     \\  this.activeEntries = []; this.pendingEntries = null; this.selectedEntry = null;
     \\};
+    \\const __home_grpc_forbidden_package_segments = new Set(["__proto__", "prototype", "constructor"]);
+    \\function __home_grpc_safe_package_definition(definition) {
+    \\  const result = {};
+    \\  if (!definition || typeof definition !== "object") return result;
+    \\  for (const qualifiedName of Object.keys(definition)) {
+    \\    if (qualifiedName === "__home_proto_file") continue;
+    \\    const segments = String(qualifiedName).split(".").filter(Boolean);
+    \\    if (segments.length === 0 || segments.some(segment => __home_grpc_forbidden_package_segments.has(segment))) continue;
+    \\    let cursor = result;
+    \\    for (let index = 0; index < segments.length - 1; index++) {
+    \\      const segment = segments[index];
+    \\      if (!Object.prototype.hasOwnProperty.call(cursor, segment)) Object.defineProperty(cursor, segment, { configurable: true, enumerable: true, writable: true, value: {} });
+    \\      cursor = cursor[segment];
+    \\    }
+    \\    Object.defineProperty(cursor, segments[segments.length - 1], { configurable: true, enumerable: true, writable: true, value: definition[qualifiedName] });
+    \\  }
+    \\  return result;
+    \\}
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -58982,7 +59000,8 @@ const harness_prelude =
     \\    const file = String(definition && definition.__home_proto_file || "");
     \\    if (file.includes("channelz.proto")) return __home_grpc_channelz_package;
     \\    if (file.includes("test_service.proto")) return { TestService: __home_grpc_TestService };
-    \\    return { EchoService: __home_grpc_EchoService };
+    \\    if (file) return { EchoService: __home_grpc_EchoService };
+    \\    return __home_grpc_safe_package_definition(definition);
     \\  },
     \\};
     \\__home_grpc_module.default = __home_grpc_module;
@@ -88158,6 +88177,21 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(addressError.stack).includes("Caused by:"));
         \\  picker.destroy();
         \\});
+        \\
+        \\test("package definition rejects prototype traversal", () => {
+        \\  const marker = { kind: "message" };
+        \\  const loaded = grpc.loadPackageDefinition({
+        \\    "safe.pkg.Message": marker,
+        \\    "__proto__.polluted": true,
+        \\    "constructor.prototype.polluted": true,
+        \\    "safe.prototype.polluted": true,
+        \\  });
+        \\  assert.strictEqual(loaded.safe.pkg.Message, marker);
+        \\  assert.strictEqual(Object.prototype.polluted, undefined);
+        \\  assert.strictEqual(Object.prototype.hasOwnProperty.call(loaded, "__proto__"), false);
+        \\  assert.strictEqual(Object.prototype.hasOwnProperty.call(loaded, "constructor"), false);
+        \\  assert.strictEqual(Object.prototype.hasOwnProperty.call(loaded.safe, "prototype"), false);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88175,7 +88209,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102676,6 +102710,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-metadata.test.ts", .passed = 29 },
         .{ .path = "js/third_party/grpc-js/test-outlier-detection.test.ts", .passed = 26 },
         .{ .path = "js/third_party/grpc-js/test-pick-first.test.ts", .passed = 22 },
+        .{ .path = "js/third_party/grpc-js/test-prototype-pollution.test.ts", .passed = 2 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
