@@ -15968,6 +15968,9 @@ pub const Checker = struct {
                             target
                         else
                             try self.narrowTypeByPredicate(current, target);
+                        if (self.disc_aliases.get(id.name)) |alias| {
+                            try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, target, true);
+                        }
                         try self.applyDependentBindingNarrow(id.name, target, true);
                         try self.recordNarrow(id.name, narrowed);
                     }
@@ -16003,6 +16006,9 @@ pub const Checker = struct {
                     try self.applyIdentifierLiteralNarrow(sw.discriminant, other_p.value, false);
                     if (try self.expressionNarrowLiteralType(other_p.value)) |lit_t| {
                         const id = hir_mod.identifierOf(self.hir, sw.discriminant);
+                        if (self.disc_aliases.get(id.name)) |alias| {
+                            try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, lit_t, false);
+                        }
                         try self.applyDependentBindingNarrow(id.name, lit_t, false);
                     }
                 }
@@ -16692,6 +16698,16 @@ pub const Checker = struct {
     /// store it on the fn_decl node. Walks the body so nested
     /// expressions get typed too.
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
+        const outer_cond_aliases = self.cond_aliases;
+        const outer_disc_aliases = self.disc_aliases;
+        self.cond_aliases = .empty;
+        self.disc_aliases = .empty;
+        defer {
+            self.cond_aliases.deinit(self.gpa);
+            self.disc_aliases.deinit(self.gpa);
+            self.cond_aliases = outer_cond_aliases;
+            self.disc_aliases = outer_disc_aliases;
+        }
         try self.checkGrammarArrowFunctionMtsCts(node);
         try self.checkExportedFunctionPrivateNames(node);
         try self.checkExportedTypeParamPrivateNames(node, hir_mod.fnTypeParams(self.hir, node), .function);
@@ -17480,6 +17496,55 @@ pub const Checker = struct {
                 const pos = self.sliceStartPos(src, type_text) orelse span.start;
                 return .{ .type = ret_t, .pos = pos, .origin = .returns_tag };
             }
+        }
+        return null;
+    }
+
+    fn jsDocPredicateForFunction(self: *Checker, node: NodeId, params: []const NodeId) CheckError!?FnPredicate {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(node)) return null;
+        const src = self.source orelse return null;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+
+        for (tags) |tag| {
+            if (tag.kind != .returns_tag) continue;
+            var text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            var is_asserts = false;
+            if (std.mem.startsWith(u8, text, "asserts ")) {
+                is_asserts = true;
+                text = std.mem.trimStart(u8, text["asserts ".len..], " \t\r\n");
+            }
+            const is_pos = std.mem.indexOf(u8, text, " is ");
+            const param_text = std.mem.trim(u8, if (is_pos) |pos| text[0..pos] else text, " \t\r\n");
+            if (param_text.len == 0 or (!is_asserts and is_pos == null)) return null;
+
+            var value_index: u16 = 0;
+            var matched_index: ?u16 = null;
+            for (params) |param| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param);
+                if (self.isThisParameter(param)) continue;
+                if (p.name != hir_mod.none_node_id and self.hir.kindOf(p.name) == .identifier and
+                    std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, p.name).name), param_text))
+                {
+                    matched_index = value_index;
+                    break;
+                }
+                value_index +|= 1;
+            }
+            const param_index = matched_index orelse return null;
+            const target_text = if (is_pos) |pos| std.mem.trim(u8, text[pos + " is ".len ..], " \t\r\n") else "";
+            const target_t = if (target_text.len == 0)
+                types.Primitive.unknown
+            else
+                (try self.jsDocTypeTextToTypeAt(src, target_text, node)) orelse types.Primitive.unknown;
+            return .{
+                .param_index = param_index,
+                .target_type = target_t,
+                .target_node = hir_mod.none_node_id,
+                .is_asserts = is_asserts,
+            };
         }
         return null;
     }
@@ -27794,6 +27859,9 @@ pub const Checker = struct {
         if (self.signature_min_args.get(sig)) |min_required| {
             try self.signature_min_args.put(self.gpa, new_sig, min_required);
         }
+        if (self.signature_predicates.get(sig)) |predicate| {
+            try self.signature_predicates.put(self.gpa, new_sig, predicate);
+        }
         try self.copySignatureNullishArrayDefaults(new_sig, sig);
         const recorded_node_params = try self.recordFunctionNodeGenericSignatureParams(new_sig, fn_node);
         if (!recorded_node_params) if (self.generic_signature_params.get(sig)) |type_params| {
@@ -33882,6 +33950,10 @@ pub const Checker = struct {
         // so call sites can narrow the argument.
         const is_predicate = f.return_type != hir_mod.none_node_id and
             self.hir.kindOf(f.return_type) == .type_predicate_type;
+        const jsdoc_predicate = if (!is_predicate)
+            try self.jsDocPredicateForFunction(node, params)
+        else
+            null;
         if (is_predicate) {
             try self.checkTypePredicateConstraints(f.return_type, params);
         }
@@ -33907,6 +33979,8 @@ pub const Checker = struct {
                 types.Primitive.any
             else
                 try self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type))
+        else if (jsdoc_predicate) |pred|
+            if (pred.is_asserts) types.Primitive.void_t else types.Primitive.boolean_t
         else if (jsdoc_context_sig) |sig|
             if (contextual_jsdoc_is_async_target)
                 types.Primitive.any
@@ -34065,6 +34139,12 @@ pub const Checker = struct {
             };
             try self.fn_predicates.put(self.gpa, fn_name, fn_pred);
             try self.signature_predicates.put(self.gpa, sig, fn_pred);
+        }
+        if (jsdoc_predicate) |pred| {
+            try self.signature_predicates.put(self.gpa, sig, pred);
+            if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                try self.fn_predicates.put(self.gpa, hir_mod.identifierOf(self.hir, f.name).name, pred);
+            }
         }
         return sig;
     }
@@ -83028,12 +83108,15 @@ pub const Checker = struct {
         }
         try self.checkRepeatedVarDeclaration(node, final_type);
 
-        // Aliased conditional narrowing: `let cond = obj.kind === "x"`.
+        // Aliased conditional narrowing: `const cond = obj.kind === "x"`.
         // Record `cond -> guard_expr_node` so a subsequent `if (cond)`
-        // applies the original guard. Only fires for `const`/`let`-style
-        // bindings whose init is a recognizably-narrowing expression.
-        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and
-            v.init != hir_mod.none_node_id and isNarrowingGuard(self.hir, v.init))
+        // applies the original guard. TypeScript only preserves this flow for
+        // unannotated const bindings whose guarded references remain stable.
+        if (self.hir.kindOf(node) == .const_decl and
+            v.type_annotation == hir_mod.none_node_id and
+            v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and
+            v.init != hir_mod.none_node_id and isNarrowingGuard(self, v.init) and
+            try self.aliasedGuardReferencesAreStable(v.init))
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
             try self.cond_aliases.put(self.gpa, id.name, v.init);
@@ -87556,6 +87639,8 @@ pub const Checker = struct {
             var close_pos = wrapper_end;
             while (close_pos < src.len and std.ascii.isWhitespace(src[close_pos])) : (close_pos += 1) {}
             if (close_pos >= src.len or src[close_pos] != ')') break;
+            const matching_close = sourceMatchingParen(src, open_pos) orelse break;
+            if (matching_close != close_pos) break;
 
             var comment_end = open_pos;
             while (comment_end > 0 and std.ascii.isWhitespace(src[comment_end - 1])) : (comment_end -= 1) {}
@@ -87612,6 +87697,63 @@ pub const Checker = struct {
             wrapper_end = close_pos + 1;
         }
         return if (found) result_t else null;
+    }
+
+    fn inlineJsDocCastTypeForMemberReceiver(
+        self: *Checker,
+        member_node: NodeId,
+        receiver_node: NodeId,
+        base_t: TypeId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.source_has_virtual_sections and !self.virtualSectionIsJsLike(member_node)) return null;
+        const src = self.source orelse return null;
+        const name_pos: usize = @intCast(self.memberAccessNamePos(member_node) orelse return null);
+        if (name_pos == 0 or name_pos > src.len) return null;
+
+        var close_after = name_pos;
+        while (close_after > 0 and std.ascii.isWhitespace(src[close_after - 1])) : (close_after -= 1) {}
+        if (close_after == 0 or src[close_after - 1] != '.') return null;
+        var close_pos = close_after - 1;
+        while (close_pos > 0 and std.ascii.isWhitespace(src[close_pos - 1])) : (close_pos -= 1) {}
+        if (close_pos == 0 or src[close_pos - 1] != ')') return null;
+        close_pos -= 1;
+
+        const receiver_span = self.hir.spanOf(receiver_node);
+        const search_start: usize = @min(@as(usize, receiver_span.start), close_pos);
+        var open_pos = search_start;
+        var found_open = false;
+        while (open_pos > 0) {
+            open_pos -= 1;
+            if (close_pos - open_pos > 512) break;
+            if (src[open_pos] == '(' and sourceMatchingParen(src, open_pos) == close_pos) {
+                found_open = true;
+                break;
+            }
+        }
+        if (!found_open) return null;
+
+        var comment_end = open_pos;
+        while (comment_end > 0 and std.ascii.isWhitespace(src[comment_end - 1])) : (comment_end -= 1) {}
+        if (comment_end < 2 or !std.mem.eql(u8, src[comment_end - 2 .. comment_end], "*/")) return null;
+        const body_end = comment_end - 2;
+        const comment_start = std.mem.lastIndexOf(u8, src[0..body_end], "/**") orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, src[comment_start + 3 .. body_end]) catch return null;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag or tag.type_text.len == 0) continue;
+            const type_text = jsDocTrimOuterParens(std.mem.trim(u8, tag.type_text, " \t\r\n"));
+            if (type_text.len == 0 or jsDocTypeTextIsPredicate(type_text) or std.mem.eql(u8, type_text, "const")) return null;
+            const target_t = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, receiver_node)) orelse return null;
+            try self.checkTypeAssertionOverlapAt(
+                receiver_node,
+                base_t,
+                target_t,
+                self.sliceStartPos(src, tag.type_text),
+            );
+            return target_t;
+        }
+        return null;
     }
 
     fn jsDocTypeTextIsPredicate(type_text: []const u8) bool {
@@ -101870,9 +102012,16 @@ pub const Checker = struct {
                     }
                 } else {
                     obj_t = try self.checkExpression(m.object);
+                    if (self.hir.kindOf(m.object) == .identifier) {
+                        const object_id = hir_mod.identifierOf(self.hir, m.object);
+                        if (self.lookupNarrow(object_id.name)) |flow_t| obj_t = flow_t;
+                    }
                     if (self.hir.kindOf(m.object) == .literal_string) {
                         const literal = hir_mod.literalStringOf(self.hir, m.object);
                         obj_t = self.interner.internStringLiteral(literal.value) catch return error.OutOfMemory;
+                    }
+                    if (try self.inlineJsDocCastTypeForMemberReceiver(node, m.object, obj_t)) |cast_t| {
+                        obj_t = cast_t;
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
@@ -102897,6 +103046,13 @@ pub const Checker = struct {
                     }
                     if (try self.maybeReportGenericIndexedWrite(node, obj_t, idx_t)) {
                         break :blk types.Primitive.any;
+                    }
+                }
+                if (!self.checking_element_write_target) {
+                    if (try self.elementAccessNarrowKey(node)) |key| {
+                        if (self.lookupMemberNarrow(key)) |narrowed_t| {
+                            break :blk try self.optionalChainResult(narrowed_t, element_is_optional_chain);
+                        }
                     }
                 }
                 if (try self.unionTupleLiteralIndexAccess(index_receiver_t, union_tuple_idx_t)) |access| {
@@ -116084,13 +116240,7 @@ pub const Checker = struct {
 
     fn assertionCallTargetUnannotatedName(self: *Checker, callee: NodeId) ?NodeId {
         return switch (self.hir.kindOf(callee)) {
-            .identifier => blk: {
-                const id = hir_mod.identifierOf(self.hir, callee);
-                if (self.fn_predicates.get(id.name)) |pred| {
-                    if (pred.is_asserts) break :blk null;
-                }
-                break :blk self.visibleUnannotatedVariableIdentifierNode(callee);
-            },
+            .identifier => self.visibleUnannotatedVariableIdentifierNode(callee),
             .this_expr => null,
             .member_access => blk: {
                 const object = hir_mod.memberOf(self.hir, callee).object;
@@ -116418,13 +116568,9 @@ pub const Checker = struct {
             return true;
         }
         if (self.hir.kindOf(expr) == .member_access) {
-            const m = hir_mod.memberOf(self.hir, expr);
-            if (self.hir.kindOf(m.object) != .identifier) return false;
-            const obj_id = hir_mod.identifierOf(self.hir, m.object);
-            const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
-            const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
+            const key = self.identifierRootedMemberKey(expr) orelse return false;
             const current = self.lookupMemberNarrow(key) orelse
-                ((try self.lookupObjectMember(obj_t, m.name)) orelse self.hir.typeOf(expr));
+                (try self.identifierRootedMemberStaticType(expr)) orelse self.hir.typeOf(expr);
             if (current == types.Primitive.none) return false;
             const narrowed = if (when_true)
                 try self.narrowTypeByPredicate(current, target)
@@ -117037,39 +117183,30 @@ pub const Checker = struct {
                 }
             }
         }
-        // `if (isFoo(x))` ÃÂ¢ÃÂÃÂ type-predicate call narrowing. When the
-        // condition is a call to a predicate function and the argument
-        // at the predicate's parameter index is an identifier, narrow
-        // the identifier in the then-branch to the predicate's target
-        // type (or subtract it in the else-branch).
+        // `if (isFoo(x))` and `if (Utils.isDefined(this.value))` predicate
+        // narrowing. Resolve the predicate from the callee expression and
+        // narrow either an identifier or a stable member reference.
         if (self.hir.kindOf(cond) == .call_expr) {
             const c = hir_mod.callOf(self.hir, cond);
-            if (self.hir.kindOf(c.callee) == .identifier) {
-                const callee_id = hir_mod.identifierOf(self.hir, c.callee);
-                if (self.fn_predicates.get(callee_id.name)) |pred| {
-                    const args = hir_mod.callArgs(self.hir, cond);
-                    if (pred.param_index < args.len) {
-                        const arg = args[pred.param_index];
-                        if (self.hir.kindOf(arg) == .identifier) {
-                            const arg_id = hir_mod.identifierOf(self.hir, arg);
-                            const target = try self.instantiatePredicateTarget(cond, pred);
-                            if (when_true) {
-                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
-                                const narrowed = if (self.typeIsAnyLike(current) and
-                                    (self.predicateTargetNodeIsBareName(pred.target_node, "Object") or
-                                        self.predicateTargetNodeIsBareName(pred.target_node, "Function")))
-                                    current
-                                else
-                                    try self.narrowTypeByPredicate(current, target);
-                                try self.recordNarrow(arg_id.name, narrowed);
-                            } else {
-                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
-                                const narrowed = self.subtractTypeByPredicate(current, target) catch current;
-                                try self.recordNarrow(arg_id.name, narrowed);
-                            }
+            var callee_t = self.hir.typeOf(c.callee);
+            if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
+            if (try self.assignmentExpressionPredicate(c.callee, callee_t)) |pred| {
+                const args = hir_mod.callArgs(self.hir, cond);
+                if (pred.param_index < args.len) {
+                    const arg = args[pred.param_index];
+                    const target = try self.instantiatePredicateTarget(cond, pred);
+                    if (self.hir.kindOf(arg) == .identifier and when_true) {
+                        const arg_id = hir_mod.identifierOf(self.hir, arg);
+                        const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
+                        if (self.typeIsAnyLike(current) and
+                            (self.predicateTargetNodeIsBareName(pred.target_node, "Object") or
+                                self.predicateTargetNodeIsBareName(pred.target_node, "Function")))
+                        {
+                            try self.recordNarrow(arg_id.name, current);
                             return;
                         }
                     }
+                    if (try self.recordPredicateNarrowForExpression(arg, target, when_true)) return;
                 }
             }
         }
@@ -117754,6 +117891,12 @@ pub const Checker = struct {
         if (try self.staticStringValue(element.index)) |property_name| {
             return .{ .obj_name = object_name, .prop_name = property_name };
         }
+        if (self.hir.kindOf(element.index) == .literal_number) {
+            return .{
+                .obj_name = object_name,
+                .prop_name = try self.enumNumberToStringId(hir_mod.literalNumberOf(self.hir, element.index)),
+            };
+        }
         if (self.hir.kindOf(element.index) != .identifier) return null;
 
         const index_name = hir_mod.identifierOf(self.hir, element.index).name;
@@ -117914,8 +118057,12 @@ pub const Checker = struct {
     /// later `if (t === lit)` narrows the referenced object. Mirrors
     /// `controlFlowAliasing2`.
     fn recordDiscriminantAliases(self: *Checker, node: NodeId, v: hir_mod.VarDeclPayload) CheckError!void {
-        _ = node;
-        if (v.init == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(node) != .const_decl or
+            v.type_annotation != hir_mod.none_node_id or
+            v.init == hir_mod.none_node_id)
+        {
+            return;
+        }
         // Shape 1: `const t = obj.kind`.
         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and
             self.hir.kindOf(v.init) == .member_access and self.memberAccessHasNarrowableObject(v.init))
@@ -117925,28 +118072,105 @@ pub const Checker = struct {
             try self.disc_aliases.put(self.gpa, id.name, .{ .object = m.object, .prop = m.name });
             return;
         }
-        // Shape 2: `const { kind: t } = obj` (renamed object-destructuring).
-        // Each rename pair is an `is_rename_binding_key` parameter (key in
-        // `default_value`) followed by the binding target.
+        // Shape 2: `const { kind } = obj` and `const { kind: t } = obj`.
         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .object_pattern and
             self.nodeIsNarrowableReference(v.init))
         {
             const elems = hir_mod.patternElements(self.hir, v.name);
-            var i: usize = 0;
-            while (i + 1 < elems.len) : (i += 1) {
-                if (self.hir.kindOf(elems[i]) != .parameter) continue;
-                const kp = hir_mod.parameterOf(self.hir, elems[i]);
-                if (!kp.flags.is_rename_binding_key) continue;
-                if (kp.default_value == hir_mod.none_node_id or
-                    self.hir.kindOf(kp.default_value) != .identifier) continue;
-                const key_name = hir_mod.identifierOf(self.hir, kp.default_value).name;
-                if (self.hir.kindOf(elems[i + 1]) != .parameter) continue;
-                const tp = hir_mod.parameterOf(self.hir, elems[i + 1]);
-                if (tp.name == hir_mod.none_node_id or self.hir.kindOf(tp.name) != .identifier) continue;
-                const target_name = hir_mod.identifierOf(self.hir, tp.name).name;
+            for (elems) |elem| {
+                if (self.hir.kindOf(elem) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, elem);
+                if (p.flags.is_rename_binding_key or p.name == hir_mod.none_node_id or
+                    self.hir.kindOf(p.name) != .identifier) continue;
+                const key_name = (try self.objectBindingElementKeyName(elem, p.name)) orelse continue;
+                const target_name = hir_mod.identifierOf(self.hir, p.name).name;
                 try self.disc_aliases.put(self.gpa, target_name, .{ .object = v.init, .prop = key_name });
             }
         }
+    }
+
+    fn memberReferenceIsReadonlyStable(self: *Checker, node: NodeId) CheckError!bool {
+        if (self.hir.kindOf(node) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, node);
+        const object_kind = self.hir.kindOf(member.object);
+        if (object_kind == .member_access and !try self.memberReferenceIsReadonlyStable(member.object)) return false;
+        if (object_kind != .identifier and object_kind != .this_expr and object_kind != .member_access) return false;
+
+        var object_t = self.hir.typeOf(member.object);
+        if (object_t == types.Primitive.none) object_t = try self.checkExpression(member.object);
+        if (self.typeUnionHasReadonlyMember(object_t, member.name)) return true;
+        if (self.nodeIsThisReference(member.object)) {
+            const class_node = self.enclosingClassNode(node);
+            if (class_node != hir_mod.none_node_id and self.classDeclaresReadonlyMember(class_node, member.name)) return true;
+        }
+        return false;
+    }
+
+    fn guardAccessObjectIsStable(self: *Checker, access: NodeId) CheckError!bool {
+        return switch (self.hir.kindOf(access)) {
+            .member_access => blk: {
+                const object = hir_mod.memberOf(self.hir, access).object;
+                break :blk switch (self.hir.kindOf(object)) {
+                    .identifier, .this_expr => true,
+                    .member_access => try self.memberReferenceIsReadonlyStable(object),
+                    else => false,
+                };
+            },
+            .element_access => blk: {
+                const object = hir_mod.elementOf(self.hir, access).object;
+                break :blk self.hir.kindOf(object) == .identifier or self.hir.kindOf(object) == .this_expr;
+            },
+            else => true,
+        };
+    }
+
+    fn guardReferencesAssignedIdentifier(self: *Checker, guard: NodeId) bool {
+        const fn_node = self.enclosingFunctionLike(guard) orelse return false;
+        const body = hir_mod.fnDeclOf(self.hir, fn_node).body;
+        if (body == hir_mod.none_node_id) return false;
+        const guard_span = self.hir.spanOf(guard);
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .identifier) continue;
+            const span = self.hir.spanOf(candidate);
+            if (span.start < guard_span.start or span.end > guard_span.end) continue;
+            const name = hir_mod.identifierOf(self.hir, candidate).name;
+            if (self.nodeAssignsIdentifier(body, name)) return true;
+        }
+        return false;
+    }
+
+    fn aliasedGuardReferencesAreStable(self: *Checker, node: NodeId) CheckError!bool {
+        if (self.guardReferencesAssignedIdentifier(node)) return false;
+        return switch (self.hir.kindOf(node)) {
+            .logical_op => blk: {
+                const logical = hir_mod.logicalOf(self.hir, node);
+                break :blk try self.aliasedGuardReferencesAreStable(logical.lhs) and
+                    try self.aliasedGuardReferencesAreStable(logical.rhs);
+            },
+            .binary_op => blk: {
+                const binary = hir_mod.binopOf(self.hir, node);
+                const lhs = if (self.hir.kindOf(binary.lhs) == .unary_op and
+                    hir_mod.unaryOf(self.hir, binary.lhs).op == .typeof)
+                    hir_mod.unaryOf(self.hir, binary.lhs).operand
+                else
+                    binary.lhs;
+                const rhs = if (self.hir.kindOf(binary.rhs) == .unary_op and
+                    hir_mod.unaryOf(self.hir, binary.rhs).op == .typeof)
+                    hir_mod.unaryOf(self.hir, binary.rhs).operand
+                else
+                    binary.rhs;
+                break :blk try self.guardAccessObjectIsStable(lhs) and try self.guardAccessObjectIsStable(rhs);
+            },
+            .call_expr => blk: {
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.hir.kindOf(arg) == .member_access and
+                        !try self.memberReferenceIsReadonlyStable(arg)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => true,
+        };
     }
 
     fn directDependentBindingIdentifier(self: *Checker, node: NodeId) ?NodeId {
@@ -118109,8 +118333,12 @@ pub const Checker = struct {
             segment_count += 1;
             current = member.object;
         }
-        if (self.hir.kindOf(current) != .identifier or segment_count == 0) return null;
-        const root_name = hir_mod.identifierOf(self.hir, current).name;
+        if (segment_count == 0) return null;
+        const root_name = switch (self.hir.kindOf(current)) {
+            .identifier => hir_mod.identifierOf(self.hir, current).name,
+            .this_expr => self.string_interner.intern("this") catch return null,
+            else => return null,
+        };
         if (segment_count == 1) return .{ .obj_name = root_name, .prop_name = segments[0] };
 
         var path_buf: [1024]u8 = undefined;
@@ -136830,10 +137058,23 @@ pub const Checker = struct {
         if (std.mem.eql(u8, self.string_interner.get(name), "prototype") and
             self.checkJsPrototypeAccessHasFunctionOwner(node)) return;
         const name_str = self.string_interner.get(name);
+        var rendered_target = target_text;
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, target_text, " \t\r\n"), "{") and
+            std.mem.indexOf(u8, target_text, " | ") != null and
+            self.hir.kindOf(node) == .member_access)
+        {
+            const receiver = hir_mod.memberOf(self.hir, node).object;
+            const receiver_t = self.hir.typeOf(receiver);
+            if (receiver_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(receiver_t).is_union)
+            {
+                rendered_target = (try self.allocDiagnosticUnionDisplayName(self.interner.unionMembers(receiver_t))) orelse target_text;
+            }
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' does not exist on type '{s}'.",
-            .{ name_str, target_text },
+            .{ name_str, rendered_target },
         );
         if (self.sourceHasCommonJsReexportAlias() and
             self.diagnosticExistsWithMessage(node, TsCodes.property_does_not_exist, msg)) return;
@@ -137492,6 +137733,17 @@ pub const Checker = struct {
             !self.alias_display_names.contains(target_t))
         {
             try self.registerDiagnosticUnionDisplayName(target_t, self.interner.unionMembers(target_t));
+        }
+        if (target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_union)
+        {
+            if (self.alias_display_names.get(target_t)) |display| {
+                if (std.mem.startsWith(u8, std.mem.trimStart(u8, display, " \t\r\n"), "{")) {
+                    if (try self.allocDiagnosticUnionDisplayName(self.interner.unionMembers(target_t))) |canonical| {
+                        return canonical;
+                    }
+                }
+            }
         }
         if (try self.allocSimpleTypeName(target_t)) |name| return name;
         if (self.alias_display_names.get(target_t)) |name| return name;
@@ -162943,7 +163195,7 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
-            .pos = self.varDeclNameDiagnosticPos(node) orelse self.hir.spanOf(init_node).start,
+            .pos = self.varDeclNameDiagnosticPos(node) orelse self.hir.spanOf(node).start,
             .code = TsCodes.type_not_assignable,
             .message = msg,
             .chain = self.buildAssignmentAssignabilityElaborationChain(source, target) catch &.{},
@@ -162971,6 +163223,9 @@ pub const Checker = struct {
         else
             try self.checkExpression(e.index);
         if (object_t == types.Primitive.none or index_t == types.Primitive.none) return null;
+        if (try self.resolveObjectIndexedAccessType(object_t, index_t)) |resolved_t| {
+            if (try self.allocAssignmentDiagnosticTypeName(resolved_t)) |resolved_name| return resolved_name;
+        }
         const object_name = (try self.elementAccessOperandAnnotationName(e.object)) orelse
             (try self.allocAssignmentDiagnosticTypeName(object_t)) orelse
             (try self.allocObjectTypeShape(object_t)) orelse
@@ -174333,16 +174588,22 @@ fn mergeVariance(a: types.Variance, b: types.Variance) types.Variance {
     return @enumFromInt(@intFromEnum(a) | @intFromEnum(b));
 }
 
-/// Recognise expressions that produce control-flow narrowing when
-/// used as conditions. Used by `cond_aliases` to decide whether to
-/// record `let cond = <expr>` for later aliased-narrow expansion.
-fn isNarrowingGuard(hir: *const Hir, node: NodeId) bool {
-    const k = hir.kindOf(node);
+/// Recognise expressions that produce control-flow narrowing when used as
+/// conditions, including compound expressions built from earlier aliases.
+fn isNarrowingGuard(self: *Checker, node: NodeId) bool {
+    const k = self.hir.kindOf(node);
     if (k == .call_expr) return true; // could be a predicate call
+    if (k == .identifier) {
+        return self.cond_aliases.contains(hir_mod.identifierOf(self.hir, node).name);
+    }
+    if (k == .logical_op) {
+        const logical = hir_mod.logicalOf(self.hir, node);
+        return isNarrowingGuard(self, logical.lhs) or isNarrowingGuard(self, logical.rhs);
+    }
     if (k != .binary_op) return false;
-    const b = hir_mod.binopOf(hir, node);
+    const b = hir_mod.binopOf(self.hir, node);
     return switch (b.op) {
-        .eq_strict, .neq_strict, .instanceof, .in => true,
+        .eq, .neq, .eq_strict, .neq_strict, .instanceof, .in => true,
         else => false,
     };
 }
@@ -199105,7 +199366,7 @@ test "checker: aliased conditional narrows via stored guard" {
     const s = try newSetup(
         \\function isString(x: any): x is string { return true; }
         \\function f(x: any) {
-        \\  let cond = isString(x);
+        \\  const cond = isString(x);
         \\  if (cond) {
         \\    let s = x;
         \\  }
@@ -199117,7 +199378,7 @@ test "checker: aliased conditional narrows via stored guard" {
     const fn_node = stmts[1];
     const f = hir_mod.fnDeclOf(&s.hir, fn_node);
     const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
-    // body_stmts[0] = let cond = isString(x)
+    // body_stmts[0] = const cond = isString(x)
     // body_stmts[1] = if (cond) { let s = x; }
     const if_stmt = body_stmts[1];
     const ifp = hir_mod.ifOf(&s.hir, if_stmt);
@@ -199255,6 +199516,129 @@ test "checker: explicitly annotated assertion aliases are accepted" {
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assertion_call_target_needs_explicit_annotations));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assertion_call_target_must_be_qualified_name));
+}
+
+test "checker: tsgo alias checkjs assertion arrow requires an explicit variable annotation" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: assertion.js
+        \\/** @typedef {{ x: number }} A */
+        \\/** @typedef {A & { y: number }} B */
+        \\/**
+        \\ * @param {A} a
+        \\ * @returns {asserts a is B}
+        \\ */
+        \\const assertB = (a) => {
+        \\  if (/** @type {B} */ (a).y !== 0) throw TypeError();
+        \\  return undefined;
+        \\};
+        \\/** @type {A} */
+        \\const a = { x: 1 };
+        \\assertB(a);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.assertion_call_target_needs_explicit_annotations));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: tsgo alias compound conditional preserves both branch partitions" {
+    const s = try newSetup(
+        \\function f(x: string | number | boolean) {
+        \\  const isString = typeof x === "string";
+        \\  const isNumber = typeof x === "number";
+        \\  const isStringOrNumber = isString || isNumber;
+        \\  if (isStringOrNumber) {
+        \\    const value: string | number = x;
+        \\  } else {
+        \\    const value: boolean = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: tsgo alias requires immutable unannotated bindings and stable paths" {
+    const s = try newSetup(
+        \\type U = { kind: "foo", foo: string } | { kind: "bar", bar: number };
+        \\function annotated(obj: U) {
+        \\  const isFoo: boolean = obj.kind === "foo";
+        \\  if (isFoo) obj.foo; else obj.bar;
+        \\}
+        \\function mutable(obj: U) {
+        \\  let isFoo = obj.kind === "foo";
+        \\  if (isFoo) obj.foo; else obj.bar;
+        \\}
+        \\function nested(outer: { obj: U }) {
+        \\  const isFoo = outer.obj.kind === "foo";
+        \\  if (isFoo) outer.obj.foo; else outer.obj.bar;
+        \\}
+        \\function readonlyNested(outer: { readonly obj: U }) {
+        \\  const isFoo = outer.obj.kind === "foo";
+        \\  if (isFoo) outer.obj.foo; else outer.obj.bar;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: tsgo alias tuple and switch narrow their original references" {
+    const s = try newSetup(
+        \\type U = { kind: "foo", foo: string } | { kind: "bar", bar: number };
+        \\function tupleStable(obj: readonly [string | number]) {
+        \\  const isString = typeof obj[0] === "string";
+        \\  if (isString) { const value: string = obj[0]; }
+        \\}
+        \\function tupleAssigned(obj: readonly [string | number]) {
+        \\  const isString = typeof obj[0] === "string";
+        \\  obj = [42];
+        \\  if (isString) { const value: string = obj[0]; }
+        \\}
+        \\function switched(obj: U) {
+        \\  const { kind } = obj;
+        \\  switch (kind) {
+        \\    case "foo": obj.foo; break;
+        \\    case "bar": obj.bar; break;
+        \\  }
+        \\}
+        \\function mixed(obj: { kind: "foo", foo?: string } | { kind: "bar", bar?: number }) {
+        \\  const { kind } = obj;
+        \\  const isFoo = kind == "foo";
+        \\  if (isFoo && obj.foo) { const value: string = obj.foo; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: tsgo alias predicate narrows readonly member arguments" {
+    const s = try newSetup(
+        \\class Utils {
+        \\  static isDefined(value: number | undefined): value is number { return value !== undefined; }
+        \\}
+        \\class Container {
+        \\  readonly value: number | undefined;
+        \\  check() {
+        \\    const isNumber = Utils.isDefined(this.value);
+        \\    if (isNumber) { const value: number = this.value; }
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2776 assertion calls require qualified-name targets" {
