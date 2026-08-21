@@ -66464,18 +66464,38 @@ const harness_prelude =
     \\      return null;
     \\    }
     \\}
-    \\function __home_jwt_sign(payload, secret, options) {
-    \\  const opts = options || {};
+    \\function __home_jwt_sign_failure(error, options) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const algorithm = String(options && options.algorithm || "HS256"); const failure = new Error(String(cause.message || cause));
+    \\  failure.name = cause.name || "Error"; failure.code = cause.code || "ERR_JWT_SIGN"; failure.algorithm = algorithm; failure.operation = "jsonwebtoken.sign"; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at jsonwebtoken.sign (algorithm " + algorithm + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_jwt_sign_core(payload, secret, options) {
+    \\  const opts = options || {}; const algorithm = String(opts.algorithm || "HS256");
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresInSeconds")) throw new Error('"expiresInSeconds" is not allowed');
+    \\  if (!secret && algorithm !== "none") throw new Error("secretOrPrivateKey must have a value");
+    \\  if (/^(?:RS|PS)/.test(algorithm)) {
+    \\    if (!secret || !secret.__home_key_object || String(secret.asymmetricKeyType || "").toLowerCase() !== "rsa") throw new Error("secretOrPrivateKey must be an asymmetric RSA key");
+    \\    const modulusLength = Number(secret.asymmetricKeyDetails && secret.asymmetricKeyDetails.modulusLength || 0);
+    \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
+    \\  }
+    \\  if (opts.notBefore !== undefined && typeof opts.notBefore !== "number" && typeof opts.notBefore !== "string") throw new Error('"notBefore" should be a number of seconds or string representing a timespan');
+    \\  if ((typeof payload === "string" || typeof payload === "number" || typeof payload === "boolean") && opts.noTimestamp) throw new Error("invalid noTimestamp option for non-object payload");
     \\  let body = payload && typeof payload.toString === "function" && payload.constructor && payload.constructor.name === "Buffer" ? payload.toString() : payload;
     \\  if (body && typeof body === "object" && !Array.isArray(body)) {
-    \\    body = Object.assign({}, body);
-    \\    if (opts.expiresIn === "5m") body.exp = Math.floor(Date.now() / 1000) + 5 * 60;
-    \\    else if (typeof opts.expiresIn === "number") body.exp = Math.floor(Date.now() / 1000) + opts.expiresIn;
+    \\    body = opts.mutatePayload === true ? body : Object.assign({}, body); const now = Math.floor(Date.now() / 1000);
+    \\    if (typeof opts.notBefore === "number") body.nbf = now + opts.notBefore;
+    \\    if (opts.expiresIn === "5m") body.exp = now + 5 * 60;
+    \\    else if (typeof opts.expiresIn === "number") body.exp = now + opts.expiresIn;
     \\  }
-    \\  const header = Object.assign({ alg: "HS256", typ: "JWT" }, opts.header || {});
-    \\  const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
+    \\  const header = Object.assign({ alg: algorithm, typ: "JWT" }, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
+    \\}
+    \\function __home_jwt_sign(payload, secret, options, callback) {
+    \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
+    \\  try { const token = __home_jwt_sign_core(payload, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, token)); return undefined; } return token; }
+    \\  catch (error) { const failure = __home_jwt_sign_failure(error, options); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
     \\}
     \\function __home_jwt_verify(token, secret, callback) {
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided");
@@ -66497,6 +66517,7 @@ const harness_prelude =
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
     \\};
+    \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; } };
     \\function __home_install_url_search_params_constructor_contract() {
     \\  if (typeof URLSearchParams !== "function" || URLSearchParams.__home_constructor_normalized) return;
     \\  const __home_NativeURLSearchParams = URLSearchParams;
@@ -75962,6 +75983,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import jwt from \"jsonwebtoken\";",
             .replacement = "const jwt = globalThis.__home_import(\"jsonwebtoken\");",
+        },
+        .{
+            .needle = "import jws from \"jws\";",
+            .replacement = "const jws = globalThis.__home_import(\"jws\");",
+        },
+        .{
+            .needle = "import { generateKeyPairSync } from \"crypto\";",
+            .replacement = "const { generateKeyPairSync } = globalThis.__home_import(\"crypto\");",
         },
         .{
             .needle = "import crypto from \"crypto\";",
@@ -103586,6 +103615,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/hono/hello-world-fixture.test.ts", .passed = 1 },
         .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
         .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103630,6 +103660,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { expect, test } from "bun:test";
         \\import { Hono } from "hono";
         \\import http2Wrapper from "http2-wrapper";
+        \\import jwt from "jsonwebtoken";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
         \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
@@ -103653,6 +103684,16 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("http2-wrapper.auto (ftp://example.test:21");
         \\  expect(caught.stack).toContain("Caused by: RangeError: Unsupported protocol ftp:");
         \\});
+        \\test("jsonwebtoken async errors retain signing context", async () => {
+        \\  let caught;
+        \\  await new Promise(resolve => jwt.sign({ value: 1 }, "not-a-key", { algorithm: "RS256" }, error => { caught = error; resolve(); }));
+        \\  expect(caught.code).toBe("ERR_JWT_SIGN");
+        \\  expect(caught.algorithm).toBe("RS256");
+        \\  expect(caught.operation).toBe("jsonwebtoken.sign");
+        \\  expect(caught.cause.message).toContain("asymmetric RSA key");
+        \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm RS256");
+        \\  expect(caught.stack).toContain("Caused by: Error: secretOrPrivateKey must be an asymmetric RSA key");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103664,7 +103705,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
