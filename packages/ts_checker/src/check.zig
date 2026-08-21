@@ -38827,6 +38827,7 @@ pub const Checker = struct {
             // Upstream checks every class member through `checkSourceElement`,
             // which gives each member an independent instantiation budget.
             self.instantiation_count = 0;
+            try self.checkJsOnlyClassMemberSyntax(m);
             try self.checkStaticMemberTypeParameterUse(m, type_params);
             switch (self.hir.kindOf(m)) {
                 .index_signature => {
@@ -84236,6 +84237,30 @@ pub const Checker = struct {
             TsCodes.ts_only_signature_decl_in_js,
             "Signature declarations can only be used in TypeScript files.",
         );
+    }
+
+    fn checkJsOnlyClassMemberSyntax(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.virtualSectionIsJsLike(node)) return;
+        switch (self.hir.kindOf(node)) {
+            .index_signature => try self.reportAt(
+                node,
+                self.hir.spanOf(node).start,
+                TsCodes.ts_only_signature_decl_in_js,
+                "Signature declarations can only be used in TypeScript files.",
+            ),
+            .object_property => {
+                if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+                const property = hir_mod.objectPropertyOf(self.hir, node);
+                if (property.is_method or property.type_annotation == hir_mod.none_node_id) return;
+                try self.reportAt(
+                    property.type_annotation,
+                    self.hir.spanOf(property.type_annotation).start,
+                    TsCodes.ts_only_type_annotation_in_js,
+                    "Type annotations can only be used in TypeScript files.",
+                );
+            },
+            else => {},
+        }
     }
 
     /// parserArrowFunctionExpression10/13/14/15/16/17: emit TS8010 for
@@ -219494,6 +219519,24 @@ test "checker: checkjs self-referential JSDoc type on function emits TS8030" {
         );
     }
     try T.expect(found);
+}
+
+test "checker: checked JS class members reject TypeScript-only type syntax" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\class C {
+        \\  field: string;
+        \\  other: number;
+        \\  [key: string]: string;
+        \\  [index: number]: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.ts_only_type_annotation_in_js));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.ts_only_signature_decl_in_js));
 }
 
 test "checker: checkjs Closure-style function @type reports TS8030 and TS1005" {
