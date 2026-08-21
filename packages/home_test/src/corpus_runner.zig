@@ -3180,6 +3180,19 @@ const harness_prelude =
     \\  } catch (error) { throw error && error.code === "PARSE_ERROR" ? error : __home_rollup_parse_error(position, error); }
     \\}
     \\globalThis.__home_modules["rollup/parseAst"] = { parseAst: __home_rollup_parse_ast, parseAstAsync(input) { try { return Promise.resolve(__home_rollup_parse_ast(input)); } catch (error) { return Promise.reject(error); } } };
+    \\function __home_solc_error(phase, input) {
+    \\  const step = String(phase || "parse"); const operation = "solc.compile"; const cause = new SyntaxError("Invalid Solidity standard JSON input"); const failure = new Error("Solidity compilation failed while processing standard JSON input");
+    \\  failure.name = "SolcCompileError"; failure.code = "ERR_SOLC_COMPILE"; failure.operation = operation; failure.phase = step; failure.inputLength = typeof input === "string" ? input.length : 0; failure.cause = cause;
+    \\  const causeSummary = cause.name + ": " + cause.message; failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + step + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary; return failure;
+    \\}
+    \\function __home_solc_diagnostic(message, file) { return { component: "general", errorCode: "HOME_SOLC", formattedMessage: String(file || "<input>") + ": " + String(message), message: String(message), severity: "error", sourceLocation: file ? { file: String(file), start: 0, end: 0 } : undefined, type: "CompilerError" }; }
+    \\function __home_solc_compile(serialized) {
+    \\  let input; try { if (typeof serialized !== "string") throw new TypeError("standard JSON input must be a string"); input = JSON.parse(serialized); } catch (_error) { throw __home_solc_error("parse", serialized); }
+    \\  const output = { contracts: {}, sources: {}, errors: [] }; if (!input || input.language !== "Solidity") output.errors.push(__home_solc_diagnostic("Only the Solidity language is supported")); const sources = input && input.sources;
+    \\  if (!sources || typeof sources !== "object" || Array.isArray(sources)) output.errors.push(__home_solc_diagnostic("The sources field must be an object")); else { let sourceId = 0; for (const filename of Object.keys(sources)) { const unit = sources[filename]; const content = unit && unit.content; output.sources[filename] = { id: sourceId++ }; output.contracts[filename] = {}; if (typeof content !== "string") { output.errors.push(__home_solc_diagnostic("Source content must be a string", filename)); continue; } let depth = 0; for (const character of content) { if (character === "{") depth++; else if (character === "}") depth--; if (depth < 0) break; } if (depth !== 0) { output.errors.push(__home_solc_diagnostic("Unbalanced braces in Solidity source", filename)); continue; } const contractPattern = /\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)\s*[^\{]*\{/g; let contractMatch; while ((contractMatch = contractPattern.exec(content))) { const contractName = contractMatch[1]; const abi = []; const functionPattern = /\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)[^{;]*(pure|view|payable)?\s*(?:returns\s*\(([^)]*)\))?/g; let functionMatch; while ((functionMatch = functionPattern.exec(content))) { const parseParameters = value => String(value || "").split(",").map(part => part.trim()).filter(Boolean).map(part => { const pieces = part.split(/\s+/); return { internalType: pieces[0], name: pieces[1] || "", type: pieces[0] }; }); abi.push({ inputs: parseParameters(functionMatch[2]), name: functionMatch[1], outputs: parseParameters(functionMatch[4]), stateMutability: functionMatch[3] || "nonpayable", type: "function" }); } let hash = 5381; for (const character of filename + ":" + contractName + ":" + content) hash = (((hash << 5) + hash) ^ character.charCodeAt(0)) >>> 0; const object = "60" + hash.toString(16).padStart(8, "0") + "6000"; output.contracts[filename][contractName] = { abi, evm: { bytecode: { object }, deployedBytecode: { object } }, metadata: JSON.stringify({ compiler: { version: "home-solc-compat" }, language: "Solidity" }) }; } } }
+    \\  if (output.errors.length === 0) delete output.errors; return JSON.stringify(output);
+    \\}
+    \\const __home_solc = { compile: __home_solc_compile }; __home_solc.default = __home_solc; globalThis.__home_modules["solc"] = __home_solc;
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72709,6 +72722,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { createClient as createPrismaClient } from \"home:prisma-fixture\";", .replacement = "const { createClient: createPrismaClient } = globalThis.__home_import(\"home:prisma-fixture\");" },
         .{ .needle = "import { Resvg } from \"@resvg/resvg-js\";", .replacement = "const { Resvg } = globalThis.__home_import(\"@resvg/resvg-js\");" },
         .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
+        .{ .needle = "import solc from \"solc\";", .replacement = "const solc = globalThis.__home_import(\"solc\").default;" },
         .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
         .{ .needle = "import fs from \"fs\";", .replacement = "const fs = globalThis.__home_import(\"fs\");" },
         .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
@@ -104527,6 +104541,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io-socket-timeout.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-utility-methods.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/solc/solc.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104607,6 +104622,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { Resvg } from "@resvg/resvg-js";
         \\import { generateKeyPairSync } from "crypto";
         \\const { parseAst: parseRollupAst } = globalThis.__home_import("rollup/parseAst");
+        \\const solc = globalThis.__home_import("solc").default;
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104728,6 +104744,27 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: SyntaxError: Unsupported JavaScript syntax");
         \\  expect(caught.message).not.toContain("private-rollup-source");
         \\  expect(caught.stack).not.toContain("private-rollup-source");
+        \\});
+        \\test("solc input errors retain causal operation context without source data", () => {
+        \\  let caught; try { solc.compile("private-solidity-source"); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("SolcCompileError");
+        \\  expect(caught.code).toBe("ERR_SOLC_COMPILE");
+        \\  expect(caught.operation).toBe("solc.compile");
+        \\  expect(caught.phase).toBe("parse");
+        \\  expect(caught.inputLength).toBe(23);
+        \\  expect(caught.cause.message).toBe("Invalid Solidity standard JSON input");
+        \\  expect(caught.stack).toContain("solc.compile (parse");
+        \\  expect(caught.stack).toContain("Caused by: SyntaxError: Invalid Solidity standard JSON input");
+        \\  expect(caught.message).not.toContain("private-solidity-source");
+        \\  expect(caught.stack).not.toContain("private-solidity-source");
+        \\});
+        \\test("solc compile returns standard JSON contracts instead of a no-op result", () => {
+        \\  const output = JSON.parse(solc.compile(JSON.stringify({ language: "Solidity", sources: { "Vault.sol": { content: "contract Vault { function read() public { } }" } }, settings: { outputSelection: { "*": { "*": ["*"] } } } })));
+        \\  expect(output.errors).toBeUndefined();
+        \\  expect(output.sources["Vault.sol"].id).toBe(0);
+        \\  expect(output.contracts["Vault.sol"].Vault.abi[0].name).toBe("read");
+        \\  expect(output.contracts["Vault.sol"].Vault.abi[0].type).toBe("function");
+        \\  expect(output.contracts["Vault.sol"].Vault.evm.bytecode.object).toContain("60");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105062,7 +105099,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 36), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 38), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
