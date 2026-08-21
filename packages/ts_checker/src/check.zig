@@ -28039,6 +28039,30 @@ pub const Checker = struct {
         if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (!f.flags.is_getter or f.return_type != hir_mod.none_node_id) return null;
+        const property = self.hir.parentOf(fn_node);
+        if (property != hir_mod.none_node_id and self.hir.kindOf(property) == .object_property) {
+            const getter_prop = hir_mod.objectPropertyOf(self.hir, property);
+            const object_node = self.hir.parentOf(property);
+            if (object_node != hir_mod.none_node_id and self.hir.kindOf(object_node) == .object_literal) {
+                const getter_name = self.propertyNameFromKeyNode(getter_prop.key) orelse return null;
+                for (hir_mod.objectLiteralProps(self.hir, object_node)) |candidate| {
+                    if (candidate == property or self.hir.kindOf(candidate) != .object_property) continue;
+                    const setter_prop = hir_mod.objectPropertyOf(self.hir, candidate);
+                    const setter_name = self.propertyNameFromKeyNode(setter_prop.key) orelse continue;
+                    if (setter_name != getter_name or setter_prop.value == hir_mod.none_node_id) continue;
+                    const setter_kind = self.hir.kindOf(setter_prop.value);
+                    if (setter_kind != .fn_decl and setter_kind != .fn_expr and setter_kind != .arrow_fn) continue;
+                    const setter = hir_mod.fnDeclOf(self.hir, setter_prop.value);
+                    if (!setter.flags.is_setter) continue;
+                    const params = hir_mod.fnParams(self.hir, setter_prop.value);
+                    if (params.len == 0 or self.hir.kindOf(params[0]) != .parameter) return null;
+                    const parameter = hir_mod.parameterOf(self.hir, params[0]);
+                    if (parameter.type_annotation == hir_mod.none_node_id) return null;
+                    return self.lowererLowerWithTypeParams(parameter.type_annotation) catch null;
+                }
+                return null;
+            }
+        }
         const member_name = (self.classMemberNameFromFunctionName(f.name) catch null) orelse return null;
         const class_node = self.enclosingClassNode(fn_node);
         if (class_node == hir_mod.none_node_id) return null;
@@ -87589,7 +87613,6 @@ pub const Checker = struct {
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocRequireAliasType(anchor, name, true)) |t| return t;
             if (try self.jsDocSameFileClassInstanceType(anchor, name)) |t| return t;
-            if (try self.jsDocSameFileEnumTagType(anchor, name)) |t| return t;
             if (is_entire_type and
                 try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return types.Primitive.any;
         }
@@ -87627,34 +87650,6 @@ pub const Checker = struct {
             .message = message,
         });
         return true;
-    }
-
-    /// Resolve a JSDoc type name that refers to a same-file `@enum`-tagged
-    /// object literal (`/** @enum {string} */ const Target = { … }`) to the
-    /// enum's backing type. The `@enum` JSDoc tag declares both a value and a
-    /// type, so `@type {Target}` must resolve rather than report TS2304.
-    /// Mirrors `jsDeclarationsEnumTag`.
-    fn jsDocSameFileEnumTagType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (!self.check_js_enabled) return null;
-        const src = self.source orelse return null;
-        const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            const decl = if (self.hir.kindOf(stmt) == .export_decl) self.unwrapExportDecl(stmt) else stmt;
-            if (decl == hir_mod.none_node_id) continue;
-            const dk = self.hir.kindOf(decl);
-            if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
-            const v = hir_mod.varDeclOf(self.hir, decl);
-            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, v.name).name != name) continue;
-            // The `@enum` tag rides on the statement's leading JSDoc (before
-            // any `export` keyword), so anchor the scan at the statement.
-            const jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(stmt).start) orelse return null;
-            if (std.mem.indexOf(u8, jsdoc.body, "@enum") == null) return null;
-            const type_text = jsDocBlockTagTypeText(jsdoc.body, "@enum") orelse return types.Primitive.any;
-            return (try self.jsDocTypeTextToTypeAt(src, type_text, anchor)) orelse types.Primitive.any;
-        }
-        return null;
     }
 
     /// Resolve a JSDoc type name that refers to a same-file class, including a
@@ -90434,14 +90429,24 @@ pub const Checker = struct {
         if (!ok and self.hir.kindOf(node) == .object_literal) {
             ok = try self.jsDocObjectLiteralMembersSatisfyTarget(node, target_t);
         }
+        if (!ok and self.diagnostics.items.len == diag_start and self.hir.kindOf(node) == .object_literal) {
+            const missing_start = self.diagnostics.items.len;
+            if (try self.tryReportSinglePropertyMissing(node, node, expr_t, target_t)) {
+                const missing_pos = self.jsDocSatisfiesTagPosition(node);
+                for (self.diagnostics.items[missing_start..]) |*diagnostic| {
+                    if (diagnostic.code == TsCodes.property_missing_required) diagnostic.pos = missing_pos;
+                }
+                return;
+            }
+        }
         if (ok and
             self.hir.kindOf(node) == .object_literal and
             self.objectLiteralNeedsIndexerValidation(target_t))
         {
             ok = self.objectLiteralAssignableToTarget(node, expr_t, target_t) catch false;
         }
-        // tsgo reports declaration-tag object property/excess diagnostics but
-        // does not synthesize the inline-expression fallback for missing keys.
+        // Keep declaration-tag failures from falling through to a generic
+        // TS1360 after property-level diagnostics have had their chance.
         if (!ok and
             self.diagnostics.items.len == diag_start and
             self.hir.kindOf(node) == .object_literal and
@@ -139116,7 +139121,7 @@ pub const Checker = struct {
             .delete => blk: {
                 const operand_kind = self.hir.kindOf(u.operand);
                 const private_delete_operand = self.deleteOperandContainsPrivateIdentifier(u.operand);
-                if (operand_kind == .identifier) {
+                if (operand_kind == .identifier or operand_kind == .literal_undefined) {
                     // TS1102 is a grammar restriction that only applies
                     // in strict mode. The file is in strict mode when
                     // `alwaysStrict` is set, when the source is an
@@ -139128,8 +139133,10 @@ pub const Checker = struct {
                     // real identifiers and only emits TS2703 for
                     // `delete this`. Mirrors `parserStrictMode16.ts`
                     // and `deleteOperatorWithAnyOtherType` baselines.
-                    const ident_name = hir_mod.identifierOf(self.hir, u.operand).name;
-                    const is_this_keyword = std.mem.eql(u8, self.string_interner.get(ident_name), "this");
+                    const is_this_keyword = if (operand_kind == .identifier) this_name: {
+                        const ident_name = hir_mod.identifierOf(self.hir, u.operand).name;
+                        break :this_name std.mem.eql(u8, self.string_interner.get(ident_name), "this");
+                    } else false;
                     if (!is_this_keyword and self.strictModeAppliesAt(u.operand)) {
                         try self.report(u.operand, TsCodes.delete_identifier_strict_mode, "'delete' cannot be called on an identifier in strict mode.");
                     }
@@ -170817,6 +170824,7 @@ pub const Checker = struct {
             return @min(min_required, params.len);
         }
         var min_required = self.signatureMinRequiredArgs(sig, params);
+        if (self.signature_min_args.contains(sig)) return min_required;
         if (!self.nonStrictJsCallAllowsTrailingNullishOmissions(call_node)) return min_required;
         while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
             min_required -= 1;
@@ -191606,6 +191614,15 @@ test "checker: delete on identifier emits TS1102 alongside TS2703" {
     try T.expect(found_2703);
 }
 
+test "checker: tsgo parity residual strict delete undefined emits TS1102" {
+    const s = try newSetup("delete undefined;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .always_strict = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.delete_identifier_strict_mode));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.delete_operand_property_reference));
+}
+
 test "checker: delete on property access does not emit TS1102" {
     // `delete obj.prop` is the canonical valid form; TS1102 only
     // applies to bare identifiers.
@@ -193776,6 +193793,23 @@ test "checker: trailing void parameter can be omitted" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
+}
+
+test "checker: tsgo parity residual checked JS instantiated undefined parameter remains required" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: defs.d.ts
+        \\interface I<T> { m(p: T): void; }
+        \\declare const takesVoid: I<void>;
+        \\declare const takesUndefined: I<undefined>;
+        \\// @filename: use.js
+        \\takesVoid.m();
+        \\takesUndefined.m();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: instantiated void parameter can be omitted" {
@@ -214928,6 +214962,20 @@ test "checker: tsgo current JSDoc enum self type merges without circular diagnos
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
 }
 
+test "checker: tsgo parity residual JSDoc enum tag remains value-only in type positions" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @enum {number} */
+        \\var Values = {};
+        \\/** @type {Values} */
+        \\var selected;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
 test "checker: untagged JSDoc generic constructors keep tsgo value and prototype errors" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -215247,7 +215295,25 @@ test "checker: checkjs JSDoc @satisfies validates a value" {
     }
 }
 
-test "checker: checkjs JSDoc satisfies constraint anchors on the tag" {
+test "checker: tsgo parity residual checkjs JSDoc satisfies reports missing required property" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @typedef {Object} T1
+        \\ * @property {number} a
+        \\ */
+        \\/** @satisfies {T1} */
+        \\const declarationMissing = {};
+        \\const inlineMissing = /** @satisfies {T1} */ ({});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.satisfies_constraint));
+}
+
+test "checker: tsgo parity residual checkjs JSDoc missing property anchors on the tag" {
     const source =
         \\// @allowJs: true
         \\// @checkJs: true
@@ -215264,7 +215330,7 @@ test "checker: checkjs JSDoc satisfies constraint anchors on the tag" {
     const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "satisfies") orelse return error.TestUnexpectedResult);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.satisfies_constraint) continue;
+        if (d.code != TsCodes.property_missing_required) continue;
         try T.expectEqual(expected_pos, d.pos);
         found = true;
     }
@@ -240885,6 +240951,22 @@ test "checker: object-literal getter whose return violates the string index stil
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: tsgo parity residual object-literal inferred getter is checked against paired setter" {
+    const b = try newBoundSetup(
+        \\const value = {
+        \\  get a() { return 4; },
+        \\  set a(next: string) {},
+        \\};
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'string'.",
+    ));
 }
 
 test "checker: getter return is contextually typed by paired setter" {
