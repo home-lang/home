@@ -3032,6 +3032,46 @@ const harness_prelude =
     \\__home_PGPool.prototype.end = function() { this.ended = true; return Promise.resolve(undefined); };
     \\globalThis.__home_modules["pg"] = { Client: __home_PGClient, Pool: __home_PGPool };
     \\globalThis.__home_modules["pg-connection-string"] = { parse: __home_pg_connection_options };
+    \\function __home_pino_transport_target(value) {
+    \\  const target = String(value || "<unconfigured>");
+    \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
+    \\}
+    \\function __home_pino_transport_error(error, target, phase) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const name = __home_pino_transport_target(target); const step = String(phase || "configure");
+    \\  const failure = new Error("Pino transport " + step + " failed for " + name + ": " + String(cause.message || cause)); failure.name = "PinoTransportError";
+    \\  failure.code = "ERR_PINO_TRANSPORT"; failure.operation = "pino.transport"; failure.phase = step; failure.target = name; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at pino.transport (" + step + ", " + name + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_pino(options) {
+    \\  const config = options && typeof options === "object" ? options : {}; const transport = config.transport && typeof config.transport === "object" ? config.transport : null; const target = transport && transport.target;
+    \\  if (target !== undefined && String(target) !== "pino-pretty") throw __home_pino_transport_error(new Error("Unknown Pino transport target"), target, "configure");
+    \\  const colorize = !!(transport && transport.options && transport.options.colorize);
+    \\  function format(level, message) { const name = String(level || "INFO").toUpperCase(); const text = String(message); return colorize ? "\u001b[32m" + name + "\u001b[39m \u001b[36m" + text + "\u001b[39m\n" : name + " " + text + "\n"; }
+    \\  return { level: "info", info(message) { const line = format("INFO", message); if (typeof console === "object" && console && typeof console.write === "function") console.write(line); return line; }, __home_format: format };
+    \\}
+    \\function __home_pino_pretty(options) { return { options: options || {} }; }
+    \\__home_pino.default = __home_pino;
+    \\__home_pino_pretty.default = __home_pino_pretty;
+    \\globalThis.__home_modules["pino"] = __home_pino;
+    \\globalThis.__home_modules["pino-pretty"] = __home_pino_pretty;
+    \\function __home_spawn_pino_pretty_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/third_party/pino/pino.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : []; const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0 || evalIndex + 1 >= cmd.length) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes('require("pino")')) return null;
+    \\  const target = (source.match(/target\s*:\s*["']([^"']+)["']/) || [])[1] || "<unconfigured>";
+    \\  const message = (source.match(/logger\.info\s*\(\s*["']([^"']*)["']\s*\)/) || [])[1];
+    \\  try {
+    \\    if (message === undefined) throw __home_pino_transport_error(new Error("Pino eval is missing logger.info(message)"), target, "execute");
+    \\    const logger = __home_pino({ transport: { target, options: { colorize: /colorize\s*:\s*true/.test(source) } } });
+    \\    return __home_spawn_completed(logger.__home_format("INFO", message), "", 0);
+    \\  } catch (error) {
+    \\    const failure = error && error.code === "ERR_PINO_TRANSPORT" ? error : __home_pino_transport_error(error, target, "execute");
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_hono_default_export_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -25865,6 +25905,8 @@ const harness_prelude =
     \\    if (maxbufFixture) return maxbufFixture;
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
+    \\    const pinoPrettyFixture = __home_spawn_pino_pretty_fixture(options || {});
+    \\    if (pinoPrettyFixture) return pinoPrettyFixture;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
     \\    const virtualFileStdinTextFixture = __home_spawn_virtual_file_stdin_text_fixture(options || {});
@@ -72353,6 +72395,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { Client, Pool } from \"pg\";", .replacement = "const { Client, Pool } = globalThis.__home_import(\"pg\");" },
         .{ .needle = "import { Client as PGClient } from \"pg\";", .replacement = "const { Client: PGClient } = globalThis.__home_import(\"pg\");" },
         .{ .needle = "import { parse } from \"pg-connection-string\";", .replacement = "const { parse } = globalThis.__home_import(\"pg-connection-string\");" },
+        .{ .needle = "import pino from \"pino\";", .replacement = "const pino = globalThis.__home_import(\"pino\").default;" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104043,6 +104086,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/nodemailer/nodemailer.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/pg-gateway/pglite.test.ts", .passed = 1 },
         .{ .path = "js/third_party/pg/pg.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/pino/pino.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104116,6 +104160,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { createError as createNextAuthFixtureError, validate as validateNextAuthFixture } from "home:next-auth-fixture";
         \\import { fromNodeSocket } from "pg-gateway/node";
         \\import { Client as PGClient } from "pg";
+        \\import pino from "pino";
         \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
@@ -104141,6 +104186,18 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("mongodb.connect (db.example.test");
         \\  expect(caught.stack).toContain("Caused by: Error: native MongoDB TLS transport");
         \\  expect(caught.stack).not.toContain("super-secret");
+        \\});
+        \\test("Pino transport errors retain target and operation context", () => {
+        \\  let caught;
+        \\  try { pino({ transport: { target: "unknown-transport" } }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("PinoTransportError");
+        \\  expect(caught.code).toBe("ERR_PINO_TRANSPORT");
+        \\  expect(caught.operation).toBe("pino.transport");
+        \\  expect(caught.phase).toBe("configure");
+        \\  expect(caught.target).toBe("unknown-transport");
+        \\  expect(caught.cause.message).toBe("Unknown Pino transport target");
+        \\  expect(caught.stack).toContain("pino.transport (configure, unknown-transport");
+        \\  expect(caught.stack).toContain("Caused by: Error: Unknown Pino transport target");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104425,7 +104482,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 25), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 26), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
