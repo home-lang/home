@@ -79459,6 +79459,7 @@ pub const Checker = struct {
             if (k == .assignment) {
                 const a = hir_mod.assignmentOf(self.hir, el);
                 const default_t = try self.checkExpression(a.value);
+                try self.recordDefiniteDestructuringDefaultWrites(a.value);
                 const effective_t = try self.destructuringSourceWithDefault(source_elem_t, default_t);
                 try self.checkDestructuringAssignmentTargetWithDefault(a.target, a.value, effective_t, source_elem_t, default_t);
                 continue;
@@ -79774,6 +79775,7 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, op.value);
                 const prop_t = maybe_prop_t orelse types.Primitive.undefined_t;
                 const default_t = try self.checkExpression(a.value);
+                try self.recordDefiniteDestructuringDefaultWrites(a.value);
                 const effective_t = try self.destructuringSourceWithDefault(prop_t, default_t);
                 try self.checkDestructuringAssignmentTargetWithDefault(a.target, a.value, effective_t, prop_t, default_t);
                 if (op.is_shorthand and
@@ -79787,6 +79789,54 @@ pub const Checker = struct {
                 const prop_t = maybe_prop_t orelse types.Primitive.any;
                 try self.checkDestructuringAssignmentTarget(op.value, prop_t, hir_mod.none_node_id);
             }
+        }
+    }
+
+    fn recordDefiniteDestructuringDefaultWrites(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .as_expr, .satisfies_expr, .type_assertion => {
+                try self.recordDefiniteDestructuringDefaultWrites(hir_mod.asExpressionOf(self.hir, node).expr);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |element| {
+                    if (element != hir_mod.none_node_id) try self.recordDefiniteDestructuringDefaultWrites(element);
+                }
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |property| {
+                    if (self.hir.kindOf(property) == .spread) {
+                        try self.recordDefiniteDestructuringDefaultWrites(hir_mod.spreadOf(self.hir, property).expression);
+                        continue;
+                    }
+                    if (self.hir.kindOf(property) != .object_property) continue;
+                    const object_property = hir_mod.objectPropertyOf(self.hir, property);
+                    if (object_property.is_computed) try self.recordDefiniteDestructuringDefaultWrites(object_property.key);
+                    if (object_property.value != hir_mod.none_node_id) {
+                        try self.recordDefiniteDestructuringDefaultWrites(object_property.value);
+                    }
+                }
+            },
+            .binary_op => {
+                const binary = hir_mod.binopOf(self.hir, node);
+                if (binary.op != .comma) return;
+                try self.recordDefiniteDestructuringDefaultWrites(binary.lhs);
+                try self.recordDefiniteDestructuringDefaultWrites(binary.rhs);
+            },
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                try self.recordDefiniteDestructuringDefaultWrites(assignment.value);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) return;
+                var value_t = self.hir.typeOf(assignment.value);
+                if (value_t == types.Primitive.none) return;
+                value_t = try self.flowTypeForAssignmentValue(assignment.value, value_t);
+                const target_t = self.typeOfIdentifierDeclared(assignment.target);
+                if (value_t == types.Primitive.none or value_t == types.Primitive.any or value_t == types.Primitive.unknown or
+                    target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown or
+                    !(try self.checkerAssignableTo(value_t, target_t))) return;
+                try self.recordNarrow(hir_mod.identifierOf(self.hir, assignment.target).name, value_t);
+            },
+            else => {},
         }
     }
 
@@ -214051,13 +214101,25 @@ test "checker: object destructuring reports missing and fresh excess properties"
     try T.expect(saw_excess);
 }
 
-test "checker: destructuring assignment joins default and computed-key flow" {
+test "checker: destructuring assignment evaluates defaults before computed keys" {
     const s = try newSetup(
         \\{
         \\  let a: 0 | 1 = 0;
         \\  let b: 0 | 1 | 9;
         \\  [{ [(a = 1)]: b } = [9, a] as const] = [];
         \\  const bb: 0 = b;
+        \\}
+        \\{
+        \\  let a: 0 | 1 = 1;
+        \\  let b: 0 | 1 | 9;
+        \\  [{ [a]: b } = [9, a = 0] as const] = [];
+        \\  const bb: 9 = b;
+        \\}
+        \\{
+        \\  let a: 0 | 1 = 0;
+        \\  let b: 0 | 1 | 8 | 9;
+        \\  [{ [(a = 1)]: b } = [9, a] as const] = [[9, 8] as const];
+        \\  const bb: 0 | 8 = b;
         \\}
         \\{
         \\  let a: 0 | 1 = 1;
@@ -214068,8 +214130,7 @@ test "checker: destructuring assignment joins default and computed-key flow" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
-    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type '0 | 8 | 9' is not assignable to type '0 | 8'."));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: computed binding pattern order preserves tuple property type" {
