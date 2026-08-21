@@ -3202,6 +3202,16 @@ const harness_prelude =
     \\  return function homeStaticMiddleware(request, response, next) { try { const rawUrl = String(request && request.url || "/"); const decoded = decodeURIComponent(rawUrl.split("?")[0].split("#")[0]); const segments = decoded.split("/"); if (decoded.includes("\0") || segments.includes("..")) throw new Error("Request path escapes the configured static root"); let relative = segments.filter(Boolean).join("/"); if (!relative) relative = String(config.index || "index.html"); const target = __home_build_join(base, relative); const text = __home_build_read_text(target); if (text === null) { if (typeof next === "function") return next(); response.statusCode = 404; return response.end(); } const extension = (relative.match(/\.([A-Za-z0-9]+)$/) || [])[1] || ""; const contentType = extension === "html" ? "text/html; charset=utf-8" : (extension === "json" ? "application/json; charset=utf-8" : (extension === "js" || extension === "ts" ? "application/javascript; charset=utf-8" : "text/plain; charset=utf-8")); response.statusCode = 200; if (typeof response.setHeader === "function") response.setHeader("content-type", contentType); return response.end(text); } catch (error) { const failure = error && error.code === "ERR_ST_STATIC_FILE" ? error : __home_st_error("serve", base, error); if (typeof next === "function") return next(failure); throw failure; } };
     \\}
     \\__home_st.default = __home_st; globalThis.__home_modules["st"] = __home_st;
+    \\let __home_stripe_request_id = 1;
+    \\class __home_StripeInvalidRequestError extends Error {}
+    \\function __home_stripe_charge_error(chargeId, error) {
+    \\  const resource = String(chargeId || "<missing>"); const cause = error instanceof Error ? error : new Error(String(error)); const operation = "stripe.charges.retrieve"; const requestId = "req_home_" + String(__home_stripe_request_id++); const failure = new __home_StripeInvalidRequestError(String(cause.message || cause));
+    \\  failure.name = "StripeInvalidRequestError"; failure.type = "StripeInvalidRequestError"; failure.code = "resource_missing"; failure.operation = operation; failure.param = "id"; failure.statusCode = 404; failure.requestId = requestId; failure.cause = cause; failure.raw = { code: failure.code, message: failure.message, param: failure.param, requestId, statusCode: 404, type: "invalid_request_error" }; const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + resource + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary; return failure;
+    \\}
+    \\class __home_Stripe {
+    \\  constructor(apiKey, config) { this._apiKey = String(apiKey || ""); this._config = config || {}; this.charges = { retrieve: (chargeId, options) => { void options; const id = String(chargeId || ""); const cause = new Error(id ? "No such charge: '" + id + "'" : "A charge identifier is required"); return Promise.reject(__home_stripe_charge_error(id, cause)); } }; }
+    \\}
+    \\__home_Stripe.errors = { StripeInvalidRequestError: __home_StripeInvalidRequestError }; globalThis.__home_modules["stripe"] = { Stripe: __home_Stripe, default: __home_Stripe };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72739,6 +72749,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
         .{ .needle = "import solc from \"solc\";", .replacement = "const solc = globalThis.__home_import(\"solc\").default;" },
         .{ .needle = "import st from \"st\";", .replacement = "const st = globalThis.__home_import(\"st\").default;" },
+        .{ .needle = "import { Stripe } from \"stripe\";", .replacement = "const { Stripe } = globalThis.__home_import(\"stripe\");" },
         .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
         .{ .needle = "import fs from \"fs\";", .replacement = "const fs = globalThis.__home_import(\"fs\");" },
         .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
@@ -104559,6 +104570,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/solc/solc.test.ts", .passed = 1 },
         .{ .path = "js/third_party/st/st.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/stripe/stripe.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104641,6 +104653,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const { parseAst: parseRollupAst } = globalThis.__home_import("rollup/parseAst");
         \\const solc = globalThis.__home_import("solc").default;
         \\const st = globalThis.__home_import("st").default;
+        \\const { Stripe } = globalThis.__home_import("stripe");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104802,6 +104815,24 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: Error: Request path escapes the configured static root");
         \\  expect(caught.message).not.toContain("private-st-secret");
         \\  expect(caught.stack).not.toContain("private-st-secret");
+        \\});
+        \\test("Stripe charge errors retain operation context without credentials", async () => {
+        \\  const stripe = new Stripe("sk_private_home_secret"); let caught;
+        \\  try { await stripe.charges.retrieve("ch_missing_home", { stripeAccount: "acct_private_home" }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("StripeInvalidRequestError");
+        \\  expect(caught).toBeInstanceOf(Stripe.errors.StripeInvalidRequestError);
+        \\  expect(caught.code).toBe("resource_missing");
+        \\  expect(caught.operation).toBe("stripe.charges.retrieve");
+        \\  expect(caught.param).toBe("id");
+        \\  expect(caught.statusCode).toBe(404);
+        \\  expect(caught.requestId).toContain("req_home_");
+        \\  expect(caught.cause.message).toBe("No such charge: 'ch_missing_home'");
+        \\  expect(caught.stack).toContain("stripe.charges.retrieve (ch_missing_home");
+        \\  expect(caught.stack).toContain("Caused by: Error: No such charge: 'ch_missing_home'");
+        \\  expect(caught.message).not.toContain("sk_private_home_secret");
+        \\  expect(caught.stack).not.toContain("sk_private_home_secret");
+        \\  expect(caught.message).not.toContain("acct_private_home");
+        \\  expect(caught.stack).not.toContain("acct_private_home");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105136,7 +105167,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 40), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 41), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
