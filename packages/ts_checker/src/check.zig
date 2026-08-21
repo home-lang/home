@@ -38021,21 +38021,21 @@ pub const Checker = struct {
             }
             if (indices.get(inherited.name)) |index| {
                 var merged = members.items[index];
-                // Intersection accessibility uses the least restrictive
-                // constituent: any public declaration makes the effective
-                // property public; otherwise private dominates protected.
-                merged.visibility = if (merged.visibility == .public or inherited.visibility == .public)
-                    .public
-                else if (merged.visibility == .private or inherited.visibility == .private)
-                    .private
-                else
-                    .protected;
+                merged.visibility = intersectionMemberVisibility(merged.visibility, inherited.visibility);
                 members.items[index] = merged;
                 continue;
             }
             try indices.put(self.gpa, inherited.name, members.items.len);
             try members.append(self.gpa, inherited);
         }
+    }
+
+    fn intersectionMemberVisibility(left: types.MemberVisibility, right: types.MemberVisibility) types.MemberVisibility {
+        // A private constituent keeps the intersection inaccessible. Without
+        // one, any public declaration makes the effective property public.
+        if (left == .private or right == .private) return .private;
+        if (left == .public or right == .public) return .public;
+        return .protected;
     }
 
     fn checkClassDecl(self: *Checker, node: NodeId) CheckError!void {
@@ -48570,6 +48570,7 @@ pub const Checker = struct {
                 existing.is_optional = existing.is_optional and member.is_optional;
                 existing.is_readonly = existing.is_readonly and member.is_readonly;
                 existing.is_method = existing.is_method and member.is_method;
+                existing.visibility = intersectionMemberVisibility(existing.visibility, member.visibility);
                 merged = true;
                 break;
             }
@@ -243681,6 +243682,24 @@ test "checker: inherited protected member without override still reports TS2445 
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCode(b, TsCodes.protected_member_access));
+}
+
+test "checker: public intersection constituent exposes a protected member" {
+    const b = try newBoundSetup(
+        \\class Protected { protected p: string; }
+        \\class Protected2 { protected p: string; }
+        \\class Public { public p: string; }
+        \\declare function Mix<T, U>(left: T, right: U): T & U;
+        \\class PublicMixed extends Mix(Protected, Public) {}
+        \\class ProtectedMixed extends Mix(Protected, Protected2) {}
+        \\declare const publicMixed: PublicMixed;
+        \\declare const protectedMixed: ProtectedMixed;
+        \\publicMixed.p;
+        \\protectedMixed.p;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.protected_member_access));
 }
 
 test "checker: explicit this-parameter type binds this inside a plain function body" {
