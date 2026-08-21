@@ -387,6 +387,7 @@ const harness_prelude =
     \\if (typeof console.error !== "function") console.error = console.log;
     \\if (typeof console.debug !== "function") console.debug = console.log;
     \\let __home_next_timer_id = 1;
+    \\let __home_pending_next_ticks = 0;
     \\var __home_cancelled_timers = new Set();
     \\var __home_fake_timer_records = new Map();
     \\var __home_all_timer_records = new Map();
@@ -523,11 +524,13 @@ const harness_prelude =
     \\    __home_deferred_immediate_queue.push({ id, callback, args, record });
     \\    return __home_timer_handle(id, record);
     \\  }
-    \\  Promise.resolve().then(() => {
+    \\  const run = () => {
     \\    if (__home_cancelled_timers.has(id)) return;
+    \\    if (__home_pending_next_ticks > 0) { Promise.resolve().then(run); return; }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\    record.active = false;
-    \\  });
+    \\  };
+    \\  Promise.resolve().then(run);
     \\  return __home_timer_handle(id, record);
     \\}
     \\function __home_drain_deferred_immediates() {
@@ -29709,8 +29712,10 @@ const harness_prelude =
     \\process.nextTick = function(callback) {
     \\  if (typeof callback !== "function") throw new TypeError("process.nextTick callback must be a function");
     \\  const args = Array.prototype.slice.call(arguments, 1);
+    \\  __home_pending_next_ticks += 1;
     \\  Promise.resolve().then(function() {
-    \\    callback.apply(undefined, args);
+    \\    try { callback.apply(undefined, args); }
+    \\    finally { __home_pending_next_ticks -= 1; }
     \\  });
     \\};
     \\function __home_hrtime_tuple_from_nanos(totalNanos) {
@@ -58406,6 +58411,32 @@ const harness_prelude =
     \\  this.forceShutdown();
     \\  if (typeof callback === "function") Promise.resolve().then(() => callback());
     \\};
+    \\function __home_grpc_TestServerFixture(useTls, options) {
+    \\  this.useTls = useTls; this.server = new __home_grpc_Server(options); this.target = null;
+    \\  this.server.addService(__home_grpc_EchoService.service, { echo(call, callback) { callback(null, call.request); } });
+    \\}
+    \\__home_grpc_TestServerFixture.prototype.__home_credentials = function() { return this.useTls ? __home_grpc_ServerCredentials.createSsl(null, [{ private_key: Buffer.from("key"), cert_chain: Buffer.from("cert") }], false) : __home_grpc_ServerCredentials.createInsecure(); };
+    \\__home_grpc_TestServerFixture.prototype.start = function() { return new Promise((resolve, reject) => this.server.bindAsync("localhost:0", this.__home_credentials(), (error, port) => { if (error) { reject(error); return; } this.target = "localhost:" + String(port); resolve(); })); };
+    \\__home_grpc_TestServerFixture.prototype.startUds = function() { const target = "unix:///tmp/home-grpc-uds-" + String(Date.now()); return new Promise((resolve, reject) => this.server.bindAsync(target, this.__home_credentials(), error => { if (error) { reject(error); return; } this.target = target; resolve(); })); };
+    \\__home_grpc_TestServerFixture.prototype.shutdown = function() { this.server.forceShutdown(); };
+    \\__home_grpc_TestServerFixture.prototype.getTarget = function() { if (this.target === null) { const cause = new Error("Server not yet started"); const failure = new Error("TestServer.getTarget failed: " + cause.message); failure.code = "ERR_GRPC_SERVER_NOT_STARTED"; failure.cause = cause; failure.stack = String(failure.stack || failure) + "\n    at TestServer.getTarget (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause); throw failure; } return this.target; };
+    \\function __home_grpc_TestClientFixture(target, useTls, options) { this.client = new __home_grpc_EchoService(target, useTls ? __home_grpc_credentials.createSsl(Buffer.from("ca")) : __home_grpc_credentials.createInsecure(), options); }
+    \\__home_grpc_TestClientFixture.createFromServer = function(server, options) { return new __home_grpc_TestClientFixture(server.getTarget(), server.useTls, options); };
+    \\__home_grpc_TestClientFixture.prototype.waitForReady = function(deadline, callback) { this.client.waitForReady(deadline, callback); };
+    \\__home_grpc_TestClientFixture.prototype.sendRequest = function(callback) { this.client.echo({}, callback); };
+    \\__home_grpc_TestClientFixture.prototype.sendRequestWithMetadata = function(metadata, callback) { this.client.echo({}, metadata, callback); };
+    \\__home_grpc_TestClientFixture.prototype.getChannelState = function() { return this.client.getChannel().getConnectivityState(false); };
+    \\__home_grpc_TestClientFixture.prototype.waitForClientState = function(deadline, state, callback) { this.client.getChannel().watchConnectivityState(this.getChannelState(), deadline, error => { if (error) { callback(error); return; } const currentState = this.getChannelState(); if (currentState === state) callback(); else this.waitForClientState(deadline, state, callback); }); };
+    \\__home_grpc_TestClientFixture.prototype.close = function() { this.client.close(); };
+    \\function __home_grpc_MockSubchannelFixture(address, initialState) { this.__home_address = String(address); this.__home_state = initialState === undefined ? __home_grpc_connectivity_state.IDLE : initialState; this.__home_listeners = new Set(); }
+    \\__home_grpc_MockSubchannelFixture.prototype.getConnectivityState = function() { return this.__home_state; };
+    \\__home_grpc_MockSubchannelFixture.prototype.addConnectivityStateListener = function(listener) { this.__home_listeners.add(listener); };
+    \\__home_grpc_MockSubchannelFixture.prototype.removeConnectivityStateListener = function(listener) { this.__home_listeners.delete(listener); };
+    \\__home_grpc_MockSubchannelFixture.prototype.transitionToState = function(nextState) { const previous = this.__home_state; for (const listener of Array.from(this.__home_listeners)) listener(this, previous, nextState, 0); this.__home_state = nextState; };
+    \\__home_grpc_MockSubchannelFixture.prototype.startConnecting = function() {};
+    \\__home_grpc_MockSubchannelFixture.prototype.getAddress = function() { return this.__home_address; };
+    \\__home_grpc_MockSubchannelFixture.prototype.ref = function() {};
+    \\__home_grpc_MockSubchannelFixture.prototype.unref = function() {};
     \\function __home_grpc_client_error(target, operation, code, message) {
     \\  const cause = new Error(message || "No connection established for target " + String(target));
     \\  cause.code = code;
@@ -58796,6 +58827,135 @@ const harness_prelude =
     \\  return new __home_grpc_OutlierDetectionLoadBalancingConfig(result);
     \\};
     \\__home_grpc_OutlierDetectionLoadBalancingConfig.prototype.toJsonObject = function() { return { outlier_detection: __home_grpc_clone_config(this.value) }; };
+    \\function __home_grpc_pick_first_error(error, operation, address) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error("PickFirstLoadBalancer." + operation + " failed" + (address ? " for '" + String(address) + "'" : "") + ": " + String(cause.message || cause));
+    \\  failure.code = "ERR_GRPC_PICK_FIRST"; failure.address = String(address || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at PickFirstLoadBalancer." + operation + " (" + String(address || "address list") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_subchannel_address_to_string(address) {
+    \\  if (!address || typeof address !== "object") throw __home_grpc_pick_first_error(new TypeError("subchannel address must be an object"), "formatAddress", "");
+    \\  const host = String(address.host || "");
+    \\  const port = Number(address.port);
+    \\  if (!host || !Number.isInteger(port) || port < 0 || port > 65535) throw __home_grpc_pick_first_error(new RangeError("subchannel address requires a valid host and port"), "formatAddress", host + ":" + String(address.port));
+    \\  return (host.includes(":") ? "[" + host + "]" : host) + ":" + String(port);
+    \\}
+    \\function __home_grpc_create_child_channel_control_helper(base, overrides) { return Object.assign({}, base || {}, overrides || {}); }
+    \\function __home_grpc_PickFirstLoadBalancingConfig(shuffleAddressList) { this.shuffleAddressList = !!shuffleAddressList; }
+    \\__home_grpc_PickFirstLoadBalancingConfig.createFromJson = function(value) {
+    \\  if (!value || typeof value !== "object" || Array.isArray(value)) throw __home_grpc_pick_first_error(new TypeError("pick_first config must be an object"), "createFromJson", "pick_first");
+    \\  if (value.shuffleAddressList !== undefined && typeof value.shuffleAddressList !== "boolean") throw __home_grpc_pick_first_error(new TypeError("shuffleAddressList must be a boolean"), "createFromJson", "pick_first.shuffleAddressList");
+    \\  return new __home_grpc_PickFirstLoadBalancingConfig(value.shuffleAddressList);
+    \\};
+    \\__home_grpc_PickFirstLoadBalancingConfig.prototype.toJsonObject = function() { return { pick_first: { shuffleAddressList: this.shuffleAddressList } }; };
+    \\let __home_grpc_shuffle_generation = 0;
+    \\function __home_grpc_shuffled(values) {
+    \\  const copy = Array.from(values || []);
+    \\  if (copy.length < 2) return copy;
+    \\  const shift = __home_grpc_shuffle_generation++ % copy.length;
+    \\  return copy.slice(shift).concat(copy.slice(0, shift));
+    \\}
+    \\function __home_grpc_Picker(subchannel) { this.subchannel = subchannel || null; }
+    \\__home_grpc_Picker.prototype.pick = function() { return { subchannel: this.subchannel }; };
+    \\function __home_grpc_PickFirstLoadBalancer(channelControlHelper, credentials, options) {
+    \\  this.channelControlHelper = channelControlHelper || {};
+    \\  this.credentials = credentials;
+    \\  this.options = Object.assign({}, options || {});
+    \\  this.currentState = __home_grpc_connectivity_state.IDLE;
+    \\  this.activeEntries = [];
+    \\  this.pendingEntries = null;
+    \\  this.selectedEntry = null;
+    \\  this.lastEndpoints = [];
+    \\  this.lastConfig = new __home_grpc_PickFirstLoadBalancingConfig(false);
+    \\  this.lastAddressKey = "";
+    \\  this.repeatedFailureUpdate = false;
+    \\}
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_emit = function(state, subchannel) {
+    \\  this.currentState = state;
+    \\  if (typeof this.channelControlHelper.updateState === "function") this.channelControlHelper.updateState(state, new __home_grpc_Picker(subchannel || null));
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_request_reresolution = function() {
+    \\  if (typeof this.channelControlHelper.requestReresolution === "function") this.channelControlHelper.requestReresolution();
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_all_failed = function(entries) { return entries.length > 0 && entries.every(entry => entry.state === __home_grpc_connectivity_state.TRANSIENT_FAILURE); };
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_first_ready = function(entries) { return entries.find(entry => entry.state === __home_grpc_connectivity_state.READY) || null; };
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_evaluate = function(entries, preserveFailure) {
+    \\  const ready = this.__home_first_ready(entries);
+    \\  if (ready) { this.selectedEntry = ready; this.activeEntries = entries; this.pendingEntries = null; this.__home_emit(__home_grpc_connectivity_state.READY, ready.subchannel); return; }
+    \\  if (this.__home_all_failed(entries)) { this.__home_request_reresolution(); if (this.currentState !== __home_grpc_connectivity_state.TRANSIENT_FAILURE) this.__home_emit(__home_grpc_connectivity_state.TRANSIENT_FAILURE, null); return; }
+    \\  if (preserveFailure && this.currentState === __home_grpc_connectivity_state.TRANSIENT_FAILURE) return;
+    \\  this.__home_emit(__home_grpc_connectivity_state.CONNECTING, null);
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_on_state = function(entry, nextState) {
+    \\  entry.state = nextState;
+    \\  const isActive = this.activeEntries.includes(entry), isPending = !!this.pendingEntries && this.pendingEntries.includes(entry);
+    \\  if (!isActive && !isPending && entry !== this.selectedEntry) return;
+    \\  if (nextState === __home_grpc_connectivity_state.READY) {
+    \\    const owner = isPending ? this.pendingEntries : this.activeEntries;
+    \\    this.selectedEntry = entry; this.activeEntries = owner; this.pendingEntries = null;
+    \\    this.__home_emit(__home_grpc_connectivity_state.READY, entry.subchannel);
+    \\    return;
+    \\  }
+    \\  if (entry === this.selectedEntry && nextState === __home_grpc_connectivity_state.IDLE) {
+    \\    this.selectedEntry = null;
+    \\    if (this.pendingEntries) { this.activeEntries = this.pendingEntries; this.pendingEntries = null; this.__home_evaluate(this.activeEntries, false); }
+    \\    else this.__home_emit(__home_grpc_connectivity_state.IDLE, null);
+    \\    return;
+    \\  }
+    \\  const owner = isPending ? this.pendingEntries : this.activeEntries;
+    \\  if (nextState === __home_grpc_connectivity_state.TRANSIENT_FAILURE && this.__home_all_failed(owner)) {
+    \\    this.__home_request_reresolution();
+    \\    if (!this.selectedEntry && this.currentState !== __home_grpc_connectivity_state.TRANSIENT_FAILURE) this.__home_emit(__home_grpc_connectivity_state.TRANSIENT_FAILURE, null);
+    \\  }
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.__home_create_entries = function(endpoints, config) {
+    \\  if (!Array.isArray(endpoints)) throw __home_grpc_pick_first_error(new TypeError("endpoint list must be an array"), "updateAddressList", "");
+    \\  let addresses = [];
+    \\  for (const endpoint of endpoints) {
+    \\    if (!endpoint || !Array.isArray(endpoint.addresses)) throw __home_grpc_pick_first_error(new TypeError("each endpoint must contain an addresses array"), "updateAddressList", "endpoint");
+    \\    addresses = addresses.concat(endpoint.addresses);
+    \\  }
+    \\  if (config && config.shuffleAddressList) addresses = __home_grpc_shuffled(addresses);
+    \\  return addresses.map(address => {
+    \\    const formatted = __home_grpc_subchannel_address_to_string(address);
+    \\    let subchannel;
+    \\    try { subchannel = this.channelControlHelper.createSubchannel(address, {}); }
+    \\    catch (error) { throw __home_grpc_pick_first_error(error, "createSubchannel", formatted); }
+    \\    if (!subchannel || typeof subchannel.getConnectivityState !== "function") throw __home_grpc_pick_first_error(new TypeError("createSubchannel must return a subchannel"), "createSubchannel", formatted);
+    \\    const entry = { address, formatted, subchannel, state: subchannel.getConnectivityState() };
+    \\    entry.listener = (ignored, previousState, nextState) => { void ignored; void previousState; this.__home_on_state(entry, nextState); };
+    \\    if (typeof subchannel.addConnectivityStateListener === "function") subchannel.addConnectivityStateListener(entry.listener);
+    \\    if (entry.state === __home_grpc_connectivity_state.IDLE && typeof subchannel.startConnecting === "function") subchannel.startConnecting();
+    \\    return entry;
+    \\  });
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.updateAddressList = function(endpoints, config) {
+    \\  config = config instanceof __home_grpc_PickFirstLoadBalancingConfig ? config : __home_grpc_PickFirstLoadBalancingConfig.createFromJson(config || {});
+    \\  const key = JSON.stringify(endpoints || []);
+    \\  if (this.currentState === __home_grpc_connectivity_state.TRANSIENT_FAILURE && key === this.lastAddressKey && this.repeatedFailureUpdate) return;
+    \\  if (key === this.lastAddressKey && this.currentState === __home_grpc_connectivity_state.TRANSIENT_FAILURE) this.repeatedFailureUpdate = true;
+    \\  else this.repeatedFailureUpdate = false;
+    \\  this.lastAddressKey = key; this.lastEndpoints = __home_grpc_clone_config(endpoints || []); this.lastConfig = config;
+    \\  const entries = this.__home_create_entries(endpoints, config);
+    \\  if (this.currentState === __home_grpc_connectivity_state.READY && this.selectedEntry) {
+    \\    const ready = this.__home_first_ready(entries);
+    \\    if (ready) { this.activeEntries = entries; this.pendingEntries = null; this.selectedEntry = ready; this.__home_emit(__home_grpc_connectivity_state.READY, ready.subchannel); }
+    \\    else this.pendingEntries = entries;
+    \\    return;
+    \\  }
+    \\  this.activeEntries = entries; this.pendingEntries = null; this.selectedEntry = null;
+    \\  this.__home_evaluate(entries, true);
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.exitIdle = function() {
+    \\  if (this.currentState !== __home_grpc_connectivity_state.IDLE) return;
+    \\  this.repeatedFailureUpdate = false;
+    \\  this.updateAddressList(this.lastEndpoints, this.lastConfig);
+    \\};
+    \\__home_grpc_PickFirstLoadBalancer.prototype.destroy = function() {
+    \\  for (const entry of this.activeEntries.concat(this.pendingEntries || [])) if (entry.subchannel && typeof entry.subchannel.removeConnectivityStateListener === "function") entry.subchannel.removeConnectivityStateListener(entry.listener);
+    \\  this.activeEntries = []; this.pendingEntries = null; this.selectedEntry = null;
+    \\};
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -58835,6 +58995,10 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/logging"] = __home_grpc_logging;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/metadata"] = { Metadata: __home_grpc_Metadata };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer-outlier-detection"] = { OutlierDetectionLoadBalancingConfig: __home_grpc_OutlierDetectionLoadBalancingConfig };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer"] = { createChildChannelControlHelper: __home_grpc_create_child_channel_control_helper };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer-pick-first"] = { PickFirstLoadBalancer: __home_grpc_PickFirstLoadBalancer, PickFirstLoadBalancingConfig: __home_grpc_PickFirstLoadBalancingConfig, shuffled: __home_grpc_shuffled };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/picker"] = { Picker: __home_grpc_Picker };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/subchannel-address"] = { subchannelAddressToString: __home_grpc_subchannel_address_to_string };
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71418,6 +71582,23 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as Buffer", .replacement = "" },
         .{ .needle = "const expected: MetadataObject = new Map<string, MetadataValue[]>([", .replacement = "const expected = new Map([" },
         .{ .needle = "import { OutlierDetectionLoadBalancingConfig } from \"@grpc/grpc-js/build/src/load-balancer-outlier-detection\";", .replacement = "const { OutlierDetectionLoadBalancingConfig } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-outlier-detection\");" },
+        .{ .needle = "import { credentials } from \"@grpc/grpc-js\";", .replacement = "const { credentials } = globalThis.__home_import(\"@grpc/grpc-js\");" },
+        .{ .needle = "import { ChannelControlHelper, createChildChannelControlHelper } from \"@grpc/grpc-js/build/src/load-balancer\";", .replacement = "const { createChildChannelControlHelper } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer\");" },
+        .{ .needle = "import {\n  PickFirstLoadBalancer,\n  PickFirstLoadBalancingConfig,\n  shuffled,\n} from \"@grpc/grpc-js/build/src/load-balancer-pick-first\";", .replacement = "const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig, shuffled } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-pick-first\");" },
+        .{ .needle = "import { Metadata } from \"@grpc/grpc-js/build/src/metadata\";", .replacement = "const { Metadata } = globalThis.__home_import(\"@grpc/grpc-js/build/src/metadata\");" },
+        .{ .needle = "import { Picker } from \"@grpc/grpc-js/build/src/picker\";", .replacement = "" },
+        .{ .needle = "import { Endpoint, subchannelAddressToString } from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { subchannelAddressToString } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
+        .{ .needle = "import { MockSubchannel, TestClient, TestServer } from \"./common\";", .replacement = "const MockSubchannel = __home_grpc_MockSubchannelFixture;\nconst TestClient = __home_grpc_TestClientFixture;\nconst TestServer = __home_grpc_TestServerFixture;" },
+        .{ .needle = "function updateStateCallBackForExpectedStateSequence(expectedStateSequence: ConnectivityState[], done: Mocha.Done)", .replacement = "function updateStateCallBackForExpectedStateSequence(expectedStateSequence, done)" },
+        .{ .needle = "const actualStateSequence: ConnectivityState[] = [];", .replacement = "const actualStateSequence = [];" },
+        .{ .needle = "let lastPicker: Picker | null = null;", .replacement = "let lastPicker = null;" },
+        .{ .needle = "return (connectivityState: ConnectivityState, picker: Picker) =>", .replacement = "return (connectivityState, picker) =>" },
+        .{ .needle = "let subchannels: MockSubchannel[] = [];", .replacement = "let subchannels = [];" },
+        .{ .needle = "const baseChannelControlHelper: ChannelControlHelper =", .replacement = "const baseChannelControlHelper =" },
+        .{ .needle = "const pickedSubchannels: Set<string> = new Set();", .replacement = "const pickedSubchannels = new Set();" },
+        .{ .needle = "const endpoints: Endpoint[] = [];", .replacement = "const endpoints = [];" },
+        .{ .needle = "let server: TestServer;", .replacement = "let server;" },
+        .{ .needle = "let client: TestClient;", .replacement = "let client;" },
         .{ .needle = "function multiDone(done: Mocha.Done, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = "return (error?: any) =>", .replacement = "return error =>" },
         .{ .needle = "(call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) =>", .replacement = "(call, callback) =>" },
@@ -87947,6 +88128,36 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  globalThis.__home_performance_clock = originalClock;
         \\  client.close();
         \\});
+        \\
+        \\test("pick-first handoff and invalid-address diagnostics", () => {
+        \\  const { PickFirstLoadBalancer, PickFirstLoadBalancingConfig } = globalThis.__home_import("@grpc/grpc-js/build/src/load-balancer-pick-first");
+        \\  const created = [];
+        \\  const states = [];
+        \\  let nextInitialState = grpc.connectivityState.READY;
+        \\  const helper = {
+        \\    createSubchannel(address) { const child = new __home_grpc_MockSubchannelFixture(String(address.host) + ":" + String(address.port), nextInitialState); created.push(child); return child; },
+        \\    updateState(state, picker) { states.push({ state, subchannel: picker.pick({}).subchannel }); },
+        \\    requestReresolution() {},
+        \\  };
+        \\  const picker = new PickFirstLoadBalancer(helper, grpc.credentials.createInsecure(), {});
+        \\  const config = new PickFirstLoadBalancingConfig(false);
+        \\  picker.updateAddressList([{ addresses: [{ host: "localhost", port: 1 }] }], config);
+        \\  nextInitialState = grpc.connectivityState.IDLE;
+        \\  picker.updateAddressList([{ addresses: [{ host: "localhost", port: 2 }] }], config);
+        \\  assert.deepStrictEqual(states.map(entry => entry.state), [grpc.connectivityState.READY]);
+        \\  created[0].transitionToState(grpc.connectivityState.IDLE);
+        \\  created[1].transitionToState(grpc.connectivityState.READY);
+        \\  assert.deepStrictEqual(states.map(entry => entry.state), [grpc.connectivityState.READY, grpc.connectivityState.CONNECTING, grpc.connectivityState.READY]);
+        \\  assert.strictEqual(states[2].subchannel, created[1]);
+        \\
+        \\  let addressError;
+        \\  try { picker.updateAddressList([{ addresses: [{ host: "", port: -1 }] }], config); } catch (error) { addressError = error; }
+        \\  assert.strictEqual(addressError.code, "ERR_GRPC_PICK_FIRST");
+        \\  assert.ok(addressError.cause instanceof Error);
+        \\  assert.ok(String(addressError.stack).includes("PickFirstLoadBalancer.formatAddress"));
+        \\  assert.ok(String(addressError.stack).includes("Caused by:"));
+        \\  picker.destroy();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87964,7 +88175,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102464,6 +102675,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-logging.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-metadata.test.ts", .passed = 29 },
         .{ .path = "js/third_party/grpc-js/test-outlier-detection.test.ts", .passed = 26 },
+        .{ .path = "js/third_party/grpc-js/test-pick-first.test.ts", .passed = 22 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
