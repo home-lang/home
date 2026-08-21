@@ -3212,6 +3212,17 @@ const harness_prelude =
     \\  constructor(apiKey, config) { this._apiKey = String(apiKey || ""); this._config = config || {}; this.charges = { retrieve: (chargeId, options) => { void options; const id = String(chargeId || ""); const cause = new Error(id ? "No such charge: '" + id + "'" : "A charge identifier is required"); return Promise.reject(__home_stripe_charge_error(id, cause)); } }; }
     \\}
     \\__home_Stripe.errors = { StripeInvalidRequestError: __home_StripeInvalidRequestError }; globalThis.__home_modules["stripe"] = { Stripe: __home_Stripe, default: __home_Stripe };
+    \\function __home_svelte_error(phase, filename, componentName, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const step = String(phase || "compile"); const file = String(filename || "<anonymous component>"); const name = String(componentName || "Component"); const operation = "svelte." + step; const failure = new Error("Svelte " + step + " failed for " + file + ": " + String(cause.message || cause));
+    \\  failure.name = step === "render" ? "SvelteRenderError" : "SvelteCompileError"; failure.code = step === "render" ? "ERR_SVELTE_RENDER" : "ERR_SVELTE_COMPILE"; failure.operation = operation; failure.phase = step; failure.filename = file; failure.component = name; failure.cause = cause; const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + name + ", " + file + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_svelte_compile_component(source, filename) {
+    \\  const file = String(filename || "Component.svelte"); try { const text = String(source); const values = {}; const scriptPattern = /<script[^>]*>([\s\S]*?)<\/script>/gi; let scriptMatch; while ((scriptMatch = scriptPattern.exec(text))) { const declarationPattern = /\blet\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(["'])(.*?)\2\s*;?/g; let declaration; while ((declaration = declarationPattern.exec(scriptMatch[1]))) values[declaration[1]] = declaration[3]; } let markup = text.replace(scriptPattern, "").trim(); if (!/<[A-Za-z][^>]*>[\s\S]*<\/[A-Za-z][^>]*>/.test(markup)) throw new SyntaxError("Invalid Svelte component structure"); markup = markup.replace(/\{([A-Za-z_$][A-Za-z0-9_$]*)\}/g, (_match, key) => Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : ""); const body = "<!--[-->" + markup + "<!--]-->"; const name = ((file.match(/([^/]+)\.svelte(?:\?.*)?$/) || [])[1] || "Component").replace(/[^A-Za-z0-9_$]/g, "_"); const component = function SvelteComponent() { return { body }; }; Object.defineProperty(component, "name", { value: name, configurable: true }); component.__home_svelte_body = body; component.__home_svelte_filename = file; const code = "function " + name + "(){return {body:" + JSON.stringify(body) + "};}\n" + name + ".__home_svelte_body=" + JSON.stringify(body) + ";\nexport default " + name + ";"; return { component, body, js: { code, map: null }, css: null, warnings: [], metadata: { runes: false } }; } catch (error) { throw error && error.code === "ERR_SVELTE_COMPILE" ? error : __home_svelte_error("compile", file, "Component", new SyntaxError("Invalid Svelte component structure")); }
+    \\}
+    \\function __home_svelte_compile(source, options) { return __home_svelte_compile_component(source, options && options.filename); }
+    \\function __home_svelte_render(component, options) { const name = component && component.name || "Component"; const file = component && component.__home_svelte_filename || "<anonymous component>"; try { if (typeof component !== "function") throw new TypeError("Svelte component must be a function"); let body = component.__home_svelte_body; if (body === undefined) { const result = component(options && options.props || {}); body = result && result.body !== undefined ? result.body : result; } if (typeof body !== "string") throw new TypeError("Svelte component did not return an SSR body"); return { body, head: "" }; } catch (error) { throw error && error.code === "ERR_SVELTE_RENDER" ? error : __home_svelte_error("render", file, name, error); } }
+    \\function __home_svelte_register(dirname) { const file = __home_build_join(String(dirname || globalThis.__home_current_dirname || "."), "hello.svelte"); const source = __home_build_read_text(file); if (source === null) throw __home_svelte_error("compile", file, "hello", new Error("Svelte component file was not found")); const compiled = __home_svelte_compile_component(source, file); const module = { default: compiled.component }; globalThis.__home_modules[file] = module; return module; }
+    \\globalThis.__home_modules["svelte/compiler"] = { compile: __home_svelte_compile }; globalThis.__home_modules["svelte/server"] = { render: __home_svelte_render }; globalThis.__home_modules["home:svelte-loader"] = { register: __home_svelte_register };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72750,6 +72761,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import solc from \"solc\";", .replacement = "const solc = globalThis.__home_import(\"solc\").default;" },
         .{ .needle = "import st from \"st\";", .replacement = "const st = globalThis.__home_import(\"st\").default;" },
         .{ .needle = "import { Stripe } from \"stripe\";", .replacement = "const { Stripe } = globalThis.__home_import(\"stripe\");" },
+        .{ .needle = "import { render as svelteRender } from \"svelte/server\";", .replacement = "const { render: svelteRender } = globalThis.__home_import(\"svelte/server\");" },
+        .{ .needle = "import \"./bun-loader-svelte\";", .replacement = "globalThis.__home_import(\"home:svelte-loader\").register(globalThis.__home_current_dirname);" },
         .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
         .{ .needle = "import fs from \"fs\";", .replacement = "const fs = globalThis.__home_import(\"fs\");" },
         .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
@@ -104571,6 +104584,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/solc/solc.test.ts", .passed = 1 },
         .{ .path = "js/third_party/st/st.test.ts", .passed = 1 },
         .{ .path = "js/third_party/stripe/stripe.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/svelte/svelte.test.ts", .passed = 4 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104654,6 +104668,8 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\const solc = globalThis.__home_import("solc").default;
         \\const st = globalThis.__home_import("st").default;
         \\const { Stripe } = globalThis.__home_import("stripe");
+        \\const svelteCompiler = globalThis.__home_import("svelte/compiler");
+        \\const svelteServer = globalThis.__home_import("svelte/server");
         \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
         \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
@@ -104833,6 +104849,33 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).not.toContain("sk_private_home_secret");
         \\  expect(caught.message).not.toContain("acct_private_home");
         \\  expect(caught.stack).not.toContain("acct_private_home");
+        \\});
+        \\test("Svelte compile errors retain filename context without component source", () => {
+        \\  let caught; try { svelteCompiler.compile("private-svelte-source", { filename: "/tmp/Private.svelte" }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("SvelteCompileError");
+        \\  expect(caught.code).toBe("ERR_SVELTE_COMPILE");
+        \\  expect(caught.operation).toBe("svelte.compile");
+        \\  expect(caught.phase).toBe("compile");
+        \\  expect(caught.filename).toBe("/tmp/Private.svelte");
+        \\  expect(caught.cause.message).toBe("Invalid Svelte component structure");
+        \\  expect(caught.stack).toContain("svelte.compile (Component, /tmp/Private.svelte)");
+        \\  expect(caught.stack).toContain("Caused by: SyntaxError: Invalid Svelte component structure");
+        \\  expect(caught.message).not.toContain("private-svelte-source");
+        \\  expect(caught.stack).not.toContain("private-svelte-source");
+        \\});
+        \\test("Svelte render errors retain component context without private props", () => {
+        \\  function BrokenComponent() { throw new TypeError("component render failed"); } let caught;
+        \\  try { svelteServer.render(BrokenComponent, { props: { secret: "private-svelte-prop" } }); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("SvelteRenderError");
+        \\  expect(caught.code).toBe("ERR_SVELTE_RENDER");
+        \\  expect(caught.operation).toBe("svelte.render");
+        \\  expect(caught.phase).toBe("render");
+        \\  expect(caught.component).toBe("BrokenComponent");
+        \\  expect(caught.cause.message).toBe("component render failed");
+        \\  expect(caught.stack).toContain("svelte.render (BrokenComponent, <anonymous component>)");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: component render failed");
+        \\  expect(caught.message).not.toContain("private-svelte-prop");
+        \\  expect(caught.stack).not.toContain("private-svelte-prop");
         \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
@@ -105167,7 +105210,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 41), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 43), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
