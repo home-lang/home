@@ -118840,6 +118840,10 @@ pub const Checker = struct {
         const is_object = flags.is_object_type;
         const is_intersection = flags.is_intersection;
         if (!is_union and !is_object and !is_intersection) return;
+        if (is_object and !is_union) {
+            const disc_t = self.interner.objectMember(static_t, prop_name) orelse return;
+            if (!self.isUnitDiscriminantType(disc_t)) return;
+        }
         if (is_intersection) {
             if (try self.narrowIntersectionByDiscriminant(static_t, prop_name, lit_t, positive)) |narrowed| {
                 try self.recordNarrow(obj_name, narrowed);
@@ -204460,6 +204464,18 @@ test "checker: obj.x !== null narrows obj.x in then-branch" {
     const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
     // The narrowed `obj.x` should be string_t ÃÂ¢ÃÂÃÂ null subtracted out.
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v_init));
+}
+
+test "checker: non-strict null ternary keeps array receiver reachable" {
+    const s = try newSetup(
+        \\function lastOf(items: any[]): any {
+        \\    return (items === null || items.length === 0) ? null : items[items.length - 1];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: obj.x === <literal> narrows obj.x to literal type" {
