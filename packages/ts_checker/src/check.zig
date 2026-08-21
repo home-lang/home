@@ -140687,6 +140687,12 @@ pub const Checker = struct {
                             try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                         }
                     },
+                    .literal_number => {
+                        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(u.operand), " \t\r\n");
+                        if (!std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "1")) {
+                            try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                        }
+                    },
                     // `!null` / `!undefined` ÃÂ¢ÃÂÃÂ both operands are the
                     // canonical falsy literals. tsc emits TS2873 at
                     // the operand. Mirrors fixture
@@ -180154,6 +180160,17 @@ test "checker: negated numeric literal does not report always truthy" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_always_truthy));
+}
+
+test "checker: negated numeric literals other than zero and one are always truthy" {
+    const s = try newSetup(
+        \\const a = !10;
+        \\const b = !0;
+        \\const c = !1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_truthy));
 }
 
 test "checker: unreachable JS reports TS7027 per unreachable run" {
