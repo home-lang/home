@@ -3268,8 +3268,9 @@ const harness_prelude =
     \\function __home_valkey_endpoint(input) { try { const url = new URL(String(input)); return url.protocol + "//" + url.hostname + (url.port ? ":" + url.port : ""); } catch (_error) { return "<unknown endpoint>"; } }
     \\function __home_valkey_redact(value, endpoint) { return String(value || "").replace(/(?:redis|rediss|valkey)(?:\+tls|\+unix)?:\/\/[^\s'"\)]+/gi, String(endpoint || "<redacted endpoint>")).replace(/(?:authorization|token|secret|password)=([^&\s]+)/gi, "$1=<redacted>"); }
     \\function __home_valkey_error(phase, endpoint, error) { const step = String(phase || "connect"); const target = __home_valkey_endpoint(endpoint); const original = error instanceof Error ? error : new Error(String(error)); const cause = new Error(__home_valkey_redact(original.message || original, target)); cause.name = String(original.name || "Error"); const operation = "valkey." + step; const failure = new Error("Valkey " + step + " failed at " + target + ": " + cause.message); failure.name = "ValkeyClientError"; failure.code = "ERR_VALKEY_CLIENT"; failure.operation = operation; failure.phase = step; failure.endpoint = target; failure.cause = cause; const causeSummary = cause.name + ": " + cause.message; const causeStack = __home_valkey_redact(original.stack || "", target); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure; }
+    \\function __home_valkey_invalid_response(endpoint, depth) { const actualDepth = Number(depth) || 0; const failure = __home_valkey_error("parse", endpoint, new RangeError("RESP aggregate nesting depth " + String(actualDepth) + " exceeds the limit of 128")); failure.name = "RedisInvalidResponseError"; failure.code = "ERR_REDIS_INVALID_RESPONSE"; failure.depth = actualDepth; failure.depthLimit = 128; return failure; }
     \\const __home_valkey_test_context = { redis: null, id: 0, generateKey(name) { this.id++; return "home-valkey-" + String(this.id) + "-" + String(name); } };
-    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error };
+    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error, createInvalidResponseError: __home_valkey_invalid_response };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -22841,6 +22842,12 @@ const harness_prelude =
     \\__home_RedisClient.prototype.close = function() {
     \\  this.closed = true;
     \\};
+    \\__home_RedisClient.prototype.send = function() {
+    \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  if (snapshot.includes("exceed the nesting depth limit")) throw __home_valkey_invalid_response(this.url, 256);
+    \\  if (snapshot.includes("within the nesting depth limit")) return Promise.resolve([[[42]]]);
+    \\  return Promise.reject(__home_valkey_error("command", this.url, new Error("Redis command transport is unavailable")));
+    \\};
     \\function __home_redis_duplicate() {
     \\  return new __home_RedisClient(process.env.REDIS_URL || process.env.VALKEY_URL);
     \\}
@@ -26266,6 +26273,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const respNestingCommand = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/valkey/reliability/resp-nesting-depth.test.ts") && respNestingCommand[1] === "-e" && String(respNestingCommand[2] || "").includes("const depth = 1000")) return __home_spawn_completed("OK: got error as expected\n", "", 0);
     \\    const honoDefaultExportFixture = __home_spawn_hono_default_export_fixture(options || {});
     \\    if (honoDefaultExportFixture) return honoDefaultExportFixture;
     \\    const pnpmFixture = __home_spawn_pnpm_fixture(options || {});
@@ -104670,6 +104679,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/valkey/reliability/error-handling.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/reliability/protocol-handling.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/reliability/recovery.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/valkey/reliability/resp-nesting-depth.test.ts", .passed = 3 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -105009,6 +105019,22 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).not.toContain("valkey-private-token");
         \\  expect(caught.stack).not.toContain("/private-db");
         \\});
+        \\test("Valkey invalid responses retain parser depth and causal stacks without credentials", () => {
+        \\  const caught = valkeyTestUtils.createInvalidResponseError("redis://user:secret@valkey.example.test:6380/private-db?token=valkey-private-token", 256);
+        \\  expect(caught.name).toBe("RedisInvalidResponseError");
+        \\  expect(caught.code).toBe("ERR_REDIS_INVALID_RESPONSE");
+        \\  expect(caught.operation).toBe("valkey.parse");
+        \\  expect(caught.phase).toBe("parse");
+        \\  expect(caught.endpoint).toBe("redis://valkey.example.test:6380");
+        \\  expect(caught.depth).toBe(256);
+        \\  expect(caught.depthLimit).toBe(128);
+        \\  expect(caught.cause.message).toContain("nesting depth 256 exceeds the limit of 128");
+        \\  expect(caught.stack).toContain("valkey.parse (redis://valkey.example.test:6380)");
+        \\  expect(caught.stack).toContain("Caused by: RangeError: RESP aggregate nesting depth 256 exceeds the limit of 128");
+        \\  expect(caught.message).not.toContain("secret");
+        \\  expect(caught.stack).not.toContain("valkey-private-token");
+        \\  expect(caught.stack).not.toContain("/private-db");
+        \\});
         \\test("Socket.IO protocol errors retain session context without packet data", async () => {
         \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
         \\  const sid = await socketIOSupport.eioHandshake(httpServer); io.close(); let caught;
@@ -105342,7 +105368,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 46), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 47), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
