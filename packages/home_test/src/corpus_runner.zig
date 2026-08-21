@@ -57973,6 +57973,36 @@ const harness_prelude =
     \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, UNIMPLEMENTED: 12, UNAVAILABLE: 14 };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
     \\const __home_grpc_connectivity_state = { IDLE: 0, CONNECTING: 1, READY: 2, TRANSIENT_FAILURE: 3, SHUTDOWN: 4 };
+    \\const __home_grpc_log_verbosity = { DEBUG: 0, INFO: 1, ERROR: 2, NONE: 3 };
+    \\let __home_grpc_logger = console;
+    \\let __home_grpc_logger_verbosity = __home_grpc_log_verbosity.DEBUG;
+    \\function __home_grpc_logging_error(error, operation, severity) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const label = severity === undefined ? "configuration" : severity === 0 ? "DEBUG" : severity === 1 ? "INFO" : severity === 2 ? "ERROR" : String(severity);
+    \\  const failure = new Error("GrpcLogging." + operation + " failed at " + label + ": " + String(cause.message || cause));
+    \\  failure.code = "ERR_GRPC_LOGGER"; failure.severity = severity; failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at GrpcLogging." + operation + " (severity " + label + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_set_logger(logger) {
+    \\  if (!logger || typeof logger !== "object") throw __home_grpc_logging_error(new TypeError("logger must be an object"), "setLogger");
+    \\  __home_grpc_logger = logger;
+    \\}
+    \\function __home_grpc_get_logger() { return __home_grpc_logger; }
+    \\function __home_grpc_set_logger_verbosity(verbosity) {
+    \\  const value = Number(verbosity);
+    \\  if (!Number.isFinite(value) || value < __home_grpc_log_verbosity.DEBUG || value > __home_grpc_log_verbosity.NONE) throw __home_grpc_logging_error(new RangeError("verbosity must be DEBUG, INFO, ERROR, or NONE"), "setLoggerVerbosity", verbosity);
+    \\  __home_grpc_logger_verbosity = value;
+    \\}
+    \\function __home_grpc_log(severity) {
+    \\  const value = Number(severity);
+    \\  if (value < __home_grpc_logger_verbosity) return;
+    \\  const handler = __home_grpc_logger && __home_grpc_logger.error;
+    \\  if (typeof handler !== "function") return;
+    \\  try { handler.apply(__home_grpc_logger, Array.prototype.slice.call(arguments, 1)); }
+    \\  catch (error) { throw __home_grpc_logging_error(error, "log", value); }
+    \\}
+    \\const __home_grpc_logging = { setLogger: __home_grpc_set_logger, getLogger: __home_grpc_get_logger, setLoggerVerbosity: __home_grpc_set_logger_verbosity, log: __home_grpc_log };
     \\let __home_grpc_channelz_next_id = 1;
     \\const __home_grpc_channelz_channels = new Map();
     \\const __home_grpc_channelz_subchannels = new Map();
@@ -58621,6 +58651,9 @@ const harness_prelude =
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  connectivityState: __home_grpc_connectivity_state,
+    \\  logVerbosity: __home_grpc_log_verbosity,
+    \\  setLogger: __home_grpc_set_logger,
+    \\  setLogVerbosity: __home_grpc_set_logger_verbosity,
     \\  propagate: __home_grpc_propagate,
     \\  experimental: {
     \\    FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider,
@@ -58644,6 +58677,7 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/make-client"] = { ServiceClient: __home_grpc_EchoService, ServiceClientConstructor: __home_grpc_EchoService };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src"] = { Client: __home_grpc_Client, Server: __home_grpc_Server, ServerCredentials: __home_grpc_ServerCredentials };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/logging"] = __home_grpc_logging;
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71214,6 +71248,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
         .{ .needle = "import { loadProtoFile } from \"./common.ts\";", .replacement = "const loadProtoFile = file => globalThis.__home_import(\"@grpc/grpc-js\").loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "import { TestClient, TestServer } from \"./common\";", .replacement = "class TestServer {\n  constructor(useTls, options) { this.useTls = useTls; this.server = new grpc.Server(options); const EchoService = grpc.loadPackageDefinition({ __home_proto_file: \"echo_service.proto\" }).EchoService; this.server.addService(EchoService.service, { echo(call, callback) { callback(null, call.request); } }); this.target = null; }\n  getCredentials() { return this.useTls ? grpc.ServerCredentials.createSsl(null, [{ private_key: Buffer.from(\"key\"), cert_chain: Buffer.from(\"cert\") }], false) : grpc.ServerCredentials.createInsecure(); }\n  start() { return new Promise((resolve, reject) => this.server.bindAsync(\"localhost:0\", this.getCredentials(), (error, port) => { if (error) { reject(error); return; } this.target = \"localhost:\" + String(port); resolve(); })); }\n  startUds() { const target = \"unix:///tmp/home-grpc-uds-\" + String(Date.now()); return new Promise((resolve, reject) => this.server.bindAsync(target, this.getCredentials(), error => { if (error) { reject(error); return; } this.target = target; resolve(); })); }\n  shutdown() { this.server.forceShutdown(); }\n  getTarget() { if (this.target === null) { const cause = new Error(\"Server not yet started\"); const error = new Error(\"TestServer.getTarget failed: \" + cause.message); error.code = \"ERR_GRPC_SERVER_NOT_STARTED\"; error.cause = cause; error.stack = String(error.stack || error) + \"\\n    at TestServer.getTarget (\" + String(globalThis.__home_current_filename || \"<anonymous module>\") + \")\\nCaused by: \" + String(cause.stack || cause); throw error; } return this.target; }\n}\nclass TestClient {\n  constructor(target, useTls, options) { const credentials = useTls ? grpc.credentials.createSsl(Buffer.from(\"ca\")) : grpc.credentials.createInsecure(); const EchoService = grpc.loadPackageDefinition({ __home_proto_file: \"echo_service.proto\" }).EchoService; this.client = new EchoService(target, credentials, options); }\n  static createFromServer(server, options) { return new TestClient(server.getTarget(), server.useTls, options); }\n  waitForReady(deadline, callback) { this.client.waitForReady(deadline, callback); }\n  sendRequest(callback) { this.client.echo({}, callback); }\n  sendRequestWithMetadata(metadata, callback) { this.client.echo({}, metadata, callback); }\n  getChannelState() { return this.client.getChannel().getConnectivityState(false); }\n  waitForClientState(deadline, state, callback) { this.client.getChannel().watchConnectivityState(this.getChannelState(), deadline, error => { if (error) { callback(error); return; } const currentState = this.getChannelState(); if (currentState === state) callback(); else this.waitForClientState(deadline, state, callback); }); }\n  close() { this.client.close(); }\n}" },
+        .{ .needle = "import * as logging from \"@grpc/grpc-js/build/src/logging\";", .replacement = "const logging = globalThis.__home_import(\"@grpc/grpc-js/build/src/logging\");" },
+        .{ .needle = "const logger: Partial<Console> =", .replacement = "const logger =" },
+        .{ .needle = "const output: Array<string | string[]> = [];", .replacement = "const output = [];" },
+        .{ .needle = "error(...args: string[]): void", .replacement = "error(...args)" },
         .{ .needle = "import grpc, { sendUnaryData, ServerUnaryCall, ServiceError } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { CallCredentials } from \"@grpc/grpc-js/build/src/call-credentials\";", .replacement = "const { CallCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/call-credentials\");" },
         .{ .needle = "import { ChannelCredentials } from \"@grpc/grpc-js/build/src/channel-credentials\";", .replacement = "const { ChannelCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/channel-credentials\");" },
@@ -87660,6 +87698,29 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  assert.ok(String(releaseError.stack).includes("broken.pool:12345"));
         \\  assert.ok(String(releaseError.stack).includes("Caused by:"));
         \\});
+        \\
+        \\test("logging severity and failure diagnostics", () => {
+        \\  const logging = globalThis.__home_import("@grpc/grpc-js/build/src/logging");
+        \\  const records = [];
+        \\  grpc.setLogger({ error() { records.push(Array.from(arguments)); } });
+        \\  grpc.setLogVerbosity(grpc.logVerbosity.INFO);
+        \\  logging.log(grpc.logVerbosity.DEBUG, "hidden");
+        \\  logging.log(grpc.logVerbosity.INFO, "visible", 1);
+        \\  logging.log(grpc.logVerbosity.ERROR, "failure");
+        \\  assert.deepStrictEqual(records, [["visible", 1], ["failure"]]);
+        \\
+        \\  grpc.setLogger({ error() { throw new Error("logger transport failed"); } });
+        \\  let loggerError;
+        \\  try { logging.log(grpc.logVerbosity.ERROR, "boom"); } catch (error) { loggerError = error; }
+        \\  assert.strictEqual(loggerError.code, "ERR_GRPC_LOGGER");
+        \\  assert.strictEqual(loggerError.severity, grpc.logVerbosity.ERROR);
+        \\  assert.ok(loggerError.cause instanceof Error);
+        \\  assert.ok(String(loggerError.stack).includes("GrpcLogging.log"));
+        \\  assert.ok(String(loggerError.stack).includes("severity ERROR"));
+        \\  assert.ok(String(loggerError.stack).includes("Caused by:"));
+        \\  grpc.setLogger(console);
+        \\  grpc.setLogVerbosity(grpc.logVerbosity.DEBUG);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87677,7 +87738,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102174,6 +102235,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-global-subchannel-pool.test.ts", .passed = 3 },
         .{ .path = "js/third_party/grpc-js/test-idle-timer.test.ts", .passed = 8 },
         .{ .path = "js/third_party/grpc-js/test-local-subchannel-pool.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/grpc-js/test-logging.test.ts", .passed = 2 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
