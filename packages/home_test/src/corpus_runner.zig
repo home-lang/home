@@ -58407,7 +58407,7 @@ const harness_prelude =
     \\            const parsedRequestUrl = new URL(request && request.url || origin + "/");
     \\            const serverRequest = Object.assign(__home_http_event_target(), {
     \\              method: String(request && request.method || "GET").toUpperCase(),
-    \\              headers: request && request.headers ? request.headers : new Headers(),
+    \\              headers: __home_http_headers_object(request && request.headers ? request.headers : new Headers()),
     \\              url: parsedRequestUrl.pathname + parsedRequestUrl.search,
     \\              __home_raw_body: request && request.__home_raw_body,
     \\              __home_web_request: request,
@@ -62829,6 +62829,24 @@ const harness_prelude =
     \\  lines.push("");
     \\  return { boundary, text: lines.join("\r\n") };
     \\}
+    \\function __home_formdata_serialize_request(form) {
+    \\  try {
+    \\    const serialized = __home_formdata_serialize(form);
+    \\    serialized.byteLength = __home_text_to_utf8_bytes(serialized.text).length;
+    \\    return serialized;
+    \\  } catch (cause) {
+    \\    const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Unable to serialize FormData"));
+    \\    const failure = new TypeError("Unable to serialize FormData request body: " + String(underlying.message || underlying));
+    \\    failure.code = "ERR_FORM_DATA_SERIALIZE";
+    \\    failure.operation = "fetch.request.formData.serialize";
+    \\    failure.phase = "serialize";
+    \\    failure.cause = underlying;
+    \\    const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\    const causeStack = String(underlying.stack || "");
+    \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\    throw failure;
+    \\  }
+    \\}
     \\function __home_url_to_usv_string(value) {
     \\  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
     \\  const text = String(value);
@@ -65800,7 +65818,7 @@ const harness_prelude =
     \\        requestInit = Object.assign({}, fetchOptions, { body: compressedBody, headers: compressedHeaders });
     \\      }
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
-    \\      request.__home_raw_body = fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null;
+    \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
     \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
@@ -67834,11 +67852,13 @@ const harness_prelude =
     \\    if (methodOption !== undefined) this.method = String(methodOption).toUpperCase();
     \\    if (headersOption !== undefined) this.headers = new Headers(headersOption);
     \\    if (bodyOption !== undefined && bodyOption !== null && bodyOption && bodyOption.__home_is_formdata) {
-    \\      const serialized = __home_formdata_serialize(bodyOption);
+    \\      const serialized = __home_formdata_serialize_request(bodyOption);
     \\      this.__home_text = serialized.text;
     \\      this.__home_formdata = bodyOption;
+    \\      this.__home_serialized_formdata = serialized;
     \\      this.body = __home_body_record({ __home_text: this.__home_text });
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
+    \\      if (this.headers.get("content-length") === null) this.headers.set("content-length", String(serialized.byteLength));
     \\    } else if (bodyOption !== undefined && bodyOption !== null) {
     \\      this.__home_formdata = null;
     \\      this.body = __home_body_record_with_blob_stream(bodyOption);
@@ -108733,6 +108753,41 @@ test "bootstrap runner mirrors client fetch corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors FormData Content-Length corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/content-length.test.js";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_formdata_serialize_request") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FORM_DATA_SERIALIZE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serialized.byteLength") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http_headers_object(request && request.headers") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "FormData Content-Length corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 1), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -108764,6 +108819,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
         .{ .path = "js/web/fetch/chunked-trailing.test.js", .passed = 23 },
         .{ .path = "js/web/fetch/client-fetch.test.ts", .passed = 29, .todo = 2 },
+        .{ .path = "js/web/fetch/content-length.test.js", .passed = 1 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
