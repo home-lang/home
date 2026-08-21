@@ -66482,7 +66482,10 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(opts, "keyid") && typeof opts.keyid !== "string") throw new Error('"keyid" must be a string');
     \\  if (!secret && algorithm !== "none") throw new Error("secretOrPrivateKey must have a value");
     \\  if (/^(?:RS|PS)/.test(algorithm)) {
-    \\    if (!secret || !secret.__home_key_object || String(secret.asymmetricKeyType || "").toLowerCase() !== "rsa") throw new Error("secretOrPrivateKey must be an asymmetric RSA key");
+    \\    const pemText = typeof Buffer === "function" && Buffer.isBuffer(secret) ? secret.toString() : (typeof secret === "string" ? secret : "");
+    \\    const isRsaKeyObject = !!(secret && secret.__home_key_object && String(secret.type || "private") === "private" && String(secret.asymmetricKeyType || "").toLowerCase() === "rsa");
+    \\    const isRsaPrivatePem = /^-----BEGIN RSA PRIVATE KEY-----/.test(pemText.trim());
+    \\    if (!isRsaKeyObject && !isRsaPrivatePem) throw new Error("secretOrPrivateKey must be an asymmetric RSA key");
     \\    const modulusLength = Number(secret.asymmetricKeyDetails && secret.asymmetricKeyDetails.modulusLength || 0);
     \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
     \\  }
@@ -103740,6 +103743,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-sub.test.js", .passed = 24 },
         .{ .path = "js/third_party/jsonwebtoken/header-kid.test.js", .passed = 20 },
         .{ .path = "js/third_party/jsonwebtoken/issue_304.test.js", .passed = 5 },
+        .{ .path = "js/third_party/jsonwebtoken/issue_70.test.js", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
