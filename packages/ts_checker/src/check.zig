@@ -15814,7 +15814,10 @@ pub const Checker = struct {
             try self.checkVarDecl(node);
             return;
         }
-        const init_t = try self.checkExpression(v.init);
+        var init_t = try self.checkExpression(v.init);
+        if (self.hir.kindOf(node) == .const_decl) {
+            init_t = try self.constInitializerType(v.init, init_t);
+        }
         if (declared_type != types.Primitive.none) {
             const ok = (self.engine.isAssignableTo(init_t, declared_type) catch return error.OutOfMemory) or
                 try self.typeParameterConstraintAssignableToParam(init_t, declared_type);
@@ -27792,7 +27795,17 @@ pub const Checker = struct {
                 }
             }
         }
-        const t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const number_idx = if (!hir_mod.enumOf(self.hir, decl).is_const and
+            (self.enumDeclIsNumeric(decl, enum_name) orelse false))
+            types.Primitive.string_t
+        else
+            types.Primitive.none;
+        const t = self.interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            types.Primitive.none,
+            number_idx,
+            types.Primitive.none,
+        ) catch return error.OutOfMemory;
         try self.registerEnumNamespaceDisplayName(t, enum_name);
         return t;
     }
@@ -47917,12 +47930,11 @@ pub const Checker = struct {
                 try self.reportClassExtendsIndexMismatch(child_node, extends_expr);
             }
         }
-        // The assignability checks below can intern new types and grow the
-        // same member pool this borrowed slice points into.
-        const parent_members_borrow = self.interner.objectMembers(parent_t);
+        // Flatten intersection-returning factories and own the resulting
+        // member list before relation checks can grow the interner pools.
         var parent_members_copy: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer parent_members_copy.deinit(self.gpa);
-        try parent_members_copy.appendSlice(self.gpa, parent_members_borrow);
+        try self.collectIntersectionObjectMembers(parent_t, &parent_members_copy);
         const parent_members = parent_members_copy.items;
 
         // Collect the child declarations so overrides can be checked
@@ -48155,12 +48167,19 @@ pub const Checker = struct {
                 // its type arguments. Mirrors the override-base bare-name rule
                 // (0debd6bbe) + subtypingWithObjectMembers.
                 const cc = hir_mod.classOf(self.hir, child_node);
+                const factory_return_name = if (cc.extends != hir_mod.none_node_id and
+                    self.hir.kindOf(cc.extends) == .call_expr)
+                    try self.classFactoryHeritageReturnDiagnosticName(cc.extends)
+                else
+                    null;
                 const extends_text = if (cc.extends != hir_mod.none_node_id)
                     self.classExtendsDisplayText(cc.extends)
                 else
                     null;
                 defer if (extends_text) |text| self.gpa.free(text);
-                var base_name: []const u8 = if (extends_text) |text|
+                var base_name: []const u8 = if (factory_return_name) |name|
+                    name
+                else if (extends_text) |text|
                     if (std.mem.indexOfScalar(u8, text, '<') != null) text else parent_name
                 else
                     parent_name;
@@ -48186,6 +48205,13 @@ pub const Checker = struct {
             "Property '{s}' in type is not assignable to the same property in base type.",
             .{prop_str},
         );
+    }
+
+    fn classFactoryHeritageReturnDiagnosticName(self: *Checker, extends_expr: NodeId) CheckError!?[]const u8 {
+        if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .call_expr) return null;
+        const args = hir_mod.callTypeArgs(self.hir, extends_expr);
+        if (args.len != 1) return null;
+        return try self.heritageTypeNodeDiagnosticName(args[0]);
     }
 
     fn checkIntersectionFactoryClassStaticSide(
@@ -62055,7 +62081,17 @@ pub const Checker = struct {
             try self.checkInterfaceClassPrivateHeritage(node, extends[visibility_index], child_members);
         }
         for (extends) |ext_node| {
-            const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            var parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            var flattened_parent_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer flattened_parent_members.deinit(self.gpa);
+            if (parent_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(parent_t).is_intersection)
+            {
+                try self.collectIntersectionObjectMembers(parent_t, &flattened_parent_members);
+                if (flattened_parent_members.items.len > 0) {
+                    parent_t = self.interner.internObjectType(flattened_parent_members.items) catch return error.OutOfMemory;
+                }
+            }
             if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
             const parent_string_idx = self.interner.objectStringIndex(parent_t);
             if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
@@ -62252,13 +62288,7 @@ pub const Checker = struct {
                         // 'Base1<number>'.`). Falls back to the bare
                         // unqualified name when no source text is
                         // available or the extends carries no generics.
-                        const ext_src = self.nodeSourceTextOrEmpty(ext_node);
-                        const base_display: []const u8 = blk_base: {
-                            if (ext_src.len > 0 and std.mem.indexOfScalar(u8, ext_src, '<') != null) {
-                                break :blk_base ext_src;
-                            }
-                            break :blk_base base_name_str.?;
-                        };
+                        const base_display = (try self.heritageTypeNodeDiagnosticName(ext_node)) orelse base_name_str.?;
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Interface '{s}' incorrectly extends interface '{s}'.",
@@ -63116,13 +63146,7 @@ pub const Checker = struct {
                 const iface_name_str = self.string_interner.get(iface_name_id.?);
                 const base_name_str = self.string_interner.get(base_name_id.?);
                 const child_with_params = try self.formatInterfaceDisplayName(node, iface_name_str);
-                const ext_src = self.nodeSourceTextOrEmpty(ext_node);
-                const base_display: []const u8 = blk_base: {
-                    if (ext_src.len > 0 and std.mem.indexOfScalar(u8, ext_src, '<') != null) {
-                        break :blk_base ext_src;
-                    }
-                    break :blk_base base_name_str;
-                };
+                const base_display = (try self.heritageTypeNodeDiagnosticName(ext_node)) orelse base_name_str;
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Interface '{s}' incorrectly extends interface '{s}'.",
@@ -63143,6 +63167,51 @@ pub const Checker = struct {
             .message = "Interface incorrectly extends base interface; index signatures are incompatible.",
             .chain = chain,
         });
+    }
+
+    fn heritageTypeNodeDiagnosticName(self: *Checker, type_node: NodeId) CheckError!?[]const u8 {
+        if (type_node == hir_mod.none_node_id) return null;
+        const arena = self.diag_arena.allocator();
+        if (self.hir.kindOf(type_node) == .intersection_type) {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            for (hir_mod.intersectionTypeMembers(self.hir, type_node), 0..) |member, index| {
+                const member_name = (try self.heritageTypeNodeDiagnosticName(member)) orelse return null;
+                if (index > 0) try buf.appendSlice(arena, " & ");
+                try buf.appendSlice(arena, member_name);
+            }
+            return if (buf.items.len > 0) buf.items else null;
+        }
+        if (self.hir.kindOf(type_node) == .type_ref) {
+            const type_ref = hir_mod.typeRefOf(self.hir, type_node);
+            if (type_ref.args_len > 0) {
+                const source_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
+                const angle = std.mem.indexOfScalar(u8, source_text, '<') orelse return null;
+                const head = std.mem.trim(u8, source_text[0..angle], " \t\r\n");
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                try buf.appendSlice(arena, head);
+                try buf.append(arena, '<');
+                for (hir_mod.typeRefArgs(self.hir, type_node), 0..) |arg, index| {
+                    const arg_name = (try self.heritageTypeNodeDiagnosticName(arg)) orelse return null;
+                    if (index > 0) try buf.appendSlice(arena, ", ");
+                    try buf.appendSlice(arena, arg_name);
+                }
+                try buf.append(arena, '>');
+                return buf.items;
+            }
+            if (type_ref.qualifier_len == 0 and type_ref.args_len == 0) {
+                if (self.findVisibleNamedTypeDecl(type_node, type_ref.name)) |decl| {
+                    if (self.hir.kindOf(decl) == .type_alias_decl) {
+                        const aliased = hir_mod.typeAliasOf(self.hir, decl).aliased;
+                        switch (self.hir.kindOf(aliased)) {
+                            .array_type, .tuple_type, .typeof_type =>
+                                return try self.allocTypeAnnotationDiagnosticName(aliased, false),
+                            else => {},
+                        }
+                    }
+                }
+            }
+        }
+        return try self.allocTypeAnnotationDiagnosticName(type_node, false);
     }
 
     /// Locate the declaring HIR node for the named member of a class
@@ -63593,8 +63662,14 @@ pub const Checker = struct {
         number_idx: TypeId,
     ) CheckError!void {
         if (number_idx == types.Primitive.none or string_idx == types.Primitive.none) return;
-        const anchor = self.mergedInterfaceIndexSignatureNode(node, "number");
-        const final_anchor = if (anchor != hir_mod.none_node_id) anchor else node;
+        const number_anchor = self.mergedInterfaceIndexSignatureNode(node, "number");
+        const string_anchor = self.mergedInterfaceIndexSignatureNode(node, "string");
+        const final_anchor = if (number_anchor != hir_mod.none_node_id)
+            number_anchor
+        else if (string_anchor != hir_mod.none_node_id)
+            string_anchor
+        else
+            node;
         if (self.diagnosticExists(final_anchor, TsCodes.number_index_not_assignable_to_string_index)) return;
         const effective_number_idx = self.effectiveIndexValueType(number_idx);
         const apparent_number_idx = try self.indexValueApparentType(effective_number_idx, string_idx);
@@ -63738,6 +63813,11 @@ pub const Checker = struct {
         var declaration_start = line_start;
         while (declaration_start < bracket and
             (src[declaration_start] == ' ' or src[declaration_start] == '\t')) : (declaration_start += 1) {}
+        if (declaration_start == bracket) return @intCast(declaration_start);
+        const prefix = std.mem.trim(u8, src[declaration_start..bracket], " \t");
+        if (!std.mem.eql(u8, prefix, "readonly") and self.nodeHasAncestorKind(node, .interface_decl)) {
+            return @intCast(bracket);
+        }
         return @intCast(declaration_start);
     }
 
@@ -63772,17 +63852,23 @@ pub const Checker = struct {
         if (number_idx != types.Primitive.none and string_idx != types.Primitive.none and
             !(try self.indexValueAssignableToStringIndex(number_idx, string_idx)))
         {
-            const anchor = self.mergedInterfaceIndexSignatureNode(node, "number");
+            const number_anchor = self.mergedInterfaceIndexSignatureNode(node, "number");
             const container_kind = self.hir.kindOf(node);
             const inherited_class_number_index =
                 (container_kind == .class_decl or container_kind == .class_expr) and
-                anchor == hir_mod.none_node_id;
+                number_anchor == hir_mod.none_node_id;
             // Class index constraints are reported only when the number index
             // declaration belongs to the class being checked. An inherited
             // number index remains available for lookup but is not rechecked
             // against a newly declared string index.
             if (!inherited_class_number_index) {
-                const final_anchor = if (anchor != hir_mod.none_node_id) anchor else node;
+                const string_anchor = self.mergedInterfaceIndexSignatureNode(node, "string");
+                const final_anchor = if (number_anchor != hir_mod.none_node_id)
+                    number_anchor
+                else if (string_anchor != hir_mod.none_node_id)
+                    string_anchor
+                else
+                    node;
                 if (!self.diagnosticExists(final_anchor, TsCodes.number_index_not_assignable_to_string_index)) {
                     try self.reportNumberStringIndexMismatch(final_anchor, number_idx, string_idx);
                 }
@@ -64260,9 +64346,20 @@ pub const Checker = struct {
             return;
         }
         if (!flags.is_object_type) return;
+        const synthetic_static_name = self.string_interner.intern("name") catch return error.OutOfMemory;
+        const static_class_name = self.class_name_by_static.get(parent_t);
         for (self.interner.objectMembers(parent_t)) |pm| {
             const is_signature_member = self.syntheticSignatureMemberName(pm.name);
             if (!is_signature_member and child_names.contains(pm.name)) continue;
+            if (pm.name == synthetic_static_name) {
+                if (static_class_name) |class_name| {
+                    const is_declared_static = if (self.class_static_member_names.getPtr(class_name)) |names|
+                        names.contains(pm.name)
+                    else
+                        false;
+                    if (!is_declared_static) continue;
+                }
+            }
             try inherited.append(self.gpa, pm);
             if (!is_signature_member) try child_names.put(self.gpa, pm.name, {});
         }
@@ -189057,6 +189154,73 @@ test "checker: derived interface checks numeric members before string index cons
     try T.expect(std.mem.indexOf(u8, messages.items[1], "'string' index type") != null);
     try T.expect(std.mem.indexOf(u8, messages.items[2], "'number' index type") != null);
     try T.expect(std.mem.indexOf(u8, messages.items[3], "'string' index type") != null);
+}
+
+test "checker: intersection heritage checks every constituent and names factory returns" {
+    const s = try newSetup(
+        \\type T1 = { a: number };
+        \\type T2 = T1 & { b: number };
+        \\interface I2 extends T2 { b: string }
+        \\type Constructor<T> = new () => T;
+        \\declare function Constructor<T>(): Constructor<T>;
+        \\class C2 extends Constructor<T2>() { b: string }
+        \\type Identifiable<T> = { _id: string } & T;
+        \\interface I22 extends Identifiable<T1> { a: string }
+        \\interface I23 extends Identifiable<T1 & { b: number}> { a: string }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'I2' incorrectly extends interface 'T2'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'I23' incorrectly extends interface 'Identifiable<T1 & { b: number; }>'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_not_assignable_to_base,
+        "Property 'b' in type 'C2' is not assignable to the same property in base type 'T2'.",
+    ));
+}
+
+test "checker: typeof heritage preserves static and namespace index shapes" {
+    const s = try newSetup(
+        \\declare class CX { static a: string }
+        \\declare enum EX { A, B, C }
+        \\declare namespace NX { export const a = "hello" }
+        \\type TCX = typeof CX;
+        \\type TEX = typeof EX;
+        \\type TNX = typeof NX;
+        \\interface I10 extends TCX { a: number }
+        \\interface I11 extends TEX { C: string }
+        \\interface I12 extends TNX { a: number }
+        \\interface I14 extends TCX { [x: string]: number }
+        \\interface I15 extends TEX { [x: string]: number }
+        \\interface I16 extends TNX { [x: string]: number }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.number_index_not_assignable_to_string_index));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'I10' incorrectly extends interface 'typeof CX'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_not_assignable_to_index_type,
+        "Property 'a' of type '\"hello\"' is not assignable to 'string' index type 'number'.",
+    ));
 }
 
 test "checker: interface arity mismatch fires TS2428 once per declaration" {
