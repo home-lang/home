@@ -58327,6 +58327,79 @@ const harness_prelude =
     \\  this.__home_reply("getServerSockets", __home_grpc_channelz_servers.get(id), id, callback, server => ({ socket_ref: server.socketIds.map(socketId => ({ socket_id: socketId })), end: true }));
     \\};
     \\const __home_grpc_channelz_package = { grpc: { channelz: { v1: { Channelz: __home_grpc_ChannelzClient } } } };
+    \\function __home_grpc_clone_config(value) {
+    \\  if (Array.isArray(value)) return value.map(__home_grpc_clone_config);
+    \\  if (!value || typeof value !== "object") return value;
+    \\  const clone = {};
+    \\  for (const key of Object.keys(value)) clone[key] = __home_grpc_clone_config(value[key]);
+    \\  return clone;
+    \\}
+    \\function __home_grpc_lb_error(policy, path, message, cause) {
+    \\  const rootCause = cause instanceof Error ? cause : new TypeError(message);
+    \\  rootCause.code = rootCause.code || "ERR_INVALID_ARG_VALUE";
+    \\  const location = String(policy || "<unknown>") + (path ? "." + String(path) : "");
+    \\  const failure = new Error("Invalid load-balancing config at " + location + ": " + String(message));
+    \\  failure.code = rootCause.code; failure.policy = String(policy || ""); failure.path = String(path || ""); failure.cause = rootCause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at LoadBalancingConfig.parse (" + location + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(rootCause.stack || rootCause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_lb_duration(value, fallback, policy, path) {
+    \\  if (value === undefined) return { seconds: fallback, nanos: 0 };
+    \\  if (!value || typeof value !== "object") throw __home_grpc_lb_error(policy, path, "duration must be an object");
+    \\  const seconds = Number(value.seconds === undefined ? 0 : value.seconds), nanos = Number(value.nanos === undefined ? 0 : value.nanos);
+    \\  if (!Number.isFinite(seconds) || !Number.isFinite(nanos) || seconds < 0 || nanos < 0 || nanos >= 1000000000) throw __home_grpc_lb_error(policy, path, "duration is outside the supported range");
+    \\  return { seconds, nanos };
+    \\}
+    \\function __home_grpc_lb_number(value, fallback, policy, path, minimum, maximum) {
+    \\  const result = value === undefined ? fallback : Number(value);
+    \\  if (!Number.isFinite(result) || result < minimum || (maximum !== undefined && result > maximum)) throw __home_grpc_lb_error(policy, path, "value is outside the supported range");
+    \\  return result;
+    \\}
+    \\function __home_grpc_LoadBalancingConfig(policy, value) { this.policy = policy; this.value = __home_grpc_clone_config(value); }
+    \\__home_grpc_LoadBalancingConfig.prototype.toJsonObject = function() { return { [this.policy]: __home_grpc_clone_config(this.value) }; };
+    \\function __home_grpc_parse_load_balancing_config(input) {
+    \\  if (!input || typeof input !== "object" || Array.isArray(input)) throw __home_grpc_lb_error("<root>", "", "configuration must be an object");
+    \\  const policies = Object.keys(input);
+    \\  if (policies.length !== 1) throw __home_grpc_lb_error("<root>", "", "configuration must contain exactly one policy");
+    \\  const policy = policies[0], raw = input[policy];
+    \\  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw __home_grpc_lb_error(policy, "", "policy value must be an object");
+    \\  if (policy === "pick_first") {
+    \\    if (raw.shuffleAddressList !== undefined && typeof raw.shuffleAddressList !== "boolean") throw __home_grpc_lb_error(policy, "shuffleAddressList", "value must be a boolean");
+    \\    return new __home_grpc_LoadBalancingConfig(policy, { shuffleAddressList: raw.shuffleAddressList === undefined ? false : raw.shuffleAddressList });
+    \\  }
+    \\  if (policy === "round_robin") return new __home_grpc_LoadBalancingConfig(policy, {});
+    \\  if (policy === "outlier_detection") {
+    \\    if (!Array.isArray(raw.child_policy) || raw.child_policy.length === 0) throw __home_grpc_lb_error(policy, "child_policy", "at least one child policy is required");
+    \\    if (raw.success_rate_ejection !== undefined && (!raw.success_rate_ejection || typeof raw.success_rate_ejection !== "object" || Array.isArray(raw.success_rate_ejection))) throw __home_grpc_lb_error(policy, "success_rate_ejection", "value must be an object");
+    \\    if (raw.failure_percentage_ejection !== undefined && (!raw.failure_percentage_ejection || typeof raw.failure_percentage_ejection !== "object" || Array.isArray(raw.failure_percentage_ejection))) throw __home_grpc_lb_error(policy, "failure_percentage_ejection", "value must be an object");
+    \\    for (let index = 0; index < raw.child_policy.length; index++) {
+    \\      try { __home_grpc_parse_load_balancing_config(raw.child_policy[index]); }
+    \\      catch (error) { throw __home_grpc_lb_error(policy, "child_policy[" + String(index) + "]", "child policy is invalid", error); }
+    \\    }
+    \\    const success = raw.success_rate_ejection === undefined ? undefined : {
+    \\      stdev_factor: __home_grpc_lb_number(raw.success_rate_ejection.stdev_factor, 1900, policy, "success_rate_ejection.stdev_factor", 0),
+    \\      enforcement_percentage: __home_grpc_lb_number(raw.success_rate_ejection.enforcement_percentage, 100, policy, "success_rate_ejection.enforcement_percentage", 0, 100),
+    \\      minimum_hosts: __home_grpc_lb_number(raw.success_rate_ejection.minimum_hosts, 5, policy, "success_rate_ejection.minimum_hosts", 0),
+    \\      request_volume: __home_grpc_lb_number(raw.success_rate_ejection.request_volume, 100, policy, "success_rate_ejection.request_volume", 0),
+    \\    };
+    \\    const failure = raw.failure_percentage_ejection === undefined ? undefined : {
+    \\      threshold: __home_grpc_lb_number(raw.failure_percentage_ejection.threshold, 85, policy, "failure_percentage_ejection.threshold", 0, 100),
+    \\      enforcement_percentage: __home_grpc_lb_number(raw.failure_percentage_ejection.enforcement_percentage, 100, policy, "failure_percentage_ejection.enforcement_percentage", 0, 100),
+    \\      minimum_hosts: __home_grpc_lb_number(raw.failure_percentage_ejection.minimum_hosts, 5, policy, "failure_percentage_ejection.minimum_hosts", 0),
+    \\      request_volume: __home_grpc_lb_number(raw.failure_percentage_ejection.request_volume, 50, policy, "failure_percentage_ejection.request_volume", 0),
+    \\    };
+    \\    return new __home_grpc_LoadBalancingConfig(policy, {
+    \\      interval: __home_grpc_lb_duration(raw.interval, 10, policy, "interval"),
+    \\      base_ejection_time: __home_grpc_lb_duration(raw.base_ejection_time, 30, policy, "base_ejection_time"),
+    \\      max_ejection_time: __home_grpc_lb_duration(raw.max_ejection_time, 300, policy, "max_ejection_time"),
+    \\      max_ejection_percent: __home_grpc_lb_number(raw.max_ejection_percent, 10, policy, "max_ejection_percent", 0, 100),
+    \\      success_rate_ejection: success,
+    \\      failure_percentage_ejection: failure,
+    \\      child_policy: __home_grpc_clone_config(raw.child_policy),
+    \\    });
+    \\  }
+    \\  throw __home_grpc_lb_error(policy, "", "unsupported load-balancing policy");
+    \\}
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -58337,7 +58410,7 @@ const harness_prelude =
     \\  credentials: __home_grpc_credentials,
     \\  status: __home_grpc_status,
     \\  propagate: __home_grpc_propagate,
-    \\  experimental: { FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider },
+    \\  experimental: { FileWatcherCertificateProvider: __home_grpc_FileWatcherCertificateProvider, parseLoadBalancingConfig: __home_grpc_parse_load_balancing_config },
     \\  getChannelzServiceDefinition() { return { __home_name: "Channelz" }; },
     \\  getChannelzHandlers() { return {}; },
     \\  loadPackageDefinition(definition) {
@@ -70934,6 +71007,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { ConnectivityState } from \"@grpc/grpc-js/build/src/connectivity-state\";", .replacement = "const { ConnectivityState } = globalThis.__home_import(\"@grpc/grpc-js/build/src/connectivity-state\");" },
         .{ .needle = "let server: Server;", .replacement = "let server;" },
         .{ .needle = "let client: Client;", .replacement = "let client;" },
+        .{ .needle = "import parseLoadBalancingConfig = experimental.parseLoadBalancingConfig;", .replacement = "const parseLoadBalancingConfig = experimental.parseLoadBalancingConfig;" },
+        .{ .needle = "const allTestCases: { [lbPolicyName: string]: TestCase[] } =", .replacement = "const allTestCases =" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -87208,6 +87283,22 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  client.close();
         \\});
         \\
+        \\test("load balancing config diagnostics", () => {
+        \\  let error;
+        \\  try {
+        \\    grpc.experimental.parseLoadBalancingConfig({ outlier_detection: { child_policy: [] } });
+        \\  } catch (failure) {
+        \\    error = failure;
+        \\  }
+        \\  assert.strictEqual(error.code, "ERR_INVALID_ARG_VALUE");
+        \\  assert.ok(error.cause instanceof Error);
+        \\  assert.strictEqual(error.policy, "outlier_detection");
+        \\  assert.strictEqual(error.path, "child_policy");
+        \\  assert.ok(String(error.stack).includes("LoadBalancingConfig.parse"));
+        \\  assert.ok(String(error.stack).includes("outlier_detection.child_policy"));
+        \\  assert.ok(String(error.stack).includes("Caused by:"));
+        \\});
+        \\
         \\test("base client diagnostics", async () => {
         \\  const client = new grpc.Client("host.invalid", grpc.credentials.createInsecure());
         \\  const error = await new Promise(resolve => client.makeUnaryRequest("/service/method", value => value, value => value, Buffer.from([]), failure => resolve(failure)));
@@ -87235,7 +87326,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -101725,6 +101816,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-channel-credentials.test.ts", .passed = 9, .todo = 1 },
         .{ .path = "js/third_party/grpc-js/test-channelz.test.ts", .passed = 5 },
         .{ .path = "js/third_party/grpc-js/test-client.test.ts", .passed = 5 },
+        .{ .path = "js/third_party/grpc-js/test-confg-parsing.test.ts", .passed = 7 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
