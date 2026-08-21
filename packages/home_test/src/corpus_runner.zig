@@ -72351,8 +72351,10 @@ const harness_prelude =
     \\    this.name = String(name);
     \\    this.onmessage = null;
     \\    this.onmessageerror = null;
-    \\    this.__home_bc_closed = false;
-    \\    this.__home_bc_listeners = [];
+    \\    Object.defineProperties(this, {
+    \\      __home_bc_closed: { configurable: true, writable: true, value: false },
+    \\      __home_bc_listeners: { configurable: true, value: [] },
+    \\    });
     \\    var list = __home_bc_registry[this.name] || (__home_bc_registry[this.name] = []);
     \\    list.push(this);
     \\  };
@@ -72394,6 +72396,16 @@ const harness_prelude =
     \\  BroadcastChannel.prototype.dispatchEvent = function() { return true; };
     \\  BroadcastChannel.prototype.ref = function() { return this; };
     \\  BroadcastChannel.prototype.unref = function() { return this; };
+    \\  Object.defineProperty(BroadcastChannel.prototype, __home_util_inspect_custom, {
+    \\    configurable: true,
+    \\    value: function(depth, options, inspect) {
+    \\      if (depth !== undefined && depth !== null && Number(depth) < 0) return "BroadcastChannel";
+    \\      const forwardedOptions = Object.assign({}, options || {});
+    \\      if (depth !== undefined && depth !== null) forwardedOptions.depth = Number(depth) - 1;
+    \\      const render = typeof inspect === "function" ? inspect : __home_util_inspect;
+    \\      return "BroadcastChannel " + render({ name: this.name, active: !this.__home_bc_closed }, forwardedOptions);
+    \\    },
+    \\  });
     \\  try { Object.defineProperty(BroadcastChannel.prototype, Symbol.toStringTag, { value: "BroadcastChannel", configurable: true }); } catch (__e3) {}
     \\}
     \\
@@ -89739,6 +89751,40 @@ test "bootstrap worker process failures retain causes and operation stacks" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap BroadcastChannel custom inspect forwards options and live state" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import util from "node:util";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("BroadcastChannel inspection", () => {
+        \\  const channel = new BroadcastChannel("hello");
+        \\  expect(util.inspect(channel, { compact: true, breakLength: 2 })).toBe(
+        \\    "BroadcastChannel { name:\n   'hello',\n  active:\n   true }",
+        \\  );
+        \\  channel.close();
+        \\  expect(util.inspect(channel)).toBe("BroadcastChannel { name: 'hello', active: false }");
+        \\  expect(Object.keys(channel)).not.toContain("__home_bc_closed");
+        \\  expect(Object.keys(channel)).not.toContain("__home_bc_listeners");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "internal/broadcast-channel-inspect.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("BroadcastChannel inspect regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap grpc errors retain causes and operation stacks" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -107004,6 +107050,9 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/abort/abort.test.ts", .passed = 5 },
         .{ .path = "js/web/atomics.test.ts", .passed = 28 },
         .{ .path = "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts", .passed = 4 },
+        .{ .path = "js/web/broadcastchannel/broadcast-channel.test.ts", .passed = 11 },
+        .{ .path = "js/web/broadcastchannel/message-event-init-gc.test.ts", .passed = 1 },
+        .{ .path = "js/web/console/console-log-utf16.test.ts", .passed = 1 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
