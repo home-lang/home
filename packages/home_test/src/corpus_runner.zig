@@ -57795,13 +57795,27 @@ const harness_prelude =
     \\  this.__home_port = __home_grpc_port(target);
     \\  this.__home_credentials = credentials || null;
     \\  this.__home_options = Object.assign({}, options || {});
+    \\  this.__home_closed = false;
     \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") this.__home_credentials.__home_activate();
     \\}
     \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
     \\__home_grpc_EchoService.prototype.__home_server = function() {
     \\  return __home_grpc_servers[this.__home_port];
     \\};
-    \\__home_grpc_EchoService.prototype.close = function() { if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate(); };
+    \\__home_grpc_EchoService.prototype.waitForReady = function(deadline, callback) {
+    \\  let settled = false;
+    \\  const finish = error => { if (settled) return; settled = true; callback(error || null); };
+    \\  Promise.resolve().then(() => {
+    \\    if (this.__home_closed) { finish(__home_grpc_client_error(this.__home_target, "waitForReady", __home_grpc_status.UNAVAILABLE, "The client is closed")); return; }
+    \\    if (this.__home_server()) { finish(null); return; }
+    \\    const delay = Math.max(0, Number(deadline) - Date.now());
+    \\    setTimeout(() => finish(__home_grpc_client_error(this.__home_target, "waitForReady", __home_grpc_status.UNAVAILABLE)), delay);
+    \\  });
+    \\};
+    \\__home_grpc_EchoService.prototype.close = function() {
+    \\  if (this.__home_closed) return; this.__home_closed = true;
+    \\  if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate();
+    \\};
     \\function __home_grpc_metadata_value(metadata, name) {
     \\  if (!metadata || typeof metadata.get !== "function") return null;
     \\  const values = metadata.get(name);
@@ -58027,6 +58041,7 @@ const harness_prelude =
     \\  }
     \\  const clientCall = __home_grpc_stream();
     \\  const metadata = options instanceof __home_grpc_Metadata ? options : new __home_grpc_Metadata();
+    \\  if (this.__home_closed) { Promise.resolve().then(() => { if (typeof callback === "function") callback(__home_grpc_client_error(this.__home_target, "echo", __home_grpc_status.UNAVAILABLE, "The client is closed")); }); return clientCall; }
     \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
     \\  if (callOptions.deadline && Number(new Date(callOptions.deadline)) <= Date.now()) { Promise.resolve().then(() => callback(__home_grpc_status_error(__home_grpc_status.DEADLINE_EXCEEDED, "echo"))); return clientCall; }
     \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
@@ -71125,6 +71140,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const allTestCases: { [lbPolicyName: string]: TestCase[] } =", .replacement = "const allTestCases =" },
         .{ .needle = "const expectationList: {\n      input: string;\n      result: duration.Duration | null;\n    }[] =", .replacement = "const expectationList =" },
         .{ .needle = "import * as duration from \"@grpc/grpc-js/build/src/duration\";", .replacement = "const duration = globalThis.__home_import(\"@grpc/grpc-js/build/src/duration\");" },
+        .{ .needle = "import grpc, { Server, ServerCredentials, ServerUnaryCall, ServiceError, sendUnaryData } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");\nconst { Server, ServerCredentials } = grpc;" },
+        .{ .needle = "import { ServiceClientConstructor } from \"@grpc/grpc-js/build/src/make-client\";", .replacement = "" },
+        .{ .needle = "const echoService = loadProtoFile(protoFile).EchoService as ServiceClientConstructor;", .replacement = "const echoService = loadProtoFile(protoFile).EchoService;" },
+        .{ .needle = "let client1: InstanceType<grpc.ServiceClientConstructor>;", .replacement = "let client1;" },
+        .{ .needle = "let client2: InstanceType<grpc.ServiceClientConstructor>;", .replacement = "let client2;" },
+        .{ .needle = "function callService(client: InstanceType<grpc.ServiceClientConstructor>)", .replacement = "function callService(client)" },
+        .{ .needle = "let promises: Promise<any>[];", .replacement = "let promises;" },
         .{ .needle = "function multiDone(done: () => void, target: number)", .replacement = "function multiDone(done, target)" },
         .{ .needle = ": grpc.ClientUnaryCall;", .replacement = ";" },
         .{ .needle = ": grpc.ClientWritableStream<unknown>;", .replacement = ";" },
@@ -101976,6 +101998,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-deadline.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-duration.test.ts", .passed = 4 },
         .{ .path = "js/third_party/grpc-js/test-end-to-end.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/third_party/grpc-js/test-global-subchannel-pool.test.ts", .passed = 3 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
