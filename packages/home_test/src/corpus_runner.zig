@@ -57830,6 +57830,26 @@ const harness_prelude =
     \\__home_node_https.default = __home_node_https;
     \\globalThis.__home_modules["https"] = __home_node_https;
     \\globalThis.__home_modules["node:https"] = __home_node_https;
+    \\function __home_http2_wrapper_error(error, options) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const protocol = String(options && options.protocol || "https:"); const host = String(options && (options.hostname || options.host) || "localhost"); const port = Number(options && options.port || (protocol === "https:" ? 443 : 80));
+    \\  const operation = protocol + "//" + host + ":" + String(port); const failure = new Error("http2-wrapper.auto failed for " + operation + ": " + String(cause.message || cause));
+    \\  failure.code = cause.code || "ERR_HTTP2_WRAPPER_AUTO"; failure.protocol = protocol; failure.host = host; failure.port = port; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at http2-wrapper.auto (" + operation + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_http2_wrapper_auto(options, callback) {
+    \\  options = Object.assign({}, options || {}); const protocol = String(options.protocol || "https:");
+    \\  if (protocol !== "http:" && protocol !== "https:") return Promise.reject(__home_http2_wrapper_error(new RangeError("Unsupported protocol " + protocol), options));
+    \\  try {
+    \\    const request = (protocol === "https:" ? __home_https_request : __home_http_request)(options, callback); const emit = request.emit;
+    \\    request.emit = function(name, value) { if (name === "error" && !(value && value.__home_http2_wrapper_error)) { value = __home_http2_wrapper_error(value, options); value.__home_http2_wrapper_error = true; } return emit.call(this, name, value); };
+    \\    return Promise.resolve(request);
+    \\  } catch (error) { return Promise.reject(__home_http2_wrapper_error(error, options)); }
+    \\}
+    \\const __home_http2_wrapper = { auto: __home_http2_wrapper_auto };
+    \\__home_http2_wrapper.default = __home_http2_wrapper;
+    \\globalThis.__home_modules["http2-wrapper"] = __home_http2_wrapper;
     \\let __home_grpc_next_port = 45000;
     \\const __home_grpc_servers = Object.create(null);
     \\const __home_grpc_servers_by_target = Object.create(null);
@@ -71926,6 +71946,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
         .{ .needle = "import { color } from \"bun\";", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
+        .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
+        .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
+        .{ .needle = "import http from \"http\";", .replacement = "" },
+        .{ .needle = "async function doRequest(options: AutoRequestOptions)", .replacement = "async function doRequest(options)" },
+        .{ .needle = "(response: http.IncomingMessage) =>", .replacement = "response =>" },
+        .{ .needle = "const body: Array<Buffer> = [];", .replacement = "const body = [];" },
+        .{ .needle = "const body = (await promise) as string;", .replacement = "const body = await promise;" },
         .{ .needle = "const { color } = globalThis.__home_import(\"bun\");", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
         .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
@@ -103558,6 +103585,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-uri-parser.test.ts", .passed = 15, .todo = 1 },
         .{ .path = "js/third_party/hono/hello-world-fixture.test.ts", .passed = 1 },
         .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103598,9 +103626,10 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
 
-    const hono_diagnostic_source =
+    const third_party_error_diagnostic_source =
         \\import { expect, test } from "bun:test";
         \\import { Hono } from "hono";
+        \\import http2Wrapper from "http2-wrapper";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
         \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
@@ -103613,18 +103642,29 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Hono.fetch (GET /boom");
         \\  expect(caught.stack).toContain("Caused by: TypeError: route exploded");
         \\});
+        \\test("http2-wrapper errors retain negotiation context", async () => {
+        \\  let caught;
+        \\  try { await http2Wrapper.auto({ protocol: "ftp:", host: "example.test", port: 21 }); } catch (error) { caught = error; }
+        \\  expect(caught.code).toBe("ERR_HTTP2_WRAPPER_AUTO");
+        \\  expect(caught.protocol).toBe("ftp:");
+        \\  expect(caught.host).toBe("example.test");
+        \\  expect(caught.port).toBe(21);
+        \\  expect(caught.cause.message).toBe("Unsupported protocol ftp:");
+        \\  expect(caught.stack).toContain("http2-wrapper.auto (ftp://example.test:21");
+        \\  expect(caught.stack).toContain("Caused by: RangeError: Unsupported protocol ftp:");
+        \\});
     ;
-    var prepared = try prepareCorpusModule(std.testing.allocator, hono_diagnostic_source, "js/third_party/hono/permanent-diagnostics.test.ts");
+    var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) {
-        std.debug.print("permanent Hono error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
+        std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
