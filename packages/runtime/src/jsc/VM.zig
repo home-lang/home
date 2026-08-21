@@ -66,6 +66,17 @@ pub const VM = opaque {
         return .{ .vm = vm };
     }
 
+    /// Acquire the API lock for a worker whose shutdown path destroys this VM.
+    ///
+    /// The lock is intentionally never released: current Bun tears the JSC VM
+    /// down while worker execution still owns its API lock. Releasing afterward
+    /// would dereference the destroyed VM/JSLock during thread-stack unwinding.
+    /// This must only be used by a terminal path that destroys the VM before
+    /// returning and never touches the lock afterward.
+    pub fn acquireAPILockForTeardown(vm: *VM) void {
+        JSC__VM__getAPILock(vm);
+    }
+
     pub const Lock = struct {
         vm: *VM,
         pub fn release(lock: Lock) void {
@@ -233,6 +244,7 @@ test "VM exposes the expected entrypoints" {
     try std.testing.expect(@hasDecl(VM, "create"));
     try std.testing.expect(@hasDecl(VM, "deinit"));
     try std.testing.expect(@hasDecl(VM, "getAPILock"));
+    try std.testing.expect(@hasDecl(VM, "acquireAPILockForTeardown"));
     try std.testing.expect(@hasDecl(VM, "drainMicrotasks"));
     try std.testing.expect(@hasDecl(VM, "notifyNeedTermination"));
     try std.testing.expect(@hasDecl(VM, "collectAsync"));

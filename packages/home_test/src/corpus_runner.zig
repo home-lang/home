@@ -2961,6 +2961,39 @@ const harness_prelude =
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
     \\}
+    \\function __home_worker_process_error(phase, process, stdout, stderr, exitCode) {
+    \\  const step = String(phase || "run");
+    \\  const testName = String(globalThis.__home_current_snapshot_name || "<unnamed worker test>");
+    \\  const code = exitCode === undefined || exitCode === null ? null : Number(exitCode);
+    \\  const signal = process && process.signalCode != null ? String(process.signalCode) : null;
+    \\  const stdoutText = String(stdout || "").slice(0, 4096);
+    \\  const stderrText = String(stderr || "").slice(0, 4096);
+    \\  const detail = stderrText || stdoutText || (signal ? "terminated by " + signal : "exited without diagnostics");
+    \\  const cause = new Error(detail);
+    \\  cause.name = signal ? "WorkerProcessSignalError" : "WorkerProcessExitError";
+    \\  cause.code = signal || code;
+    \\  const operation = "worker.process." + step;
+    \\  const status = signal ? "signal " + signal : "exit code " + String(code);
+    \\  const failure = new Error("Worker subprocess " + step + " failed in " + testName + " with " + status + ": " + detail);
+    \\  failure.name = "WorkerProcessError";
+    \\  failure.code = "ERR_WORKER_PROCESS";
+    \\  failure.operation = operation;
+    \\  failure.phase = step;
+    \\  failure.testName = testName;
+    \\  failure.exitCode = code;
+    \\  failure.signal = signal;
+    \\  failure.stdout = stdoutText;
+    \\  failure.stderr = stderrText;
+    \\  failure.cause = cause;
+    \\  const causeSummary = cause.name + ": " + cause.message;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + testName + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary;
+    \\  return failure;
+    \\}
+    \\function __home_assert_worker_process(process, stdout, stderr, exitCode, phase) {
+    \\  const signal = process && process.signalCode != null ? String(process.signalCode) : null;
+    \\  if (Number(exitCode) === 0 && signal === null) return;
+    \\  throw __home_worker_process_error(phase, process, stdout, stderr, exitCode);
+    \\}
     \\function __home_hono_handler_error(error, method, path) {
     \\  const cause = error instanceof Error ? error : new Error(String(error));
     \\  const operation = String(method || "GET").toUpperCase() + " " + String(path || "/");
@@ -80078,6 +80111,28 @@ fn rewriteJsonWebTokenTestUtilsCorpus(allocator: std.mem.Allocator, source: []co
     });
 }
 
+fn rewriteBroadcastChannelWorkerGcCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_diagnostics = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);",
+        "    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);\n    __home_assert_worker_process(proc, stdout, stderr, exitCode, \"teardown\");",
+    );
+    defer allocator.free(with_diagnostics);
+
+    // Apple system malloc's strict mode made the stale AtomString reference
+    // deterministic. It is an inert environment variable elsewhere, so keep
+    // this upstream lifecycle regression permanently allocator-sensitive.
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_diagnostics,
+        "      env: bunEnv,",
+        "      env: { ...bunEnv, Malloc: \"1\" },",
+    );
+}
+
 fn rewritePrismaCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     _ = source;
     const prisma_bootstrap_source =
@@ -80254,6 +80309,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
         try rewriteTextEncoderCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
+        try rewriteBroadcastChannelWorkerGcCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event.test.ts"))
         try rewriteDenoEventCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event-target.test.ts"))
@@ -89641,6 +89698,45 @@ test "bootstrap runner mirrors http2 frame-size connect corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap worker process failures retain causes and operation stacks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("worker teardown diagnostics", () => {
+        \\  let caught;
+        \\  try {
+        \\    __home_assert_worker_process({ signalCode: "SIGSEGV" }, "", "", 139, "teardown");
+        \\  } catch (error) {
+        \\    caught = error;
+        \\  }
+        \\  expect(caught.name).toBe("WorkerProcessError");
+        \\  expect(caught.code).toBe("ERR_WORKER_PROCESS");
+        \\  expect(caught.operation).toBe("worker.process.teardown");
+        \\  expect(caught.phase).toBe("teardown");
+        \\  expect(caught.testName).toContain("worker teardown diagnostics");
+        \\  expect(caught.exitCode).toBe(139);
+        \\  expect(caught.signal).toBe("SIGSEGV");
+        \\  expect(caught.cause).toBeInstanceOf(Error);
+        \\  expect(caught.cause.name).toBe("WorkerProcessSignalError");
+        \\  expect(String(caught.stack)).toContain("worker.process.teardown");
+        \\  expect(String(caught.stack)).toContain("Caused by: WorkerProcessSignalError");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "internal/worker-process-diagnostics.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap grpc errors retain causes and operation stacks" {
@@ -106907,6 +107003,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/abort/abort-controller-gc-reason.test.ts", .passed = 2 },
         .{ .path = "js/web/abort/abort.test.ts", .passed = 5 },
         .{ .path = "js/web/atomics.test.ts", .passed = 28 },
+        .{ .path = "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts", .passed = 4 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },

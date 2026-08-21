@@ -97,6 +97,11 @@ pub fn transpileSourceCode(
     globalObject: ?*JSGlobalObject,
     comptime flags: FetchFlags,
 ) !ResolvedSource {
+    // `input_specifier` is borrowed from JSC. Every successful
+    // `ResolvedSource` returned from this function must take its own +1 with
+    // `dupeRef()`: C++ `SourceProvider::~SourceProvider` derefs the field after
+    // parsing. Copying the tagged pointer without retaining it leaves the
+    // parser's JSString and SourceProvider sharing one counted reference.
     const disable_transpilying = comptime flags.disableTranspiling();
 
     if (comptime disable_transpilying) {
@@ -105,7 +110,7 @@ pub fn transpileSourceCode(
             return ResolvedSource{
                 .allocator = null,
                 .source_code = bun.String.empty,
-                .specifier = input_specifier,
+                .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
             };
         }
@@ -344,7 +349,7 @@ pub fn transpileSourceCode(
                 return ResolvedSource{
                     .allocator = null,
                     .source_code = bun.String.cloneUTF8(source.contents),
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = ResolvedSourceTag.json_for_object_loader,
                 };
@@ -358,7 +363,7 @@ pub fn transpileSourceCode(
                         .print_source => bun.String.init(source.contents),
                         else => @compileError("unreachable"),
                     },
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                 };
             }
@@ -367,7 +372,7 @@ pub fn transpileSourceCode(
                 if (parse_result.empty) {
                     return ResolvedSource{
                         .allocator = null,
-                        .specifier = input_specifier,
+                        .specifier = input_specifier.dupeRef(),
                         .source_url = input_specifier.createIfDifferent(path.text),
                         .jsvalue_for_export = JSValue.createEmptyObject(jsc_vm.global, 0),
                         .tag = .exports_object,
@@ -376,7 +381,7 @@ pub fn transpileSourceCode(
 
                 return ResolvedSource{
                     .allocator = null,
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .jsvalue_for_export = parse_result.ast.parts.at(0).stmts[0].data.s_expr.value.toJS(allocator, globalObject orelse jsc_vm.global) catch |e| panic("Unexpected JS error: {s}", .{@errorName(e)}),
                     .tag = .exports_object,
@@ -388,7 +393,7 @@ pub fn transpileSourceCode(
                 return ResolvedSource{
                     .allocator = null,
                     .source_code = bun.String.cloneLatin1(source.contents),
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .already_bundled = true,
                     .bytecode_cache = if (bytecode_slice.len > 0) bytecode_slice.ptr else null,
@@ -406,7 +411,7 @@ pub fn transpileSourceCode(
                     return .{
                         .allocator = null,
                         .source_code = bun.String.static("(function(){})"),
-                        .specifier = input_specifier,
+                        .specifier = input_specifier.dupeRef(),
                         .source_url = input_specifier.createIfDifferent(path.text),
                         .is_commonjs_module = true,
                         .tag = .javascript,
@@ -441,7 +446,7 @@ pub fn transpileSourceCode(
                             break :brk result;
                         },
                     },
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .is_commonjs_module = entry.metadata.module_type == .cjs,
                     .module_info = module_info,
@@ -584,7 +589,7 @@ pub fn transpileSourceCode(
 
                     break :brk result;
                 },
-                .specifier = input_specifier,
+                .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .is_commonjs_module = is_commonjs_module,
                 .module_info = module_info_deserialized,
@@ -652,7 +657,7 @@ pub fn transpileSourceCode(
                 return ResolvedSource{
                     .allocator = null,
                     .source_code = bun.String.static(""),
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = .esm,
                 };
@@ -711,7 +716,7 @@ pub fn transpileSourceCode(
             return ResolvedSource{
                 .allocator = null,
                 .source_code = bun.String.cloneUTF8(sqlite_module_source_code_string),
-                .specifier = input_specifier,
+                .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .tag = .esm,
             };
@@ -722,7 +727,7 @@ pub fn transpileSourceCode(
                 return ResolvedSource{
                     .allocator = null,
                     .source_code = bun.String.empty,
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = .esm,
                 };
@@ -737,7 +742,7 @@ pub fn transpileSourceCode(
             return ResolvedSource{
                 .allocator = &jsc_vm.allocator,
                 .jsvalue_for_export = .zero,
-                .specifier = input_specifier,
+                .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .tag = .export_default_object,
             };
@@ -748,7 +753,7 @@ pub fn transpileSourceCode(
                 return ResolvedSource{
                     .allocator = null,
                     .source_code = bun.String.empty,
-                    .specifier = input_specifier,
+                    .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = .esm,
                 };
@@ -818,7 +823,7 @@ pub fn transpileSourceCode(
             return ResolvedSource{
                 .allocator = null,
                 .jsvalue_for_export = value,
-                .specifier = input_specifier,
+                .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .tag = .export_default_object,
             };
@@ -1150,8 +1155,9 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
         .@"bun:main" => if (jsc_vm.entry_point.generated) .{
             .allocator = null,
             .source_code = bun.String.cloneUTF8(jsc_vm.entry_point.contents),
-            .specifier = specifier,
-            .source_url = specifier,
+            // +1 each: SourceProvider owns and derefs both fields at teardown.
+            .specifier = specifier.dupeRef(),
+            .source_url = specifier.dupeRef(),
             .tag = .esm,
             .source_code_needs_deref = true,
         } else null,
@@ -1172,8 +1178,9 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
             return .{
                 .allocator = null,
                 .source_code = bun.String.cloneUTF8(source),
-                .specifier = specifier,
-                .source_url = specifier,
+                // +1 each: SourceProvider owns and derefs both fields at teardown.
+                .specifier = specifier.dupeRef(),
+                .source_url = specifier.dupeRef(),
                 .source_code_needs_deref = true,
             };
         },
@@ -1199,7 +1206,7 @@ pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?Reso
             return .{
                 .allocator = null,
                 .source_code = bun.String.cloneUTF8(entry.source.contents),
-                .specifier = specifier,
+                .specifier = specifier.dupeRef(),
                 .source_url = specifier.dupeRef(),
             };
         }

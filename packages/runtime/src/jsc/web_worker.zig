@@ -137,11 +137,6 @@ pub const Status = enum(u8) {
 
 extern fn WebWorker__teardownJSCVM(*jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchExit(*anyopaque, i32) void;
-/// Remove a terminated worker's ScriptExecutionContext from the global contexts
-/// map (see napi_weak_home_dups.cpp). Guards against a use-after-free where a
-/// late cross-thread post (BroadcastChannel dispatch, MessageChannel, etc.)
-/// resolves the stale identifier and enqueues onto the worker's freed loop.
-extern fn Bun__ScriptExecutionContext__removeFromContextsMapByIdentifier(identifier: u32) void;
 extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
@@ -171,15 +166,26 @@ const LiveWorkers = struct {
         bun.Futex.wake(&outstanding, 1);
     }
 
-    fn unregister(worker: *WebWorker) void {
+    /// Remove the worker from the intrusive list while it is still safe to
+    /// dereference. The outstanding count is deliberately left unchanged
+    /// until dispatchExit has been posted (see markExited).
+    fn unlink(worker: *WebWorker) void {
         mutex.lock();
         list.remove(&worker.live_node);
         mutex.unlock();
-        // Wake any waiter in terminateAllAndWait when we hit zero. Waking
-        // unconditionally is fine (spurious wakeups just re-check the
-        // counter) and avoids a compare-before-wake race.
+    }
+
+    /// Publish completion after dispatchExit. This prevents global teardown
+    /// from observing zero live workers before the last parent close task has
+    /// entered its concurrent queue.
+    fn markExited() void {
         _ = outstanding.fetchSub(1, .release);
         bun.Futex.wake(&outstanding, 1);
+    }
+
+    fn unregister(worker: *WebWorker) void {
+        unlink(worker);
+        markExited();
     }
 };
 
@@ -430,18 +436,26 @@ fn threadMain(this: *WebWorker) void {
     // parent still gets a close event and the thread ref is dropped.
     if (this.hasRequestedTerminate()) {
         this.shutdown();
-        // unreachable
+        return;
     }
 
-    this.startVM() catch |err| {
+    const vm = (this.startVM() catch |err| {
         Output.panic("An unhandled error occurred while starting a worker: {s}\n", .{@errorName(err)});
-    };
+    }) orelse return;
 
-    this.vm.?.global.vm().holdAPILock(this, jsc.OpaqueWrap(WebWorker, WebWorker.spin));
+    // Current Bun's C++ teardown drops the VM's final ref while this thread
+    // still owns the API lock. Acquire it without an RAII/callback frame: the
+    // lock dies with the VM and must never be released during pthread unwind.
+    // The previous JSLockHolder bridge unwound after teardown and touched the
+    // destroyed lock, corrupting system-malloc state under worker churn.
+    vm.global.vm().acquireAPILockForTeardown();
+    this.spin();
 }
 
 /// Phase 1: build the worker's arena + VirtualMachine and publish `vm`.
-fn startVM(this: *WebWorker) !void {
+/// Returns null when the early-termination checkpoint already completed
+/// shutdown; callers must return without touching `this` in that case.
+fn startVM(this: *WebWorker) !?*jsc.VirtualMachine {
     assert(this.status == .start);
     assert(this.vm == null);
 
@@ -504,6 +518,9 @@ fn startVM(this: *WebWorker) !void {
     if (this.hasRequestedTerminate()) {
         temp_proxy_storage.deinit();
         this.shutdown();
+        // dispatchExit may allow the parent to free `this`; communicate the
+        // completed shutdown only through this value and touch nothing else.
+        return null;
     }
 
     var vm = try jsc.VirtualMachine.initWorker(this, .{
@@ -531,8 +548,8 @@ fn startVM(this: *WebWorker) !void {
     //     so teardownJSCVM/vm.deinit() run and the just-built JSC::VM
     //     heap is not leaked.
     // We do NOT call shutdown() directly from here: shutdown() with a
-    // non-null vm runs vm.onExit() (JS), which requires holdAPILock.
-    // Instead we return; threadMain enters holdAPILock(spin) and spin()'s
+    // non-null vm runs vm.onExit() (JS), which requires the API lock.
+    // Instead we return; threadMain acquires the terminal API lock and spin()'s
     // first check observes requested_terminate.
     {
         this.vm_lock.lock();
@@ -551,7 +568,7 @@ fn startVM(this: *WebWorker) !void {
     // if terminate arrived during it, skip configureDefines() (which
     // walks the resolver's global dir_cache) and entry-point loading.
     // spin() will observe the flag and shutdown() under the API lock.
-    if (this.hasRequestedTerminate()) return;
+    if (this.hasRequestedTerminate()) return vm;
 
     b.configureDefines() catch {
         // Fall through to spin() → shutdown() for full teardown under
@@ -559,14 +576,15 @@ fn startVM(this: *WebWorker) !void {
         // bails immediately; vm.log carries the error for flushLogs.
         vm.exit_handler.exit_code = 1;
         _ = this.setRequestedTerminate();
-        return;
+        return vm;
     };
 
     vm.loadExtraEnvAndSourceCodePrinter();
+    return vm;
 }
 
 /// Phase 2: load the entry point, dispatch 'online', run the event loop.
-/// Runs inside `holdAPILock`. Always ends by calling `shutdown()`.
+/// Runs with the terminal API lock held. Always ends by calling `shutdown()`.
 fn spin(this: *WebWorker) void {
     log("[{d}] spin start", .{this.execution_context_id});
 
@@ -580,14 +598,14 @@ fn spin(this: *WebWorker) void {
     if (this.hasRequestedTerminate()) {
         this.flushLogs(vm);
         this.shutdown();
+        return;
     }
 
     vm.preload = this.preloads;
 
     // Resolve the entry point on the worker thread (the parent only stored the
-    // raw specifier). The returned slice is BORROWED — every exit from spin()
-    // goes through shutdown() which is noreturn, so a `defer free` here would
-    // never run anyway.
+    // raw specifier). The returned slice is BORROWED from storage that outlives
+    // this VM, so it must not be freed by spin().
     var resolve_error = bun.String.empty;
     const path = resolveEntryPointSpecifier(vm, this.unresolved_specifier, &resolve_error, vm.log) orelse {
         vm.exit_handler.exit_code = 1;
@@ -599,6 +617,7 @@ fn spin(this: *WebWorker) void {
         resolve_error.deref();
         this.flushLogs(vm);
         this.shutdown();
+        return;
     };
     resolve_error.deref();
 
@@ -606,6 +625,7 @@ fn spin(this: *WebWorker) void {
     if (this.hasRequestedTerminate()) {
         this.flushLogs(vm);
         this.shutdown();
+        return;
     }
 
     var promise = vm.loadEntryPointForWebWorker(path) catch {
@@ -613,6 +633,7 @@ fn spin(this: *WebWorker) void {
         if (!this.exit_called) vm.exit_handler.exit_code = 1;
         this.flushLogs(vm);
         this.shutdown();
+        return;
     };
 
     if (promise.status() == .rejected) {
@@ -621,6 +642,7 @@ fn spin(this: *WebWorker) void {
         if (!handled) {
             vm.exit_handler.exit_code = 1;
             this.shutdown();
+            return;
         }
     } else {
         _ = promise.result(vm.jsc_vm);
@@ -670,22 +692,23 @@ fn spin(this: *WebWorker) void {
 }
 
 /// Phase 3: run exit handlers, tear down the JSC VM, post the close event,
-/// free the arena, exit the thread.
+/// free the arena, and return normally so the thread can exit cleanly.
 ///
 /// Ordering constraints (each step is a barrier for the next):
 ///   1. `vm = null` under lock    — a racing notifyNeedTermination() now sees
 ///                                  null and skips wakeup() instead of touching
 ///                                  memory freed in step 5.
 ///   2. `vm.onExit()`             — user 'exit' handlers run; needs the JSC VM.
-///   3. `teardownJSCVM()`         — collectNow + vm.deref×2; can re-enter Zig
+///   3. `teardownJSCVM()`         — collectNow + one vm.deref; can re-enter Zig
 ///                                  via finalizers, so must precede step 5.
 ///   4. `dispatchExit()`          — posts close task → parent releases
 ///                                  parent_poll_ref + thread-held Worker ref.
 ///                                  After this `this` may be freed at any time.
 ///   5. free loop/arena/pools     — no `this.*` dereferences below step 4.
 ///
-/// Does NOT free `this` — see ownership rule in the file header.
-fn shutdown(this: *WebWorker) noreturn {
+/// Does NOT free `this` — see ownership rule in the file header. After this
+/// returns, callers must return immediately without dereferencing `this`.
+fn shutdown(this: *WebWorker) void {
     jsc.markBinding(@src());
     this.setStatus(.terminated);
     bun.analytics.Features.workers_terminated += 1;
@@ -712,7 +735,6 @@ fn shutdown(this: *WebWorker) noreturn {
     // ---- 2. User exit handlers -------------------------------------------
     var exit_code: i32 = 0;
     var globalObject: ?*jsc.JSGlobalObject = null;
-    var worker_ctx_id: ?bun.webcore.ScriptExecutionContext.Identifier = null;
     if (vm_to_deinit) |vm| {
         // terminate() set the JSC termination flag to interrupt running JS;
         // clear it so process.on('exit') handlers can run. teardownJSCVM
@@ -727,7 +749,6 @@ fn shutdown(this: *WebWorker) noreturn {
         if (vm.rare_data) |rare| rare.closeAllSocketGroups(vm);
         exit_code = vm.exit_handler.exit_code;
         globalObject = vm.global;
-        worker_ctx_id = vm.global.scriptExecutionContextIdentifier();
     }
 
     // ---- 3. JSC VM teardown ----------------------------------------------
@@ -735,27 +756,16 @@ fn shutdown(this: *WebWorker) noreturn {
         WebWorker__teardownJSCVM(global);
     }
 
-    // teardownJSCVM does not synchronously destroy the worker's global here
-    // (its refcount does not reach zero), so GlobalObject::~GlobalObject —
-    // which normally calls removeFromContextsMap() — has not run and the
-    // worker's ScriptExecutionContext is still registered in the global
-    // contexts map. Once the loop/VM below is freed, a late cross-thread post
-    // (e.g. BroadcastChannel dispatch from the parent) would resolve the stale
-    // identifier via ScriptExecutionContext::postTaskTo and enqueue onto the
-    // freed event loop → use-after-free. Remove it now, before the free.
-    if (worker_ctx_id) |cid| {
-        Bun__ScriptExecutionContext__removeFromContextsMapByIdentifier(@intFromEnum(cid));
-    }
-
     // JSC is down; no more resolver/module-loader access past this point.
     // Unregister so the main thread's terminateAllAndWait() can proceed to
     // free process-global resolver state. Must happen before dispatchExit
     // because `this` may be freed once that posts.
-    LiveWorkers.unregister(this);
+    LiveWorkers.unlink(this);
 
     // ---- 4. Post close task to parent ------------------------------------
     WebWorker__dispatchExit(cpp_worker, exit_code);
     // `this` may be freed past this point.
+    LiveWorkers.markExited();
 
     // ---- 5. Free worker-thread resources ---------------------------------
     if (loop) |loop_| {
@@ -771,13 +781,14 @@ fn shutdown(this: *WebWorker) noreturn {
     }
     if (vm_to_deinit) |vm| {
         vm.deinit();
+        jsc.VirtualMachine.VMHolder.vm = null;
+        jsc.VirtualMachine.VMHolder.cached_global_object = null;
     }
     bun.deleteAllPoolsForThreadExit();
+    bun.uws.onThreadExit();
     if (arena) |*arena_| {
         arena_.deinit();
     }
-
-    bun.exitThread();
 }
 
 /// process.exit() inside the worker. Worker-thread only.
@@ -858,7 +869,11 @@ fn onUnhandledRejection(vm: *jsc.VirtualMachine, globalObject: *jsc.JSGlobalObje
     jsc.markBinding(@src());
     WebWorker__dispatchError(globalObject, worker.cpp_worker, bun.String.cloneUTF8(array.written()), error_instance);
     _ = worker.setRequestedTerminate();
-    worker.shutdown();
+    // shutdown() now returns normally. Destroying the VM here would return
+    // through uncaughtException() and live JSC frames that still reference it,
+    // producing a use-after-free and potentially a second shutdown. Arm the
+    // termination trap and let spin() reach the one terminal shutdown point.
+    vm.jsc_vm.notifyNeedTermination();
 }
 
 /// Resolve a worker entry-point specifier to a path the module loader can
