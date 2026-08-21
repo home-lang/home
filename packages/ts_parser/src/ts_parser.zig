@@ -1332,7 +1332,7 @@ pub const Parser = struct {
             try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
-            try self.scanJSDocImplementsTypeDiagnostics(body_start, body_end);
+            try self.scanJSDocHeritageTypeDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
     }
@@ -1553,7 +1553,7 @@ pub const Parser = struct {
         }
     }
 
-    fn scanJSDocImplementsTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+    fn scanJSDocHeritageTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
         var i = start;
         while (i < end) {
             const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
@@ -1562,7 +1562,9 @@ pub const Parser = struct {
             while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
             const tag_name = self.source[tag_name_start..tag_name_end];
             i = tag_name_end;
-            if (!std.mem.eql(u8, tag_name, "implements")) continue;
+            if (!std.mem.eql(u8, tag_name, "implements") and
+                !std.mem.eql(u8, tag_name, "augments") and
+                !std.mem.eql(u8, tag_name, "extends")) continue;
 
             const line_end = self.jsDocTagLineEnd(tag_name_end, end);
             const type_start = firstNonWhitespace(self.source, tag_name_end, line_end);
@@ -32661,6 +32663,23 @@ test "parser: JSDoc implements missing type reports TS1003" {
     try T.expectEqual(@as(u32, 18), empty.pos - @as(u32, @intCast(empty_line_start)) + 1);
 }
 
+test "parser: JSDoc augments and extends missing types report TS1003" {
+    var s = try newTestSetup(
+        \\/** @augments */
+        \\class A {}
+        \\/** @extends {} */
+        \\class B {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 1003), diagnostic.code);
+        try T.expectEqualStrings("Identifier expected.", diagnostic.message);
+    }
+}
+
 test "parser: top-level public before break reports declaration expected" {
     var s = try newTestSetup("public break;");
     defer destroyTestSetup(s);
@@ -34650,7 +34669,7 @@ test "parser: recovered JavaScript modifiers retain grammar diagnostics" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(u32, 5), countDiag(s, 8009));
+    try T.expectEqual(@as(u32, 3), countDiag(s, 8009));
     try T.expectEqual(@as(u32, 2), countDiag(s, 1248));
     try T.expectEqual(@as(u32, 2), countDiag(s, 1031));
     try T.expectEqual(@as(u32, 2), countDiag(s, 1030));

@@ -31382,6 +31382,7 @@ pub const Checker = struct {
             return false;
         }
         if (!flags.is_object_type) return false;
+        if (self.isActualTupleType(t)) return true;
         const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
         if (self.interner.objectMemberInfo(t, symbol_iterator)) |member| {
             if (member.is_optional) return false;
@@ -31793,6 +31794,7 @@ pub const Checker = struct {
 
     fn iteratorNextValueType(self: *Checker, t: TypeId) CheckError!TypeId {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return types.Primitive.any;
+        if (self.generator_type_info.get(t)) |generator| return generator.yield_type;
         if (t >= self.interner.pool.typeCount()) return types.Primitive.none;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_intersection) {
@@ -47369,7 +47371,6 @@ pub const Checker = struct {
         if (!self.interner.isSignature(child_t) or !self.interner.isSignature(parent_t)) {
             return self.heritageMemberAssignable(child_t, parent_t);
         }
-        if (self.methodOverrideHasExtraRequiredParams(child_t, parent_t)) return false;
 
         const child_ret = self.interner.signatureReturn(child_t) orelse types.Primitive.any;
         const parent_ret = self.interner.signatureReturn(parent_t) orelse types.Primitive.any;
@@ -55298,9 +55299,9 @@ pub const Checker = struct {
             specifier.local;
     }
 
-    /// TS2303 for pure named-alias cycles across modules. The diagnostic is
-    /// emitted on the alias whose target closes the active resolution chain,
-    /// then deduplicated against every member of that cycle.
+    /// TS2303 for pure named-alias cycles across modules. Each starting alias
+    /// resolves the cycle independently, so every member receives the
+    /// diagnostic once, matching resolver circularity at each export site.
     fn checkCircularTypeOnlyNamedAliases(self: *Checker, declaration: NodeId) CheckError!void {
         const named = switch (self.hir.kindOf(declaration)) {
             .import_decl => hir_mod.importNamed(self.hir, declaration),
@@ -55323,17 +55324,13 @@ pub const Checker = struct {
                         break;
                     }
                 }
-                if (cycle_start) |first| {
+                if (cycle_start != null) {
                     var already_reported = false;
                     for (self.diagnostics.items) |diagnostic| {
-                        if (diagnostic.code != TsCodes.circular_import_alias) continue;
-                        for (chain.items[first..]) |member| {
-                            if (diagnostic.node == member) {
-                                already_reported = true;
-                                break;
-                            }
+                        if (diagnostic.code == TsCodes.circular_import_alias and diagnostic.node == current) {
+                            already_reported = true;
+                            break;
                         }
-                        if (already_reported) break;
                     }
                     if (already_reported) break;
                     const name = self.string_interner.get(self.typeOnlyAliasDisplayName(current));
@@ -77362,10 +77359,10 @@ pub const Checker = struct {
             types.Primitive.none;
         const obj_t = self.interner.internObjectTypeWithIndex(built.items, types.Primitive.none, number_index) catch return error.OutOfMemory;
         if (homomorphic_source) |source_t| {
+            if (self.isTupleShapedTarget(source_t)) try self.markTupleOrigin(obj_t);
             if (self.tuple_trailing_variadic_types.get(source_t)) |source_rest_t| {
                 if (try self.mappedTypeForHomomorphicTupleRest(m, tp.name, tp_id, source_rest_t)) |mapped_rest_t| {
                     try self.tuple_trailing_variadic_types.put(self.gpa, obj_t, mapped_rest_t);
-                    try self.markTupleOrigin(obj_t);
                 }
             }
         }
@@ -98367,6 +98364,11 @@ pub const Checker = struct {
                     defer self.checking_element_write_target = prev_element_write_target;
                     break :blk_target try self.checkExpression(a.target);
                 };
+                if (a.op == null and target_kind == .element_access) {
+                    if (try self.declaredElementWriteTypeAfterNarrow(a.target)) |declared_t| {
+                        target_t = declared_t;
+                    }
+                }
                 if (a.op == null and target_kind == .member_access and
                     self.memberAccessIsImportMeta(a.target))
                 {
@@ -102020,6 +102022,16 @@ pub const Checker = struct {
                     }
                     break :blk try self.optionalChainResult(access.value_type, element_is_optional_chain);
                 }
+                if (!self.checking_element_write_target and
+                    obj_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(obj_t).is_object_type)
+                {
+                    if (try self.elementAccessNarrowKey(node)) |key| {
+                        if (self.lookupMemberNarrow(key)) |narrowed_t| {
+                            break :blk try self.optionalChainResult(narrowed_t, element_is_optional_chain);
+                        }
+                    }
+                }
                 const obj_or_index_is_union = obj_t < self.interner.pool.typeCount() and
                     (self.interner.pool.flagsOf(obj_t).is_union or
                         (idx_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(idx_t).is_union));
@@ -102219,12 +102231,11 @@ pub const Checker = struct {
                     }
                 }
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
-                    if (self.hir.kindOf(e.object) == .identifier and self.hir.kindOf(e.index) == .literal_string) {
-                        const obj_id = hir_mod.identifierOf(self.hir, e.object);
-                        const lit = hir_mod.literalStringOf(self.hir, e.index);
-                        const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = lit.value };
-                        if (self.lookupMemberNarrow(key)) |nt| {
-                            break :blk try self.optionalChainResult(nt, element_is_optional_chain);
+                    if (!self.checking_element_write_target) {
+                        if (try self.elementAccessNarrowKey(node)) |key| {
+                            if (self.lookupMemberNarrow(key)) |nt| {
+                                break :blk try self.optionalChainResult(nt, element_is_optional_chain);
+                            }
                         }
                     }
                     // Tuple negative-literal index: `tup[-1]` is invalid
@@ -116714,6 +116725,34 @@ pub const Checker = struct {
                 }
             }
         }
+        if (self.hir.kindOf(b.lhs) == .element_access) {
+            const target = (try self.memberNarrowTargetFromAccess(b.lhs)) orelse return;
+            const compared_t: ?TypeId = if (self.nodeIsNullLiteralish(b.rhs))
+                types.Primitive.null_t
+            else if (self.nodeIsUndefinedLiteralish(b.rhs))
+                types.Primitive.undefined_t
+            else
+                try self.expressionNarrowLiteralType(b.rhs);
+            if (compared_t) |rhs_t| {
+                const current = self.lookupMemberNarrow(target.key) orelse target.current;
+                if (current == types.Primitive.none) return;
+                const loose_nullish = (b.op == .eq or b.op == .neq) and
+                    (rhs_t == types.Primitive.null_t or rhs_t == types.Primitive.undefined_t);
+                const next = if (positive)
+                    if (loose_nullish) try self.nullUndefinedUnionType() else rhs_t
+                else blk: {
+                    const without_rhs = self.subtractType(current, rhs_t) catch current;
+                    break :blk if (loose_nullish)
+                        self.subtractType(
+                            without_rhs,
+                            if (rhs_t == types.Primitive.null_t) types.Primitive.undefined_t else types.Primitive.null_t,
+                        ) catch without_rhs
+                    else
+                        without_rhs;
+                };
+                try self.recordMemberNarrow(target.key, next);
+            }
+        }
     }
 
     fn enclosingLoopAssignmentFlowType(
@@ -116807,16 +116846,50 @@ pub const Checker = struct {
             },
             .element_access => {
                 const e = hir_mod.elementOf(self.hir, access);
-                if (self.hir.kindOf(e.object) != .identifier) return null;
-                const prop_name = (try self.staticStringValue(e.index)) orelse return null;
+                const key = (try self.elementAccessNarrowKey(access)) orelse return null;
                 const obj_id = hir_mod.identifierOf(self.hir, e.object);
-                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = prop_name };
                 const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(e.object);
-                const current = (try self.lookupObjectMember(obj_t, prop_name)) orelse self.hir.typeOf(access);
+                const current = if (try self.staticStringValue(e.index)) |prop_name|
+                    (try self.lookupObjectMember(obj_t, prop_name)) orelse self.hir.typeOf(access)
+                else
+                    self.hir.typeOf(access);
                 return .{ .key = key, .current = current };
             },
             else => return null,
         }
+    }
+
+    fn elementAccessNarrowKey(self: *Checker, access: NodeId) CheckError!?MemberKey {
+        if (self.hir.kindOf(access) != .element_access) return null;
+        const element = hir_mod.elementOf(self.hir, access);
+        if (self.hir.kindOf(element.object) != .identifier) return null;
+        const object_name = hir_mod.identifierOf(self.hir, element.object).name;
+        if (try self.staticStringValue(element.index)) |property_name| {
+            return .{ .obj_name = object_name, .prop_name = property_name };
+        }
+        if (self.hir.kindOf(element.index) != .identifier) return null;
+
+        const index_name = hir_mod.identifierOf(self.hir, element.index).name;
+        const index_text = self.string_interner.get(index_name);
+        var buffer: [1024]u8 = undefined;
+        const property_text = std.fmt.bufPrint(&buffer, "\x00computed:{s}", .{index_text}) catch return null;
+        const property_name = self.string_interner.intern(property_text) catch return error.OutOfMemory;
+        return .{ .obj_name = object_name, .prop_name = property_name };
+    }
+
+    fn declaredElementWriteTypeAfterNarrow(self: *Checker, access: NodeId) CheckError!?TypeId {
+        const key = (try self.elementAccessNarrowKey(access)) orelse return null;
+        if (self.lookupMemberNarrow(key) == null) return null;
+        const element = hir_mod.elementOf(self.hir, access);
+        const object_t = self.typeOfIdentifierDeclared(element.object);
+        var index_t = self.hir.typeOf(element.index);
+        if (index_t == types.Primitive.none) return null;
+        index_t = (try self.expressionNarrowLiteralType(element.index)) orelse index_t;
+
+        const previous = self.checking_element_write_target;
+        self.checking_element_write_target = true;
+        defer self.checking_element_write_target = previous;
+        return try self.resolveObjectIndexedAccessType(object_t, index_t);
     }
 
     fn staticStringValue(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
@@ -121618,12 +121691,16 @@ pub const Checker = struct {
         const any_t = types.Primitive.any;
         const string_t = types.Primitive.string_t;
         const string_arr = self.interner.internArrayType(self.string_interner, string_t) catch return error.OutOfMemory;
+        const sig_construct = self.interner.internSignature(&[_]TypeId{ any_t, any_t }, any_t, true) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_construct, &.{ true, true });
         // segment(input: string): Segments (Iterable<SegmentData>) —
         // modeled as `any` to surface `.containing(...)` / for-of access.
         const sig_segment = self.interner.internSignature(&[_]TypeId{string_t}, any_t, false) catch return error.OutOfMemory;
         const sig_resolved = try self.seedAnySig0(any_t);
         const sig_supported = self.interner.internSignature(&[_]TypeId{ any_t, any_t }, string_arr, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_supported, &.{ false, true });
         const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = sig_construct, .is_optional = false, .is_readonly = true, .is_method = true },
             .{ .name = self.string_interner.intern("segment") catch return error.OutOfMemory, .type = sig_segment, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("resolvedOptions") catch return error.OutOfMemory, .type = sig_resolved, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("supportedLocalesOf") catch return error.OutOfMemory, .type = sig_supported, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -143436,6 +143513,7 @@ pub const Checker = struct {
                     mapped_number_index,
                     types.Primitive.none,
                 ) catch return error.OutOfMemory;
+                if (self.isTupleShapedTarget(source_obj)) try self.markTupleOrigin(result);
                 return try self.finishSubstitutedMappedType(mapped_t, result, subs);
             }
             const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
@@ -153301,6 +153379,7 @@ pub const Checker = struct {
         if (try self.nestedGenericInstantiationVarianceMismatch(arg_t, param_t, 0)) return false;
         if (try self.iterableIntersectionArgumentRelation(arg_t, param_t)) |ok| return ok;
         if (try self.iterableArgumentRelation(arg_t, param_t)) |ok| return ok;
+        if (try self.contextualGeneratorFunctionRelationToParam(arg_node, arg_t, param_t)) |generator_ok| return generator_ok;
         if (self.isContextualFunctionExpressionLike(arg_node) and self.firstSignatureType(param_t) != null) {
             const relation_arg_t = try self.genericInferenceFunctionArgumentType(arg_node, arg_t);
             const fn_assignable = try self.functionExpressionAssignableToSignatureTarget(arg_node, relation_arg_t, param_t);
@@ -153350,7 +153429,6 @@ pub const Checker = struct {
             return try self.conditionalExpressionAssignableToTarget(arg_node, param_t);
         }
         if (try self.contextualCallReturnAssignableToParam(arg_node, param_t)) return true;
-        if (try self.contextualGeneratorFunctionRelationToParam(arg_node, arg_t, param_t)) |generator_ok| return generator_ok;
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
         if (try self.argumentAssignableToReducedConditionalTarget(arg_t, param_t)) return true;
         if (try self.promisePayloadArgumentAssignable(arg_t, param_t)) return true;
@@ -155777,8 +155855,17 @@ pub const Checker = struct {
         }
         const arg_ret = self.interner.signatureReturn(arg_t) orelse return null;
         const param_ret = self.interner.signatureReturn(param_t) orelse return null;
-        if (!self.generator_type_info.contains(arg_ret) or !self.generator_type_info.contains(param_ret)) return null;
+        if (!self.generator_type_info.contains(arg_ret) or !self.typeContainsGeneratorProtocol(param_ret)) return null;
         return try self.generatorReturnAssignableToTargetReturn(arg_ret, param_ret);
+    }
+
+    fn typeContainsGeneratorProtocol(self: *Checker, t: TypeId) bool {
+        if (self.generator_type_info.contains(t)) return true;
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (self.typeContainsGeneratorProtocol(member)) return true;
+        }
+        return false;
     }
 
     fn generatorReturnAssignableToTargetReturn(
@@ -155800,6 +155887,7 @@ pub const Checker = struct {
     }
 
     fn generatorSlotAssignable(self: *Checker, source: TypeId, target: TypeId) !bool {
+        if (source == types.Primitive.never) return true;
         if (self.engine.isAssignableTo(source, target) catch false) return true;
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
         const sf = self.interner.pool.flagsOf(source);
@@ -175427,7 +175515,7 @@ test "checker: non-circular import alias chain stays clean (no TS2303)" {
     }
 }
 
-test "checker: circular type-only re-export emits one TS2303 at the closing alias" {
+test "checker: circular type-only re-export emits TS2303 for every alias" {
     const b = try newBoundSetup(
         \\// @filename: /a.ts
         \\export type { A } from './b';
@@ -175437,14 +175525,18 @@ test "checker: circular type-only re-export emits one TS2303 at the closing alia
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     var count: usize = 0;
+    var saw_a = false;
+    var saw_b = false;
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.circular_import_alias) continue;
         count += 1;
         try T.expectEqualStrings("Circular definition of import alias 'A'.", d.message);
         const filename = b.base.checker.virtualSectionFilenameForNode(d.node) orelse "";
-        try T.expectEqualStrings("/b.ts", filename);
+        if (std.mem.eql(u8, filename, "/a.ts")) saw_a = true;
+        if (std.mem.eql(u8, filename, "/b.ts")) saw_b = true;
     }
-    try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expect(saw_a and saw_b);
 }
 
 test "checker: circular local type-only re-export resolves through its import alias" {
@@ -175459,14 +175551,23 @@ test "checker: circular local type-only re-export resolves through its import al
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     var count: usize = 0;
+    var saw_a = false;
+    var saw_b = false;
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.circular_import_alias) continue;
         count += 1;
-        try T.expectEqualStrings("Circular definition of import alias 'B'.", d.message);
         const filename = b.base.checker.virtualSectionFilenameForNode(d.node) orelse "";
-        try T.expectEqualStrings("/b.ts", filename);
+        if (std.mem.eql(u8, filename, "/a.ts")) {
+            try T.expectEqualStrings("Circular definition of import alias 'A'.", d.message);
+            saw_a = true;
+        }
+        if (std.mem.eql(u8, filename, "/b.ts")) {
+            try T.expectEqualStrings("Circular definition of import alias 'B'.", d.message);
+            saw_b = true;
+        }
     }
-    try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expect(saw_a and saw_b);
 }
 
 test "checker: shadowed uninstantiated namespace import alias stays clean" {
@@ -180793,6 +180894,17 @@ test "checker: modern shared-memory and intl globals are recognized" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: Intl Segmenter constructor and locale options are optional" {
+    const s = try newSetup(
+        \\new Intl.Segmenter();
+        \\new Intl.Segmenter("en-US");
+        \\Intl.Segmenter.supportedLocalesOf("en-US");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: string slice permits omitted start while substring requires it" {
@@ -186527,6 +186639,16 @@ test "checker: TS2416 method override is bivariant (no diagnostic on widened par
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_not_assignable_to_base);
     }
+}
+
+test "checker: method override bivariance accepts an additional required parameter" {
+    const s = try newSetup(
+        \\class Base { method(value: string, count = 1) {} }
+        \\class Derived extends Base { method(value: string, count: number) {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
 }
 
 test "checker: method override keeps bivariant params with covariant return" {
@@ -199082,6 +199204,19 @@ test "checker: homomorphic mapped over tuple preserves positional element shape"
     }
 }
 
+test "checker: homomorphic mapped tuples remain iterable for nested destructuring" {
+    const s = try newSetup(
+        \\type Settled<T extends readonly unknown[]> = {
+        \\  [K in keyof T]: [T[K], undefined] | [undefined, Error]
+        \\};
+        \\declare const result: Settled<[number, string]>;
+        \\const [[value, failure], other] = result;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+}
+
 test "checker: homomorphic mapped over tuple preserves per-position types via T[K]" {
     // Phase 4 #2 ÃÂ¢ÃÂÃÂ when the value template references `T[K]` and T
     // is a tuple, each position should retain its specific type.
@@ -201779,6 +201914,20 @@ test "checker: generator return annotation accepts Generator or AsyncGenerator u
     }
 }
 
+test "checker: contextual async generator matches the async branch of a return union" {
+    const s = try newSetup(
+        \\declare function accept(gen: () => Generator<0, 0, 1> | AsyncGenerator<0, 0, 1>): void;
+        \\accept(async function* () {
+        \\  const sent = yield 0;
+        \\  return 0;
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: RegExp constructor and literals expose test method" {
     const s = try newSetup(
         \\const regExp = new RegExp(RegExp.escape("foo.bar"));
@@ -201863,6 +202012,22 @@ test "checker: delegated yield accepts object literal Symbol iterator" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.yield_star_not_iterable);
     }
+}
+
+test "checker: delegated generator metadata excludes iterator return branches" {
+    const s = try newSetup(
+        \\declare function accept<T, U>(value: T, gen: () => Iterable<(value: T) => U>): void;
+        \\accept("", function* () {
+        \\  yield* {
+        \\    *[Symbol.iterator]() {
+        \\      yield value => value.length;
+        \\    }
+        \\  };
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: for-of iterator return property must be a method" {
@@ -204252,6 +204417,33 @@ test "checker: typeof element access guard narrows matching element access" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: stable computed element access guards retain their narrowed type" {
+    const s = try newSetup(
+        \\function f(obj: Record<string, string | number | undefined>, key: string) {
+        \\  if (obj[key] !== undefined) {
+        \\    if (typeof obj[key] === "string") obj[key].toUpperCase();
+        \\    if (typeof obj[key] === "number") obj[key].toFixed();
+        \\  }
+        \\  const fixed = key + key;
+        \\  if (obj[fixed] !== undefined) obj[fixed].toString();
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: computed element writes use the declared property type after narrowing" {
+    const s = try newSetup(
+        \\let value: { enabled: boolean } = { enabled: false };
+        \\if (value["enabled"] === false) value["enabled"] = true;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: typeof dotted value reference uses member narrow" {

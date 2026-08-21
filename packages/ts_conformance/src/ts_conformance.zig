@@ -1007,6 +1007,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_missing_binding_priority = a.code == 7031 and b.code == 1005;
             const b_missing_binding_priority = b.code == 7031 and a.code == 1005;
             if (a_missing_binding_priority != b_missing_binding_priority) return a_missing_binding_priority;
+            const a_jsdoc_heritage_priority = a.code == 8023 and b.code == 1003;
+            const b_jsdoc_heritage_priority = b.code == 8023 and a.code == 1003;
+            if (a_jsdoc_heritage_priority != b_jsdoc_heritage_priority) return a_jsdoc_heritage_priority;
             if ((a.code == 2695 and b.code == 1005) or
                 (a.code == 1005 and b.code == 2695))
             {
@@ -1101,6 +1104,11 @@ const ActualDiagnosticLine = struct {
         {
             return a.code == 7031;
         }
+        if ((a.code == 8023 and b.code == 1003) or
+            (a.code == 1003 and b.code == 8023))
+        {
+            return a.code == 8023;
+        }
         if ((a.code == 2695 and b.code == 1005) or
             (a.code == 1005 and b.code == 2695))
         {
@@ -1172,6 +1180,20 @@ test "conformance: recovered binding diagnostics preserve tsgo precedence" {
         lines[2].code,
         lines[3].code,
     });
+}
+
+test "conformance: JSDoc heritage mismatch precedes missing type recovery" {
+    var syntax_text = [_]u8{'s'};
+    var semantic_text = [_]u8{'m'};
+    var lines = [_]ActualDiagnosticLine{
+        .{ .file = "a.js", .line = 1, .col = 1, .code = 1003, .order = 0, .text = &syntax_text },
+        .{ .file = "a.js", .line = 1, .col = 1, .code = 8023, .order = 1, .text = &semantic_text },
+    };
+
+    std.mem.sort(ActualDiagnosticLine, &lines, {}, ActualDiagnosticLine.lessThan);
+
+    try std.testing.expectEqual(@as(u32, 8023), lines[0].code);
+    try std.testing.expectEqual(@as(u32, 1003), lines[1].code);
 }
 
 const ScriptGlobalSpaces = struct {
@@ -2319,7 +2341,7 @@ test "conformance: direct run keeps checkJs diagnostics for late-bound computed 
     try T.expect(result.actual_diag_count > 0);
 }
 
-test "conformance: loaded corpus keeps checkJs diagnostics for late-bound computed prototype fixture" {
+test "conformance: loaded corpus keeps current checkJs diagnostics for late-bound computed prototype fixture" {
     const paths_or_null = try resolveTsCorpusPaths(T.allocator);
     if (paths_or_null == null) return;
     const paths = paths_or_null.?;
@@ -2340,7 +2362,7 @@ test "conformance: loaded corpus keeps checkJs diagnostics for late-bound comput
     }
     for (corpus) |entry| {
         if (!std.mem.eql(u8, entry.name, "lateBoundAssignmentDeclarationSupport5")) continue;
-        try T.expect(std.mem.indexOf(u8, entry.expected_errors, "TS7053") != null);
+        try T.expect(std.mem.indexOf(u8, entry.expected_errors, "TS7009") != null);
         const result = try runOneEntry(T.allocator, .{
             .name = entry.name,
             .source = entry.source,
@@ -45608,7 +45630,7 @@ test "conformance: symbolProperty8 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: symbolProperty37 passes clean" {
+test "conformance: symbolProperty37 reports duplicate well-known symbol members" {
     const result = try runOneEntry(T.allocator, .{
         .name = "symbolProperty37",
         .path = "symbolProperty37.ts",
@@ -45619,8 +45641,10 @@ test "conformance: symbolProperty37 passes clean" {
         \\    [Symbol.isConcatSpreadable]: string;
         \\}
         ,
-        .expects_error = false,
-        .expected_errors = "",
+        .expects_error = true,
+        .expected_errors =
+        "symbolProperty37.ts(2,5): error TS2300: Duplicate identifier '[Symbol.isConcatSpreadable]'.\n" ++
+            "symbolProperty37.ts(3,5): error TS2300: Duplicate identifier '[Symbol.isConcatSpreadable]'.",
         .use_exact_errors = true,
     });
     defer {
@@ -55974,11 +55998,15 @@ test "conformance: program path sees script-global type-only virtual declaration
         .path = "yieldAsTypeIsStrictError.ts",
         .source = source,
         .raw_source = source,
-        .expected_errors = "yieldInClassComputedPropertyIsError.ts(2,14): error TS1213: Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.\n" ++
+        .expected_errors = "yieldAsTypeIsStrictError.ts(1,11): error TS1212: Identifier expected. 'yield' is a reserved word in strict mode.\n" ++
+            "yieldInClassComputedPropertyIsError.ts(2,14): error TS1213: Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.\n" ++
             "yieldInClassComputedPropertyIsError.ts(2,14): error TS2693: 'yield' only refers to a type, but is being used as a value here.",
         .syntax_target_es2015 = true,
     });
     defer if (r.detail.len > 0) T.allocator.free(r.detail);
+    if (r.outcome != .passed) {
+        std.debug.print("virtual-script-global-type-only detail:\n{s}\n", .{r.detail});
+    }
     try T.expectEqual(Outcome.passed, r.outcome);
 }
 

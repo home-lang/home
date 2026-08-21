@@ -2436,6 +2436,14 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
             {
                 return a.code == 2300;
             }
+            // A malformed JSDoc heritage tag is first checked against the
+            // class heritage clause, then recovered as a missing type name.
+            // Both diagnostics share the same zero-width start in tsgo.
+            if ((a.code == 8023 and b.code == 1003) or
+                (a.code == 1003 and b.code == 8023))
+            {
+                return a.code == 8023;
+            }
             // TypeScript's `compareDiagnostics` orders same-start
             // diagnostics by span length before falling back to the
             // diagnostic code. This matters when an identifier-level
