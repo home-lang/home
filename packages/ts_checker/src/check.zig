@@ -16846,9 +16846,14 @@ pub const Checker = struct {
         }
         if (self.rootHasTopLevelGlobalValueDecl(node, "Promise")) return;
         const no_lib_missing_ctor = self.sourceHasNoLibTrueDirective() and self.rootHasTopLevelGlobalTypeDecl(node, "Promise");
-        const lib_missing_ctor = self.sourceTargetExcludesLib("es2015");
+        const parent = self.hir.parentOf(node);
+        const is_contextual_call_argument = parent != hir_mod.none_node_id and
+            (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
+            hir_mod.callOf(self.hir, parent).callee != node;
+        const lib_missing_ctor = self.sourceTargetExcludesLib("es2015") or
+            (is_contextual_call_argument and self.sourceLibDirectiveExcludes("es2015"));
         if (!no_lib_missing_ctor and !lib_missing_ctor) return;
-        if (no_lib_missing_ctor) try self.reportMissingGlobalValueOnce(node, "Promise");
+        try self.reportMissingGlobalValueOnce(node, "Promise");
         try self.reportAsyncRequiresPromiseConstructor(node);
     }
 
@@ -17751,6 +17756,13 @@ pub const Checker = struct {
         const contextual_return_t = self.contextualReturnTypeForFunctionKind(node, f.flags.is_async);
         const has_return_value_body = self.fnBodyHasReturnValueSyntax(f.body);
         const has_contextual_return_value_body = contextual_return_t != null and has_return_value_body;
+        if (f.flags.is_async and
+            f.return_type == hir_mod.none_node_id and
+            !self.current_function_return_from_jsdoc and
+            has_contextual_return_value_body)
+        {
+            try self.checkAsyncInferredPromiseAvailability(node);
+        }
         if (f.return_type == hir_mod.none_node_id and
             !self.current_function_return_from_jsdoc and
             (!has_contextual_return_value_body or f.flags.is_generator))
@@ -26314,9 +26326,9 @@ pub const Checker = struct {
     fn buildStructuralPromise(self: *Checker, value_t: TypeId) CheckError!TypeId {
         const cb_params = [_]TypeId{value_t};
         const cb_sig = self.interner.internSignature(&cb_params, types.Primitive.any, false) catch return error.OutOfMemory;
-        var any_or_undefined_members = [_]TypeId{ types.Primitive.any, types.Primitive.undefined_t };
-        const optional_any = self.interner.internUnion(&any_or_undefined_members) catch return error.OutOfMemory;
-        const then_params = [_]TypeId{ cb_sig, optional_any };
+        const reject_cb_sig = self.interner.internSignature(&[_]TypeId{types.Primitive.any}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const optional_reject_cb = self.interner.internUnion(&.{ reject_cb_sig, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const then_params = [_]TypeId{ cb_sig, optional_reject_cb };
         const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
         try self.signature_min_args.put(self.gpa, then_sig, 0);
         const finally_cb_sig = self.interner.internSignature(&[_]TypeId{}, types.Primitive.any, false) catch return error.OutOfMemory;
@@ -26324,7 +26336,7 @@ pub const Checker = struct {
         // `catch(onrejected?: (reason: any) => any): Promise<any>` — modeled
         // loosely as `(cb?) => any`. Without it, `p.catch(...)` on a
         // `Promise<T>` value tripped a spurious TS2339.
-        const catch_sig = self.interner.internSignature(&[_]TypeId{optional_any}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const catch_sig = self.interner.internSignature(&[_]TypeId{optional_reject_cb}, types.Primitive.any, false) catch return error.OutOfMemory;
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
         const finally_id = self.string_interner.intern("finally") catch return error.OutOfMemory;
         const catch_id = self.string_interner.intern("catch") catch return error.OutOfMemory;
@@ -34939,6 +34951,7 @@ pub const Checker = struct {
             .node = node,
             .code = TsCodes.cannot_find_global_value,
             .message = msg,
+            .is_global = true,
         });
     }
 
@@ -220560,10 +220573,27 @@ test "checker: structural Promise.then accepts rejection callback" {
         \\p.then(value => value.toFixed(), err => err);
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
     }
+}
+
+test "checker: contextual async callback under ES5 owns Promise availability diagnostics" {
+    const s = try newSetup(
+        \\// @lib: es5
+        \\// @module: commonjs
+        \\const p = import("./module");
+        \\p.then(undefined, async err => { await err; });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_global_value));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.async_requires_promise_constructor));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: optional class method super.m short-circuit call emits no diagnostics" {
