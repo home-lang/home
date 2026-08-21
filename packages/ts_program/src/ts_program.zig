@@ -4269,6 +4269,17 @@ fn moduleExportFactsFromResolvedModuleDepth(
             {
                 facts.generic_function = true;
             }
+            if (ex.is_namespace and
+                compilation.interner.get(ex.namespace_alias).len != 0 and
+                ex.namespace_alias == name_id)
+            {
+                facts.exported_type = true;
+                if (ex.is_type_only) {
+                    if (facts.type_only_pos == null) facts.type_only_pos = compilation.hir.spanOf(stmt).start;
+                } else {
+                    facts.exported_value = true;
+                }
+            }
         }
         if (ex.decl == hir_mod_ns.none_node_id and ex.named_len > 0) {
             const name_id = compilation.interner.lookup(name) orelse continue;
@@ -6825,6 +6836,26 @@ test "module export facts follow named reexports and destructured bindings" {
     try T.expect(named.exported_type);
     try T.expect(named.exported_value);
     try T.expect(destructured.exported_value);
+}
+
+test "module export facts retain namespace alias meaning" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/a.ts", "export class A {}");
+    try vfs.addFile("/type.ts", "export type * as ns from './a';");
+    try vfs.addFile("/value.ts", "export * as ns from './a';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const type_only = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/type.ts", "ns");
+    try T.expect(type_only.exported_type);
+    try T.expect(!type_only.exported_value);
+    try T.expect(type_only.type_only_pos != null);
+
+    const value = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/value.ts", "ns");
+    try T.expect(value.exported_type);
+    try T.expect(value.exported_value);
+    try T.expect(value.type_only_pos == null);
 }
 
 test "module export facts preserve generic function exports through reexports" {

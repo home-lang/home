@@ -13952,6 +13952,7 @@ pub const Checker = struct {
                     if (self.virtualSectionStartForNode(previous) != self.virtualSectionStartForNode(stmt)) continue;
                     const previous_spec_id = self.virtualExportStarDeclarationSpecifier(previous) orelse continue;
                     const previous_spec = self.string_interner.get(previous_spec_id);
+                    if (std.mem.eql(u8, previous_spec, current_spec)) continue;
                     if (!std.mem.startsWith(u8, previous_spec, ".")) continue;
                     if (!try self.virtualRelativeModuleHasNamedExport(previous, previous_spec, name)) continue;
                     const msg = try std.fmt.allocPrint(
@@ -57054,10 +57055,9 @@ pub const Checker = struct {
             }
             if (ex.is_namespace and
                 ex.namespace_alias != string_interner.empty_string_id and
-                ex.namespace_alias == name and
-                !ex.is_type_only)
+                ex.namespace_alias == name)
             {
-                return .value;
+                return if (ex.is_type_only) .type_only_alias else .value;
             }
             if (ex.is_namespace and
                 ex.namespace_alias == string_interner.empty_string_id and
@@ -59740,18 +59740,6 @@ pub const Checker = struct {
         if (self.typeOnlyImportLocalDecl(local_name, anchor)) |decl| {
             return .{ .node = decl, .name = local_name };
         }
-        const import_alias = self.findImportEqualsByAlias(anchor, local_name) orelse return null;
-        const imp = hir_mod.importOf(self.hir, import_alias);
-        if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return null;
-        const target = hir_mod.typeRefOf(self.hir, imp.import_equals);
-        const target_qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
-        const target_root = if (target_qualifiers.len > 0) blk: {
-            if (self.hir.kindOf(target_qualifiers[0]) != .identifier) return null;
-            break :blk hir_mod.identifierOf(self.hir, target_qualifiers[0]).name;
-        } else target.name;
-        if (self.typeOnlyImportLocalDecl(target_root, import_alias)) |decl| {
-            return .{ .node = decl, .name = target_root };
-        }
         return null;
     }
 
@@ -59779,7 +59767,12 @@ pub const Checker = struct {
     /// TS1362: a name imported as a value whose source module nonetheless
     /// exports it type-only. Inline `import { type X }` and whole
     /// `import type` clauses are excluded (those are the TS1361 path).
-    fn plainNamedImportModule(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?hir_mod.StringId {
+    const PlainNamedImport = struct {
+        module: hir_mod.StringId,
+        imported: hir_mod.StringId,
+    };
+
+    fn plainNamedImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?PlainNamedImport {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -59795,7 +59788,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.is_type_only) continue;
-                if (sp.local == name) return imp.module;
+                if (sp.local == name) return .{ .module = imp.module, .imported = sp.imported };
             }
         }
         return null;
@@ -59806,19 +59799,19 @@ pub const Checker = struct {
     /// (`cross_module_type_only_export_cache`) so the module-recompiling
     /// `moduleExport` query runs at most once per name, not per value-use.
     fn nameIsCrossModuleTypeOnlyExport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) bool {
-        const mod_id = self.plainNamedImportModule(name, anchor) orelse return false;
-        const spec = self.string_interner.get(mod_id);
+        const import = self.plainNamedImport(name, anchor) orelse return false;
+        const spec = self.string_interner.get(import.module);
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
-            if (self.virtualRelativeModuleHasPlainLocalValueExport(anchor, spec, name) catch false) return false;
-            const status = self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, name) catch .unknown;
+            if (self.virtualRelativeModuleHasPlainLocalValueExport(anchor, spec, import.imported) catch false) return false;
+            const status = self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, import.imported) catch .unknown;
             return status == .type_only_decl or status == .type_only_alias;
         }
         if (self.cross_module_type_only_export_cache.get(name)) |cached| return cached;
-        const name_text = self.string_interner.get(name);
+        const imported_text = self.string_interner.get(import.imported);
         var result = false;
         if (self.external_resolver) |resolver| {
-            if (resolver.moduleExport(spec, self.importer_path, name_text)) |info| {
-                const bare_type_value_export = info.exported_value and std.mem.eql(u8, name_text, "type");
+            if (resolver.moduleExport(spec, self.importer_path, imported_text)) |info| {
+                const bare_type_value_export = info.exported_value and std.mem.eql(u8, imported_text, "type");
                 result = info.type_only_export and !bare_type_value_export;
             }
         }
@@ -59852,8 +59845,9 @@ pub const Checker = struct {
                 );
                 var related: []const RelatedInfo = &.{};
                 if (self.external_resolver) |resolver| {
-                    if (self.plainNamedImportModule(sp.local, stmt)) |mod_id| {
-                        if (resolver.moduleExport(self.string_interner.get(mod_id), self.importer_path, name)) |info| {
+                    if (self.plainNamedImport(sp.local, stmt)) |import| {
+                        const imported_name = self.string_interner.get(import.imported);
+                        if (resolver.moduleExport(self.string_interner.get(import.module), self.importer_path, imported_name)) |info| {
                             related = self.exportedHereRelatedInfo(name, info);
                         }
                     }
@@ -73810,6 +73804,17 @@ pub const Checker = struct {
         } else full_path.items[1..];
         if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name)) |t| return t;
         if (try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name)) |t| return t;
+        if (namespace_path.len == 0) {
+            const spec = self.string_interner.get(import_info.specifier);
+            const status = if (std.mem.startsWith(u8, spec, "."))
+                try self.virtualRelativeModuleNamedExportRuntimeStatus(type_node, spec, leaf_name)
+            else
+                self.externalModuleNamedExportRuntimeStatus(type_node, spec, leaf_name);
+            if (status == .value) {
+                try self.reportQualifiedValueUsedAsTypeDidYouMeanTypeofOnce(type_node);
+                return types.Primitive.any;
+            }
+        }
         return null;
     }
 
@@ -120150,8 +120155,9 @@ pub const Checker = struct {
             // anchor the TS1377 "was exported here" cross-file related-info.
             var related: []const RelatedInfo = &.{};
             if (self.external_resolver) |resolver| {
-                if (self.plainNamedImportModule(id.name, node)) |mod_id| {
-                    if (resolver.moduleExport(self.string_interner.get(mod_id), self.importer_path, name_str)) |info| {
+                if (self.plainNamedImport(id.name, node)) |import| {
+                    const imported_name = self.string_interner.get(import.imported);
+                    if (resolver.moduleExport(self.string_interner.get(import.module), self.importer_path, imported_name)) |info| {
                         related = self.exportedHereRelatedInfo(name_str, info);
                     }
                 }
@@ -248569,4 +248575,57 @@ test "checker: tsgo parity follow-up Closure function enum type is accepted" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_close_brace));
+}
+
+test "checker: type-only namespace value member used as a type reports TS2749" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\export const Value = {};
+        \\// @filename: /b.ts
+        \\import type * as types from './a';
+        \\let value: types.Value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.value_used_as_type_did_you_mean_typeof,
+        "'types.Value' refers to a value, but is being used as a type here. Did you mean 'typeof types.Value'?",
+    ));
+}
+
+test "checker: invalid import-equals provenance stops at its exported alias" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\export class A {}
+        \\// @filename: /b.ts
+        \\import type * as a from './a';
+        \\import A = a.A;
+        \\import aa = a;
+        \\export { a, A };
+        \\// @filename: /c.ts
+        \\import * as b from './b';
+        \\import A = b.a.A;
+        \\import AA = b.A;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.import_alias_references_import_type));
+}
+
+test "checker: repeated export stars from one module are unambiguous" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\export class A {}
+        \\// @filename: /b.ts
+        \\export type * from './a';
+        \\export * from './a';
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
 }
