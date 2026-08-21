@@ -3164,6 +3164,23 @@ const harness_prelude =
     \\  }
     \\}
     \\globalThis.__home_modules["@resvg/resvg-js"] = { Resvg: __home_Resvg };
+    \\function __home_rollup_parse_error(position, error) {
+    \\  const cause = error instanceof Error ? error : new SyntaxError(String(error)); const offset = Number(position) || 0; const operation = "rollup.parseAst";
+    \\  const failure = new Error("Rollup AST parsing failed at offset " + String(offset) + ": " + String(cause.message || cause)); failure.name = "RollupParseError"; failure.code = "PARSE_ERROR"; failure.operation = operation; failure.position = offset; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "SyntaxError") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (offset " + String(offset) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_rollup_parse_ast(input) {
+    \\  const source = String(input); let position = 0;
+    \\  try {
+    \\    const match = source.match(/^(\s*)(const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(true|false|null|-?(?:[0-9]+(?:\.[0-9]+)?)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*;?\s*$/); if (!match) throw new SyntaxError("Unsupported JavaScript syntax");
+    \\    const kind = match[2]; const name = match[3]; const raw = match[4]; const declarationStart = match[1].length; const idStart = source.indexOf(name, declarationStart + kind.length); const idEnd = idStart + name.length; const initStart = source.indexOf(raw, idEnd); position = initStart;
+    \\    let value; if (raw === "true") value = true; else if (raw === "false") value = false; else if (raw === "null") value = null; else if (raw[0] === '"') value = JSON.parse(raw); else if (raw[0] === "'") value = raw.slice(1, -1).replace(/\\'/g, "'").replace(/\\\\/g, "\\"); else value = Number(raw);
+    \\    let end = source.trimEnd().length; const declaratorEnd = initStart + raw.length;
+    \\    return { type: "Program", start: 0, end, body: [{ type: "VariableDeclaration", start: declarationStart, end, kind, declarations: [{ type: "VariableDeclarator", start: idStart, end: declaratorEnd, id: { type: "Identifier", start: idStart, end: idEnd, name }, init: { type: "Literal", start: initStart, end: declaratorEnd, value, raw } }] }], sourceType: "module" };
+    \\  } catch (error) { throw error && error.code === "PARSE_ERROR" ? error : __home_rollup_parse_error(position, error); }
+    \\}
+    \\globalThis.__home_modules["rollup/parseAst"] = { parseAst: __home_rollup_parse_ast, parseAstAsync(input) { try { return Promise.resolve(__home_rollup_parse_ast(input)); } catch (error) { return Promise.reject(error); } } };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -72625,6 +72642,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import postgresJs from \"postgres\";", .replacement = "const postgresJs = globalThis.__home_import(\"postgres\").default;" },
         .{ .needle = "import { createClient as createPrismaClient } from \"home:prisma-fixture\";", .replacement = "const { createClient: createPrismaClient } = globalThis.__home_import(\"home:prisma-fixture\");" },
         .{ .needle = "import { Resvg } from \"@resvg/resvg-js\";", .replacement = "const { Resvg } = globalThis.__home_import(\"@resvg/resvg-js\");" },
+        .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104399,6 +104417,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/prisma/prisma.test.ts", .passed = 7, .todo = 5 },
         .{ .path = "js/third_party/remix/remix.test.ts", .passed = 1 },
         .{ .path = "js/third_party/resvg/bbox.test.js", .passed = 3 },
+        .{ .path = "js/third_party/rollup-v4/rollup-v4.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104478,6 +104497,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { createClient as createPrismaClient } from "home:prisma-fixture";
         \\import { Resvg } from "@resvg/resvg-js";
         \\import { generateKeyPairSync } from "crypto";
+        \\const { parseAst: parseRollupAst } = globalThis.__home_import("rollup/parseAst");
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
         \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
@@ -104584,6 +104604,19 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: Error: Invalid SVG document");
         \\  expect(caught.message).not.toContain("private-svg-payload");
         \\  expect(caught.stack).not.toContain("private-svg-payload");
+        \\});
+        \\test("Rollup parse errors retain position and cause without source data", () => {
+        \\  let caught;
+        \\  try { parseRollupAst("private-rollup-source +"); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("RollupParseError");
+        \\  expect(caught.code).toBe("PARSE_ERROR");
+        \\  expect(caught.operation).toBe("rollup.parseAst");
+        \\  expect(caught.position).toBe(0);
+        \\  expect(caught.cause.message).toBe("Unsupported JavaScript syntax");
+        \\  expect(caught.stack).toContain("rollup.parseAst (offset 0");
+        \\  expect(caught.stack).toContain("Caused by: SyntaxError: Unsupported JavaScript syntax");
+        \\  expect(caught.message).not.toContain("private-rollup-source");
+        \\  expect(caught.stack).not.toContain("private-rollup-source");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104868,7 +104901,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 31), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 32), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
