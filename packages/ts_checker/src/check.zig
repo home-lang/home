@@ -101669,7 +101669,11 @@ pub const Checker = struct {
                 }
                 if (self.hir.kindOf(c.callee) == .member_access) {
                     const m = hir_mod.memberOf(self.hir, c.callee);
-                    const receiver_t = if (try self.staticClassMemberAccess(m.object, m.name)) |static_access|
+                    const receiver_t = if (self.nodeIsSuperReference(m.object)) blk_super: {
+                        const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                        const visible_super_t = self.lookupNarrow(super_id) orelse break :blk_super types.Primitive.any;
+                        break :blk_super self.superPropertyObjectType(visible_super_t);
+                    } else if (try self.staticClassMemberAccess(m.object, m.name)) |static_access|
                         static_access.receiver_t
                     else
                         try self.checkExpression(m.object);
@@ -101698,7 +101702,11 @@ pub const Checker = struct {
                 }
                 if (self.hir.kindOf(c.callee) == .element_access) {
                     const e = hir_mod.elementOf(self.hir, c.callee);
-                    const receiver_t = try self.checkExpression(e.object);
+                    const receiver_t = if (self.nodeIsSuperReference(e.object)) blk_super: {
+                        const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                        const visible_super_t = self.lookupNarrow(super_id) orelse break :blk_super types.Primitive.any;
+                        break :blk_super self.superPropertyObjectType(visible_super_t);
+                    } else try self.checkExpression(e.object);
                     const index_t = try self.checkExpression(e.index);
                     if (self.typeIsAnyLike(index_t)) {
                         const number_index_t = try self.arrayElementType(receiver_t);
@@ -190966,16 +190974,26 @@ test "checker: static and instance super resolve separate class sides" {
         \\  static func(): number { return 1; }
         \\}
         \\class Derived extends Base {
+        \\  constructor() { super(); var x = super.func(); var x: string; }
         \\  static sf(): number { return super.func(); }
         \\  im(): string { return super.func(); }
         \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    const base_name = try s.sint.intern("Base");
+    const func_name = try s.sint.intern("func");
+    const base_instance = s.checker.class_instance_types.get(base_name) orelse return error.MissingBaseInstance;
+    const instance_func = s.ti.objectMemberInfo(base_instance, func_name) orelse return error.MissingInstanceFunc;
+    try T.expectEqual(types.Primitive.string_t, s.ti.signatureReturn(instance_func.type).?);
+    const base_static = s.checker.class_static_types.get(base_name) orelse return error.MissingBaseStatic;
+    const static_func = s.ti.objectMemberInfo(base_static, func_name) orelse return error.MissingStaticFunc;
+    try T.expectEqual(types.Primitive.number_t, s.ti.signatureReturn(static_func.type).?);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.overload_must_be_static);
         try T.expect(d.code != TsCodes.overload_must_not_be_static);
         try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
 }
 
