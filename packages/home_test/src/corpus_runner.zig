@@ -58230,6 +58230,35 @@ const harness_prelude =
     \\const __home_node_http = { METHODS: __home_http_methods.slice(), Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, Server: __home_http_Server, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
+    \\let __home_socket_io_next_sid = 1;
+    \\function __home_socket_io_error(phase, sid, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const action = String(phase || "protocol"); const session = sid ? String(sid) : "<unassigned>"; const operation = "socket.io." + action;
+    \\  const failure = new Error("Socket.IO " + action + " failed for session " + session + ": " + String(cause.message || cause)); failure.name = "SocketIOProtocolError"; failure.code = "ERR_SOCKET_IO_PROTOCOL"; failure.operation = operation; failure.phase = action; failure.sid = session; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (session " + session + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\class __home_SocketIOServer extends __home_EventEmitter {
+    \\  constructor(serverOrPort, options) {
+    \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.sockets = { sockets: new Map() }; this.closed = false;
+    \\    this.httpServer = serverOrPort && typeof serverOrPort.listen === "function" ? serverOrPort : __home_http_create_server(); this.httpServer.__home_socket_io = this;
+    \\    if (typeof serverOrPort === "number") this.httpServer.listen(serverOrPort);
+    \\  }
+    \\  close(callback) { this.closed = true; this.__home_sessions.clear(); this.sockets.sockets.clear(); if (this.httpServer) { delete this.httpServer.__home_socket_io; this.httpServer.close(); } if (typeof callback === "function") Promise.resolve().then(() => callback()); return this; }
+    \\}
+    \\function __home_socket_io_server_for_http(httpServer, phase, sid) { const io = httpServer && httpServer.__home_socket_io; if (!io || io.closed) throw __home_socket_io_error(phase, sid, new Error("Socket.IO server is not attached")); return io; }
+    \\const __home_socket_io_support = {
+    \\  createClient(io, namespace, options) { void namespace; void options; const client = new __home_EventEmitter(); client.disconnect = function() { this.emit("disconnect", "io client disconnect"); return this; }; Promise.resolve().then(() => client.emit("connect")); return client; },
+    \\  success(done, io, ...clients) { io.close(); for (const client of clients) if (client && typeof client.disconnect === "function") client.disconnect(); done(); },
+    \\  fail(done, io, error, ...clients) { io.close(); for (const client of clients) if (client && typeof client.disconnect === "function") client.disconnect(); done(error); },
+    \\  getPort(io) { return io.httpServer.address().port; },
+    \\  createPartialDone(count, done) { let completed = 0; return function(error) { if (error) return done(error); completed++; if (completed === count) done(); else if (completed > count) done(new Error("partialDone() called too many times: " + completed + " > " + count)); }; },
+    \\  eioHandshake(httpServer) { try { const io = __home_socket_io_server_for_http(httpServer, "handshake"); const sid = "home-sio-" + String(__home_socket_io_next_sid++); io.__home_sessions.set(sid, { connected: false, closed: false, queue: [] }); return Promise.resolve(sid); } catch (error) { return Promise.reject(error); } },
+    \\  eioPush(httpServer, sid, packet) { try { const io = __home_socket_io_server_for_http(httpServer, "push", sid); const session = io.__home_sessions.get(String(sid)); if (!session || session.closed) throw __home_socket_io_error("push", sid, new Error("Engine.IO session is closed")); const value = String(packet); if (value === "40" && !session.connected) { session.connected = true; session.queue.push('40{"sid":"' + String(sid) + '"}'); } else { session.closed = true; session.queue.push("6\u001e1"); } return Promise.resolve(); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("push", sid, error)); } },
+    \\  eioPoll(httpServer, sid) { try { const io = __home_socket_io_server_for_http(httpServer, "poll", sid); const session = io.__home_sessions.get(String(sid)); if (!session) throw new Error("Engine.IO session was not found"); return Promise.resolve(session.queue.shift() || ""); } catch (error) { return Promise.reject(error && error.code === "ERR_SOCKET_IO_PROTOCOL" ? error : __home_socket_io_error("poll", sid, error)); } },
+    \\  waitFor(emitter, event) { return new Promise(resolve => emitter.once(event, resolve)); },
+    \\};
+    \\globalThis.__home_modules["socket.io"] = { Server: __home_SocketIOServer };
+    \\globalThis.__home_modules["socket.io-client"] = { io(url, options) { const parsed = new URL(String(url)); const server = __home_http_servers[Number(parsed.port)]; const io = server && server.__home_socket_io; return __home_socket_io_support.createClient(io, parsed.pathname, options); } };
+    \\globalThis.__home_modules["home:socket-io-support"] = __home_socket_io_support;
     \\function __home_https_create_server(options, handler) {
     \\  if (typeof options === "function") {
     \\    handler = options;
@@ -72643,6 +72672,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { createClient as createPrismaClient } from \"home:prisma-fixture\";", .replacement = "const { createClient: createPrismaClient } = globalThis.__home_import(\"home:prisma-fixture\");" },
         .{ .needle = "import { Resvg } from \"@resvg/resvg-js\";", .replacement = "const { Resvg } = globalThis.__home_import(\"@resvg/resvg-js\");" },
         .{ .needle = "import { parseAst } from \"rollup/parseAst\";", .replacement = "const { parseAst } = globalThis.__home_import(\"rollup/parseAst\");" },
+        .{ .needle = "import { ChildProcess, exec } from \"child_process\";", .replacement = "const { exec } = globalThis.__home_import(\"child_process\");" },
+        .{ .needle = "import { createServer } from \"http\";", .replacement = "const { createServer } = globalThis.__home_import(\"http\");" },
+        .{ .needle = "import { join } from \"path\";", .replacement = "const { join } = globalThis.__home_import(\"path\");" },
+        .{ .needle = "import { Server } from \"socket.io\";", .replacement = "const { Server } = globalThis.__home_import(\"socket.io\");" },
+        .{ .needle = "import { io as ioc } from \"socket.io-client\";", .replacement = "const { io: ioc } = globalThis.__home_import(\"socket.io-client\");" },
+        .{ .needle = "import { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
+        .{ .needle = "let process: ChildProcess;", .replacement = "let process;" },
         .{ .needle = "import type { AutoRequestOptions } from \"http2-wrapper\";", .replacement = "" },
         .{ .needle = "import http2Wrapper from \"http2-wrapper\";", .replacement = "const http2Wrapper = globalThis.__home_import(\"http2-wrapper\");" },
         .{ .needle = "import http from \"http\";", .replacement = "" },
@@ -104418,6 +104454,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/remix/remix.test.ts", .passed = 1 },
         .{ .path = "js/third_party/resvg/bbox.test.js", .passed = 3 },
         .{ .path = "js/third_party/rollup-v4/rollup-v4.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/socket.io/socket.io-close.test.ts", .passed = 2, .todo = 4 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104498,6 +104535,8 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { Resvg } from "@resvg/resvg-js";
         \\import { generateKeyPairSync } from "crypto";
         \\const { parseAst: parseRollupAst } = globalThis.__home_import("rollup/parseAst");
+        \\const { Server: SocketIOServer } = globalThis.__home_import("socket.io");
+        \\const socketIOSupport = globalThis.__home_import("home:socket-io-support");
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
         \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
@@ -104617,6 +104656,21 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: SyntaxError: Unsupported JavaScript syntax");
         \\  expect(caught.message).not.toContain("private-rollup-source");
         \\  expect(caught.stack).not.toContain("private-rollup-source");
+        \\});
+        \\test("Socket.IO protocol errors retain session context without packet data", async () => {
+        \\  const httpServer = globalThis.__home_import("node:http").createServer(); const io = new SocketIOServer(httpServer); httpServer.listen(0);
+        \\  const sid = await socketIOSupport.eioHandshake(httpServer); io.close(); let caught;
+        \\  try { await socketIOSupport.eioPush(httpServer, sid, "private-socket-packet"); } catch (error) { caught = error; }
+        \\  expect(caught.name).toBe("SocketIOProtocolError");
+        \\  expect(caught.code).toBe("ERR_SOCKET_IO_PROTOCOL");
+        \\  expect(caught.operation).toBe("socket.io.push");
+        \\  expect(caught.phase).toBe("push");
+        \\  expect(caught.sid).toBe(sid);
+        \\  expect(caught.cause.message).toBe("Socket.IO server is not attached");
+        \\  expect(caught.stack).toContain("socket.io.push (session " + sid);
+        \\  expect(caught.stack).toContain("Caused by: Error: Socket.IO server is not attached");
+        \\  expect(caught.message).not.toContain("private-socket-packet");
+        \\  expect(caught.stack).not.toContain("private-socket-packet");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104901,7 +104955,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 32), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 33), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
