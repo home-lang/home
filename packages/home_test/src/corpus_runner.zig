@@ -3269,7 +3269,7 @@ const harness_prelude =
     \\function __home_valkey_redact(value, endpoint) { return String(value || "").replace(/(?:redis|rediss|valkey)(?:\+tls|\+unix)?:\/\/[^\s'"\)]+/gi, String(endpoint || "<redacted endpoint>")).replace(/(?:authorization|token|secret|password)=([^&\s]+)/gi, "$1=<redacted>"); }
     \\function __home_valkey_error(phase, endpoint, error) { const step = String(phase || "connect"); const target = __home_valkey_endpoint(endpoint); const original = error instanceof Error ? error : new Error(String(error)); const cause = new Error(__home_valkey_redact(original.message || original, target)); cause.name = String(original.name || "Error"); const operation = "valkey." + step; const failure = new Error("Valkey " + step + " failed at " + target + ": " + cause.message); failure.name = "ValkeyClientError"; failure.code = "ERR_VALKEY_CLIENT"; failure.operation = operation; failure.phase = step; failure.endpoint = target; failure.cause = cause; const causeSummary = cause.name + ": " + cause.message; const causeStack = __home_valkey_redact(original.stack || "", target); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + target + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure; }
     \\const __home_valkey_test_context = { redis: null, id: 0, generateKey(name) { this.id++; return "home-valkey-" + String(this.id) + "-" + String(name); } };
-    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error };
+    \\globalThis.__home_modules["home:valkey-test-utils"] = { ConnectionType: { TCP: "tcp", TLS: "tls", UNIX: "unix", AUTH: "auth", READONLY: "readonly", WRITEONLY: "writeonly" }, DEFAULT_REDIS_OPTIONS: { username: "default", password: "", db: 0, tls: false }, DEFAULT_REDIS_URL: "redis://localhost:6379", isEnabled: false, ctx: __home_valkey_test_context, delay() { return Promise.resolve(); }, testKey(name) { return __home_valkey_test_context.generateKey(name); }, expectType() { return true; }, createClient() { throw __home_valkey_error("connect", "redis://localhost:6379", new Error("Docker-backed Valkey integration fixture is unavailable")); }, createError: __home_valkey_error };
     \\function __home_pino_transport_target(value) {
     \\  const target = String(value || "<unconfigured>");
     \\  return /^[A-Za-z0-9@._/-]+$/.test(target) ? target.slice(0, 120) : "<redacted>";
@@ -77197,6 +77197,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { DEFAULT_REDIS_OPTIONS, DEFAULT_REDIS_URL, delay, isEnabled } = globalThis.__home_import(\"home:valkey-test-utils\");",
         },
         .{
+            .needle = "import { ConnectionType, createClient, ctx, isEnabled, testKey } from \"../test-utils\";",
+            .replacement = "const { ConnectionType, createClient, ctx, isEnabled, testKey } = globalThis.__home_import(\"home:valkey-test-utils\");",
+        },
+        .{
+            .needle = "import { ConnectionType, createClient, ctx, expectType, isEnabled } from \"../test-utils\";",
+            .replacement = "const { ConnectionType, createClient, ctx, expectType, isEnabled } = globalThis.__home_import(\"home:valkey-test-utils\");",
+        },
+        .{
+            .needle = "import { DEFAULT_REDIS_OPTIONS, DEFAULT_REDIS_URL, isEnabled } from \"../test-utils\";",
+            .replacement = "const { DEFAULT_REDIS_OPTIONS, DEFAULT_REDIS_URL, isEnabled } = globalThis.__home_import(\"home:valkey-test-utils\");",
+        },
+        .{
             .needle = "import { serve } from \"bun\";",
             .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
         },
@@ -104655,6 +104667,9 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/wpt-h2/run.test.ts", .passed = 20, .todo = 4 },
         .{ .path = "js/valkey/integration/complex-operations.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/valkey/reliability/connection-failures.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/valkey/reliability/error-handling.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/valkey/reliability/protocol-handling.test.ts", .passed = 0, .todo = 1 },
+        .{ .path = "js/valkey/reliability/recovery.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
