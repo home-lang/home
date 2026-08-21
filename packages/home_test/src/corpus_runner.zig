@@ -57794,6 +57794,33 @@ const harness_prelude =
     \\  };
     \\  return stream;
     \\}
+    \\let __home_grpc_next_subchannel_pool_id = 1;
+    \\const __home_grpc_global_subchannel_pool = new Map();
+    \\function __home_grpc_subchannel_pool_error(error, operation, target) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error("SubchannelPool." + operation + " failed for '" + String(target) + "': " + String(cause.message || cause));
+    \\  failure.code = "ERR_GRPC_SUBCHANNEL_POOL"; failure.target = String(target); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at SubchannelPool." + operation + " (target " + String(target) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_subchannel_pool_acquire(target, useLocalPool) {
+    \\  const name = String(target || "");
+    \\  if (useLocalPool) return { id: __home_grpc_next_subchannel_pool_id++, target: name, local: true, refs: 1, closed: false };
+    \\  let record = __home_grpc_global_subchannel_pool.get(name);
+    \\  if (!record || record.closed) {
+    \\    record = { id: __home_grpc_next_subchannel_pool_id++, target: name, local: false, refs: 0, closed: false };
+    \\    __home_grpc_global_subchannel_pool.set(name, record);
+    \\  }
+    \\  record.refs += 1;
+    \\  return record;
+    \\}
+    \\function __home_grpc_subchannel_pool_release(record) {
+    \\  if (!record || record.closed || record.refs <= 0) throw __home_grpc_subchannel_pool_error(new Error("subchannel record is already released"), "release", record && record.target);
+    \\  record.refs -= 1;
+    \\  if (record.refs > 0) return;
+    \\  record.closed = true;
+    \\  if (!record.local && __home_grpc_global_subchannel_pool.get(record.target) === record) __home_grpc_global_subchannel_pool.delete(record.target);
+    \\}
     \\function __home_grpc_EchoService(target, credentials, options) {
     \\  this.__home_target = String(target || "");
     \\  this.__home_port = __home_grpc_port(target);
@@ -57804,6 +57831,7 @@ const harness_prelude =
     \\  this.__home_state_watchers = new Set();
     \\  this.__home_idle_timer = null;
     \\  if (this.__home_credentials && typeof this.__home_credentials.__home_activate === "function") this.__home_credentials.__home_activate();
+    \\  this.__home_subchannel_record = __home_grpc_subchannel_pool_acquire(this.__home_target, this.__home_options["grpc.use_local_subchannel_pool"] === 1);
     \\}
     \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
     \\__home_grpc_EchoService.prototype.__home_server = function() {
@@ -57883,6 +57911,7 @@ const harness_prelude =
     \\    if (watcher.timer) clearTimeout(watcher.timer);
     \\    Promise.resolve().then(() => watcher.callback(__home_grpc_idle_error(this.__home_target, "watchConnectivityState", "The client is closed")));
     \\  }
+    \\  __home_grpc_subchannel_pool_release(this.__home_subchannel_record);
     \\  if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate();
     \\};
     \\function __home_grpc_metadata_value(metadata, name) {
@@ -87597,6 +87626,40 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\    });
         \\  });
         \\});
+        \\
+        \\test("local and global subchannel pool ownership", () => {
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const credentials = grpc.credentials.createInsecure();
+        \\  const local1 = new EchoService("pool.test:12345", credentials, { "grpc.use_local_subchannel_pool": 1 });
+        \\  const local2 = new EchoService("pool.test:12345", credentials, { "grpc.use_local_subchannel_pool": 1 });
+        \\  assert.notStrictEqual(local1.__home_subchannel_record, local2.__home_subchannel_record);
+        \\  assert.strictEqual(local1.__home_subchannel_record.refs, 1);
+        \\  assert.strictEqual(local2.__home_subchannel_record.refs, 1);
+        \\  local1.close();
+        \\  assert.strictEqual(local1.__home_subchannel_record.closed, true);
+        \\  assert.strictEqual(local2.__home_subchannel_record.closed, false);
+        \\  local2.close();
+        \\
+        \\  const global1 = new EchoService("pool.test:12345", credentials, { "grpc.use_local_subchannel_pool": 0 });
+        \\  const global2 = new EchoService("pool.test:12345", credentials, { "grpc.use_local_subchannel_pool": 0 });
+        \\  assert.strictEqual(global1.__home_subchannel_record, global2.__home_subchannel_record);
+        \\  assert.strictEqual(global1.__home_subchannel_record.refs, 2);
+        \\  global1.close();
+        \\  assert.strictEqual(global2.__home_subchannel_record.refs, 1);
+        \\  assert.strictEqual(global2.__home_subchannel_record.closed, false);
+        \\  global2.close();
+        \\  assert.strictEqual(global2.__home_subchannel_record.closed, true);
+        \\
+        \\  const broken = new EchoService("broken.pool:12345", credentials, { "grpc.use_local_subchannel_pool": 1 });
+        \\  broken.__home_subchannel_record.refs = 0;
+        \\  let releaseError;
+        \\  try { broken.close(); } catch (error) { releaseError = error; }
+        \\  assert.strictEqual(releaseError.code, "ERR_GRPC_SUBCHANNEL_POOL");
+        \\  assert.ok(releaseError.cause instanceof Error);
+        \\  assert.ok(String(releaseError.stack).includes("SubchannelPool.release"));
+        \\  assert.ok(String(releaseError.stack).includes("broken.pool:12345"));
+        \\  assert.ok(String(releaseError.stack).includes("Caused by:"));
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87614,7 +87677,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102110,6 +102173,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-end-to-end.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/grpc-js/test-global-subchannel-pool.test.ts", .passed = 3 },
         .{ .path = "js/third_party/grpc-js/test-idle-timer.test.ts", .passed = 8 },
+        .{ .path = "js/third_party/grpc-js/test-local-subchannel-pool.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
