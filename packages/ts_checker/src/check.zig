@@ -6927,7 +6927,12 @@ pub const Checker = struct {
                 if (jsDocClosureFunctionOpen(inner)) |paren| {
                     const pos: u32 = @intCast(body_start + open + 1 + paren);
                     const line_start = if (std.mem.lastIndexOfScalar(u8, body[0..open], '\n')) |newline| newline + 1 else 0;
-                    const is_typedef = std.mem.indexOf(u8, body[line_start..open], "@typedef") != null;
+                    const tag_prefix = body[line_start..open];
+                    if (std.mem.indexOf(u8, tag_prefix, "@enum") != null) {
+                        scan = open + type_len;
+                        continue;
+                    }
+                    const is_typedef = std.mem.indexOf(u8, tag_prefix, "@typedef") != null;
                     if (is_typedef) {
                         var diagnostic_index: usize = 0;
                         while (diagnostic_index < self.diagnostics.items.len) : (diagnostic_index += 1) {
@@ -10314,6 +10319,8 @@ pub const Checker = struct {
 
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        const section = self.virtualSectionStartForNode(node);
+        if (self.virtualSectionHasExternalModuleSyntax(root, section)) return;
 
         if (try self.namespaceMergeMismatchCoveredByTypeOnlyImportConflict(node, path.items)) return;
 
@@ -27000,6 +27007,12 @@ pub const Checker = struct {
         _ = self;
         _ = spec_node;
         return sp.local;
+    }
+
+    fn exportSpecifierHasTypeOnlyModifier(self: *Checker, spec_node: NodeId, sp: hir_mod.ImportSpecifierPayload) bool {
+        if (!sp.is_type_only) return false;
+        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(spec_node), " \t\r\n");
+        return !std.mem.eql(u8, text, "type");
     }
 
     fn exportedValueTypeForNamespaceMember(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!TypeId {
@@ -56292,7 +56305,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(export_spec) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, export_spec);
                 if (self.exportSpecifierExportedName(export_spec, sp) != name) continue;
-                if (ex.is_type_only or sp.is_type_only) {
+                if (ex.is_type_only or self.exportSpecifierHasTypeOnlyModifier(export_spec, sp)) {
                     saw_type_only_export = true;
                     continue;
                 }
@@ -56372,6 +56385,32 @@ pub const Checker = struct {
                 if (self.hir.kindOf(export_spec) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, export_spec);
                 if (std.mem.eql(u8, self.string_interner.get(self.exportSpecifierExportedName(export_spec, sp)), "default")) return true;
+            }
+        }
+        return false;
+    }
+
+    fn virtualRelativeModuleHasPlainLocalValueExport(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        const from = self.virtualSectionFilenameForNode(node) orelse return false;
+        const resolved = try self.resolveVirtualRelativePath(from, stripJsOutputExtension(spec));
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec) or self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            if (ex.is_type_only or ex.module != string_interner.empty_string_id) continue;
+            for (hir_mod.exportNamed(self.hir, raw)) |export_spec| {
+                if (self.hir.kindOf(export_spec) != .import_specifier) continue;
+                const exported = hir_mod.importSpecifierOf(self.hir, export_spec);
+                if (self.exportSpecifierExportedName(export_spec, exported) != name or
+                    self.exportSpecifierHasTypeOnlyModifier(export_spec, exported)) continue;
+                if (try self.virtualRelativeModuleLocalDeclCreatesRuntimeValue(node, spec, exported.imported)) return true;
             }
         }
         return false;
@@ -58989,6 +59028,7 @@ pub const Checker = struct {
         const mod_id = self.plainNamedImportModule(name, anchor) orelse return false;
         const spec = self.string_interner.get(mod_id);
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
+            if (self.virtualRelativeModuleHasPlainLocalValueExport(anchor, spec, name) catch false) return false;
             const status = self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, name) catch .unknown;
             return status == .type_only_decl or status == .type_only_alias;
         }
@@ -58997,7 +59037,8 @@ pub const Checker = struct {
         var result = false;
         if (self.external_resolver) |resolver| {
             if (resolver.moduleExport(spec, self.importer_path, name_text)) |info| {
-                result = info.type_only_export;
+                const bare_type_value_export = info.exported_value and std.mem.eql(u8, name_text, "type");
+                result = info.type_only_export and !bare_type_value_export;
             }
         }
         self.cross_module_type_only_export_cache.put(self.gpa, name, result) catch {};
@@ -89720,7 +89761,12 @@ pub const Checker = struct {
                         continue;
                     }
                     param_tag_index += 1;
-                    const param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, self.jsdoc_diagnostic_anchor, tag.name)) orelse types.Primitive.any;
+                    var param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, self.jsdoc_diagnostic_anchor, tag.name)) orelse types.Primitive.any;
+                    if (!tag.optional) {
+                        if (try self.jsDocObjectParamTypeFromDottedTags(src, tags, self.jsdoc_diagnostic_anchor, tag.name)) |object_t| {
+                            param_t = object_t;
+                        }
+                    }
                     try params.append(self.gpa, param_t);
                     try omittable.append(self.gpa, tag.optional);
                 } else if (tag.kind == .returns_tag) {
@@ -231461,6 +231507,23 @@ test "checker: TS1362 fires for a normally-imported name exported type-only by i
     ));
 }
 
+test "checker: tsgo parity follow-up bare type value export overrides alias metadata" {
+    const s = try newSetup(
+        \\import { type } from "./b";
+        \\type;
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"b\"",
+        .exported_name = "type",
+        .exported_type = false,
+        .exported_value = true,
+        .type_only_export = true,
+    };
+    try runCrossModuleCheck(s, &stub);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+}
+
 test "checker: ambiguous type-only export specifiers publish aliases without TS2661" {
     const b = try newBoundSetup(
         \\// @filename: /imports.ts
@@ -237745,6 +237808,7 @@ const CrossModuleStubResolver = struct {
     canned_module_name: []const u8,
     exported_name: []const u8,
     exported_type: bool,
+    exported_value: bool = false,
     /// When true (and `exported_type` false), the canned name is reported
     /// as reachable only via a nested exported namespace — the
     /// `cannot be named` (CannotBeNamed) case.
@@ -237790,7 +237854,8 @@ const CrossModuleStubResolver = struct {
         return .{
             .module_name = self.canned_module_name,
             .exported_type = self.exported_type and matches,
-            .exported_value = matches and !self.exported_type and !self.cannot_be_named and !self.type_only_export,
+            .exported_value = matches and (self.exported_value or
+                (!self.exported_type and !self.cannot_be_named and !self.type_only_export)),
             .cannot_be_named = self.cannot_be_named and matches,
             .type_only_export = is_type_only,
             .export_path = if (is_type_only) "/dep.ts" else "",
@@ -246120,4 +246185,79 @@ test "checker: polymorphic this default parameters merge with body var declarati
         TsCodes.subsequent_var_type_mismatch,
         "Subsequent variable declarations must have the same type.  Variable 'value' must be of type 'this', but here has type 'Generic<T, U>'.",
     ));
+}
+
+test "checker: tsgo parity follow-up callback dotted parameters form an object" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: callback.js
+        \\/**
+        \\ * @callback PersonCallback
+        \\ * @param {Object} person
+        \\ * @param {string} person.name
+        \\ * @param {number} [person.age]
+        \\ * @returns {void}
+        \\ */
+        \\/** @param {PersonCallback} callback */
+        \\function eachPerson(callback) { callback({ name: "Empty" }); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
+}
+
+test "checker: tsgo parity follow-up external module namespaces do not merge across files" {
+    const s = try newSetup(
+        \\// @filename: one.ts
+        \\namespace x { export const value = 1; }
+        \\export = x;
+        \\// @filename: two.ts
+        \\function x() {}
+        \\export = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.namespace_in_different_file));
+}
+
+test "checker: tsgo parity follow-up bare type export specifier remains a value" {
+    const s = try newSetup(
+        \\// @filename: /imports.ts
+        \\import { type, as, something, foo, bar } from "./exports.js";
+        \\type;
+        \\as;
+        \\something;
+        \\foo;
+        \\bar;
+        \\// @filename: /exports.ts
+        \\const type = 0;
+        \\const as = 0;
+        \\const something = 0;
+        \\export { type };
+        \\export { type as };
+        \\export { type something };
+        \\export { type type as foo };
+        \\export { type as as bar };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_only_export_used_as_value) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "'type'") == null);
+    }
+}
+
+test "checker: tsgo parity follow-up Closure function enum type is accepted" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: enum.js
+        \\/** @enum {function(number): number} */
+        \\export const Functions = { id: value => value };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_close_brace));
 }
