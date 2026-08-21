@@ -27833,6 +27833,17 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl) == .enum_decl) {
             return try self.enumNamespaceValueType(decl, name);
         }
+        if (self.hir.kindOf(decl) == .fn_decl or self.hir.kindOf(decl) == .fn_expr or
+            self.hir.kindOf(decl) == .arrow_fn)
+        {
+            var signature = self.hir.typeOf(decl);
+            if (signature == types.Primitive.none or signature >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(signature).is_signature)
+            {
+                signature = try self.preRegisterFunctionSignature(decl);
+            }
+            return try self.checkJsSourceFunctionDisplaySignature(decl, signature);
+        }
         if (try self.exportedVariableValueType(decl, name)) |var_t| return var_t;
         const t = self.hir.typeOf(decl);
         return if (t != types.Primitive.none) t else types.Primitive.any;
@@ -59480,6 +59491,7 @@ pub const Checker = struct {
     }
 
     fn commonJsExportAssignmentValueType(self: *Checker, value: NodeId) CheckError!TypeId {
+        if (try self.commonJsRequireBindingMemberType(value)) |member_t| return member_t;
         if (self.hir.kindOf(value) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, value);
             if (try self.checkJsCommonJsExportedFunctionStaticType(value, id.name)) |function_t| return function_t;
@@ -59537,6 +59549,17 @@ pub const Checker = struct {
             }
         }
         return export_t;
+    }
+
+    fn commonJsRequireBindingMemberType(self: *Checker, value: NodeId) CheckError!?TypeId {
+        if (value == hir_mod.none_node_id or self.hir.kindOf(value) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, value);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+        const local_name = hir_mod.identifierOf(self.hir, member.object).name;
+        const spec = self.requireSpecifierForLocal(local_name, value) orelse return null;
+        if (!std.mem.startsWith(u8, spec, ".") or !self.sourceHasVirtualFilenameSections()) return null;
+        const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+        return try self.virtualRelativeModuleExportValueType(value, spec_id, member.name);
     }
 
     fn commonJsWholeExportSourceFunctionTypeInSection(self: *Checker, anchor: NodeId) CheckError!?TypeId {
@@ -74257,10 +74280,20 @@ pub const Checker = struct {
         if (!std.mem.startsWith(u8, spec, ".")) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
             if (self.hir.kindOf(raw) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, raw);
+            if (ex.is_default and leaf_name == default_name and ex.decl != hir_mod.none_node_id) {
+                if (self.hir.kindOf(ex.decl) == .identifier) {
+                    const local_name = hir_mod.identifierOf(self.hir, ex.decl).name;
+                    return (try self.localValueTypeInVirtualSection(raw, local_name)) orelse
+                        try self.checkExpression(ex.decl);
+                }
+                const exported_name = self.declarationName(ex.decl) orelse default_name;
+                return try self.exportedValueTypeForNamespaceMember(ex.decl, exported_name);
+            }
             if (ex.is_namespace and
                 ex.namespace_alias != string_interner.empty_string_id and
                 ex.namespace_alias == leaf_name and
@@ -99973,10 +100006,18 @@ pub const Checker = struct {
                         }
                     }
                     if (self.commonJsModuleExportsPropertyName(a.target)) |prop_name| {
-                        if (self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey())) |exports_t| {
+                        const whole_export_t = (try self.commonJsWholeExportSourceFunctionTypeFromText(a.target)) orelse
+                            (try self.commonJsWholeExportSourceFunctionTypeInSection(a.target)) orelse
+                            (try self.commonJsWholeExportTypeInSection(a.target));
+                        const exports_t_opt = whole_export_t orelse self.lookupCommonJsExportNarrow(
+                            try self.commonJsModuleExportsDirectKey(),
+                        );
+                        if (exports_t_opt) |exports_t| {
                             const collides_with_typedef = self.visibleJsDocTypedefNameExistsAt(a.target, prop_name);
                             if (!self.assignmentTargetValueIsVoidExpression(a.target) and
-                                (collides_with_typedef or !self.typeCanReceiveCommonJsExportProperty(exports_t)) and
+                                (collides_with_typedef or
+                                    whole_export_t != null or
+                                    !self.typeCanReceiveCommonJsExportProperty(exports_t)) and
                                 (try self.lookupObjectMember(exports_t, prop_name)) == null)
                             {
                                 const display_t = (try self.commonJsWholeExportSourceFunctionTypeFromText(a.target)) orelse
@@ -220053,6 +220094,29 @@ test "checker: checkjs imported callable expando target reports TS2339" {
         if (d.code == TsCodes.property_does_not_exist) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: checkjs CommonJS re-exported callable rejects new expandos" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: exporter.js
+        \\function validate() {}
+        \\export default validate;
+        \\// @filename: index.js
+        \\const m = require("./exporter");
+        \\module.exports = m.default;
+        \\module.exports.memberName = "thing";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'memberName' does not exist on type '() => void'.",
+    ));
 }
 
 test "checker: checkjs object namespace class expando is visible to new and extends" {
