@@ -66402,12 +66402,12 @@ const harness_prelude =
     \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
     \\  return {};
     \\};
-    \\function __home_jwt_error_type(name) {
+    \\function __home_jwt_error_type(name, Parent) {
     \\  const Constructor = function(message) { const error = new Error(message); Object.setPrototypeOf(error, Constructor.prototype); error.name = name; return error; };
-    \\  Constructor.prototype = Object.create(Error.prototype); Constructor.prototype.constructor = Constructor; Object.defineProperty(Constructor, "name", { configurable: true, value: name }); return Constructor;
+    \\  Constructor.prototype = Object.create((Parent || Error).prototype); Constructor.prototype.constructor = Constructor; Object.defineProperty(Constructor, "name", { configurable: true, value: name }); return Constructor;
     \\}
     \\const __home_jwt_JsonWebTokenError = __home_jwt_error_type("JsonWebTokenError");
-    \\const __home_jwt_TokenExpiredError = __home_jwt_error_type("TokenExpiredError");
+    \\const __home_jwt_TokenExpiredError = __home_jwt_error_type("TokenExpiredError", __home_jwt_JsonWebTokenError);
     \\function __home_jwt_error(name, message) { return name === "TokenExpiredError" ? new __home_jwt_TokenExpiredError(message) : new __home_jwt_JsonWebTokenError(message); }
     \\function __home_jwt_base64url_to_binary(value) {
     \\  const base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
@@ -66492,6 +66492,7 @@ const harness_prelude =
     \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid audience option for object payload");
     \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "aud")) throw new Error('Bad "options.audience" option. The payload already has an "aud" property.');
     \\  }
+    \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "iat") && typeof payload.iat !== "number") throw new Error('"iat" should be a number of seconds');
     \\  let expiresInSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresIn")) {
     \\    if (typeof opts.expiresIn === "number" && Number.isInteger(opts.expiresIn) && Number.isFinite(opts.expiresIn)) expiresInSeconds = opts.expiresIn;
@@ -66505,9 +66506,11 @@ const harness_prelude =
     \\  let body = payload && typeof payload.toString === "function" && payload.constructor && payload.constructor.name === "Buffer" ? payload.toString() : payload;
     \\  if (body && typeof body === "object" && !Array.isArray(body)) {
     \\    body = opts.mutatePayload === true ? body : Object.assign({}, body); const now = Math.floor(Date.now() / 1000);
+    \\    const timestamp = typeof body.iat === "number" && body.iat ? body.iat : now;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
-    \\    if (typeof opts.notBefore === "number") body.nbf = now + opts.notBefore;
-    \\    if (expiresInSeconds !== undefined) body.exp = (typeof body.iat === "number" ? body.iat : now) + expiresInSeconds;
+    \\    if (typeof opts.notBefore === "number") body.nbf = timestamp + opts.notBefore;
+    \\    if (expiresInSeconds !== undefined) body.exp = timestamp + expiresInSeconds;
+    \\    if (opts.noTimestamp === true) delete body.iat; else if (!body.iat) body.iat = timestamp;
     \\  }
     \\  const header = Object.assign({ alg: algorithm, typ: "JWT" }, opts.header || {}); const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
@@ -66529,20 +66532,37 @@ const harness_prelude =
     \\  const actualValues = Array.isArray(actual) ? actual : [actual]; const expectedValues = Array.isArray(expected) ? expected : [expected];
     \\  return expectedValues.some(candidate => actualValues.some(value => candidate instanceof RegExp ? candidate.test(String(value)) : String(candidate) === String(value)));
     \\}
+    \\function __home_jwt_timespan_seconds(value) {
+    \\  if (typeof value === "number" && Number.isFinite(value)) return value;
+    \\  if (typeof value !== "string") return undefined;
+    \\  const match = value.match(/^\\s*(-?\\d+(?:\\.\\d+)?)\\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?\\s*$/i); if (!match) return undefined;
+    \\  const amount = Number(match[1]); const unit = String(match[2] || "ms").toLowerCase();
+    \\  if (unit === "ms") return amount / 1000;
+    \\  if (unit === "s" || unit === "sec" || unit === "secs" || unit === "second" || unit === "seconds") return amount;
+    \\  if (unit === "m" || unit === "min" || unit === "mins" || unit === "minute" || unit === "minutes") return amount * 60;
+    \\  if (unit === "h" || unit === "hr" || unit === "hrs" || unit === "hour" || unit === "hours") return amount * 3600;
+    \\  return amount * 86400;
+    \\}
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
-    \\    if (typeof payload.exp !== "number") throw __home_jwt_error("JsonWebTokenError", "invalid exp value");
+    \\    if (typeof payload.exp !== "number") { const invalidExpiration = __home_jwt_error("JsonWebTokenError", "invalid exp value"); invalidExpiration.claim = "exp"; throw invalidExpiration; }
     \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0);
-    \\    if (!opts.ignoreExpiration && clockTimestamp >= payload.exp + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "jwt expired"); expired.expiredAt = new Date(payload.exp * 1000); throw expired; }
+    \\    if (!opts.ignoreExpiration && clockTimestamp >= payload.exp + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "jwt expired"); expired.expiredAt = new Date(payload.exp * 1000); expired.claim = "exp"; throw expired; }
     \\  }
     \\  if (opts.audience !== undefined && (!payload || typeof payload !== "object" || !__home_jwt_audience_matches(payload.aud, opts.audience))) throw __home_jwt_error("JsonWebTokenError", "jwt audience invalid. expected: " + __home_jwt_audience_text(opts.audience));
+    \\  if (opts.maxAge !== undefined) {
+    \\    if (!payload || typeof payload !== "object" || typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) { const missingIssuedAt = __home_jwt_error("JsonWebTokenError", "iat required when maxAge is specified"); missingIssuedAt.claim = "iat"; throw missingIssuedAt; }
+    \\    const maxAgeSeconds = __home_jwt_timespan_seconds(opts.maxAge); if (maxAgeSeconds === undefined) { const invalidMaxAge = __home_jwt_error("JsonWebTokenError", '"maxAge" should be a number of seconds or string representing a timespan'); invalidMaxAge.claim = "iat"; throw invalidMaxAge; }
+    \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0); const expiresAt = payload.iat + maxAgeSeconds;
+    \\    if (clockTimestamp >= expiresAt + tolerance) { const expired = __home_jwt_error("TokenExpiredError", "maxAge exceeded"); expired.expiredAt = new Date(expiresAt * 1000); expired.claim = "iat"; throw expired; }
+    \\  }
     \\  return payload;
     \\}
     \\function __home_jwt_verify(token, secret, options, callback) {
     \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
     \\  try { const payload = __home_jwt_verify_core(token, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, payload)); return undefined; } return payload; }
-    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && (error.name === "TokenExpiredError" || /(?:^|\\s)exp(?:\\s|$)/.test(String(error.message || ""))) ? "exp" : "token"); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
+    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && error.claim ? error.claim : (error && error.name === "TokenExpiredError" ? "exp" : "token")); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
     \\}
     \\globalThis.__home_modules["jsonwebtoken"] = {
     \\  JsonWebTokenError: __home_jwt_JsonWebTokenError,
@@ -103665,6 +103685,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-iat.test.js", .passed = 39 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103767,6 +103788,18 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim exp");
         \\  expect(caught.stack).toContain("Caused by: TokenExpiredError: jwt expired");
         \\});
+        \\test("jsonwebtoken maxAge errors retain issued-at context", async () => {
+        \\  const token = jwt.sign({ value: 1 }, "secret"); const issuedAt = jwt.decode(token).iat; let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", { maxAge: 10, clockTimestamp: issuedAt + 10 }, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.TokenExpiredError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("iat");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.expiredAt.getTime()).toBe((issuedAt + 10) * 1000);
+        \\  expect(caught.cause.message).toBe("maxAge exceeded");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim iat");
+        \\  expect(caught.stack).toContain("Caused by: TokenExpiredError: maxAge exceeded");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103778,7 +103811,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
