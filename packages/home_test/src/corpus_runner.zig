@@ -66578,6 +66578,7 @@ const harness_prelude =
     \\  return amount * 86400;
     \\}
     \\function __home_jwt_verify_core(token, secret, options) {
+    \\  if (typeof token !== "string") throw __home_jwt_error("JsonWebTokenError", "jwt must be a string");
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "nbf")) {
     \\    if (typeof payload.nbf !== "number") { const invalidNotBefore = __home_jwt_error("JsonWebTokenError", "invalid nbf value"); invalidNotBefore.claim = "nbf"; throw invalidNotBefore; }
@@ -103738,6 +103739,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-private.test.js", .passed = 19 },
         .{ .path = "js/third_party/jsonwebtoken/claim-sub.test.js", .passed = 24 },
         .{ .path = "js/third_party/jsonwebtoken/header-kid.test.js", .passed = 20 },
+        .{ .path = "js/third_party/jsonwebtoken/issue_304.test.js", .passed = 5 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103909,6 +103911,21 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm HS256");
         \\  expect(caught.stack).toContain('Caused by: Error: "keyid" must be a string');
         \\});
+        \\test("jsonwebtoken invalid inputs retain verification context", async () => {
+        \\  let caught, syncCaught;
+        \\  await new Promise(resolve => jwt.verify({ token: "not-a-string" }, "secret", error => { caught = error; resolve(); }));
+        \\  try { jwt.verify(123, "secret"); } catch (error) { syncCaught = error; }
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(syncCaught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(syncCaught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("token");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("jwt must be a string");
+        \\  expect(syncCaught.cause.message).toBe("jwt must be a string");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim token");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt must be a string");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103920,7 +103937,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
