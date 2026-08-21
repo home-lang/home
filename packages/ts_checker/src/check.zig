@@ -91968,6 +91968,9 @@ pub const Checker = struct {
         if (!ok and self.hir.kindOf(node) == .object_literal) {
             ok = try self.jsDocObjectLiteralMembersSatisfyTarget(node, target_t);
         }
+        if (!ok and self.hir.kindOf(node) == .array_literal) {
+            ok = self.arrayLiteralAssignableToTarget(node, target_t) catch false;
+        }
         if (!ok and self.diagnostics.items.len == diag_start and self.hir.kindOf(node) == .object_literal) {
             const missing_start = self.diagnostics.items.len;
             if (try self.tryReportSinglePropertyMissing(node, node, expr_t, target_t)) {
@@ -137603,6 +137606,7 @@ pub const Checker = struct {
     ) CheckError!void {
         if (std.mem.eql(u8, self.string_interner.get(name), "prototype") and
             self.checkJsPrototypeAccessHasFunctionOwner(node)) return;
+        if (self.memberAccessReceiverIsJsDocEnumObject(node)) return;
         const name_str = self.string_interner.get(name);
         var rendered_target = target_text;
         if (std.mem.startsWith(u8, std.mem.trimStart(u8, target_text, " \t\r\n"), "{") and
@@ -137951,6 +137955,7 @@ pub const Checker = struct {
     fn reportPropertyDoesNotExistOnType(self: *Checker, node: NodeId, name: hir_mod.StringId, target_t: TypeId) CheckError!void {
         if (std.mem.eql(u8, self.string_interner.get(name), "prototype") and
             self.checkJsPrototypeAccessHasFunctionOwner(node)) return;
+        if (self.memberAccessReceiverIsJsDocEnumObject(node)) return;
         if ((try self.checkJsPrototypeConstructorThisMemberType(node, name)) != null) return;
         if (self.checkJsPrototypeObjectLiteralHasConstructor(node)) {
             self.removePriorDiagnosticForNode(node, TsCodes.property_does_not_exist);
@@ -138160,6 +138165,69 @@ pub const Checker = struct {
             return;
         }
         try self.reportPropertyDoesNotExist(node, name);
+    }
+
+    fn memberAccessReceiverIsJsDocEnumObject(self: *Checker, node: NodeId) bool {
+        if ((!self.virtualSectionIsJsLike(node) and !self.sourceHasCheckJsDirective()) or
+            self.hir.kindOf(node) != .member_access) return false;
+        const object = hir_mod.memberOf(self.hir, node).object;
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, object).name;
+        const decl = self.findLocalValueDeclBeforeExpression(object, name) orelse
+            self.findOuterValueDeclBeforeExpression(object, name) orelse return false;
+        const kind = self.hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return false;
+        const src = self.source orelse return false;
+        const jsdoc = self.leadingJsDocBodyWithStart(src, self.hir.spanOf(decl).start) orelse return false;
+        return std.mem.indexOf(u8, jsdoc.body, "@enum") != null;
+    }
+
+    fn findOuterValueDeclBeforeExpression(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        var anchor = node;
+        var scope = self.hir.parentOf(node);
+        var skipped_innermost_block = false;
+        while (scope != hir_mod.none_node_id) : (scope = self.hir.parentOf(scope)) {
+            const kind = self.hir.kindOf(scope);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, scope)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const binding = hir_mod.parameterOf(self.hir, param).name;
+                    if (binding != hir_mod.none_node_id and self.hir.kindOf(binding) == .identifier and
+                        hir_mod.identifierOf(self.hir, binding).name == name) return null;
+                }
+                anchor = scope;
+                continue;
+            }
+            const statements: []const NodeId = switch (kind) {
+                .block_stmt => hir_mod.blockStmts(self.hir, scope),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, scope),
+                else => {
+                    anchor = scope;
+                    continue;
+                },
+            };
+            if (!skipped_innermost_block) {
+                skipped_innermost_block = true;
+                anchor = scope;
+                continue;
+            }
+            for (statements) |statement| {
+                if (statement == anchor or
+                    (self.hir.kindOf(statement) == .export_decl and hir_mod.exportOf(self.hir, statement).decl == anchor)) break;
+                const decl = if (self.hir.kindOf(statement) == .export_decl)
+                    hir_mod.exportOf(self.hir, statement).decl
+                else
+                    statement;
+                if (decl == hir_mod.none_node_id) continue;
+                const decl_kind = self.hir.kindOf(decl);
+                if (decl_kind != .var_decl and decl_kind != .let_decl and decl_kind != .const_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, decl);
+                if (variable.name != hir_mod.none_node_id and self.hir.kindOf(variable.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, variable.name).name == name) return decl;
+            }
+            anchor = scope;
+        }
+        return null;
     }
 
     fn requireBindingCommonJsModuleNamespaceDisplay(
@@ -195059,6 +195127,17 @@ test "checker: array literal satisfies variadic tuple length intersection" {
     }
 }
 
+test "checker: parity residual cluster preserves JSDoc satisfies tuple arrays" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\const pair = /** @satisfies {[number, number]} */ ([1, 2]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.satisfies_constraint));
+}
+
 test "checker: contextual tuple return reports nested element mismatches" {
     const s = try newSetup(
         \\function zip<T, U>(): [[T, U]] {
@@ -213532,6 +213611,24 @@ test "checker: non-tuple spread into fixed parameter reports TS2556" {
         if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: parity residual cluster spreads JSDoc cast arrays into rest parameters" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @type {unknown[]} */
+        \\const values = [];
+        \\/** @type {unknown[]} */
+        \\const result = [];
+        \\result.push(.../** @type {unknown[]} */ (values));
+        \\/** @param {unknown} item */
+        \\function fixed(item) {}
+        \\fixed(...values);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.spread_argument_requires_tuple_or_rest));
 }
 
 test "checker: array literal spread uses fixed parameter context and arity" {
@@ -249181,6 +249278,28 @@ test "checker: tsgo parity follow-up Closure function enum type is accepted" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_close_brace));
+}
+
+test "checker: parity residual cluster keeps JSDoc enum value objects open" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/** @enum {string} */
+        \\const Values = {
+        \\  START: "start",
+        \\  MISTAKE: 1,
+        \\  /** @type {number} */
+        \\  OK_I_GUESS: 2,
+        \\};
+        \\function consume() {
+        \\  /** @type {Values} */
+        \\  let value = Values.START;
+        \\  value = Values.UNKNOWN;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: type-only namespace value member used as a type reports TS2749" {

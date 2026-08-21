@@ -504,7 +504,11 @@ pub fn arrayProto(
     const cb_reduce = try ti.internSignature(&[_]TypeId{ u_tp, elem }, u_tp, false);
 
     // Method signatures.
-    const sig_push = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
+    // `push(...items: T[]): number` accepts both zero/multiple scalar
+    // arguments and an array spread. Keep the parameter array-shaped and
+    // register the signature as variadic, matching `unshift` below.
+    const sig_push = try ti.internSignature(&[_]TypeId{arr_t}, number_t, false);
+    try rest_set.put(gpa, sig_push, {});
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     // `map<U>(cb: (value: T) => U): U[]`.
     const sig_map = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
