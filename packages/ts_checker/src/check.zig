@@ -71948,6 +71948,7 @@ pub const Checker = struct {
                         }
                         return t;
                     }
+                    if (try self.jsDocContainingTemplateParamType(type_node, r.name)) |t| return t;
                     if (self.enumDeclForNameAt(r.name, type_node)) |decl| {
                         const e = hir_mod.enumOf(self.hir, decl);
                         if (!e.is_const and (self.enumDeclIsNumeric(decl, r.name) orelse false)) return try self.enumNominalTypeForDecl(decl, r.name);
@@ -89639,6 +89640,15 @@ pub const Checker = struct {
         return tp_id;
     }
 
+    fn jsDocContainingTemplateParamType(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourcePositionHasJsDocTemplateName(self.hir.spanOf(type_node).start, name)) return null;
+        return try self.freshJsDocTemplateParamType(name);
+    }
+
     fn jsDocTemplateParamTypeFromBody(self: *Checker, body: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
@@ -90037,6 +90047,12 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id) return null;
         const name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        const pos = self.sliceStartPos(src, trimmed);
+        if (pos) |source_pos| {
+            if (self.sourcePositionHasJsDocTemplateName(source_pos, name)) {
+                return self.lookupNarrow(name) orelse try self.freshJsDocTemplateParamType(name);
+            }
+        }
         if (self.visibleJsDocTypedefNameExistsAt(anchor, name)) {
             return types.Primitive.any;
         }
@@ -90044,7 +90060,6 @@ pub const Checker = struct {
             try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
             return types.Primitive.any;
         }
-        const pos = self.sliceStartPos(src, trimmed);
         if (self.sourceHasVirtualFilenameSections() and
             !jsDocTypePositionIsPropertyTag(src, pos) and
             self.sourceHasLexicalValueDeclarationTextAtPos(name, pos))
@@ -90151,6 +90166,9 @@ pub const Checker = struct {
         }
         if (try self.jsDocVisibleNamespaceGenericType(src, name, args_text, type_text)) |namespace_t| {
             return namespace_t;
+        }
+        if (try self.jsDocGenericImportTypeTextToType(src, name, args_text, type_text)) |import_t| {
+            return import_t;
         }
         if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return types.Primitive.any;
         var args = JsDocTopLevelSplitter.init(args_text, ',');
@@ -90307,6 +90325,24 @@ pub const Checker = struct {
         }
 
         return null;
+    }
+
+    fn jsDocGenericImportTypeTextToType(
+        self: *Checker,
+        src: []const u8,
+        qualified_name: []const u8,
+        args_text: []const u8,
+        display_text: []const u8,
+    ) CheckError!?TypeId {
+        if (!std.mem.startsWith(u8, qualified_name, "import(")) return null;
+        const close = jsDocMatchingParen(qualified_name, "import".len) orelse return null;
+        const rest = std.mem.trim(u8, qualified_name[close + 1 ..], " \t\r\n");
+        if (rest.len < 2 or rest[0] != '.') return null;
+        const leaf = rest[1..];
+        for (leaf) |c| if (!isJsDocIdentChar(c)) return null;
+
+        const base_t = (try self.jsDocImportTypeTextToType(src, qualified_name)) orelse return null;
+        return (try self.jsDocGenericNominalTypeTextToType(src, leaf, args_text, display_text)) orelse base_t;
     }
 
     fn jsDocGenericTypedefTypeTextToType(
@@ -129601,6 +129637,7 @@ pub const Checker = struct {
     }
 
     fn reportCannotFindNameAtPosOnce(self: *Checker, node: NodeId, pos: u32, name: hir_mod.StringId) !void {
+        if (self.sourcePositionHasJsDocTemplateName(pos, name)) return;
         for (self.diagnostics.items) |d| {
             if (d.code == TsCodes.cannot_find_name and d.pos != null and d.pos.? == pos) return;
         }
@@ -129615,6 +129652,21 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_name,
             .message = msg,
         });
+    }
+
+    fn sourcePositionHasJsDocTemplateName(
+        self: *Checker,
+        pos_u32: u32,
+        name: hir_mod.StringId,
+    ) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        const pos: usize = @intCast(pos_u32);
+        if (pos > src.len) return false;
+        const open = std.mem.lastIndexOf(u8, src[0..pos], "/**") orelse return false;
+        const close = std.mem.indexOfPos(u8, src, open + 3, "*/") orelse return false;
+        if (pos >= close) return false;
+        return jsDocBodyDeclaresTemplateName(src[open + 3 .. close], self.string_interner.get(name));
     }
 
     fn reportCannotFindNameOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -216997,6 +217049,33 @@ test "checker: checkjs JSDoc implements resolves ambient namespace interfaces" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.class_incorrectly_implements_interface));
+}
+
+test "checker: checkjs class template implements generic JSDoc import alias" {
+    const b = try newBoundSetup(
+        \\// @checkjs: true
+        \\// @filename: /interface.ts
+        \\export interface Encoder<T> {
+        \\  encode(value: T): Uint8Array;
+        \\}
+        \\// @filename: /lib.js
+        \\/**
+        \\ * @template T
+        \\ * @implements {IEncoder<T>}
+        \\ */
+        \\export class Encoder {
+        \\  /** @param {T} value */
+        \\  encode(value) { return new Uint8Array(0); }
+        \\}
+        \\/**
+        \\ * @template T
+        \\ * @typedef {import("./interface").Encoder<T>} IEncoder
+        \\ */
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.class_incorrectly_implements_interface));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs JSDoc typedef reports lowercase unresolved generic argument" {
