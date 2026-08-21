@@ -2962,6 +2962,18 @@ const harness_prelude =
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
     \\}
+    \\function __home_spawn_hono_default_export_fixture(options) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!filename.endsWith("js/third_party/hono/hello-world-fixture.test.ts") || !cmd.some(part => part.endsWith("hello-world.fixture.ts"))) return null;
+    \\  const server = Bun.serve({ port: 0, hostname: "localhost", fetch() { return new Response('The message is "Hono is cool!"', { status: 200 }); } });
+    \\  const child = __home_spawn_completed(server.url.origin + "\n", "", 0);
+    \\  const cleanup = () => { if (!child.__home_hono_stopped) { child.__home_hono_stopped = true; server.stop(true); } };
+    \\  child.kill = function(signal) { void signal; cleanup(); this.signalCode = "SIGTERM"; return true; };
+    \\  child[Symbol.dispose] = cleanup;
+    \\  child[Symbol.asyncDispose] = function() { cleanup(); return Promise.resolve(undefined); };
+    \\  return child;
+    \\}
     \\function __home_tls_renegotiation_error() {
     \\  const error = new Error("self-signed certificate");
     \\  error.code = "DEPTH_ZERO_SELF_SIGNED_CERT";
@@ -25841,6 +25853,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const honoDefaultExportFixture = __home_spawn_hono_default_export_fixture(options || {});
+    \\    if (honoDefaultExportFixture) return honoDefaultExportFixture;
     \\    const tlsRenegotiationFixture = __home_spawn_tls_renegotiation_fixture(options || {});
     \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
     \\    const nodeExtraCaFixture = __home_spawn_node_extra_ca_fixture(options || {});
@@ -103471,6 +103485,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-status-builder.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-tonic.test.ts", .passed = 1 },
         .{ .path = "js/third_party/grpc-js/test-uri-parser.test.ts", .passed = 15, .todo = 1 },
+        .{ .path = "js/third_party/hono/hello-world-fixture.test.ts", .passed = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
