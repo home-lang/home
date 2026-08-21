@@ -58235,6 +58235,11 @@ const harness_prelude =
     \\  const failure = new Error("Socket.IO " + action + " failed for session " + session + ": " + String(cause.message || cause)); failure.name = "SocketIOProtocolError"; failure.code = "ERR_SOCKET_IO_PROTOCOL"; failure.operation = operation; failure.phase = action; failure.sid = session; failure.cause = cause;
     \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (session " + session + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
     \\}
+    \\function __home_socket_io_handshake_error(request, error, status) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const method = String(request && request.method || "GET").toUpperCase(); const url = String(request && request.url || "/socket.io/"); const operation = "socket.io.handshake";
+    \\  const failure = new Error("Socket.IO handshake rejected " + method + " " + url + ": " + String(cause.message || cause)); failure.name = "SocketIOHandshakeError"; failure.code = "ERR_SOCKET_IO_HANDSHAKE"; failure.operation = operation; failure.method = method; failure.url = url; failure.status = Number(status) || 403; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || ""); failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + method + " " + url + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
     \\class __home_SocketIOSocket extends __home_EventEmitter {
     \\  constructor(io, id, pid) { super(); this.io = io; this.id = id; this.pid = pid; this.recovered = false; this.rooms = new Set([id]); this.data = {}; }
     \\  join(room) { this.rooms.add(String(room)); return Promise.resolve(); }
@@ -58246,7 +58251,14 @@ const harness_prelude =
     \\  constructor(serverOrPort, options) {
     \\    super(); this.opts = options || {}; this.__home_sessions = new Map(); this.__home_recovery = new Map(); this.__home_middlewares = []; this.__home_connection_waiters = []; this.__home_offset = 1; this.sockets = { sockets: new Map() }; this.closed = false;
     \\    this.httpServer = serverOrPort && typeof serverOrPort.listen === "function" ? serverOrPort : __home_http_create_server(); this.httpServer.__home_socket_io = this;
+    \\    this.__home_fallback_http_handler = this.httpServer.__home_handler; this.httpServer.__home_handler = (request, response) => this.__home_handle_http(request, response);
     \\    if (typeof serverOrPort === "number") this.httpServer.listen(serverOrPort);
+    \\  }
+    \\  __home_apply_cors(request, response) { const cors = this.opts.cors; if (!cors) return; const origin = typeof cors.origin === "string" ? cors.origin : request && request.headers && request.headers.origin; if (origin) response.setHeader("access-control-allow-origin", origin); if (Array.isArray(cors.methods)) response.setHeader("access-control-allow-methods", cors.methods.join(",")); if (Array.isArray(cors.allowedHeaders)) response.setHeader("access-control-allow-headers", cors.allowedHeaders.join(",")); if (cors.credentials) response.setHeader("access-control-allow-credentials", "true"); }
+    \\  __home_handle_http(request, response) {
+    \\    const url = String(request && request.url || "/"); if (!url.startsWith("/socket.io")) { if (typeof this.__home_fallback_http_handler === "function") return this.__home_fallback_http_handler(request, response); response.statusCode = 404; return response.end(); }
+    \\    const finish = allowed => { if (!allowed) { const failure = __home_socket_io_handshake_error(request, new Error("request was rejected by allowRequest"), 403); this.lastHandshakeError = failure; response.statusCode = failure.status; response.setHeader("content-type", "application/json"); return response.end(JSON.stringify({ code: failure.code, message: "Forbidden" })); } this.__home_apply_cors(request, response); if (String(request.method || "GET").toUpperCase() === "OPTIONS") { response.statusCode = 204; return response.end(); } const sid = "home-sio-" + String(__home_socket_io_next_sid++); this.__home_sessions.set(sid, { connected: false, closed: false, queue: [], socket: null }); response.statusCode = 200; response.setHeader("content-type", "text/plain; charset=UTF-8"); return response.end('0{"sid":"' + sid + '","upgrades":[],"pingInterval":25000,"pingTimeout":20000,"maxPayload":1000000}'); };
+    \\    if (typeof this.opts.allowRequest !== "function") return finish(true); let settled = false; const decide = (error, allowed) => { if (settled) return; settled = true; if (error) { const failure = __home_socket_io_handshake_error(request, error, 403); this.lastHandshakeError = failure; response.statusCode = failure.status; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ code: failure.code, message: "Forbidden" })); return; } finish(allowed === true); }; try { this.opts.allowRequest(request, decide); } catch (error) { decide(error, false); }
     \\  }
     \\  use(middleware) { if (typeof middleware === "function") this.__home_middlewares.push(middleware); return this; }
     \\  emit(event, ...args) { if (event === "connection" || event === "connect" || event === "error" || event === "newListener" || event === "removeListener") return __home_EventEmitter.prototype.emit.call(this, event, ...args); this.__home_broadcast(String(event), args); return true; }
@@ -58276,6 +58288,8 @@ const harness_prelude =
     \\globalThis.__home_modules["socket.io-adapter"] = { Adapter: __home_SocketIOAdapter };
     \\globalThis.__home_modules["socket.io-client"] = { io(url, options) { const parsed = new URL(String(url)); const server = __home_http_servers[Number(parsed.port)]; const io = server && server.__home_socket_io; return __home_socket_io_support.createClient(io, parsed.pathname, options); } };
     \\globalThis.__home_modules["home:socket-io-support"] = __home_socket_io_support;
+    \\function __home_superagent_request(method, input) { const state = { method: String(method).toUpperCase(), url: new URL(String(input)), headers: {} }; return { query(values) { for (const key of Object.keys(values || {})) state.url.searchParams.set(key, String(values[key])); return this; }, set(name, value) { state.headers[String(name).toLowerCase()] = String(value); return this; }, end(callback) { let completed = false; const finish = (error, response) => { if (completed) return; completed = true; callback(error, response); }; const request = __home_http_request(state.url, { method: state.method, headers: state.headers }, response => { const result = { status: response.statusCode, statusCode: response.statusCode, headers: response.headers, body: null }; const error = response.statusCode >= 400 ? __home_socket_io_handshake_error({ method: state.method, url: state.url.pathname + state.url.search }, new Error("HTTP " + String(response.statusCode)), response.statusCode) : null; if (error) error.response = result; finish(error, result); }); request.on("error", error => finish(__home_socket_io_handshake_error({ method: state.method, url: state.url.pathname + state.url.search }, error, 503))); request.end(); return this; } }; }
+    \\globalThis.__home_modules["superagent"] = { get(url) { return __home_superagent_request("GET", url); }, options(url) { return __home_superagent_request("OPTIONS", url); } };
     \\function __home_https_create_server(options, handler) {
     \\  if (typeof options === "function") {
     \\    handler = options;
@@ -72699,6 +72713,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import { io as ioc } from \"socket.io-client\";", .replacement = "const { io: ioc } = globalThis.__home_import(\"socket.io-client\");" },
         .{ .needle = "import { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { createClient, eioHandshake, eioPoll, eioPush, fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
         .{ .needle = "import { eioHandshake, eioPoll, eioPush, fail, success, waitFor } from \"./support/util.ts\";", .replacement = "const { eioHandshake, eioPoll, eioPush, fail, success, waitFor } = globalThis.__home_import(\"home:socket-io-support\");" },
+        .{ .needle = "import { fail, getPort, success } from \"./support/util.ts\";", .replacement = "const { fail, getPort, success } = globalThis.__home_import(\"home:socket-io-support\");" },
+        .{ .needle = "const request = require(\"superagent\");", .replacement = "const request = globalThis.__home_import(\"superagent\");" },
         .{ .needle = "let process: ChildProcess;", .replacement = "let process;" },
         .{ .needle = "async function init(httpServer: HttpServer, io: Server)", .replacement = "async function init(httpServer, io)" },
         .{ .needle = "let serverSocket: Socket | undefined;", .replacement = "let serverSocket;" },
@@ -104483,6 +104499,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/rollup-v4/rollup-v4.test.ts", .passed = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-close.test.ts", .passed = 2, .todo = 4 },
         .{ .path = "js/third_party/socket.io/socket.io-connection-state-recovery.test.ts", .passed = 7 },
+        .{ .path = "js/third_party/socket.io/socket.io-handshake.test.ts", .passed = 4 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104699,6 +104716,22 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: Error: Socket.IO server is not attached");
         \\  expect(caught.message).not.toContain("private-socket-packet");
         \\  expect(caught.stack).not.toContain("private-socket-packet");
+        \\});
+        \\test("Socket.IO handshake policy errors retain private causes only server-side", async () => {
+        \\  const request = globalThis.__home_import("superagent"); const io = new SocketIOServer(0, { allowRequest(req, callback) { callback(new TypeError("request policy failed")); } }); let publicError; let response;
+        \\  await new Promise(resolve => request.get("http://localhost:" + String(socketIOSupport.getPort(io)) + "/socket.io/default/").query({ transport: "polling", EIO: 4 }).end((error, result) => { publicError = error; response = result; resolve(); }));
+        \\  const caught = io.lastHandshakeError; io.close();
+        \\  expect(response.status).toBe(403);
+        \\  expect(caught.name).toBe("SocketIOHandshakeError");
+        \\  expect(caught.code).toBe("ERR_SOCKET_IO_HANDSHAKE");
+        \\  expect(caught.operation).toBe("socket.io.handshake");
+        \\  expect(caught.method).toBe("GET");
+        \\  expect(caught.status).toBe(403);
+        \\  expect(caught.cause.message).toBe("request policy failed");
+        \\  expect(caught.stack).toContain("socket.io.handshake (GET /socket.io/default/");
+        \\  expect(caught.stack).toContain("Caused by: TypeError: request policy failed");
+        \\  expect(publicError.message).not.toContain("request policy failed");
+        \\  expect(publicError.stack).not.toContain("request policy failed");
         \\});
         \\test("positive watchdog timers yield to resolved promise chains", async () => {
         \\  let fired = false; const timer = setTimeout(() => { fired = true; }, 20);
@@ -104988,7 +105021,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 34), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 35), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
