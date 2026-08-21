@@ -66400,11 +66400,13 @@ const harness_prelude =
     \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
     \\  return {};
     \\};
-    \\function __home_jwt_error(name, message) {
-    \\  const error = new Error(message);
-    \\  error.name = name;
-    \\  return error;
+    \\function __home_jwt_error_type(name) {
+    \\  const Constructor = function(message) { const error = new Error(message); Object.setPrototypeOf(error, Constructor.prototype); error.name = name; return error; };
+    \\  Constructor.prototype = Object.create(Error.prototype); Constructor.prototype.constructor = Constructor; Object.defineProperty(Constructor, "name", { configurable: true, value: name }); return Constructor;
     \\}
+    \\const __home_jwt_JsonWebTokenError = __home_jwt_error_type("JsonWebTokenError");
+    \\const __home_jwt_TokenExpiredError = __home_jwt_error_type("TokenExpiredError");
+    \\function __home_jwt_error(name, message) { return name === "TokenExpiredError" ? new __home_jwt_TokenExpiredError(message) : new __home_jwt_JsonWebTokenError(message); }
     \\function __home_jwt_base64url_to_binary(value) {
     \\  const base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
     \\  const padded = base64 + "===".slice((base64.length + 3) % 4);
@@ -66482,9 +66484,16 @@ const harness_prelude =
     \\  }
     \\  if (opts.notBefore !== undefined && typeof opts.notBefore !== "number" && typeof opts.notBefore !== "string") throw new Error('"notBefore" should be a number of seconds or string representing a timespan');
     \\  if ((typeof payload === "string" || typeof payload === "number" || typeof payload === "boolean") && opts.noTimestamp) throw new Error("invalid noTimestamp option for non-object payload");
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "audience")) {
+    \\    if (typeof opts.audience !== "string" && !Array.isArray(opts.audience)) throw new Error('"audience" must be a string or array');
+    \\    if (typeof payload === "string") throw new Error("invalid audience option for string payload");
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid audience option for object payload");
+    \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "aud")) throw new Error('Bad "options.audience" option. The payload already has an "aud" property.');
+    \\  }
     \\  let body = payload && typeof payload.toString === "function" && payload.constructor && payload.constructor.name === "Buffer" ? payload.toString() : payload;
     \\  if (body && typeof body === "object" && !Array.isArray(body)) {
     \\    body = opts.mutatePayload === true ? body : Object.assign({}, body); const now = Math.floor(Date.now() / 1000);
+    \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
     \\    if (typeof opts.notBefore === "number") body.nbf = now + opts.notBefore;
     \\    if (opts.expiresIn === "5m") body.exp = now + 5 * 60;
     \\    else if (typeof opts.expiresIn === "number") body.exp = now + opts.expiresIn;
@@ -66497,27 +66506,44 @@ const harness_prelude =
     \\  try { const token = __home_jwt_sign_core(payload, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, token)); return undefined; } return token; }
     \\  catch (error) { const failure = __home_jwt_sign_failure(error, options); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
     \\}
-    \\function __home_jwt_verify(token, secret, callback) {
-    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided");
-    \\  let payload = __home_jwt_decode(token);
-    \\  let error = null;
+    \\function __home_jwt_verify_failure(error, options, claim) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error)); const failure = __home_jwt_error(cause.name || "JsonWebTokenError", String(cause.message || cause));
+    \\  failure.code = cause.code || "ERR_JWT_VERIFY"; failure.operation = "jsonwebtoken.verify"; failure.claim = String(claim || "token"); failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at jsonwebtoken.verify (claim " + failure.claim + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
+    \\}
+    \\function __home_jwt_audience_text(audience) { return (Array.isArray(audience) ? audience : [audience]).map(value => String(value)).join(" or "); }
+    \\function __home_jwt_audience_matches(actual, expected) {
+    \\  const actualValues = Array.isArray(actual) ? actual : [actual]; const expectedValues = Array.isArray(expected) ? expected : [expected];
+    \\  return expectedValues.some(candidate => actualValues.some(value => candidate instanceof RegExp ? candidate.test(String(value)) : String(candidate) === String(value)));
+    \\}
+    \\function __home_jwt_verify_core(token, secret, options) {
+    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
-    \\    if (payload.exp === 0) error = __home_jwt_error("TokenExpiredError", "jwt expired");
-    \\    else if (typeof payload.exp !== "number") error = __home_jwt_error("JsonWebTokenError", "invalid exp value");
+    \\    if (payload.exp === 0) throw __home_jwt_error("TokenExpiredError", "jwt expired");
+    \\    if (typeof payload.exp !== "number") throw __home_jwt_error("JsonWebTokenError", "invalid exp value");
     \\  }
-    \\  if (typeof callback === "function") {
-    \\    callback(error, error ? undefined : payload);
-    \\    return undefined;
-    \\  }
-    \\  if (error) throw error;
+    \\  if (opts.audience !== undefined && (!payload || typeof payload !== "object" || !__home_jwt_audience_matches(payload.aud, opts.audience))) throw __home_jwt_error("JsonWebTokenError", "jwt audience invalid. expected: " + __home_jwt_audience_text(opts.audience));
     \\  return payload;
     \\}
+    \\function __home_jwt_verify(token, secret, options, callback) {
+    \\  if (typeof options === "function") { callback = options; options = {}; } options = options || {};
+    \\  try { const payload = __home_jwt_verify_core(token, secret, options); if (typeof callback === "function") { queueMicrotask(() => callback(null, payload)); return undefined; } return payload; }
+    \\  catch (error) { const claim = options.audience !== undefined ? "aud" : (error && error.name === "TokenExpiredError" ? "exp" : "token"); const failure = __home_jwt_verify_failure(error, options, claim); if (typeof callback === "function") { queueMicrotask(() => callback(failure)); return undefined; } throw failure; }
+    \\}
     \\globalThis.__home_modules["jsonwebtoken"] = {
+    \\  JsonWebTokenError: __home_jwt_JsonWebTokenError,
+    \\  TokenExpiredError: __home_jwt_TokenExpiredError,
     \\  decode: __home_jwt_decode,
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
     \\};
     \\globalThis.__home_modules["jws"] = { decode(token) { const parts = String(token || "").split("."); if (parts.length !== 3) return null; return { header: __home_jwt_decode_header_segment(parts[0]), payload: __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[1])), signature: parts[2] }; } };
+    \\function __home_jwt_test_expect_error(actual, expected) { if (!actual && !expected) return; if (!actual || !expected || actual.message !== expected.message || actual.name !== expected.name || actual.code !== expected.code) throw new Error("jsonwebtoken sync/async errors differ"); }
+    \\function __home_jwt_test_sign(payload, secret, options, callback) { const timestamp = Math.floor(Date.now() / 1000); if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && !payload.iat) payload = Object.assign({}, payload, { iat: timestamp }); __home_jwt_sign(payload, secret, options, (error, asyncToken) => { let syncError, syncToken; try { syncToken = __home_jwt_sign(payload, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && syncToken !== asyncToken) throw new Error("jsonwebtoken sync/async signatures differ"); callback(error || null, error ? undefined : syncToken); } catch (caught) { callback(caught); } }); }
+    \\function __home_jwt_test_verify(token, secret, options, callback) { __home_jwt_verify(token, secret, options, (error, asyncPayload) => { let syncError, syncPayload; try { syncPayload = __home_jwt_verify(token, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); if (!error && JSON.stringify(syncPayload) !== JSON.stringify(asyncPayload)) throw new Error("jsonwebtoken sync/async verification differs"); callback(error || null, error ? undefined : syncPayload); } catch (caught) { callback(caught); } }); }
+    \\const __home_jwt_test_utils = { asyncCheck(done, callback) { try { callback(); done(); } catch (error) { done(error); } }, base64UrlEncode(value) { return Buffer.from(value).toString("base64").replace(/[=]/g, "").replace(/\+/g, "-").replace(/\//g, "_"); }, signJWTHelper: __home_jwt_test_sign, signJWTHelperWithoutAddingTimestamp(payload, secret, options, callback) { __home_jwt_sign(payload, secret, options, (error, asyncToken) => { let syncError, syncToken; try { syncToken = __home_jwt_sign(payload, secret, options); } catch (caught) { syncError = caught; } try { __home_jwt_test_expect_error(syncError, error); callback(error || null, error ? undefined : syncToken); } catch (caught) { callback(caught); } }); }, verifyJWTHelper: __home_jwt_test_verify };
+    \\globalThis.__home_modules["./test-utils"] = __home_jwt_test_utils;
     \\function __home_install_url_search_params_constructor_contract() {
     \\  if (typeof URLSearchParams !== "function" || URLSearchParams.__home_constructor_normalized) return;
     \\  const __home_NativeURLSearchParams = URLSearchParams;
@@ -75983,6 +76009,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import jwt from \"jsonwebtoken\";",
             .replacement = "const jwt = globalThis.__home_import(\"jsonwebtoken\");",
+        },
+        .{
+            .needle = "import testUtils from \"./test-utils\";",
+            .replacement = "const testUtils = globalThis.__home_import(\"./test-utils\");",
         },
         .{
             .needle = "import jws from \"jws\";",
@@ -103616,6 +103646,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/hono/hello-world.test.ts", .passed = 1 },
         .{ .path = "js/third_party/http2-wrapper/http2-wrapper.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103694,6 +103725,17 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm RS256");
         \\  expect(caught.stack).toContain("Caused by: Error: secretOrPrivateKey must be an asymmetric RSA key");
         \\});
+        \\test("jsonwebtoken audience errors retain claim context", async () => {
+        \\  const token = jwt.sign({ aud: "expected" }, "secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", { audience: "other" }, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("aud");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.cause.message).toBe("jwt audience invalid. expected: other");
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim aud");
+        \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt audience invalid. expected: other");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103705,7 +103747,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
