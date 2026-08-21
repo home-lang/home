@@ -6986,6 +6986,19 @@ pub const Checker = struct {
                 if (std.mem.indexOf(u8, inner, "<>") != null) {
                     _ = try self.jsDocTypeTextToTypeAt(src, inner, root);
                 }
+                if (self.strict_flags.declaration or self.sourceDirectiveIsTrue("@declaration")) {
+                    if (std.mem.indexOf(u8, inner, ".<>")) |empty_args| {
+                        const pos: u32 = @intCast(body_start + open + 1 + empty_args + 1);
+                        if (!self.hasDiagnosticAtPosition(TsCodes.empty_type_argument_list, pos)) {
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = root,
+                                .pos = pos,
+                                .code = TsCodes.empty_type_argument_list,
+                                .message = "Type argument list cannot be empty.",
+                            });
+                        }
+                    }
+                }
                 if (jsDocClosureFunctionOpen(inner)) |paren| {
                     const pos: u32 = @intCast(body_start + open + 1 + paren);
                     const line_start = if (std.mem.lastIndexOfScalar(u8, body[0..open], '\n')) |newline| newline + 1 else 0;
@@ -84806,11 +84819,12 @@ pub const Checker = struct {
 
             var child_buf: [256]u8 = undefined;
             const child_full = std.fmt.bufPrint(&child_buf, "{s}.{s}", .{ parent_name, child_text }) catch continue;
+            const direct = (try self.jsDocLeafTypeForFullPath(src, tags, fn_node, child_full)) orelse continue;
             const nested = try self.jsDocObjectParamTypeFromDottedTagsDepth(src, tags, fn_node, child_full, depth + 1);
             const member_t = if (nested) |n|
                 n
             else
-                (try self.jsDocLeafTypeForFullPath(src, tags, fn_node, child_full)) orelse types.Primitive.any;
+                direct;
             const leaf_optional = if (nested == null) blk: {
                 for (tags) |t2| {
                     if (t2.kind != .param_tag) continue;
@@ -218004,6 +218018,36 @@ test "checker: empty Closure type arguments recover without TS1099" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.empty_type_argument_list));
+}
+
+test "checker: declaration emit rejects empty Closure type arguments" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @declaration: true
+        \\/** @return {(Array.<> | null)} */
+        \\function f() { return null; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.empty_type_argument_list));
+}
+
+test "checker: malformed deep JSDoc param does not synthesize its missing parent" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @param {object} xyz
+        \\ * @param {number} xyz.bar.p
+        \\ */
+        \\function g(xyz) {
+        \\    return xyz.bar.p;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: optional mapped property mismatch displays write type" {
