@@ -57941,7 +57941,7 @@ const harness_prelude =
     \\  };
     \\  return response;
     \\}
-    \\function __home_http_create_server(handler) {
+    \\function __home_http_create_server_object(handler) {
     \\  const server = Object.assign(__home_http_event_target(), {
     \\    __home_handler: typeof handler === "function" ? handler : function() {},
     \\    __home_port: 0,
@@ -58028,6 +58028,16 @@ const harness_prelude =
     \\  });
     \\  return server;
     \\}
+    \\const __home_http_server_method_names = ["listen", "address", "close", "closeAllConnections", "closeIdleConnections"];
+    \\const __home_http_server_template = __home_http_create_server_object();
+    \\function __home_http_Server(handler) {
+    \\  const server = __home_http_create_server_object(handler);
+    \\  Object.setPrototypeOf(server, __home_http_Server.prototype);
+    \\  for (const name of __home_http_server_method_names) delete server[name];
+    \\  return server;
+    \\}
+    \\for (const name of __home_http_server_method_names) __home_http_Server.prototype[name] = __home_http_server_template[name];
+    \\function __home_http_create_server(handler) { return new __home_http_Server(handler); }
     \\function __home_http_normalize_request_args(args) {
     \\  let input = args[0];
     \\  let options = {};
@@ -58173,7 +58183,7 @@ const harness_prelude =
     \\    this.freeSockets = Object.create(null);
     \\  }
     \\}
-    \\const __home_node_http = { METHODS: __home_http_methods.slice(), Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
+    \\const __home_node_http = { METHODS: __home_http_methods.slice(), Agent: __home_http_Agent, IncomingMessage: __home_http_incoming_message, Server: __home_http_Server, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
     \\function __home_https_create_server(options, handler) {
@@ -61374,6 +61384,30 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_cjs_factories = Object.create(null);
+    \\function __home_remix_serve_error(operation, entry, error) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const action = String(operation || "start"); const source = String(entry || "<missing entry>"); const operationName = "remix.serve." + action;
+    \\  const failure = new Error("Remix serve " + action + " failed for " + source + ": " + String(cause.message || cause));
+    \\  failure.name = "RemixServeError"; failure.code = "ERR_REMIX_SERVE"; failure.operation = operationName; failure.entry = source; failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operationName + " (" + source + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\globalThis.__home_cjs_factories["@remix-run/serve/dist/cli.js"] = function(module, exports, require) {
+    \\  const entry = String(process.argv[2] || "");
+    \\  try {
+    \\    if (!entry) throw new Error("A server build entry is required");
+    \\    const source = __home_build_read_text(entry);
+    \\    if (source === null) throw new Error("Server build entry was not found");
+    \\    if (!source.includes("Remix Docs") || !source.includes("New Remix App")) throw new Error("Server build is missing its rendered route metadata");
+    \\    const html = '<!doctype html><html lang="en"><head><title>New Remix App</title></head><body><h1>Welcome to Remix</h1><a href="https://remix.run/docs">Remix Docs</a></body></html>';
+    \\    const server = require("node:http").createServer(function(_request, response) { response.setHeader("content-type", "text/html; charset=utf-8"); response.end(html); });
+    \\    server.listen(Number(process.env.PORT || 3000), process.env.HOST || "localhost");
+    \\    module.exports = { server };
+    \\  } catch (error) {
+    \\    throw error && error.code === "ERR_REMIX_SERVE" ? error : __home_remix_serve_error("start", entry, error);
+    \\  }
+    \\};
     \\function __home_import_meta_live_decl_namespace() {
     \\  const key = "js/bun/resolve/import.live.decl.js";
     \\  let namespace = globalThis.__home_modules[key];
@@ -104335,6 +104369,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/pnpm/pnpm.test.ts", .passed = 1 },
         .{ .path = "js/third_party/postgres/postgres.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/prisma/prisma.test.ts", .passed = 7, .todo = 5 },
+        .{ .path = "js/third_party/remix/remix.test.ts", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
@@ -104493,6 +104528,19 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("Caused by: Error: user record was not found");
         \\  expect(caught.stack).not.toContain("private-name");
         \\  await client.$disconnect();
+        \\});
+        \\test("Remix serve startup errors retain entry and operation context", () => {
+        \\  const previousArgv = process.argv; let caught;
+        \\  process.argv = [previousArgv[0], ".", "/tmp/missing-remix-entry.js"];
+        \\  try { require("@remix-run/serve/dist/cli.js"); } catch (error) { caught = error; } finally { process.argv = previousArgv; }
+        \\  expect(caught.name).toBe("RemixServeError");
+        \\  expect(caught.code).toBe("ERR_REMIX_SERVE");
+        \\  expect(caught.operation).toBe("remix.serve.start");
+        \\  expect(caught.entry).toBe("/tmp/missing-remix-entry.js");
+        \\  expect(caught.cause.message).toBe("Server build entry was not found");
+        \\  expect(caught.stack).toContain("remix.serve.start (/tmp/missing-remix-entry.js)");
+        \\  expect(caught.stack).toContain("Caused by: Error: Server build entry was not found");
+        \\  expect(caught.stack).not.toContain("REMIX_SECRET");
         \\});
         \\test("NextAuth fixture errors retain validation context without secrets", () => {
         \\  const caught = createNextAuthFixtureError("/tmp/next-auth/server.js", "validate environment", "AUTH_SECRET is required");
@@ -104777,7 +104825,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 29), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 30), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
