@@ -104518,6 +104518,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/socket.io/socket.io-namespaces.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-server-attachment.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/socket.io/socket.io-socket-middleware.test.ts", .passed = 0, .todo = 2 },
+        .{ .path = "js/third_party/socket.io/socket.io-socket-timeout.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/async_sign.test.js", .passed = 16, .todo = 1 },
         .{ .path = "js/third_party/jsonwebtoken/claim-aud.test.js", .passed = 60 },
         .{ .path = "js/third_party/jsonwebtoken/claim-exp.test.js", .passed = 58 },
