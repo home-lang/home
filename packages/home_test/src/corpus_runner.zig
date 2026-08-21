@@ -78595,6 +78595,33 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
     return out.toOwnedSlice(allocator);
 }
 
+fn hasBootstrapTypeScriptMarker(source: []const u8, marker: []const u8) bool {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, source, start, marker)) |index| {
+        const after = index + marker.len;
+        // Generated helpers such as `globalThis.__home_import(...)` contain
+        // the dynamic-import marker as an identifier suffix. Only the
+        // standalone `import(` token needs TypeScript lowering.
+        if (std.mem.eql(u8, marker, "import(") and index > 0 and
+            isJsIdentifierContinue(source[index - 1]))
+        {
+            start = after;
+            continue;
+        }
+        // Constructor-valued object fields such as `bytes: Array.from(...)`
+        // and `url: URL(...)` are JavaScript expressions, not annotations.
+        // The bootstrap stripper cannot safely run on those valid JS shapes.
+        if (marker.len > 0 and marker[0] == ':' and after < source.len and
+            (source[after] == '.' or source[after] == '('))
+        {
+            start = after + 1;
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 fn sourceNeedsBootstrapTypeScriptRewrite(source: []const u8, relative_path: []const u8) bool {
     if (std.mem.endsWith(u8, relative_path, ".ts") or
         std.mem.endsWith(u8, relative_path, ".tsx") or
@@ -78636,9 +78663,24 @@ fn sourceNeedsBootstrapTypeScriptRewrite(source: []const u8, relative_path: []co
         "export {};",
     };
     for (markers) |marker| {
-        if (std.mem.indexOf(u8, source, marker) != null) return true;
+        if (hasBootstrapTypeScriptMarker(source, marker)) return true;
     }
     return false;
+}
+
+test "bootstrap TypeScript markers ignore constructor-valued JS object fields" {
+    try std.testing.expect(!sourceNeedsBootstrapTypeScriptRewrite(
+        "const { test } = globalThis.__home_import(\"bun:test\"); expect({ bytes: Array.from(encoded), url: URL(value) });",
+        "fixture.js",
+    ));
+    try std.testing.expect(sourceNeedsBootstrapTypeScriptRewrite(
+        "const values: Array<string> = [];",
+        "fixture.js",
+    ));
+    try std.testing.expect(sourceNeedsBootstrapTypeScriptRewrite(
+        "const dependency = import(\"fixture\");",
+        "fixture.js",
+    ));
 }
 
 fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
@@ -107286,6 +107328,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/crypto/web-crypto-sha3.test.ts", .passed = 17 },
         .{ .path = "js/web/crypto/web-crypto.test.ts", .passed = 10 },
         .{ .path = "js/web/encoding/encode-bad-chunks.test.ts", .passed = 6 },
+        .{ .path = "js/web/encoding/text-encoder.test.js", .passed = 42 },
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
         .{ .path = "js/web/encoding/text-decoder-stream.test.ts", .passed = 39 },
