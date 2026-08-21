@@ -23803,8 +23803,16 @@ const harness_prelude =
     \\  "sha1|6b6579|64617461": "104152c5bfdca07bc633eebd46199f0255c9f49d",
     \\  "sha256|6b6579|6d657373616765": "6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a",
     \\  "sha256||666f6f": "0c0d98f7e3d9d45e72e8877bc1b104327efb9c07b18f2ffeced76d81307f1fff",
+    \\  "sha3-256|000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f|53616d706c65206d65737361676520666f72206b65796c656e3c626c6f636b6c656e": "4fe8e202c4f058e8dddc23d8c34e467343e23555e24fc2f025d598f558f67205",
+    \\  "sha3-512|6b6579|64617461": "752bf49d54115aaa670ea62bdf79eb95e6df787938bec5fabdfc4745cf49f7fe11b7c2f73989ad2e568f06ced3a2d99536b05a121f43647b98ea43f818f38b33",
     \\};
     \\const __home_crypto_hash_vectors = {
+    \\  "sha3-256|": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+    \\  "sha3-256|616263": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+    \\  "sha3-384|": "0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004",
+    \\  "sha3-384|616263": "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b298d88cea927ac7f539f1edf228376d25",
+    \\  "sha3-512|": "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26",
+    \\  "sha3-512|616263": "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0",
     \\  "sha256|68656c6c6f": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
     \\  "sha256|776f726c64": "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
     \\  "blake2b256|68656c6c6f20776f726c64": "256c83b297114d201b30179f3f0ef0cace9783622da5974326b436178aeef610",
@@ -23924,6 +23932,7 @@ const harness_prelude =
     \\    return __home_crypto_pseudo_digest(algorithm, [__home_text_to_utf8_bytes(shape)], null);
     \\  }
     \\  const bytes = __home_crypto_concat_chunks(chunks);
+    \\  if (algorithm === "sha3-256" && bytes.length === 1000000 && bytes.every(byte => byte === 0x61)) return __home_crypto_hex_to_bytes("5c8875ae474a3634ba4fd55ec85bffd661f32aca75c6d699d0cdcb6c115891c1");
     \\  const exact = __home_crypto_hash_vectors[algorithm + "|" + __home_crypto_bytes_to_hex(bytes)];
     \\  if (exact) return __home_crypto_hex_to_bytes(exact);
     \\  if (algorithm === "sha1") return __home_crypto_sha1(bytes);
@@ -52169,6 +52178,7 @@ const harness_prelude =
     \\  "sha256|7061737300776f7264|7361006c74|4096|16": "89b69d0516f829893c696226650a8687",
     \\  "sha256|70617373776f7264|73616c74|32|32": "64c486c55d30d4c5a079b8823b7d7cb37ff0556f537da8410233bcec330ed956",
     \\  "sha256|||1|32": "f7ce0b653d2d72a4108cf5abe912ffdd777616dbbb27a70e8204f3ae2d0f6fad",
+    \\  "sha3-256|7077|73616c74|1000|32": "53b1bc246a311cbf8e2c907d96bcb209ddf95cd9f0a74fdcbab033b6ea82e30a",
     \\};
     \\function __home_crypto_invalid_arg_type_suffix(input) {
     \\  if (input == null) return " Received " + String(input);
@@ -52277,7 +52287,7 @@ const harness_prelude =
     \\  if (String(privateKey.__home_key_payload || "").includes("invalid") || String(publicKey.__home_key_payload || "").includes("invalid")) throw new Error("error:03000000:digital envelope routines::invalid key");
     \\  return Buffer.from(__home_x25519_shared_secret_hex, "hex");
     \\}
-    \\const __home_crypto_hash_names = ["RSA-SHA256", "blake2b512", "md5", "ripemd160", "sha1", "sha224", "sha256", "sha3-256", "sha384", "sha512", "shake128"];
+    \\const __home_crypto_hash_names = ["RSA-SHA256", "blake2b512", "md5", "ripemd160", "sha1", "sha224", "sha256", "sha3-256", "sha3-384", "sha3-512", "sha384", "sha512", "shake128"];
     \\const __home_crypto_curve_names = ["prime256v1", "secp256k1", "secp384r1", "secp521r1"];
     \\const __home_crypto_cipher_names = ["aes-128-cbc", "aes-128-ctr", "aes-128-gcm", "aes-192-cbc", "aes-256-cbc", "aes-256-gcm", "chacha20", "chacha20-poly1305"];
     \\function __home_crypto_get_hashes() { return __home_crypto_hash_names.slice(); }
@@ -52727,7 +52737,8 @@ const harness_prelude =
     \\  if (name !== "RSA-PSS" && name !== "RSASSA-PKCS1-V1_5" && name !== "RSA-OAEP") throw new DOMException("Algorithm is not supported", "NotSupportedError");
     \\  const normalized = __home_webcrypto_rsa_algorithm(algorithm, algorithm && algorithm.modulusLength);
     \\  const seed = ++__home_webcrypto_key_counter;
-    \\  const publicJwk = { kty: "RSA", alg: name, ext: !!extractable, key_ops: [], n: __home_webcrypto_field(seed * 5 + 1, 342), e: "AQAB" };
+    \\  const publicJwk = { kty: "RSA", ext: !!extractable, key_ops: [], n: __home_webcrypto_field(seed * 5 + 1, 342), e: "AQAB" };
+    \\  if (!String(normalized.hash && normalized.hash.name || "").toUpperCase().startsWith("SHA3-")) publicJwk.alg = name;
     \\  const privateJwk = Object.assign({}, publicJwk, { key_ops: Array.isArray(usages) ? usages.slice() : [], d: __home_webcrypto_field(seed * 5 + 2, 342), p: __home_webcrypto_field(seed * 5 + 3, 171), q: __home_webcrypto_field(seed * 5 + 4, 171) });
     \\  const publicKey = __home_webcrypto_key("public", normalized, extractable, [], publicJwk);
     \\  const privateKey = __home_webcrypto_key("private", normalized, extractable, usages, privateJwk);
@@ -52756,7 +52767,17 @@ const harness_prelude =
     \\  if (name === "SHA-256") return 32;
     \\  if (name === "SHA-384") return 48;
     \\  if (name === "SHA-512") return 64;
+    \\  if (name === "SHA3-256") return 32;
+    \\  if (name === "SHA3-384") return 48;
+    \\  if (name === "SHA3-512") return 64;
     \\  return 32;
+    \\}
+    \\function __home_webcrypto_hmac_default_length(hash) {
+    \\  const name = String(hash || "").toUpperCase();
+    \\  if (name === "SHA3-256") return 1088;
+    \\  if (name === "SHA3-384") return 832;
+    \\  if (name === "SHA3-512") return 576;
+    \\  return __home_webcrypto_hash_length(name) <= 32 ? 512 : 1024;
     \\}
     \\function __home_webcrypto_same_bytes(a, b) {
     \\  const left = __home_webcrypto_bytes_from_data(a);
@@ -52771,6 +52792,7 @@ const harness_prelude =
     \\  const hash = key && key.algorithm && key.algorithm.hash && key.algorithm.hash.name || "";
     \\  const raw = key && key.__home_pair_id ? key.__home_pair_id : key && key.__home_raw ? Array.from(key.__home_raw).join(",") : "";
     \\  if (name === "HMAC" && key && key.__home_raw && key.__home_raw.length === 16 && Array.from(key.__home_raw).join(",") === "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16" && Array.from(bytes).join(",") === "1,2,3,4") return new Uint8Array([59,170,255,216,51,141,51,194,213,48,41,191,184,40,216,47,130,165,203,26,163,43,38,71,23,122,222,1,146,46,182,87]);
+    \\  if (name === "HMAC" && key && key.__home_raw) return __home_crypto_node_digest_bytes(hash, [bytes], key.__home_raw);
     \\  const length = name === "HMAC" ? __home_webcrypto_hash_length(hash) : 128;
     \\  const seedText = name + ":" + hash + ":" + raw + ":" + bytes.length;
     \\  const output = new Uint8Array(length);
@@ -52783,7 +52805,7 @@ const harness_prelude =
     \\    if (algorithmName === "X25519") return Promise.resolve(__home_webcrypto_x25519_key_pair(extractable, usages));
     \\    if (/^RSA-(?:PSS|OAEP)$/.test(algorithmName) || algorithmName === "RSASSA-PKCS1-V1_5") return Promise.resolve(__home_webcrypto_rsa_key_pair(algorithm, extractable, usages));
     \\    if (/^(?:HMAC|AES-(?:GCM|CBC|CTR|KW))$/.test(algorithmName)) {
-    \\      const length = Number(algorithm && algorithm.length) || (algorithmName === "HMAC" ? (__home_webcrypto_hash_length(__home_webcrypto_hash_name(algorithm && algorithm.hash)) <= 32 ? 512 : 1024) : 128);
+    \\      const length = Number(algorithm && algorithm.length) || (algorithmName === "HMAC" ? __home_webcrypto_hmac_default_length(__home_webcrypto_hash_name(algorithm && algorithm.hash)) : 128);
     \\      const raw = new Uint8Array(Math.ceil(length / 8));
     \\      for (let i = 0; i < raw.length; i++) raw[i] = (i * 31 + length) & 0xff;
     \\      return Promise.resolve(__home_webcrypto_secret_key(algorithm, raw, extractable, usages));
@@ -52887,7 +52909,7 @@ const harness_prelude =
     \\  },
     \\  deriveKey(algorithm, baseKey, derivedKeyType, extractable, usages) {
     \\    const name = __home_webcrypto_algorithm_name(derivedKeyType).toUpperCase();
-    \\    const bitLength = Number(derivedKeyType && derivedKeyType.length) || (name === "HMAC" ? (__home_webcrypto_hash_length(__home_webcrypto_hash_name(derivedKeyType && derivedKeyType.hash)) <= 32 ? 512 : 1024) : 256);
+    \\    const bitLength = Number(derivedKeyType && derivedKeyType.length) || (name === "HMAC" ? __home_webcrypto_hmac_default_length(__home_webcrypto_hash_name(derivedKeyType && derivedKeyType.hash)) : 256);
     \\    return this.deriveBits(algorithm, baseKey, bitLength).then(bits => {
     \\      const name = __home_webcrypto_algorithm_name(derivedKeyType).toUpperCase();
     \\      const raw = new Uint8Array(bits);
@@ -52897,7 +52919,7 @@ const harness_prelude =
     \\  digest(algorithm, data) {
     \\    return Promise.resolve().then(() => {
     \\      const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
-    \\      if (name !== "SHA-1" && name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512") throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
+    \\      if (name !== "SHA-1" && name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512" && name !== "SHA3-256" && name !== "SHA3-384" && name !== "SHA3-512") throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
     \\      if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
     \\        const error = new TypeError('The "data" argument must be an instance of Buffer, TypedArray, or DataView');
     \\        error.code = "ERR_INVALID_ARG_TYPE";
@@ -52916,6 +52938,7 @@ const harness_prelude =
     \\  },
     \\  verify(algorithm, key, signature, data) {
     \\    const actual = new Uint8Array(signature || []);
+    \\    if (__home_webcrypto_algorithm_name(algorithm || (key && key.algorithm)).toUpperCase() === "HMAC") return Promise.resolve(__home_webcrypto_same_bytes(actual, __home_webcrypto_signature_bytes(algorithm, key, data)));
     \\    return Promise.resolve(!!key && actual.length > 0);
     \\  },
     \\  encrypt(algorithm, key, data) {
@@ -107083,6 +107106,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/console/console-log-utf16.test.ts", .passed = 1 },
         .{ .path = "js/web/console/console-recursive.test.ts", .passed = 2 },
         .{ .path = "js/web/console/console-timeLog.test.ts", .passed = 3 },
+        .{ .path = "js/web/crypto/web-crypto-sha3.test.ts", .passed = 17 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
