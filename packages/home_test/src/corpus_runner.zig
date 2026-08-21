@@ -66498,10 +66498,13 @@ const harness_prelude =
     \\  return failure;
     \\}
     \\function __home_jwt_sign_core(payload, secret, options) {
+    \\  if (options !== undefined && options !== null && (typeof options !== "object" || Array.isArray(options) || (Object.getPrototypeOf(options) !== Object.prototype && Object.getPrototypeOf(options) !== null))) throw new Error('Expected "options" to be a plain object');
+    \\  if (payload === undefined) throw new Error("payload is required");
     \\  const opts = options || {}; const algorithm = String(opts.algorithm || "HS256");
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresInSeconds")) throw new Error('"expiresInSeconds" is not allowed');
     \\  if (Object.prototype.hasOwnProperty.call(opts, "keyid") && typeof opts.keyid !== "string") throw new Error('"keyid" must be a string');
     \\  if (!secret && algorithm !== "none") throw new Error("secretOrPrivateKey must have a value");
+    \\  if (/^HS/.test(algorithm) && __home_jwt_key_family(secret) !== "secret") throw new Error("secretOrPrivateKey must be a symmetric key when using " + algorithm);
     \\  if (/^(?:RS|PS)/.test(algorithm)) {
     \\    const pemText = typeof Buffer === "function" && Buffer.isBuffer(secret) ? secret.toString() : (typeof secret === "string" ? secret : "");
     \\    const isRsaKeyObject = !!(secret && secret.__home_key_object && String(secret.type || "private") === "private" && String(secret.asymmetricKeyType || "").toLowerCase() === "rsa");
@@ -66605,9 +66608,11 @@ const harness_prelude =
     \\}
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (typeof token !== "string") throw __home_jwt_error("JsonWebTokenError", "jwt must be a string");
+    \\  if (token.trim() !== token) { const invalidWhitespace = __home_jwt_error("JsonWebTokenError", "invalid token"); invalidWhitespace.claim = "token"; throw invalidWhitespace; }
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const opts = options || {}; const parts = token.split(".");
     \\  if (parts.length !== 3) { const malformed = __home_jwt_error("JsonWebTokenError", "jwt malformed"); malformed.claim = "token"; throw malformed; }
     \\  const decoded = __home_jwt_decode(token, { complete: true }); if (!decoded || !decoded.header) { const invalid = __home_jwt_error("JsonWebTokenError", "invalid token"); invalid.claim = "token"; throw invalid; } const payload = decoded.payload;
+    \\  if (String(decoded.header.alg || "") === "none" && parts[2] !== "") { const unexpectedSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); unexpectedSignature.claim = "signature"; throw unexpectedSignature; }
     \\  let signatureText = ""; try { signatureText = __home_jwt_utf8_text(__home_jwt_base64url_to_binary(parts[2])); } catch (error) {}
     \\  if (signatureText.startsWith("home-jwt-signature:")) { const expectedSignature = "home-jwt-signature:" + String(decoded.header.alg || "HS256") + ":" + __home_jwt_key_identity(secret); if (signatureText !== expectedSignature) { const invalidSignature = __home_jwt_error("JsonWebTokenError", "invalid signature"); invalidSignature.claim = "signature"; throw invalidSignature; } }
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "nbf")) {
@@ -103772,6 +103777,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/issue_304.test.js", .passed = 5 },
         .{ .path = "js/third_party/jsonwebtoken/issue_70.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/jwt.asymmetric_signing.test.js", .passed = 36, .todo = 6 },
+        .{ .path = "js/third_party/jsonwebtoken/jwt.hs.test.js", .passed = 14 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103817,6 +103823,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\import { Hono } from "hono";
         \\import http2Wrapper from "http2-wrapper";
         \\import jwt from "jsonwebtoken";
+        \\import { generateKeyPairSync } from "crypto";
         \\test("Hono errors retain causes and operation stacks", async () => {
         \\  const app = new Hono();
         \\  app.get("/boom", () => { throw new TypeError("route exploded"); });
@@ -103969,6 +103976,16 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim signature");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: invalid signature");
         \\});
+        \\test("jsonwebtoken HMAC key errors retain signing context", () => {
+        \\  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 }); let caught;
+        \\  try { jwt.sign({ value: 1 }, privateKey, { algorithm: "HS256" }); } catch (error) { caught = error; }
+        \\  expect(caught.code).toBe("ERR_JWT_SIGN");
+        \\  expect(caught.algorithm).toBe("HS256");
+        \\  expect(caught.operation).toBe("jsonwebtoken.sign");
+        \\  expect(caught.cause.message).toBe("secretOrPrivateKey must be a symmetric key when using HS256");
+        \\  expect(caught.stack).toContain("jsonwebtoken.sign (algorithm HS256");
+        \\  expect(caught.stack).toContain("Caused by: Error: secretOrPrivateKey must be a symmetric key when using HS256");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103980,7 +103997,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
