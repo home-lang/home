@@ -57827,8 +57827,21 @@ const harness_prelude =
     \\function __home_grpc_EchoService(target, credentials, options) {
     \\  this.__home_target = String(target || "");
     \\  this.__home_port = __home_grpc_port(target);
+    \\  this.__home_ports = this.__home_target.startsWith("ipv4:///") ? this.__home_target.slice(9).split(",").map(value => __home_grpc_port(value)).filter(Boolean) : [this.__home_port].filter(Boolean);
     \\  this.__home_credentials = credentials || null;
     \\  this.__home_options = Object.assign({}, options || {});
+    \\  this.__home_round_robin_index = 0;
+    \\  this.__home_outlier_records = new Map();
+    \\  this.__home_outlier_config = null;
+    \\  const serviceConfigText = this.__home_options["grpc.service_config"];
+    \\  if (serviceConfigText !== undefined) {
+    \\    let serviceConfig;
+    \\    try { serviceConfig = typeof serviceConfigText === "string" ? JSON.parse(serviceConfigText) : serviceConfigText; }
+    \\    catch (error) { throw __home_grpc_service_config_error(error, "grpc.service_config"); }
+    \\    const policies = serviceConfig && Array.isArray(serviceConfig.loadBalancingConfig) ? serviceConfig.loadBalancingConfig : [];
+    \\    const outlierPolicy = policies.find(policy => policy && policy.outlier_detection);
+    \\    if (outlierPolicy) this.__home_outlier_config = __home_grpc_OutlierDetectionLoadBalancingConfig.createFromJson(outlierPolicy.outlier_detection).value;
+    \\  }
     \\  this.__home_closed = false;
     \\  this.__home_state = __home_grpc_connectivity_state.IDLE;
     \\  this.__home_state_watchers = new Set();
@@ -57837,8 +57850,44 @@ const harness_prelude =
     \\  this.__home_subchannel_record = __home_grpc_subchannel_pool_acquire(this.__home_target, this.__home_options["grpc.use_local_subchannel_pool"] === 1);
     \\}
     \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
+    \\__home_grpc_EchoService.prototype.__home_outlier_clock = function() { return Number(globalThis.__home_performance_clock || 0); };
+    \\__home_grpc_EchoService.prototype.__home_outlier_record = function(port) {
+    \\  let record = this.__home_outlier_records.get(port);
+    \\  if (!record) { record = { port, successes: 0, failures: 0, ejected: false, ejectedAt: 0 }; this.__home_outlier_records.set(port, record); }
+    \\  return record;
+    \\};
+    \\__home_grpc_EchoService.prototype.__home_outlier_base_ms = function() {
+    \\  const value = this.__home_outlier_config && this.__home_outlier_config.base_ejection_time;
+    \\  return value ? Number(value.seconds || 0) * 1000 + Number(value.nanos || 0) / 1000000 : 30000;
+    \\};
+    \\__home_grpc_EchoService.prototype.__home_pick_server = function() {
+    \\  if (this.__home_ports.length === 0) return { port: this.__home_port, server: __home_grpc_find_server(this.__home_target, this.__home_port) };
+    \\  let fallback = null;
+    \\  for (let offset = 0; offset < this.__home_ports.length; offset++) {
+    \\    const index = (this.__home_round_robin_index + offset) % this.__home_ports.length;
+    \\    const port = this.__home_ports[index], server = __home_grpc_servers[port] || null;
+    \\    if (!fallback) fallback = { port, server };
+    \\    const record = this.__home_outlier_record(port);
+    \\    if (record.ejected && this.__home_outlier_clock() - record.ejectedAt >= this.__home_outlier_base_ms()) { record.ejected = false; record.failures = 0; record.successes = 0; }
+    \\    if (record.ejected) continue;
+    \\    this.__home_round_robin_index = (index + 1) % this.__home_ports.length;
+    \\    return { port, server };
+    \\  }
+    \\  return fallback || { port: this.__home_port, server: null };
+    \\};
+    \\__home_grpc_EchoService.prototype.__home_record_outlier_result = function(port, error) {
+    \\  if (!this.__home_outlier_config || this.__home_ports.length < 2) return;
+    \\  const record = this.__home_outlier_record(port);
+    \\  if (error) record.failures += 1; else record.successes += 1;
+    \\  const successRule = this.__home_outlier_config.success_rate_ejection;
+    \\  const failureRule = this.__home_outlier_config.failure_percentage_ejection;
+    \\  const requestVolume = Math.max(1, Number(successRule && successRule.request_volume || failureRule && failureRule.request_volume || 100));
+    \\  if (record.failures >= requestVolume) { record.ejected = true; record.ejectedAt = this.__home_outlier_clock(); }
+    \\};
     \\__home_grpc_EchoService.prototype.__home_server = function() {
-    \\  return __home_grpc_find_server(this.__home_target, this.__home_port);
+    \\  const selected = this.__home_pick_server();
+    \\  this.__home_last_server = selected.server;
+    \\  return selected.server;
     \\};
     \\function __home_grpc_idle_error(target, operation, message) {
     \\  const cause = new Error(message || "Connectivity state did not change before the deadline");
@@ -57865,7 +57914,7 @@ const harness_prelude =
     \\  if (this.__home_idle_timer) clearTimeout(this.__home_idle_timer);
     \\  const clientValue = Number(this.__home_options["grpc.client_idle_timeout_ms"]);
     \\  const clientTimeout = Number.isFinite(clientValue) && clientValue > 0 ? Math.max(1000, clientValue) : Infinity;
-    \\  const server = this.__home_server();
+    \\  const server = this.__home_last_server || __home_grpc_find_server(this.__home_target, this.__home_port);
     \\  const serverValue = Number(server && server.__home_options["grpc.max_connection_idle_ms"]);
     \\  const serverTimeout = Number.isFinite(serverValue) && serverValue > 0 ? serverValue : Infinity;
     \\  const idleTimeout = Math.min(clientTimeout, serverTimeout);
@@ -58030,7 +58079,7 @@ const harness_prelude =
     \\  }));
     \\  return Promise.all(calls).then(results => { const metadata = new __home_grpc_Metadata(); for (const result of results) metadata.merge(result); return metadata; });
     \\};
-    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, UNIMPLEMENTED: 12, UNAVAILABLE: 14 };
+    \\const __home_grpc_status = { OK: 0, CANCELLED: 1, UNKNOWN: 2, INVALID_ARGUMENT: 3, DEADLINE_EXCEEDED: 4, NOT_FOUND: 5, PERMISSION_DENIED: 7, UNIMPLEMENTED: 12, UNAVAILABLE: 14 };
     \\const __home_grpc_propagate = { DEADLINE: 1, CANCELLATION: 2 };
     \\const __home_grpc_connectivity_state = { IDLE: 0, CONNECTING: 1, READY: 2, TRANSIENT_FAILURE: 3, SHUTDOWN: 4 };
     \\const __home_grpc_log_verbosity = { DEBUG: 0, INFO: 1, ERROR: 2, NONE: 3 };
@@ -58230,7 +58279,10 @@ const harness_prelude =
     \\  const clientCall = __home_grpc_stream();
     \\  const metadata = options instanceof __home_grpc_Metadata ? options : new __home_grpc_Metadata();
     \\  if (this.__home_closed) { Promise.resolve().then(() => { if (typeof callback === "function") callback(__home_grpc_client_error(this.__home_target, "echo", __home_grpc_status.UNAVAILABLE, "The client is closed")); }); return clientCall; }
-    \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
+    \\  const selected = this.__home_pick_server();
+    \\  const selectedServer = selected.server;
+    \\  this.__home_last_server = selectedServer;
+    \\  const handler = selectedServer && selectedServer.__home_services.echo;
     \\  if (handler) this.__home_touch();
     \\  if (callOptions.deadline && Number(new Date(callOptions.deadline)) <= Date.now()) { Promise.resolve().then(() => callback(__home_grpc_status_error(__home_grpc_status.DEADLINE_EXCEEDED, "echo"))); return clientCall; }
     \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
@@ -58245,9 +58297,9 @@ const harness_prelude =
     \\      sendMetadata(value) { clientCall.emit("metadata", value); },
     \\    };
     \\    let callbackInvoked = false;
-    \\    const guardedCallback = typeof callback === "function" ? function() { callbackInvoked = true; return callback.apply(this, arguments); } : undefined;
+    \\    const guardedCallback = typeof callback === "function" ? (...callbackArgs) => { callbackInvoked = true; this.__home_record_outlier_result(selected.port, callbackArgs[0]); return callback.apply(undefined, callbackArgs); } : undefined;
     \\    try { handler(serverCall, guardedCallback); }
-    \\    catch (error) { if (callbackInvoked || typeof callback !== "function") throw error; callback(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
+    \\    catch (error) { this.__home_record_outlier_result(selected.port, error); if (callbackInvoked || typeof callback !== "function") throw error; callback(__home_grpc_channel_error(error, "invokeUnary", "EchoService")); }
     \\  };
     \\  const callCredentials = this.__home_credentials && typeof this.__home_credentials._getCallCredentials === "function" ? this.__home_credentials._getCallCredentials() : null;
     \\  if (callCredentials && typeof callCredentials.generateMetadata === "function") {
@@ -58303,6 +58355,8 @@ const harness_prelude =
     \\function __home_grpc_Server(options) {
     \\  this.__home_services = {};
     \\  this.__home_port = 0;
+    \\  this.__home_bound_ports = [];
+    \\  this.__home_bound_targets = [];
     \\  this.__home_options = Object.assign({}, options || {});
     \\  if (this.__home_options["grpc.enable_channelz"] === 0) this.__home_channelz_record = null;
     \\  else {
@@ -58325,6 +58379,8 @@ const harness_prelude =
     \\  }
     \\  this.__home_port = __home_grpc_next_port++;
     \\  this.__home_target = String(address || "");
+    \\  this.__home_bound_ports.push(this.__home_port);
+    \\  this.__home_bound_targets.push(this.__home_target);
     \\  __home_grpc_servers[this.__home_port] = this;
     \\  __home_grpc_servers_by_target[this.__home_target] = this;
     \\  __home_grpc_servers_by_target["localhost:" + String(this.__home_port)] = this;
@@ -58332,10 +58388,14 @@ const harness_prelude =
     \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_port));
     \\};
     \\__home_grpc_Server.prototype.forceShutdown = function() {
-    \\  delete __home_grpc_servers[this.__home_port];
-    \\  delete __home_grpc_servers_by_target[String(this.__home_target || "")];
-    \\  delete __home_grpc_servers_by_target["localhost:" + String(this.__home_port)];
-    \\  delete __home_grpc_servers_by_target["127.0.0.1:" + String(this.__home_port)];
+    \\  for (const port of this.__home_bound_ports) {
+    \\    delete __home_grpc_servers[port];
+    \\    delete __home_grpc_servers_by_target["localhost:" + String(port)];
+    \\    delete __home_grpc_servers_by_target["127.0.0.1:" + String(port)];
+    \\  }
+    \\  for (const target of this.__home_bound_targets) delete __home_grpc_servers_by_target[String(target || "")];
+    \\  this.__home_bound_ports = [];
+    \\  this.__home_bound_targets = [];
     \\  if (this.__home_credentials && typeof this.__home_credentials.__home_deactivate === "function") this.__home_credentials.__home_deactivate();
     \\  if (this.__home_channelz_record) {
     \\    __home_grpc_channelz_servers.delete(this.__home_channelz_record.id);
@@ -58701,6 +58761,41 @@ const harness_prelude =
     \\  }
     \\  throw __home_grpc_lb_error(policy, "", "unsupported load-balancing policy");
     \\}
+    \\function __home_grpc_outlier_error(error, path, message) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error));
+    \\  const failure = new Error(String(path) + " parse error: " + String(message));
+    \\  failure.code = "ERR_INVALID_ARG_VALUE"; failure.policy = "outlier_detection"; failure.path = String(path); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at OutlierDetectionLoadBalancingConfig.createFromJson (" + String(path) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_outlier_duration(raw, path, fallbackSeconds) {
+    \\  if (raw === undefined) return { seconds: fallbackSeconds, nanos: 0 };
+    \\  const seconds = Number(raw && raw.seconds), nanos = Number(raw && raw.nanos);
+    \\  if (!raw || !Number.isFinite(seconds) || !Number.isFinite(nanos) || seconds < 0 || seconds > 315576000000 || nanos < 0 || nanos >= 1000000000) throw __home_grpc_outlier_error(new RangeError("duration values are outside the protobuf range"), path, "values out of range for non-negative Duaration");
+    \\  return { seconds, nanos };
+    \\}
+    \\function __home_grpc_outlier_percentage(value, path, fallback) {
+    \\  const number = value === undefined ? fallback : Number(value);
+    \\  if (!Number.isFinite(number) || number < 0 || number > 100) throw __home_grpc_outlier_error(new RangeError("percentage must be between 0 and 100"), path, "value out of range for percentage");
+    \\  return number;
+    \\}
+    \\function __home_grpc_OutlierDetectionLoadBalancingConfig(value) { this.value = __home_grpc_clone_config(value); }
+    \\__home_grpc_OutlierDetectionLoadBalancingConfig.createFromJson = function(raw) {
+    \\  raw = raw && typeof raw === "object" ? raw : {};
+    \\  const children = Array.isArray(raw.child_policy) ? raw.child_policy : [];
+    \\  if (children.some(child => child && Object.prototype.hasOwnProperty.call(child, "pick_first"))) throw __home_grpc_outlier_error(new TypeError("pick_first does not expose per-endpoint outcomes"), "child_policy", "outlier_detection LB policy cannot have a pick_first child policy");
+    \\  const result = {
+    \\    interval: __home_grpc_outlier_duration(raw.interval, "interval", 10),
+    \\    base_ejection_time: __home_grpc_outlier_duration(raw.base_ejection_time, "base_ejection_time", 30),
+    \\    max_ejection_time: __home_grpc_outlier_duration(raw.max_ejection_time, "max_ejection_time", 300),
+    \\    max_ejection_percent: __home_grpc_outlier_percentage(raw.max_ejection_percent, "max_ejection_percent", 10),
+    \\    child_policy: __home_grpc_clone_config(children),
+    \\  };
+    \\  if (raw.success_rate_ejection !== undefined) result.success_rate_ejection = Object.assign({}, raw.success_rate_ejection, { enforcement_percentage: __home_grpc_outlier_percentage(raw.success_rate_ejection && raw.success_rate_ejection.enforcement_percentage, "success_rate_ejection.enforcement_percentage", 100) });
+    \\  if (raw.failure_percentage_ejection !== undefined) result.failure_percentage_ejection = Object.assign({}, raw.failure_percentage_ejection, { threshold: __home_grpc_outlier_percentage(raw.failure_percentage_ejection && raw.failure_percentage_ejection.threshold, "failure_percentage_ejection.threshold", 85), enforcement_percentage: __home_grpc_outlier_percentage(raw.failure_percentage_ejection && raw.failure_percentage_ejection.enforcement_percentage, "failure_percentage_ejection.enforcement_percentage", 100) });
+    \\  return new __home_grpc_OutlierDetectionLoadBalancingConfig(result);
+    \\};
+    \\__home_grpc_OutlierDetectionLoadBalancingConfig.prototype.toJsonObject = function() { return { outlier_detection: __home_grpc_clone_config(this.value) }; };
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -58739,6 +58834,7 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/connectivity-state"] = { ConnectivityState: __home_grpc_connectivity_state };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/logging"] = __home_grpc_logging;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/metadata"] = { Metadata: __home_grpc_Metadata };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer-outlier-detection"] = { OutlierDetectionLoadBalancingConfig: __home_grpc_OutlierDetectionLoadBalancingConfig };
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71321,6 +71417,21 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let metadata: TestMetadata;", .replacement = "let metadata;" },
         .{ .needle = " as Buffer", .replacement = "" },
         .{ .needle = "const expected: MetadataObject = new Map<string, MetadataValue[]>([", .replacement = "const expected = new Map([" },
+        .{ .needle = "import { OutlierDetectionLoadBalancingConfig } from \"@grpc/grpc-js/build/src/load-balancer-outlier-detection\";", .replacement = "const { OutlierDetectionLoadBalancingConfig } = globalThis.__home_import(\"@grpc/grpc-js/build/src/load-balancer-outlier-detection\");" },
+        .{ .needle = "function multiDone(done: Mocha.Done, target: number)", .replacement = "function multiDone(done, target)" },
+        .{ .needle = "return (error?: any) =>", .replacement = "return error =>" },
+        .{ .needle = "(call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) =>", .replacement = "(call, callback) =>" },
+        .{ .needle = "const EchoService = loadProtoFile(protoFile).EchoService as grpc.ServiceClientConstructor;", .replacement = "const EchoService = loadProtoFile(protoFile).EchoService;" },
+        .{ .needle = "let goodServer: grpc.Server;", .replacement = "let goodServer;" },
+        .{ .needle = "let badServer: grpc.Server;", .replacement = "let badServer;" },
+        .{ .needle = "const goodPorts: number[] = [];", .replacement = "const goodPorts = [];" },
+        .{ .needle = "let badPort: number;", .replacement = "let badPort;" },
+        .{ .needle = "function makeManyRequests(\n    makeOneRequest: (callback: (error?: Error) => void) => void,\n    total: number,\n    callback: (error?: Error) => void,\n  )", .replacement = "function makeManyRequests(\n    makeOneRequest,\n    total,\n    callback,\n  )" },
+        .{ .needle = "let makeCheckedRequest: (callback: () => void) => void;", .replacement = "let makeCheckedRequest;" },
+        .{ .needle = "let makeCheckedRequest: (callback: (error?: Error) => void) => void;", .replacement = "let makeCheckedRequest;" },
+        .{ .needle = "let makeUncheckedRequest: (callback: (error?: Error) => void) => void;", .replacement = "let makeUncheckedRequest;" },
+        .{ .needle = "(callback: () => void) =>", .replacement = "callback =>" },
+        .{ .needle = "(callback: (error?: Error) => void) =>", .replacement = "callback =>" },
         .{ .needle = "import grpc, { sendUnaryData, ServerUnaryCall, ServiceError } from \"@grpc/grpc-js\";", .replacement = "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");" },
         .{ .needle = "import { CallCredentials } from \"@grpc/grpc-js/build/src/call-credentials\";", .replacement = "const { CallCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/call-credentials\");" },
         .{ .needle = "import { ChannelCredentials } from \"@grpc/grpc-js/build/src/channel-credentials\";", .replacement = "const { ChannelCredentials } = globalThis.__home_import(\"@grpc/grpc-js/build/src/channel-credentials\");" },
@@ -87811,6 +87922,31 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  const decoded = grpc.Metadata.fromHttp2Headers(metadata.toHttp2Headers());
         \\  assert.deepStrictEqual(decoded.get("payload-bin")[0], original);
         \\});
+        \\
+        \\test("outlier policy validation and endpoint recovery diagnostics", () => {
+        \\  const { OutlierDetectionLoadBalancingConfig } = globalThis.__home_import("@grpc/grpc-js/build/src/load-balancer-outlier-detection");
+        \\  let configError;
+        \\  try { OutlierDetectionLoadBalancingConfig.createFromJson({ interval: { seconds: -1, nanos: 0 }, child_policy: [{ round_robin: {} }] }); } catch (error) { configError = error; }
+        \\  assert.strictEqual(configError.code, "ERR_INVALID_ARG_VALUE");
+        \\  assert.strictEqual(configError.policy, "outlier_detection");
+        \\  assert.strictEqual(configError.path, "interval");
+        \\  assert.ok(configError.cause instanceof Error);
+        \\  assert.ok(String(configError.stack).includes("OutlierDetectionLoadBalancingConfig.createFromJson"));
+        \\  assert.ok(String(configError.stack).includes("Caused by:"));
+        \\
+        \\  const serviceConfig = JSON.stringify({ loadBalancingConfig: [{ outlier_detection: { base_ejection_time: { seconds: 3, nanos: 0 }, success_rate_ejection: { request_volume: 5 }, child_policy: [{ round_robin: {} }] } }] });
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const client = new EchoService("ipv4:///127.0.0.1:61001,127.0.0.1:61002", grpc.credentials.createInsecure(), { "grpc.service_config": serviceConfig });
+        \\  const originalClock = Number(globalThis.__home_performance_clock || 0);
+        \\  for (let index = 0; index < 5; index++) client.__home_record_outlier_result(61002, new Error("endpoint failed"));
+        \\  assert.strictEqual(client.__home_outlier_record(61002).ejected, true);
+        \\  globalThis.__home_performance_clock = originalClock + 4000;
+        \\  client.__home_round_robin_index = 1;
+        \\  assert.strictEqual(client.__home_pick_server().port, 61002);
+        \\  assert.strictEqual(client.__home_outlier_record(61002).ejected, false);
+        \\  globalThis.__home_performance_clock = originalClock;
+        \\  client.close();
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -87828,7 +87964,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102327,6 +102463,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-local-subchannel-pool.test.ts", .passed = 1 },
         .{ .path = "js/third_party/grpc-js/test-logging.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-metadata.test.ts", .passed = 29 },
+        .{ .path = "js/third_party/grpc-js/test-outlier-detection.test.ts", .passed = 26 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
