@@ -44476,14 +44476,14 @@ pub const Checker = struct {
                 switch (self.hir.kindOf(member)) {
                     .fn_decl, .fn_expr, .arrow_fn => {
                         const f = hir_mod.fnDeclOf(self.hir, member);
-                        const member_name = (try self.classMemberNameFromFunctionName(f.name)) orelse continue;
+                        const member_name = self.directPrivateClassMemberName(f.name) orelse continue;
                         if (member_name != prop_name) continue;
                         declares = true;
                         if (!f.flags.is_constructor and !f.flags.is_getter and !f.flags.is_setter) return true;
                     },
                     .object_property => {
                         const op = hir_mod.objectPropertyOf(self.hir, member);
-                        const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                        const member_name = self.directPrivateClassMemberName(op.key) orelse continue;
                         if (member_name != prop_name) continue;
                         declares = true;
                         if (op.is_method or self.memberSourceLooksMethod(member)) return true;
@@ -44494,6 +44494,12 @@ pub const Checker = struct {
             if (declares) return false;
         }
         return false;
+    }
+
+    fn directPrivateClassMemberName(self: *Checker, key: NodeId) ?hir_mod.StringId {
+        if (key == hir_mod.none_node_id or self.hir.kindOf(key) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, key).name;
+        return if (self.memberNameIsEcmaPrivate(name)) name else null;
     }
 
     fn privateAccessIsCompoundOrUpdateTarget(self: *Checker, node: NodeId) bool {
@@ -44529,7 +44535,7 @@ pub const Checker = struct {
                 switch (self.hir.kindOf(m)) {
                     .fn_decl, .fn_expr, .arrow_fn => {
                         const fp = hir_mod.fnDeclOf(self.hir, m);
-                        const mname = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
+                        const mname = self.directPrivateClassMemberName(fp.name) orelse continue;
                         if (mname != prop_name) continue;
                         declares = true;
                         if (fp.flags.is_getter) has_getter = true;
@@ -44537,7 +44543,7 @@ pub const Checker = struct {
                     },
                     .object_property => {
                         const op = hir_mod.objectPropertyOf(self.hir, m);
-                        const fname = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                        const fname = self.directPrivateClassMemberName(op.key) orelse continue;
                         if (fname == prop_name) declares = true;
                     },
                     else => {},
@@ -223822,6 +223828,28 @@ test "checker: TS2806 fires for setter-only private accessor in a class expressi
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.private_accessor_without_getter));
+}
+
+test "checker: computed private-name method keys do not recurse" {
+    // Mirrors privateNameComputedPropertyName3. The anonymous-class
+    // private-access fallback only needs direct `#name` declarations;
+    // resolving this computed key while scanning the class would recurse.
+    const s = try newSetup(
+        \\class Foo {
+        \\  #name: string;
+        \\  getValue(x: number) {
+        \\    const obj = this;
+        \\    class Bar {
+        \\      #y = 100;
+        \\      [obj.#name]() { return x + this.#y; }
+        \\    }
+        \\    return new Bar()[obj.#name]();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: class-expression private accessor with getter stays readable" {
