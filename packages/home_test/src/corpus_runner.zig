@@ -66408,7 +66408,8 @@ const harness_prelude =
     \\}
     \\const __home_jwt_JsonWebTokenError = __home_jwt_error_type("JsonWebTokenError");
     \\const __home_jwt_TokenExpiredError = __home_jwt_error_type("TokenExpiredError", __home_jwt_JsonWebTokenError);
-    \\function __home_jwt_error(name, message) { return name === "TokenExpiredError" ? new __home_jwt_TokenExpiredError(message) : new __home_jwt_JsonWebTokenError(message); }
+    \\const __home_jwt_NotBeforeError = __home_jwt_error_type("NotBeforeError", __home_jwt_JsonWebTokenError);
+    \\function __home_jwt_error(name, message) { if (name === "TokenExpiredError") return new __home_jwt_TokenExpiredError(message); if (name === "NotBeforeError") return new __home_jwt_NotBeforeError(message); return new __home_jwt_JsonWebTokenError(message); }
     \\function __home_jwt_base64url_to_binary(value) {
     \\  const base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
     \\  const padded = base64 + "===".slice((base64.length + 3) % 4);
@@ -66484,7 +66485,15 @@ const harness_prelude =
     \\    const modulusLength = Number(secret.asymmetricKeyDetails && secret.asymmetricKeyDetails.modulusLength || 0);
     \\    if (modulusLength > 0 && modulusLength < 2048 && opts.allowInsecureKeySizes !== true) throw new Error("secretOrPrivateKey has a minimum key size of 2048 bits for " + algorithm);
     \\  }
-    \\  if (opts.notBefore !== undefined && typeof opts.notBefore !== "number" && typeof opts.notBefore !== "string") throw new Error('"notBefore" should be a number of seconds or string representing a timespan');
+    \\  let notBeforeSeconds;
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "notBefore")) {
+    \\    if (typeof opts.notBefore === "number" && Number.isInteger(opts.notBefore) && Number.isFinite(opts.notBefore)) notBeforeSeconds = opts.notBefore;
+    \\    else if (typeof opts.notBefore === "string") notBeforeSeconds = __home_jwt_timespan_seconds(opts.notBefore);
+    \\    if (notBeforeSeconds === undefined) throw new Error('"notBefore" should be a number of seconds or string representing a timespan');
+    \\    if (typeof payload === "string") throw new Error("invalid notBefore option for string payload");
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer(payload)) throw new Error("invalid notBefore option for object payload");
+    \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "nbf")) throw new Error('Bad "options.notBefore" option the payload already has an "nbf" property.');
+    \\  }
     \\  if ((typeof payload === "string" || typeof payload === "number" || typeof payload === "boolean") && opts.noTimestamp) throw new Error("invalid noTimestamp option for non-object payload");
     \\  if (Object.prototype.hasOwnProperty.call(opts, "audience")) {
     \\    if (typeof opts.audience !== "string" && !Array.isArray(opts.audience)) throw new Error('"audience" must be a string or array');
@@ -66505,6 +66514,7 @@ const harness_prelude =
     \\    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "jti")) throw new Error('Bad "options.jwtid" option. The payload already has an "jti" property.');
     \\  }
     \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "iat") && typeof payload.iat !== "number") throw new Error('"iat" should be a number of seconds');
+    \\  if (payload && typeof payload === "object" && !(typeof Buffer === "function" && Buffer.isBuffer(payload)) && Object.prototype.hasOwnProperty.call(payload, "nbf") && typeof payload.nbf !== "number") throw new Error('"nbf" should be a number of seconds');
     \\  let expiresInSeconds;
     \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresIn")) {
     \\    if (typeof opts.expiresIn === "number" && Number.isInteger(opts.expiresIn) && Number.isFinite(opts.expiresIn)) expiresInSeconds = opts.expiresIn;
@@ -66522,7 +66532,7 @@ const harness_prelude =
     \\    if (Object.prototype.hasOwnProperty.call(opts, "audience")) body.aud = opts.audience;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "issuer")) body.iss = opts.issuer;
     \\    if (Object.prototype.hasOwnProperty.call(opts, "jwtid")) body.jti = opts.jwtid;
-    \\    if (typeof opts.notBefore === "number") body.nbf = timestamp + opts.notBefore;
+    \\    if (notBeforeSeconds !== undefined) body.nbf = timestamp + notBeforeSeconds;
     \\    if (expiresInSeconds !== undefined) body.exp = timestamp + expiresInSeconds;
     \\    if (opts.noTimestamp === true) delete body.iat; else if (!body.iat) body.iat = timestamp;
     \\  }
@@ -66538,6 +66548,7 @@ const harness_prelude =
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const failure = __home_jwt_error(cause.name || "JsonWebTokenError", String(cause.message || cause));
     \\  failure.code = cause.code || "ERR_JWT_VERIFY"; failure.operation = "jsonwebtoken.verify"; failure.claim = String(claim || "token"); failure.cause = cause;
     \\  if (cause.expiredAt !== undefined) failure.expiredAt = cause.expiredAt;
+    \\  if (cause.date !== undefined) failure.date = cause.date;
     \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause); const causeStack = String(cause.stack || "");
     \\  failure.stack = String(failure.stack || failure) + "\n    at jsonwebtoken.verify (claim " + failure.claim + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); return failure;
     \\}
@@ -66549,7 +66560,7 @@ const harness_prelude =
     \\function __home_jwt_timespan_seconds(value) {
     \\  if (typeof value === "number" && Number.isFinite(value)) return value;
     \\  if (typeof value !== "string") return undefined;
-    \\  const match = value.match(/^\\s*(-?\\d+(?:\\.\\d+)?)\\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?\\s*$/i); if (!match) return undefined;
+    \\  const match = value.match(/^\s*(-?\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?\s*$/i); if (!match) return undefined;
     \\  const amount = Number(match[1]); const unit = String(match[2] || "ms").toLowerCase();
     \\  if (unit === "ms") return amount / 1000;
     \\  if (unit === "s" || unit === "sec" || unit === "secs" || unit === "second" || unit === "seconds") return amount;
@@ -66559,6 +66570,11 @@ const harness_prelude =
     \\}
     \\function __home_jwt_verify_core(token, secret, options) {
     \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided"); const payload = __home_jwt_decode(token); const opts = options || {};
+    \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "nbf")) {
+    \\    if (typeof payload.nbf !== "number") { const invalidNotBefore = __home_jwt_error("JsonWebTokenError", "invalid nbf value"); invalidNotBefore.claim = "nbf"; throw invalidNotBefore; }
+    \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0);
+    \\    if (!opts.ignoreNotBefore && payload.nbf > clockTimestamp + tolerance) { const inactive = __home_jwt_error("NotBeforeError", "jwt not active"); inactive.date = new Date(payload.nbf * 1000); inactive.claim = "nbf"; throw inactive; }
+    \\  }
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
     \\    if (typeof payload.exp !== "number") { const invalidExpiration = __home_jwt_error("JsonWebTokenError", "invalid exp value"); invalidExpiration.claim = "exp"; throw invalidExpiration; }
     \\    const clockTimestamp = opts.clockTimestamp === undefined ? Math.floor(Date.now() / 1000) : Number(opts.clockTimestamp); const tolerance = Number(opts.clockTolerance || 0);
@@ -66586,6 +66602,7 @@ const harness_prelude =
     \\globalThis.__home_modules["jsonwebtoken"] = {
     \\  JsonWebTokenError: __home_jwt_JsonWebTokenError,
     \\  TokenExpiredError: __home_jwt_TokenExpiredError,
+    \\  NotBeforeError: __home_jwt_NotBeforeError,
     \\  decode: __home_jwt_decode,
     \\  sign: __home_jwt_sign,
     \\  verify: __home_jwt_verify,
@@ -103707,6 +103724,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/jsonwebtoken/claim-iat.test.js", .passed = 39 },
         .{ .path = "js/third_party/jsonwebtoken/claim-iss.test.js", .passed = 28 },
         .{ .path = "js/third_party/jsonwebtoken/claim-jti.test.js", .passed = 24 },
+        .{ .path = "js/third_party/jsonwebtoken/claim-nbf.test.js", .passed = 58 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
@@ -103843,6 +103861,20 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim jti");
         \\  expect(caught.stack).toContain("Caused by: JsonWebTokenError: jwt jwtid invalid. expected: expected");
         \\});
+        \\test("jsonwebtoken not-before errors retain activation context", async () => {
+        \\  const token = jwt.sign({ nbf: 120 }, "secret"); let caught;
+        \\  await new Promise(resolve => jwt.verify(token, "secret", { clockTimestamp: 60 }, error => { caught = error; resolve(); }));
+        \\  expect(caught instanceof jwt.NotBeforeError).toBe(true);
+        \\  expect(caught instanceof jwt.JsonWebTokenError).toBe(true);
+        \\  expect(caught.code).toBe("ERR_JWT_VERIFY");
+        \\  expect(caught.claim).toBe("nbf");
+        \\  expect(caught.operation).toBe("jsonwebtoken.verify");
+        \\  expect(caught.date.getTime()).toBe(120000);
+        \\  expect(caught.cause.message).toBe("jwt not active");
+        \\  expect(caught.cause.date.getTime()).toBe(caught.date.getTime());
+        \\  expect(caught.stack).toContain("jsonwebtoken.verify (claim nbf");
+        \\  expect(caught.stack).toContain("Caused by: NotBeforeError: jwt not active");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, third_party_error_diagnostic_source, "js/third_party/permanent-error-diagnostics.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103854,7 +103886,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         std.debug.print("permanent third-party error diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner covers current Bun.escapeHTML edge cases" {
