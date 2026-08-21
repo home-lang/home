@@ -3676,7 +3676,7 @@ pub fn timeEnd(
     // then display it in milliseconds
     Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
     switch (len) {
-        0 => Output.printErrorln("\n", .{}),
+        0 => Output.printErrorln("", .{}),
         else => Output.printErrorln(" {s}", .{chars[0..len]}),
     }
 

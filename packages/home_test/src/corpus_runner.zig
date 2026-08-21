@@ -107082,6 +107082,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/console/console-log.test.ts", .passed = 4 },
         .{ .path = "js/web/console/console-log-utf16.test.ts", .passed = 1 },
         .{ .path = "js/web/console/console-recursive.test.ts", .passed = 2 },
+        .{ .path = "js/web/console/console-timeLog.test.ts", .passed = 3 },
         .{ .path = "js/web/workers/message-port-context-destroy-leak.test.ts", .passed = 1 },
         .{ .path = "js/web/websocket/websocket-proxy-close-reentrancy.test.ts", .passed = 1 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
