@@ -2207,6 +2207,7 @@ pub fn compileSource(
         const co = cfg.compiler_options;
         const strict_on = options.strict orelse (co.strict orelse false);
         const no_implicit_any = co.no_implicit_any orelse strict_on;
+        const no_implicit_this = co.no_implicit_this orelse strict_on;
         const strict_fn_types = co.strict_function_types orelse strict_on;
         const strict_bind_call_apply = co.strict_bind_call_apply orelse strict_on;
         const strict_null_checks = co.strict_null_checks orelse strict_on;
@@ -2215,6 +2216,7 @@ pub fn compileSource(
         // — those are independent in tsc.
         checker.setStrictFlags(.{
             .no_implicit_any = no_implicit_any,
+            .no_implicit_this = no_implicit_this,
             .no_unused_parameters = co.no_unused_parameters orelse false,
             .no_unused_locals = co.no_unused_locals orelse false,
             .strict_function_types = strict_fn_types,
@@ -2239,6 +2241,7 @@ pub fn compileSource(
         const strict_on = options.strict orelse false;
         checker.setStrictFlags(.{
             .no_implicit_any = strict_on,
+            .no_implicit_this = strict_on,
             .strict_function_types = strict_on,
             .strict_bind_call_apply = strict_on,
             .strict_null_checks = strict_on,

@@ -8775,6 +8775,7 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
 const StrictDirectiveState = struct {
     strict: ?bool = null,
     no_implicit_any: ?bool = null,
+    no_implicit_this: ?bool = null,
     no_unused_parameters: ?bool = null,
     no_unused_locals: ?bool = null,
     strict_function_types: ?bool = null,
@@ -8842,6 +8843,7 @@ fn parseStrictDirectiveState(source: []const u8) ?ParsedStrictDirectives {
 
 fn isStrictFamilyDirective(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(name, "noImplicitAny") or
+        std.ascii.eqlIgnoreCase(name, "noImplicitThis") or
         std.ascii.eqlIgnoreCase(name, "strictFunctionTypes") or
         std.ascii.eqlIgnoreCase(name, "strictNullChecks") or
         std.ascii.eqlIgnoreCase(name, "strictPropertyInitialization") or
@@ -9307,6 +9309,7 @@ fn matchKeywordAt(source: []const u8, pos: usize, keyword: []const u8) bool {
 fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.StrictFlags {
     return .{
         .no_implicit_any = state.no_implicit_any orelse strict_on,
+        .no_implicit_this = state.no_implicit_this orelse strict_on,
         .no_unused_parameters = state.no_unused_parameters orelse false,
         .no_unused_locals = state.no_unused_locals orelse false,
         .strict_function_types = state.strict_function_types orelse strict_on,
@@ -9345,6 +9348,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.strict = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noImplicitAny")) {
         state.no_implicit_any = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "noImplicitThis")) {
+        state.no_implicit_this = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noUnusedParameters")) {
         state.no_unused_parameters = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noUnusedLocals")) {

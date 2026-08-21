@@ -3185,6 +3185,9 @@ pub const StrictFlags = struct {
     /// has no annotation and no inferable initializer raises TS7006
     /// / TS7005.
     no_implicit_any: bool = false,
+    /// `noImplicitThis` (also implied by `strict`). When false, an
+    /// unannotated plain function receiver is `any`.
+    no_implicit_this: bool = false,
     /// `noUnusedParameters`. Emits TS6133 for parameters whose name
     /// isn't referenced inside the function body. Names beginning
     /// with `_` are excluded by convention (matches tsc).
@@ -134866,12 +134869,15 @@ pub const Checker = struct {
         node: NodeId,
         member_name: hir_mod.StringId,
     ) CheckError!?TypeId {
-        if (!self.sourceHasCheckJsDirective() or node == hir_mod.none_node_id or
+        if (node == hir_mod.none_node_id or
             self.hir.kindOf(node) != .member_access) return null;
         const access = hir_mod.memberOf(self.hir, node);
         if (!self.nodeIsThisReference(access.object)) return null;
         const owner = self.checkJsPrototypeObjectLiteralOwnerName(node) orelse
             self.checkJsComputedPrototypeObjectLiteralOwnerName(node) orelse return null;
+        if (!self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_this) {
+            return types.Primitive.any;
+        }
         const constructor = self.checkJsFunctionDeclNamedInVirtualProgram(node, owner) orelse
             self.findFunctionDeclForNameNearNode(node, owner) orelse
             self.jsConstructorFunctionDeclForName(node, owner) orelse return null;
@@ -158233,9 +158239,10 @@ pub const Checker = struct {
     }
 
     fn findFunctionDeclForNameNearNode(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
-        const root = self.rootBlockFor(anchor);
-        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
-            if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, root), name)) |fn_node| return fn_node;
+        var scope = anchor;
+        while (scope != hir_mod.none_node_id) : (scope = self.hir.parentOf(scope)) {
+            if (self.hir.kindOf(scope) != .block_stmt) continue;
+            if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, scope), name)) |fn_node| return fn_node;
         }
         if (self.hir.kindOf(anchor) == .identifier) return self.findSiblingFunctionDecl(anchor);
         return null;
@@ -221119,6 +221126,27 @@ test "checker: checkjs whole-object prototype assignment merges members onto the
             try T.expect(std.mem.indexOf(u8, d.message, "'m4'") == null);
         }
     }
+}
+
+test "checker: TypeScript prototype object methods inherit constructor fields" {
+    const s = try newSetup(
+        \\(function () {
+        \\  function C(value) {
+        \\    this.value = value;
+        \\    this.cache = {};
+        \\  }
+        \\  C.prototype = {
+        \\    read: function () { return this.value; },
+        \\    clear: function () { return this.cache; },
+        \\    missing: function () { return this.unknown; }
+        \\  };
+        \\})();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_this = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs computed whole-object prototype assignment merges members" {
