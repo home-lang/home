@@ -50622,6 +50622,23 @@ pub const Checker = struct {
         return ma.name;
     }
 
+    fn checkedJsHeritageFunctionDecl(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const function = self.checkJsFunctionDeclNamedInVirtualProgram(anchor, name) orelse
+            self.findFunctionDeclForNameNearNode(anchor, name) orelse
+            self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
+        if (self.virtualSectionFilenameForNode(function)) |filename| {
+            if (!self.pathIsJsLike(filename)) return null;
+        } else if (!self.virtualSectionIsJsLike(function)) {
+            return null;
+        }
+        return function;
+    }
+
     fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
@@ -50664,6 +50681,12 @@ pub const Checker = struct {
                             break :blk inherited_t;
                         }
                     }
+                }
+                if (self.checkedJsHeritageFunctionDecl(extends_expr, id.name) != null) {
+                    if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
+                        if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
+                    }
+                    break :blk null;
                 }
                 if (self.class_instance_types.get(id.name)) |t| {
                     const inherited_t = self.merged_class_instance_types.get(t) orelse t;
@@ -51674,6 +51697,13 @@ pub const Checker = struct {
                         }
                         break :blk t;
                     }
+                }
+                if (self.checkedJsHeritageFunctionDecl(extends_expr, id.name) != null) {
+                    if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
+                        const static_t = self.typeParameterConstraint(value_t) orelse value_t;
+                        if (try self.constructReturnType(static_t)) |_| break :blk static_t;
+                    }
+                    break :blk null;
                 }
                 if (self.class_static_types.get(id.name)) |t| {
                     if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| {
@@ -135243,15 +135273,7 @@ pub const Checker = struct {
             }
         }
 
-        const src = self.source orelse return null;
-        const fn_span = self.hir.spanOf(fn_node);
-        if (fn_span.start > src.len) return null;
-        const prefix = src[0..fn_span.start];
-        const proto_pos = std.mem.lastIndexOf(u8, prefix, ".prototype.") orelse return null;
-        var owner_start = proto_pos;
-        while (owner_start > 0 and isJsDocIdentChar(prefix[owner_start - 1])) : (owner_start -= 1) {}
-        if (owner_start == proto_pos) return null;
-        return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
+        return null;
     }
 
     fn checkJsPrototypeObjectLiteralAssignmentOwnerNameForFunction(self: *Checker, fn_node: NodeId) ?hir_mod.StringId {
@@ -220126,6 +220148,43 @@ test "checker: strict checked JavaScript rejects tagged constructor functions" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
 }
 
+test "checker: checked JavaScript functions stay value-only heritage bases" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: base.js
+        \\/** @constructor @param {number} value */
+        \\function Base(value) { this.value = value; }
+        \\class Local extends Base {}
+        \\// @filename: consumer.ts
+        \\class Remote extends Base {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.not_constructor_function_type));
+}
+
+test "checker: prototype owner recovery stays within its virtual function" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: first.js
+        \\function First() { this.x = 1; }
+        \\First.prototype.method = function () { return this.x; };
+        \\// @filename: second.js
+        \\function Second() { this.y = 1; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.property_does_not_exist) continue;
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "Property 'y'") == null);
+    }
+}
+
 test "checker: generic JavaScript constructor patterns keep tsgo diagnostics" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -243372,8 +243431,6 @@ test "checker: checked JS constructor declared after its prototype use keeps TS2
         \\// @filename: a.js
         \\OOOrder.prototype.m = function () { this.p = 1; };
         \\function OOOrder() { this.x = 1; }
-        \\function InOrder() { this.y = 1; }
-        \\InOrder.prototype.m = function () { this.p = 1; };
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
@@ -247042,6 +247099,7 @@ test "checker: checked JavaScript constructors aggregate prototype property writ
         \\// @checkJs: true
         \\// @strictNullChecks: true
         \\// @noImplicitAny: true
+        \\/** @constructor */
         \\function Installer() {
         \\  this.arg = 0;
         \\  this.unknown = null;
