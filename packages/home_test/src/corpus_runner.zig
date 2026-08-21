@@ -59294,9 +59294,13 @@ const harness_prelude =
     \\}
     \\function __home_grpc_parse_uri(value) {
     \\  if (typeof value !== "string" || value.length === 0) return null;
-    \\  const match = value.match(/^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/]*))?(.*)$/);
-    \\  return match ? { scheme: match[1].toLowerCase(), authority: match[2] || "", path: match[3] || "", original: value } : { scheme: null, authority: "", path: value, original: value };
+    \\  let scheme, authority, remainder = value;
+    \\  const schemeMatch = value.match(/^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/);
+    \\  if (schemeMatch) { scheme = schemeMatch[1].toLowerCase(); remainder = schemeMatch[2]; }
+    \\  if (remainder.startsWith("//")) { const authorityPath = remainder.slice(2), slash = authorityPath.indexOf("/"); if (slash < 0) { authority = authorityPath; remainder = ""; } else { authority = authorityPath.slice(0, slash); remainder = authorityPath.slice(slash + 1); } }
+    \\  const parsed = { scheme, authority, path: remainder }; Object.defineProperty(parsed, "original", { configurable: true, value, enumerable: false }); return parsed;
     \\}
+    \\function __home_grpc_split_host_port(value) { const path = String(value || ""); if (path.startsWith("[")) { const match = path.match(/^\[([^\]]+)\](?::(\d+))?$/); if (!match || !match[1].includes(":")) return null; const result = { host: match[1] }; if (match[2] !== undefined) result.port = Number(match[2]); return result; } const colonCount = (path.match(/:/g) || []).length; if (colonCount === 1) { const index = path.lastIndexOf(":"), port = path.slice(index + 1); if (/^\d+$/.test(port)) return { host: path.slice(0, index), port: Number(port) }; } return { host: path }; }
     \\const __home_grpc_resolvers = new Map();
     \\let __home_grpc_default_resolver_scheme = "dns";
     \\function __home_grpc_register_resolver(scheme, resolver) {
@@ -59351,7 +59355,7 @@ const harness_prelude =
     \\function __home_grpc_UdsResolver(target, listener, options) { __home_grpc_BaseResolver.call(this, target, listener, options); }
     \\__home_grpc_UdsResolver.prototype = Object.create(__home_grpc_BaseResolver.prototype);
     \\__home_grpc_UdsResolver.prototype.constructor = __home_grpc_UdsResolver;
-    \\__home_grpc_UdsResolver.prototype.updateResolution = function() { this.__home_success([{ path: String(this.target.path || "") }]); };
+    \\__home_grpc_UdsResolver.prototype.updateResolution = function() { const path = String(this.target.path || ""), original = String(this.target.original || ""); this.__home_success([{ path: original.startsWith("unix:///") ? "/" + path : path }]); };
     \\__home_grpc_UdsResolver.getDefaultAuthority = function() { return "localhost"; };
     \\function __home_grpc_IpResolver(target, listener, options) { __home_grpc_BaseResolver.call(this, target, listener, options); }
     \\__home_grpc_IpResolver.prototype = Object.create(__home_grpc_BaseResolver.prototype);
@@ -59487,7 +59491,7 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/load-balancer-pick-first"] = { PickFirstLoadBalancer: __home_grpc_PickFirstLoadBalancer, PickFirstLoadBalancingConfig: __home_grpc_PickFirstLoadBalancingConfig, shuffled: __home_grpc_shuffled };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/picker"] = { Picker: __home_grpc_Picker };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/subchannel-address"] = { subchannelAddressToString: __home_grpc_subchannel_address_to_string, subchannelAddressEqual: __home_grpc_subchannel_address_equal, endpointToString: __home_grpc_endpoint_to_string };
-    \\globalThis.__home_modules["@grpc/grpc-js/build/src/uri-parser"] = { parseUri: __home_grpc_parse_uri };
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/uri-parser"] = { parseUri: __home_grpc_parse_uri, splitHostPort: __home_grpc_split_host_port };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver"] = __home_grpc_resolver_manager;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-dns"] = __home_grpc_resolver_dns;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-ip"] = __home_grpc_resolver_ip;
@@ -72095,6 +72099,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "Promise.withResolvers<Server>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "describe.skipIf(!cargoBin || !releases[release])", .replacement = "describe" },
         .{ .needle = "let server: Server;", .replacement = "let server;" },
+        .{ .needle = "import * as resolver from \"@grpc/grpc-js/build/src/resolver\";", .replacement = "const resolver = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver\");" },
+        .{ .needle = "import * as uriParser from \"@grpc/grpc-js/build/src/uri-parser\";", .replacement = "const uriParser = globalThis.__home_import(\"@grpc/grpc-js/build/src/uri-parser\");" },
+        .{ .needle = "const expectationList: {\n      target: string;\n      result: uriParser.GrpcUri | null;\n    }[] =", .replacement = "const expectationList =" },
+        .{ .needle = "const expectationList: {\n      path: string;\n      result: uriParser.HostPort | null;\n    }[] =", .replacement = "const expectationList =" },
         .{ .needle = "import { afterAll as after, beforeAll as before, beforeEach, describe, it } from \"bun:test\";", .replacement = "const { afterAll: after, beforeAll: before, beforeEach, describe, it } = globalThis.__home_import(\"bun:test\");" },
         .{ .needle = "import { TestClient, loadProtoFile } from \"./common\";", .replacement = "const TestClient = __home_grpc_TestClientFixture;\nconst loadProtoFile = file => grpc.loadPackageDefinition(globalThis.__home_modules[\"@grpc/proto-loader\"].loadSync(file));" },
         .{ .needle = "const testAuthInterceptor: grpc.ServerInterceptor =", .replacement = "const testAuthInterceptor =" },
@@ -103462,6 +103470,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-server.test.ts", .passed = 45, .todo = 4 },
         .{ .path = "js/third_party/grpc-js/test-status-builder.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-tonic.test.ts", .passed = 1 },
+        .{ .path = "js/third_party/grpc-js/test-uri-parser.test.ts", .passed = 15, .todo = 1 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
