@@ -59059,6 +59059,63 @@ const harness_prelude =
     \\const __home_grpc_resolver_dns = { setup() { __home_grpc_register_resolver("dns", __home_grpc_DnsResolver); __home_grpc_register_default_scheme("dns"); } };
     \\const __home_grpc_resolver_uds = { setup() { __home_grpc_register_resolver("unix", __home_grpc_UdsResolver); } };
     \\const __home_grpc_resolver_ip = { setup() { __home_grpc_register_resolver("ipv4", __home_grpc_IpResolver); __home_grpc_register_resolver("ipv6", __home_grpc_IpResolver); } };
+    \\const __home_grpc_status_names = new Set(["OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED"]);
+    \\function __home_grpc_validation_error(error, policy, path) {
+    \\  const cause = error instanceof Error ? error : new TypeError(String(error));
+    \\  const failure = new TypeError(String(cause.message || cause));
+    \\  failure.code = "ERR_GRPC_SERVICE_CONFIG"; failure.policy = String(policy || "serviceConfig"); failure.path = String(path || ""); failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at ServiceConfig.validateServiceConfig (policy " + failure.policy + ", path " + failure.path + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_service_config_assert(condition, message, policy, path) {
+    \\  if (!condition) throw __home_grpc_validation_error(new TypeError(message), policy, path);
+    \\}
+    \\function __home_grpc_validate_duration(value, message, policy, path, integerOnly) {
+    \\  const pattern = integerOnly ? /^(?:0|[1-9]\d*)s$/ : /^(?:0|[1-9]\d*)(?:\.\d+)?s$/;
+    \\  __home_grpc_service_config_assert(typeof value === "string" && pattern.test(value) && Number(value.slice(0, -1)) > 0, message, policy, path);
+    \\}
+    \\function __home_grpc_validate_status_codes(value, policy, path, required) {
+    \\  if (required) __home_grpc_service_config_assert(Array.isArray(value), policy + ": " + path + " is required", policy, path);
+    \\  if (value === undefined) return;
+    \\  __home_grpc_service_config_assert(Array.isArray(value), policy + ": " + path + " must be an array", policy, path);
+    \\  if (required) __home_grpc_service_config_assert(value.length > 0, policy + ": " + path + " must be non-empty", policy, path);
+    \\  for (const code of value) {
+    \\    if (typeof code === "string") __home_grpc_service_config_assert(__home_grpc_status_names.has(code), policy + ": " + path + " value not a status code name", policy, path);
+    \\    else __home_grpc_service_config_assert(Number.isInteger(code) && code >= 0 && code <= 16, policy + ": " + path + " value not in status code range", policy, path);
+    \\  }
+    \\}
+    \\function __home_grpc_validate_retry_policy(policy) {
+    \\  const name = "retry policy";
+    \\  __home_grpc_service_config_assert(policy && Number.isInteger(policy.maxAttempts) && policy.maxAttempts >= 2, name + ": maxAttempts must be an integer at least 2", name, "maxAttempts");
+    \\  __home_grpc_validate_duration(policy.initialBackoff, name + ": initialBackoff must be a string consisting of a positive integer or decimal followed by s", name, "initialBackoff", false);
+    \\  __home_grpc_validate_duration(policy.maxBackoff, name + ": maxBackoff must be a string consisting of a positive integer or decimal followed by s", name, "maxBackoff", false);
+    \\  __home_grpc_service_config_assert(typeof policy.backoffMultiplier === "number" && Number.isFinite(policy.backoffMultiplier) && policy.backoffMultiplier > 0, name + ": backoffMultiplier must be a number greater than 0", name, "backoffMultiplier");
+    \\  __home_grpc_validate_status_codes(policy.retryableStatusCodes, name, "retryableStatusCodes", true);
+    \\}
+    \\function __home_grpc_validate_hedging_policy(policy) {
+    \\  const name = "hedging policy";
+    \\  __home_grpc_service_config_assert(policy && Number.isInteger(policy.maxAttempts) && policy.maxAttempts >= 2, name + ": maxAttempts must be an integer at least 2", name, "maxAttempts");
+    \\  if (policy.hedgingDelay !== undefined) __home_grpc_validate_duration(policy.hedgingDelay, name + ": hedgingDelay must be a string consisting of a positive integer followed by s", name, "hedgingDelay", true);
+    \\  __home_grpc_validate_status_codes(policy.nonFatalStatusCodes, name, "nonFatalStatusCodes", false);
+    \\}
+    \\function __home_grpc_validate_retry_throttling(policy) {
+    \\  const name = "retryThrottling";
+    \\  __home_grpc_service_config_assert(policy && typeof policy.maxTokens === "number" && Number.isFinite(policy.maxTokens) && policy.maxTokens > 0 && policy.maxTokens <= 1000, name + ": maxTokens must be a number in (0, 1000]", name, "maxTokens");
+    \\  __home_grpc_service_config_assert(typeof policy.tokenRatio === "number" && Number.isFinite(policy.tokenRatio) && policy.tokenRatio > 0, name + ": tokenRatio must be a number greater than 0", name, "tokenRatio");
+    \\}
+    \\function __home_grpc_validate_service_config(config) {
+    \\  __home_grpc_service_config_assert(config && typeof config === "object" && !Array.isArray(config), "service config must be an object", "serviceConfig", "root");
+    \\  if (config.retryThrottling !== undefined) __home_grpc_validate_retry_throttling(config.retryThrottling);
+    \\  if (config.methodConfig !== undefined) {
+    \\    __home_grpc_service_config_assert(Array.isArray(config.methodConfig), "service config: methodConfig must be an array", "serviceConfig", "methodConfig");
+    \\    for (const method of config.methodConfig) {
+    \\      __home_grpc_service_config_assert(method && typeof method === "object" && !Array.isArray(method), "service config: methodConfig entry must be an object", "serviceConfig", "methodConfig");
+    \\      if (method.retryPolicy !== undefined) __home_grpc_validate_retry_policy(method.retryPolicy);
+    \\      if (method.hedgingPolicy !== undefined) __home_grpc_validate_hedging_policy(method.hedgingPolicy);
+    \\    }
+    \\  }
+    \\  return config;
+    \\}
     \\const __home_grpc_module = {
     \\  CallCredentials: __home_grpc_CallCredentials,
     \\  ChannelCredentials: __home_grpc_ChannelCredentials,
@@ -59110,7 +59167,7 @@ const harness_prelude =
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/resolver-uds"] = __home_grpc_resolver_uds;
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/environment"] = { GRPC_NODE_USE_ALTERNATIVE_RESOLVER: false };
     \\globalThis.__home_modules["@grpc/grpc-js/build/src/call-interface"] = {};
-    \\globalThis.__home_modules["@grpc/grpc-js/build/src/service-config"] = {};
+    \\globalThis.__home_modules["@grpc/grpc-js/build/src/service-config"] = { validateServiceConfig: __home_grpc_validate_service_config };
     \\const __home_grpc_duration = {
     \\  durationMessageToDuration(message) { return { seconds: Number.parseInt(message.seconds), nanos: message.nanos }; },
     \\  msToDuration(millis) { return { seconds: (millis / 1000) | 0, nanos: ((millis % 1000) * 1000000) | 0 }; },
@@ -71718,6 +71775,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "import * as resolver_ip from \"@grpc/grpc-js/build/src/resolver-ip\";", .replacement = "const resolver_ip = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver-ip\");" },
         .{ .needle = "import * as resolver_uds from \"@grpc/grpc-js/build/src/resolver-uds\";", .replacement = "const resolver_uds = globalThis.__home_import(\"@grpc/grpc-js/build/src/resolver-uds\");" },
         .{ .needle = "import { ServiceConfig } from \"@grpc/grpc-js/build/src/service-config\";", .replacement = "" },
+        .{ .needle = "import { validateServiceConfig } from \"@grpc/grpc-js/build/src/service-config\";", .replacement = "const { validateServiceConfig } = globalThis.__home_import(\"@grpc/grpc-js/build/src/service-config\");" },
+        .{ .needle = "function createRetryServiceConfig(retryConfig: object): object", .replacement = "function createRetryServiceConfig(retryConfig)" },
+        .{ .needle = "function createHedgingServiceConfig(hedgingConfig: object): object", .replacement = "function createHedgingServiceConfig(hedgingConfig)" },
+        .{ .needle = "function createThrottlingServiceConfig(retryThrottling: object): object", .replacement = "function createThrottlingServiceConfig(retryThrottling)" },
+        .{ .needle = "interface TestCase {\n  description: string;\n  config: object;\n  error: RegExp;\n}\n\n", .replacement = "" },
+        .{ .needle = "const RETRY_TEST_CASES: TestCase[] =", .replacement = "const RETRY_TEST_CASES =" },
+        .{ .needle = "const HEDGING_TEST_CASES: TestCase[] =", .replacement = "const HEDGING_TEST_CASES =" },
+        .{ .needle = "const THROTTLING_TEST_CASES: TestCase[] =", .replacement = "const THROTTLING_TEST_CASES =" },
         .{ .needle = "import {\n  Endpoint,\n  SubchannelAddress,\n  endpointToString,\n  subchannelAddressEqual,\n} from \"@grpc/grpc-js/build/src/subchannel-address\";", .replacement = "const { endpointToString, subchannelAddressEqual } = globalThis.__home_import(\"@grpc/grpc-js/build/src/subchannel-address\");" },
         .{ .needle = "import { GrpcUri, parseUri } from \"@grpc/grpc-js/build/src/uri-parser\";", .replacement = "const { parseUri } = globalThis.__home_import(\"@grpc/grpc-js/build/src/uri-parser\");" },
         .{ .needle = "import { isIPv6 } from \"harness\";", .replacement = "const { isIPv6 } = globalThis.__home_import(\"harness\");" },
@@ -88331,6 +88396,22 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  }, {});
         \\  resolver.updateResolution();
         \\});
+        \\
+        \\test("retry service-config validation diagnostics", () => {
+        \\  const { validateServiceConfig } = globalThis.__home_import("@grpc/grpc-js/build/src/service-config");
+        \\  let validationError;
+        \\  try {
+        \\    validateServiceConfig({ methodConfig: [{ name: [{ service: "A", method: "B" }], retryPolicy: { maxAttempts: 1, initialBackoff: "1s", maxBackoff: "1s", backoffMultiplier: 1, retryableStatusCodes: [14] } }] });
+        \\  } catch (error) { validationError = error; }
+        \\  assert.strictEqual(validationError.code, "ERR_GRPC_SERVICE_CONFIG");
+        \\  assert.strictEqual(validationError.policy, "retry policy");
+        \\  assert.strictEqual(validationError.path, "maxAttempts");
+        \\  assert.ok(validationError.cause instanceof Error);
+        \\  assert.ok(String(validationError.stack).includes("ServiceConfig.validateServiceConfig"));
+        \\  assert.ok(String(validationError.stack).includes("policy retry policy"));
+        \\  assert.ok(String(validationError.stack).includes("path maxAttempts"));
+        \\  assert.ok(String(validationError.stack).includes("Caused by:"));
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/grpc-js/grpc-error-stacks.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -88348,7 +88429,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
@@ -102851,6 +102932,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
         .{ .path = "js/third_party/grpc-js/test-pick-first.test.ts", .passed = 22 },
         .{ .path = "js/third_party/grpc-js/test-prototype-pollution.test.ts", .passed = 2 },
         .{ .path = "js/third_party/grpc-js/test-resolver.test.ts", .passed = 20, .todo = 4 },
+        .{ .path = "js/third_party/grpc-js/test-retry-config.test.ts", .passed = 28 },
         .{ .path = "js/third_party/yargs/yargs-cjs.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/decoding.test.js", .passed = 1 },
         .{ .path = "js/third_party/jsonwebtoken/buffer.test.js", .passed = 1 },
