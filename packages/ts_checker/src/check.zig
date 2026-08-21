@@ -103052,6 +103052,10 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     }
+                    if ((try self.futureCommonJsExportAssignmentValue(node, key)) != null) {
+                        try self.reportExpandoPropertyUsedBeforeAssignment(node, key.prop_name);
+                        break :blk types.Primitive.any;
+                    }
                     // A property write defines a CommonJS expando only when
                     // the section has no whole export assignment. Current
                     // tsgo diagnoses the mixed form and checks
@@ -134547,7 +134551,12 @@ pub const Checker = struct {
             if (a.value != cur) return null;
             if (self.sourceHasCheckJsDirective() and self.hir.kindOf(a.target) == .member_access) {
                 const member = hir_mod.memberOf(self.hir, a.target);
-                const receiver_t = self.checkExpression(member.object) catch types.Primitive.none;
+                var receiver_t = self.checkExpression(member.object) catch types.Primitive.none;
+                if ((receiver_t == types.Primitive.none or receiver_t == types.Primitive.any or
+                    receiver_t == types.Primitive.unknown) and self.nodeIsExactModuleExportsAccess(member.object))
+                {
+                    receiver_t = self.commonJsNamedExportFunctionReceiverType(cur, member.name) catch receiver_t;
+                }
                 if (receiver_t != types.Primitive.none and
                     receiver_t != types.Primitive.any and
                     receiver_t != types.Primitive.unknown)
@@ -134563,6 +134572,32 @@ pub const Checker = struct {
             return self.memberAccessEffectiveThisType(a.target, target_t) catch null;
         }
         return null;
+    }
+
+    fn commonJsNamedExportFunctionReceiverType(
+        self: *Checker,
+        function_node: NodeId,
+        export_name: hir_mod.StringId,
+    ) CheckError!TypeId {
+        var function_t = self.hir.typeOf(function_node);
+        if (function_t == types.Primitive.none or function_t == types.Primitive.unknown) {
+            function_t = try self.checkFnSignatureOnly(function_node);
+        }
+        const receiver_t = self.interner.internObjectType(&.{.{
+            .name = export_name,
+            .type = function_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }}) catch return error.OutOfMemory;
+        if (!self.alias_display_names.contains(receiver_t)) {
+            try self.alias_display_names.put(
+                self.gpa,
+                receiver_t,
+                try self.currentCommonJsModuleTypeName(function_node),
+            );
+        }
+        return receiver_t;
     }
 
     fn functionDeclHasExplicitThisParam(self: *Checker, fn_node: NodeId) bool {
@@ -135606,7 +135641,12 @@ pub const Checker = struct {
             self.commonJsExportsObjectPropertyName(target.object) == null) return;
         const value_kind = self.hir.kindOf(assignment.value);
         if (value_kind != .fn_decl and value_kind != .fn_expr) return;
-        const receiver_t = try self.checkExpression(target.object);
+        var receiver_t = try self.checkExpression(target.object);
+        if ((receiver_t == types.Primitive.none or receiver_t == types.Primitive.any or
+            receiver_t == types.Primitive.unknown) and self.nodeIsExactModuleExportsAccess(target.object))
+        {
+            receiver_t = try self.commonJsNamedExportFunctionReceiverType(assignment.value, target.name);
+        }
         try self.reportFunctionThisMembersMissingFromType(assignment.value, receiver_t, false);
     }
 
@@ -136086,11 +136126,16 @@ pub const Checker = struct {
         }
         const access = hir_mod.memberOf(self.hir, node);
         if (!std.mem.eql(u8, self.string_interner.get(access.name), "prototype") or
-            access.object == hir_mod.none_node_id or self.hir.kindOf(access.object) != .identifier)
-        {
-            return false;
+            access.object == hir_mod.none_node_id) return false;
+        const owner = switch (self.hir.kindOf(access.object)) {
+            .identifier => hir_mod.identifierOf(self.hir, access.object).name,
+            .member_access => self.memberAccessTrailingName(access.object) orelse return false,
+            else => return false,
+        };
+        if (self.hir.kindOf(access.object) == .member_access) {
+            const function = self.checkJsMemberAssignedFunctionForName(node, owner) orelse return false;
+            return self.fnProvidesCheckJsConstructorInstance(function);
         }
-        const owner = hir_mod.identifierOf(self.hir, access.object).name;
         return self.rootHasFunctionOrClassDeclNamed(node, owner) or
             self.checkJsFunctionDeclNamedInVirtualProgram(node, owner) != null or
             self.findFunctionDeclForNameNearNode(node, owner) != null or
@@ -246436,6 +246481,49 @@ test "checker: CommonJS sub-functions use the prior whole-export function type" 
         s,
         TsCodes.property_does_not_exist,
         "Property 'instance' does not exist on type '(p: number) => void'.",
+    ));
+}
+
+test "checker: named CommonJS constructor functions use the current module namespace" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: constructor.js
+        \\/** @constructor */
+        \\module.exports.MyClass = function () {
+        \\  this.x = 1;
+        \\};
+        \\module.exports.MyClass.prototype = { a: function () {} };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'x' does not exist on type 'typeof import(\"constructor\")'.",
+    ));
+}
+
+test "checker: CommonJS export reads before later writes report definite assignment" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\module.exports.jj = module.exports.j;
+        \\module.exports.j = function j() {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_used_before_assigned));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_used_before_assigned,
+        "Property 'j' is used before being assigned.",
     ));
 }
 
