@@ -102666,10 +102666,8 @@ pub const Checker = struct {
                 // The `Object` global's es2017+ members (`values` /
                 // `entries`) are seeded unconditionally, so the lib
                 // gate must run BEFORE the member lookup succeeds.
-                if (obj_t != types.Primitive.none and obj_t == self.lib_cache.object_global) {
-                    if (try self.reportLibGatedPropertyAccess(node, obj_t, m.name)) {
-                        break :blk types.Primitive.any;
-                    }
+                if (try self.reportLibGatedPropertyAccess(node, access_obj_t, m.name)) {
+                    break :blk types.Primitive.any;
                 }
                 if (self.identifierRootedMemberKey(node)) |flow_key| {
                     if (!self.isPlainAssignmentTarget(node)) {
@@ -122208,14 +122206,22 @@ pub const Checker = struct {
     }
 
     fn reportLibGatedPropertyAccess(self: *Checker, node: hir_mod.NodeId, receiver_t: TypeId, member_name: hir_mod.StringId) CheckError!bool {
-        const required = self.libGatedPropertyMember(receiver_t, member_name) orelse return false;
+        const member = hir_mod.memberOf(self.hir, node);
+        const receiver_is_atomics = self.hir.kindOf(member.object) == .identifier and
+            std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, member.object).name), "Atomics");
+        const required = if (receiver_is_atomics and std.mem.eql(u8, self.string_interner.get(member_name), "waitAsync"))
+            "es2024"
+        else
+            self.libGatedPropertyMember(receiver_t, member_name) orelse return false;
         const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
         if (has_lib_directive) {
             if (!self.sourceLibDirectiveExcludes(required)) return false;
         } else if (!self.sourceTargetExcludesLib(required)) return false;
 
         const prop_name = self.string_interner.get(member_name);
-        const receiver_name = if (receiver_t != types.Primitive.none and receiver_t == self.lib_cache.object_global)
+        const receiver_name = if (receiver_is_atomics)
+            "Atomics"
+        else if (receiver_t != types.Primitive.none and receiver_t == self.lib_cache.object_global)
             "ObjectConstructor"
         else
             (try self.allocSimpleTypeName(receiver_t)) orelse "type";
@@ -127302,6 +127308,9 @@ pub const Checker = struct {
         const sig_wait_async = self.interner.internSignature(&[_]TypeId{ any_t, any_t, any_t, any_t }, any_t, false) catch return error.OutOfMemory;
         // `pause(durationHint?)` (es2024.sharedmemory) → void.
         const sig_pause = self.interner.internSignature(&[_]TypeId{any_t}, types.Primitive.void_t, false) catch return error.OutOfMemory;
+        try self.signature_min_args.put(self.gpa, sig_wait, 3);
+        try self.signature_min_args.put(self.gpa, sig_wait_async, 3);
+        try self.signature_min_args.put(self.gpa, sig_pause, 0);
         const sig_is_lockfree = self.interner.internSignature(&[_]TypeId{number_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("add") catch return error.OutOfMemory, .type = sig3_num, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -182557,6 +182566,20 @@ test "checker: modern shared-memory and intl globals are recognized" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: Atomics waitAsync requires the es2024 library" {
+    const s = try newSetup(
+        \\// @lib: es2022
+        \\declare const ints: any;
+        \\Atomics.waitAsync(ints, 0, 0);
+        \\Atomics.waitAsync(ints, 0, 0, 1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist_target_library));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
 test "checker: Intl Segmenter constructor and locale options are optional" {
