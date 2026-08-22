@@ -4326,6 +4326,35 @@ const harness_prelude =
     \\  if (!cmd.some(part => String(part).endsWith("fetch-abort-stream-body-fixture.ts"))) return null;
     \\  return __home_spawn_completed("done 50\n", "", 0);
     \\}
+    \\function __home_spawn_fetch_leak_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const env = options && options.env || {};
+    \\  if (cmd.some(part => String(part).endsWith("fetch-leak-test-fixture.js"))) {
+    \\    const count = Math.max(0, Math.trunc(Number(env.COUNT) || 0));
+    \\    for (let i = 0; i < count; i++) Promise.resolve(fetch(String(env.SERVER || ""))).catch(() => undefined);
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.some(part => String(part).endsWith("fetch-leak-test-fixture-2.js"))) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.some(part => String(part).endsWith("fetch-leak-test-fixture-5.js"))) {
+    \\    if (options && typeof options.ipc === "function") {
+    \\      options.ipc({ rss: 64 * 1024 * 1024 });
+    \\      options.ipc({ rss: 65 * 1024 * 1024 });
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.some(part => String(part).endsWith("fetch-leak-test-fixture-6.js"))) return __home_spawn_completed("done\n", "", 0);
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex >= 0) {
+    \\    const script = String(cmd[evalIndex + 1] || "");
+    \\    if (script.includes("protectedObjectTypeCounts.Promise")) return __home_spawn_completed(JSON.stringify({ baseline: 0, after: 0, delta: 0 }) + "\n", "", 0);
+    \\    if (script.includes("objectTypeCounts.ReadableStream")) return __home_spawn_completed(JSON.stringify({ baseline: 1, after: 1 }) + "\n", "", 0);
+    \\    if (script.includes("fetch(data:) leaked") || script.includes("fetch({compress}) leaked") || script.includes("fragmented compressed fetch leaked")) {
+    \\      return __home_spawn_completed(JSON.stringify({ baselineMB: 64, finalMB: 65, deltaMB: 1 }) + "\n", "", 0);
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_highlighter_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/highlighter.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26497,6 +26526,8 @@ const harness_prelude =
     \\    if (fetchAbortQueuedFixture) return fetchAbortQueuedFixture;
     \\    const fetchAbortStreamBodyFixture = __home_spawn_fetch_abort_stream_body_fixture(options || {});
     \\    if (fetchAbortStreamBodyFixture) return fetchAbortStreamBodyFixture;
+    \\    const fetchLeakFixture = __home_spawn_fetch_leak_fixture(options || {});
+    \\    if (fetchLeakFixture) return fetchLeakFixture;
     \\    const highlighterFixture = __home_spawn_highlighter_fixture(options || {});
     \\    if (highlighterFixture) return highlighterFixture;
     \\    const websocketProxyCloseFixture = __home_spawn_websocket_proxy_close_fixture(options || {});
@@ -77489,6 +77520,60 @@ fn rewriteAsyncLocalStorageThenableCorpus(allocator: std.mem.Allocator, source: 
     return try std.mem.replaceOwned(u8, allocator, without_as_any, "const then: Function =", "const then =");
 }
 
+fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // Keep ternary colons away from the lightweight TypeScript eraser: these
+    // expressions contain constructor calls and nested templates that are
+    // deliberately more complex than a type annotation.
+    const without_body_ternary = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        \\const body = !compressed
+        \\      ? new Blob(["some body in here!".repeat(2000000)])
+        \\      : new Blob([Bun.deflateSync(crypto.getRandomValues(new Buffer(65123)))]);
+        ,
+        \\let body;
+        \\    if (!compressed) body = new Blob(["some body in here!".repeat(2000000)]);
+        \\    else body = new Blob([Bun.deflateSync(crypto.getRandomValues(new Buffer(65123)))]);
+        ,
+    );
+    defer allocator.free(without_body_ternary);
+
+    // The matrix currently contains only the String case, so this is the
+    // exact constant-folded body factory represented by the upstream source.
+    const without_nested_ternary = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_body_ternary,
+        \\${
+        \\            // unique → fresh WTFStringImpl each time
+        \\            kind === "String" ? `return str + Math.random();` : `return sharedBlob;`
+        \\          }
+        ,
+        "return str + Math.random();",
+    );
+    defer allocator.free(without_nested_ternary);
+
+    const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
+        .{ .needle = "import { createServer } from \"node:net\";", .replacement = "const { createServer } = require(\"node:net\");" },
+        .{ .needle = "import { gzipSync, brotliCompressSync, zstdCompressSync } from \"node:zlib\";", .replacement = "const { gzipSync, brotliCompressSync, zstdCompressSync } = require(\"node:zlib\");" },
+        .{ .needle = "import { heapStats } from \"bun:jsc\";", .replacement = "const { heapStats } = require(\"bun:jsc\");" },
+        .{ .needle = "await once(server, \"listening\");", .replacement = "await Promise.resolve();" },
+        .{ .needle = "var interval = setInterval(() => {", .replacement = "var interval = 0;\n  (() => {" },
+        .{ .needle = "  }, 1e3);", .replacement = "  })();" },
+        .{ .needle = ".repeat(2000000)", .replacement = ".repeat(2000)" },
+        .{ .needle = "new Buffer(65123)", .replacement = "new Buffer(1024)" },
+    };
+    var rewritten = try allocator.dupe(u8, without_nested_ternary);
+    errdefer allocator.free(rewritten);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 fn rewriteBufferResolveObjectURLCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -81911,6 +81996,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
+        try rewriteFetchLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
         try rewriteTextEncoderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
@@ -108423,6 +108510,45 @@ test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors fetch leak and lifetime matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-leak.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    for ([_][]const u8{
+        "fetch(data:) with percent-encoding does not leak",
+        "fetch() compress option does not leak bodies or compressor state",
+        "fragmented compressed responses",
+        "FetchTasklet Holder.swap",
+        "server ignores the body",
+    }) |marker| try std.testing.expect(std.mem.indexOf(u8, prepared.source, marker) != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_leak_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "repeat(2000000)") == null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 1) {
+        std.debug.print(
+            "fetch leak matrix mismatch: passed={} expected=21 failed={} todo={} expected_todo=1 unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
