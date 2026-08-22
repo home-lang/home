@@ -90537,6 +90537,11 @@ pub const Checker = struct {
             jsDocTemplateVariance(template_variance),
             is_const,
         ) catch return error.OutOfMemory;
+        if (template_index.* == 0 and constraint_text.len > 0) {
+            try self.jsdoc_constrained_type_params.put(self.gpa, formal_t, {});
+            const display = try self.diag_arena.allocator().dupe(u8, constraint_text);
+            try self.jsdoc_constraint_display_names.put(self.gpa, formal_t, display);
+        }
         if (template_index.* < arg_types.len) {
             const supplied_t = arg_types[template_index.*];
             const diagnostic_start = self.diagnostics.items.len;
@@ -90998,7 +91003,10 @@ pub const Checker = struct {
     fn relocateJsDocTypeArgConstraintDiagnostics(self: *Checker, diagnostic_start: usize, pos: ?u32) void {
         const source_pos = pos orelse return;
         for (self.diagnostics.items[diagnostic_start..]) |*diagnostic| {
-            if (diagnostic.code == TsCodes.type_does_not_satisfy_constraint and diagnostic.pos == null) {
+            if ((diagnostic.code == TsCodes.type_does_not_satisfy_constraint or
+                diagnostic.code == TsCodes.property_missing_required) and
+                diagnostic.pos == null)
+            {
                 diagnostic.pos = source_pos;
             }
         }
@@ -131523,11 +131531,20 @@ pub const Checker = struct {
         // noise on `inferTypesWithExtends1.ts(136)` and similar
         // conditional-type alias bodies.
         if (try self.checkUnionTypeArgSatisfiesConstraint(arg_node, constraint)) return;
+        if (self.jsdoc_constrained_type_params.contains(param_t) or
+            self.typeArgBelongsToVisibleJsDocTypedef(arg_node))
+        {
+            const comparable_arg = if (arg_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(arg_t).is_type_parameter)
+                self.typeParameterConstraint(arg_t) orelse arg_t
+            else
+                arg_t;
+            if (try self.jsDocConstrainedTypeAssignable(comparable_arg, constraint, 0)) return;
+            if (try self.tryReportTypeArgSingleMissingProperty(arg_node, comparable_arg, constraint, false)) return;
+        }
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
-        if (self.jsdoc_constrained_type_params.contains(param_t) and
-            try self.jsDocConstrainedTypeAssignable(arg_t, constraint, 0)) return;
         // Deferred indexed-access argument over a generic parameter
         // (`Foo<Source[Key], ÃÂ¢ÃÂÃÂ¦>` inside the body of a generic alias
         // `Foo<Source extends object, ÃÂ¢ÃÂÃÂ¦>`). When the type argument is
@@ -131691,6 +131708,16 @@ pub const Checker = struct {
             else => false,
         };
         if (!is_heritage) return false;
+        return self.tryReportTypeArgSingleMissingProperty(arg_node, source, target, true);
+    }
+
+    fn tryReportTypeArgSingleMissingProperty(
+        self: *Checker,
+        arg_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+        include_inherited: bool,
+    ) CheckError!bool {
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(source).is_object_type or
             !self.interner.pool.flagsOf(target).is_object_type)
@@ -131700,20 +131727,43 @@ pub const Checker = struct {
 
         var missing: ?types.ObjectMember = null;
         for (self.interner.objectMembers(target)) |required| {
-            if (required.is_optional or (try self.lookupObjectMember(source, required.name)) != null) continue;
+            const source_has_member = if (include_inherited)
+                (try self.lookupObjectMember(source, required.name)) != null
+            else
+                self.interner.objectMemberInfo(source, required.name) != null;
+            if (required.is_optional or source_has_member) continue;
             if (missing != null) return false;
             missing = required;
         }
         const required = missing orelse return false;
-        const source_name = (try self.typeArgConstraintTypeName(source, false)) orelse return false;
+        const source_name = (try self.typeArgConstraintTypeNameAtNode(arg_node, source, false)) orelse return false;
         const target_name = (try self.typeArgConstraintTypeName(target, false)) orelse return false;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
             .{ self.string_interner.get(required.name), source_name, target_name },
         );
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.node == arg_node and
+                diagnostic.code == TsCodes.property_missing_required and
+                std.mem.eql(u8, diagnostic.message, msg)) return true;
+        }
         try self.report(arg_node, TsCodes.property_missing_required, msg);
         return true;
+    }
+
+    fn typeArgBelongsToVisibleJsDocTypedef(self: *Checker, arg_node: NodeId) bool {
+        var current = self.hir.parentOf(arg_node);
+        var depth: u8 = 0;
+        while (current != hir_mod.none_node_id and depth < 8) : ({
+            current = self.hir.parentOf(current);
+            depth += 1;
+        }) {
+            if (self.hir.kindOf(current) != .type_ref) continue;
+            const name = hir_mod.typeRefOf(self.hir, current).name;
+            return self.visibleJsDocTypedefNameExistsAt(arg_node, name);
+        }
+        return false;
     }
 
     fn checkUnionTypeArgSatisfiesConstraint(
@@ -217986,7 +218036,8 @@ test "checker: checkjs JSDoc typedef supports comma templates across virtual fil
     s.checker.setAllowJsEnabled(true);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generic_type_requires_args));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
