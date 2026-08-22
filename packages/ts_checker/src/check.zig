@@ -4594,6 +4594,7 @@ pub const Checker = struct {
     target_emit_es5: bool = false,
     target_es5_baseline: bool = false,
     target_selection_explicit: bool = false,
+    target_supports_top_level_await: bool = true,
     /// True when the entire compilation unit is a `.d.ts` /
     /// `.d.mts` / `.d.cts` declaration file (set from outside via
     /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
@@ -4948,6 +4949,11 @@ pub const Checker = struct {
 
     pub fn setTargetEmitEs5(self: *Checker, enabled: bool) void {
         self.target_emit_es5 = enabled;
+        self.target_selection_explicit = true;
+    }
+
+    pub fn setTargetSupportsTopLevelAwait(self: *Checker, enabled: bool) void {
+        self.target_supports_top_level_await = enabled;
         self.target_selection_explicit = true;
     }
 
@@ -8340,7 +8346,9 @@ pub const Checker = struct {
                         ret_t != types.Primitive.unknown and
                         ret_t != types.Primitive.never)
                     {
-                        if (self.hir.kindOf(r.value) == .object_literal and
+                        if (try self.tryReportSinglePropertyMissing(node, r.value, ret_t, declared)) {
+                            emitted_nullish_return_mismatch = true;
+                        } else if (self.hir.kindOf(r.value) == .object_literal and
                             try self.tryReportObjectLiteralPropertyMismatch(r.value, declared))
                         {
                             emitted_nullish_return_mismatch = true;
@@ -22974,6 +22982,7 @@ pub const Checker = struct {
     }
 
     fn sourceTargetDisallowsTopLevelAwait(self: *Checker) bool {
+        if (self.target_selection_explicit) return !self.target_supports_top_level_await;
         return self.sourceDirectiveValueMentions("target", "es3") or
             self.sourceDirectiveValueMentions("target", "es5") or
             self.sourceDirectiveValueMentions("target", "es2015") or
@@ -84568,6 +84577,7 @@ pub const Checker = struct {
             (!self.varDeclHasMalformedListSyntax(node, v.name) or recovered_private_indexed_access) and
             !self.varDeclSharesLineWithDestructuringWithoutInitializer(node) and
             (!self.varDeclIsInsideFunctionLike(node) or recovered_private_indexed_access) and
+            !self.varDeclIsRecoveredInvalidLabelBody(node) and
             !self.varDeclIsReservedAwaitInStaticBlock(node, v.name))
         {
             const var_is_suggestion = !self.strict_flags.no_implicit_any;
@@ -84761,6 +84771,12 @@ pub const Checker = struct {
         if (!self.nodeIsInClassStaticBlockBeforeFunction(node)) return false;
         const await_id = self.string_interner.intern("await") catch return false;
         return self.findAwaitBindingIdentifier(name_node, await_id) != null;
+    }
+
+    fn varDeclIsRecoveredInvalidLabelBody(self: *Checker, node: NodeId) bool {
+        if (!self.has_parse_diagnostics) return false;
+        const parent = self.hir.parentOf(node);
+        return parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .labeled_stmt;
     }
 
     fn varDeclIsRecoveredPrivateIndexedAccess(self: *Checker, node: NodeId, name_node: NodeId) bool {
@@ -167654,7 +167670,14 @@ pub const Checker = struct {
         // source lacks. Only fire when there's exactly one such
         // missing member ÃÂ¢ÃÂÃÂ for two or more, tsc switches to the
         // multi-property TS2739 wording.
-        const target_members = self.interner.objectMembers(target);
+        const target_is_class_instance = self.class_name_by_instance.get(target) != null;
+        var ordered_target_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer ordered_target_members.deinit(self.gpa);
+        if (target_is_class_instance) try self.objectMembersOwnThenInherited(target, &ordered_target_members);
+        const target_members = if (target_is_class_instance)
+            ordered_target_members.items
+        else
+            self.interner.objectMembers(target);
         const source_members = if (source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type and
             !self.interner.pool.flagsOf(source).is_union and
@@ -167674,12 +167697,14 @@ pub const Checker = struct {
         var missing_total: usize = 0;
         const source_is_class_instance = self.class_name_by_instance.get(source) != null;
         const source_is_class_static = self.class_name_by_static.get(source) != null;
-        const target_is_class_instance = self.class_name_by_instance.get(target) != null;
         const class_instance_mismatch = source_is_class_instance and target_is_class_instance and source != target;
         const class_static_to_instance_mismatch = source_is_class_static and target_is_class_instance;
         const class_shape_mismatch = class_instance_mismatch or class_static_to_instance_mismatch;
+        const object_literal_to_class = target_is_class_instance and
+            value_node != hir_mod.none_node_id and
+            self.hir.kindOf(value_node) == .object_literal;
         for (target_members) |tm| {
-            if (tm.is_optional or (tm.is_method and !class_shape_mismatch)) continue;
+            if (tm.is_optional or (tm.is_method and !class_shape_mismatch and !object_literal_to_class)) continue;
             var found = (source_is_primitive_object_intersection or source_is_object_intersection) and
                 self.intersectionHasObjectMemberNamed(source, tm.name);
             for (source_members) |sm| {
@@ -178366,6 +178391,19 @@ test "checker: for-await context diagnostics match async/top-level split" {
         try T.expect(d.code != TsCodes.for_await_target_module);
     }
     try T.expect(found_1103);
+}
+
+test "checker: parity batch selected modern target wins over multi-target source directive" {
+    const s = try newSetup(
+        \\// @target: es5,esnext
+        \\// @module: esnext
+        \\for await (const x of y) {}
+        \\export {};
+    );
+    defer destroySetup(s);
+    s.checker.setTargetSupportsTopLevelAwait(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.for_await_target_module));
 }
 
 test "checker: tsgo parity: async accessor rejects for-await" {
@@ -194752,6 +194790,15 @@ test "checker: noImplicitAny emits TS7034 for bare `let x` declaration" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: parity batch recovered invalid labeled var suppresses TS7034" {
+    const s = try newSetup("label: var y;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHasParseDiagnostics(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
 }
 
 test "checker: noImplicitAny emits TS7005 for ambient bare var declaration" {
@@ -233175,6 +233222,30 @@ test "checker: TS2322 fires on `return null;` from a string-typed method" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: parity batch class return types report all missing required members" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\    id: number;
+        \\    dispose() {}
+        \\}
+        \\class D extends C { name: string; }
+        \\function fromLiteral(): D { return { id: 12 }; }
+        \\function fromBase(): D { return new C(); }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_missing_properties,
+        "Type '{ id: number; }' is missing the following properties from type 'D': name, dispose",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.property_missing_required,
+        "Property 'name' is missing in type 'C' but required in type 'D'.",
+    ));
 }
 
 test "checker: TS2322 prose preserves method-shorthand member syntax" {

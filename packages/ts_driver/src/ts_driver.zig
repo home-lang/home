@@ -2171,6 +2171,7 @@ pub fn compileSource(
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
+    checker.setTargetSupportsTopLevelAwait(options.emit.es_target.supportsNativeAsync());
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     checker.setReflectSuperStaticInitializerCollisionEnabled(!options.emit.es_target.supportsNativeClassFields());
     checker.setAllowImportingTsExtensionsEnabled(options.allow_importing_ts_extensions or
