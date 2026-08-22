@@ -8461,7 +8461,10 @@ pub const Checker = struct {
                                 }
                             }
                         },
-                        else => _ = try self.checkExpression(fr.init),
+                        else => {
+                            _ = try self.checkExpression(fr.init);
+                            try self.applyForInitializerAssignmentFlow(fr.init);
+                        },
                     }
                 }
                 if (fr.cond != hir_mod.none_node_id) {
@@ -8472,6 +8475,7 @@ pub const Checker = struct {
                 defer self.popNarrowScope();
                 if (fr.cond != hir_mod.none_node_id) try self.applyTypeGuard(fr.cond, true);
                 try self.checkStatement(fr.body);
+                try self.applyLoopBodyFallthroughAssignmentFlow(fr.body);
                 if (fr.update != hir_mod.none_node_id) {
                     _ = try self.checkExpression(fr.update);
                 }
@@ -20236,6 +20240,7 @@ pub const Checker = struct {
                 defer body_pending.deinit(self.gpa);
                 try self.clonePendingAssignments(pending, &body_pending);
                 try self.scanForUsedBeforeAssign(fr.body, &body_pending);
+                try self.removeDefinitelyAssignedAfterFor(fr, pending);
             },
             .try_stmt => {
                 const t = hir_mod.tryOf(self.hir, node);
@@ -20907,6 +20912,95 @@ pub const Checker = struct {
             else => {},
         }
         return false;
+    }
+
+    fn removeDefinitelyAssignedAfterFor(
+        self: *Checker,
+        statement: hir_mod.ForPayload,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (statement.cond == hir_mod.none_node_id or pending.count() == 0) return;
+
+        var false_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer false_pending.deinit(self.gpa);
+        try self.clonePendingAssignments(pending, &false_pending);
+        try self.removePendingFromPositiveGuardBranch(statement.cond, false, &false_pending);
+
+        var assigned_after_loop: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer assigned_after_loop.deinit(self.gpa);
+        var names = pending.keyIterator();
+        while (names.next()) |name_ptr| {
+            const name = name_ptr.*;
+            if (false_pending.contains(name)) continue;
+            if (!try self.loopBreaksPreserveDefiniteAssignment(statement.body, name, false)) continue;
+            try assigned_after_loop.append(self.gpa, name);
+        }
+        for (assigned_after_loop.items) |name| _ = pending.remove(name);
+    }
+
+    fn loopBreaksPreserveDefiniteAssignment(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        assigned: bool,
+    ) CheckError!bool {
+        if (node == hir_mod.none_node_id) return true;
+        return switch (self.hir.kindOf(node)) {
+            .break_stmt => assigned,
+            .block_stmt => blk: {
+                var assigned_before_next = assigned;
+                for (hir_mod.blockStmts(self.hir, node)) |child| {
+                    if (!try self.loopBreaksPreserveDefiniteAssignment(child, name, assigned_before_next)) {
+                        break :blk false;
+                    }
+                    if (self.statementDirectlyAssignsIdentifier(child, name)) assigned_before_next = true;
+                }
+                break :blk true;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                const then_assigned = assigned or try self.guardProvesDefiniteAssignment(conditional.cond, true, name);
+                if (!try self.loopBreaksPreserveDefiniteAssignment(conditional.then_branch, name, then_assigned)) {
+                    break :blk false;
+                }
+                const else_assigned = assigned or try self.guardProvesDefiniteAssignment(conditional.cond, false, name);
+                break :blk try self.loopBreaksPreserveDefiniteAssignment(conditional.else_branch, name, else_assigned);
+            },
+            .for_stmt, .for_in_stmt, .for_of_stmt, .while_stmt, .do_while_stmt,
+            .switch_stmt, .fn_decl, .fn_expr, .arrow_fn,
+            => true,
+            else => true,
+        };
+    }
+
+    fn guardProvesDefiniteAssignment(
+        self: *Checker,
+        condition: NodeId,
+        when_true: bool,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        var candidate: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer candidate.deinit(self.gpa);
+        try candidate.put(self.gpa, name, hir_mod.none_node_id);
+        try self.removePendingFromPositiveGuardBranch(condition, when_true, &candidate);
+        return !candidate.contains(name);
+    }
+
+    fn statementDirectlyAssignsIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                break :blk assignment.op == null and
+                    self.hir.kindOf(assignment.target) == .identifier and
+                    hir_mod.identifierOf(self.hir, assignment.target).name == name;
+            },
+            .var_decl, .let_decl, .const_decl => blk: {
+                const declaration = hir_mod.varDeclOf(self.hir, node);
+                break :blk declaration.init != hir_mod.none_node_id and
+                    self.bindingPatternDeclaresName(declaration.name, name);
+            },
+            else => false,
+        };
     }
 
     fn removeForLoopTargetFromPending(
@@ -117023,6 +117117,26 @@ pub const Checker = struct {
         }
     }
 
+    fn applyForInitializerAssignmentFlow(self: *Checker, node: NodeId) CheckError!void {
+        if (self.hir.kindOf(node) != .assignment) return;
+        const assignment = hir_mod.assignmentOf(self.hir, node);
+        if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) return;
+
+        var value_t = self.hir.typeOf(assignment.value);
+        if (value_t == types.Primitive.none) value_t = try self.checkExpression(assignment.value);
+        const declared_t = self.typeOfIdentifierDeclared(assignment.target);
+        if (!(try self.checkerAssignableTo(value_t, declared_t))) return;
+        const flow_t = try self.flowTypeForAssignmentValue(assignment.value, value_t);
+        if (flow_t == types.Primitive.none or flow_t == types.Primitive.any or flow_t == types.Primitive.unknown) return;
+        try self.recordNarrow(hir_mod.identifierOf(self.hir, assignment.target).name, flow_t);
+    }
+
+    fn applyLoopBodyFallthroughAssignmentFlow(self: *Checker, body: NodeId) CheckError!void {
+        const name = self.lastExhaustiveAssignmentCandidate(body) orelse return;
+        const assigned_t = (try self.definiteNonNullAssignmentType(body, name)) orelse return;
+        try self.recordNarrow(name, assigned_t);
+    }
+
     fn applyExhaustiveBranchAssignmentFlow(
         self: *Checker,
         then_branch: NodeId,
@@ -195780,6 +195894,56 @@ test "checker: for loop initializer variable is visible to condition and update"
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: for loop assignments flow through conditions and guarded breaks" {
+    const s = try newSetup(
+        \\declare let cond: boolean;
+        \\function initializerFlow() {
+        \\  let x: string | number | boolean;
+        \\  for (x = 5; x = x.toExponential(); x = 5) {
+        \\    x;
+        \\  }
+        \\}
+        \\function bodyFlow() {
+        \\  let x: string | number | boolean;
+        \\  for (x = 5; cond; x = x.length) {
+        \\    x = "";
+        \\  }
+        \\}
+        \\function exitFlow() {
+        \\  let x: string | number | boolean;
+        \\  for (; typeof x !== "string";) {
+        \\    x;
+        \\    if (typeof x === "number") break;
+        \\    x = undefined;
+        \\  }
+        \\  x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.used_before_assignment));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: unguarded loop breaks do not establish definite assignment" {
+    const s = try newSetup(
+        \\function f(cond: boolean) {
+        \\  let x: string;
+        \\  for (; typeof x !== "string";) {
+        \\    if (cond) break;
+        \\    x = "";
+        \\  }
+        \\  x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
 test "checker: for let update is not confused with later const declarations" {
