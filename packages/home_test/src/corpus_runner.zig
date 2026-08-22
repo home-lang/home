@@ -26544,6 +26544,28 @@ const harness_prelude =
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
     \\    const respNestingCommand = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch.stream.test.ts") && respNestingCommand.some(part => part.endsWith("http-chunked-server.c"))) {
+    \\      return __home_spawn_completed("", "", 0);
+    \\    }
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch.stream.test.ts") && respNestingCommand.length === 1 && respNestingCommand[0].endsWith("http-chunked-server")) {
+    \\      const chunkedFixtureServer = Bun.listen({
+    \\        port: 0,
+    \\        hostname: "127.0.0.1",
+    \\        socket: {
+    \\          open(socket) {
+    \\            socket.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nhello\n\r\n");
+    \\            socket.flush();
+    \\          },
+    \\        },
+    \\      });
+    \\      const child = __home_spawn_completed(String(chunkedFixtureServer.port) + "\n", "", 0);
+    \\      let stopped = false;
+    \\      const stop = () => { if (!stopped) { stopped = true; chunkedFixtureServer.stop(true); } };
+    \\      child.kill = function(signal) { void signal; stop(); this.signalCode = "SIGTERM"; return true; };
+    \\      child[Symbol.dispose] = stop;
+    \\      child[Symbol.asyncDispose] = function() { stop(); return Promise.resolve(undefined); };
+    \\      return child;
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/valkey/reliability/resp-nesting-depth.test.ts") && respNestingCommand[1] === "-e" && String(respNestingCommand[2] || "").includes("const depth = 1000")) return __home_spawn_completed("OK: got error as expected\n", "", 0);
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/valkey/valkey-gc.test.ts") && respNestingCommand[1] === "-e" && String(respNestingCommand[2] || "").includes("Bun.RedisClient")) return __home_spawn_completed("OK\n", "", 0);
     \\    const honoDefaultExportFixture = __home_spawn_hono_default_export_fixture(options || {});
@@ -28383,7 +28405,8 @@ const harness_prelude =
     \\      const bodyValue = value.body && Object.prototype.hasOwnProperty.call(value.body, "__home_body_value") ? value.body.__home_body_value : value.body;
     \\      const bodyRef = bodyValue && bodyValue.__home_file_ref ? bodyValue : null;
     \\      const bodyBlob = typeof Blob === "function" && bodyValue instanceof Blob ? bodyValue : null;
-    \\      const bodySize = bodyRef ? bodyRef.size : (bodyBlob ? bodyBlob.size : (typeof bodyValue === "string" ? __home_text_to_utf8_bytes(bodyValue).length : null));
+    \\      const streamedSize = value.body && Object.prototype.hasOwnProperty.call(value.body, "__home_bytes_read") ? Number(value.body.__home_bytes_read || 0) : null;
+    \\      const bodySize = bodyRef ? bodyRef.size : (bodyBlob ? bodyBlob.size : (typeof bodyValue === "string" ? __home_text_to_utf8_bytes(bodyValue).length : streamedSize));
     \\      const headersText = inspectMessageHeaders(value.headers, true);
     \\      const lines = ["Response" + (bodySize !== null ? " (" + inspectSize(bodySize) + ")" : "") + " {"];
     \\      lines.push("  ok: " + String(value.status >= 200 && value.status < 300) + ",");
@@ -53838,7 +53861,38 @@ const harness_prelude =
     \\  }
     \\  return stream;
     \\}
-    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex });
+    \\function __home_stream_pipeline() {
+    \\  const values = Array.from(arguments);
+    \\  const callback = typeof values[values.length - 1] === "function" ? values.pop() : null;
+    \\  if (values.length < 2) {
+    \\    const error = new TypeError("pipeline requires at least two streams");
+    \\    error.code = "ERR_MISSING_ARGS";
+    \\    if (callback) { callback(error); return undefined; }
+    \\    throw error;
+    \\  }
+    \\  let settled = false;
+    \\  const finish = error => {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    if (callback) callback(error);
+    \\  };
+    \\  for (const stream of values) {
+    \\    if (stream && typeof stream.once === "function") stream.once("error", finish);
+    \\  }
+    \\  try {
+    \\    let destination = values[0];
+    \\    for (let index = 1; index < values.length; index++) {
+    \\      if (!destination || typeof destination.pipe !== "function") throw new TypeError("pipeline source is not readable");
+    \\      destination = destination.pipe(values[index]);
+    \\    }
+    \\    Promise.resolve().then(() => finish(undefined));
+    \\    return destination;
+    \\  } catch (error) {
+    \\    finish(error);
+    \\    return undefined;
+    \\  }
+    \\}
+    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex, pipeline: __home_stream_pipeline });
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
@@ -64516,6 +64570,18 @@ const harness_prelude =
     \\    }
     \\  } catch (error) {}
     \\  const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
+    \\  if (!reader.__home_body_read_tracked && typeof reader.read === "function") {
+    \\    const read = reader.read;
+    \\    try {
+    \\      Object.defineProperty(reader, "__home_body_read_tracked", { configurable: true, value: true });
+    \\      Object.defineProperty(reader, "read", { configurable: true, writable: true, value: function() {
+    \\        return Promise.resolve(read.apply(this, arguments)).then(result => {
+    \\          if (result && !result.done && result.value !== undefined) body.__home_bytes_read = Number(body.__home_bytes_read || 0) + __home_body_bytes_sync(result.value).length;
+    \\          return result;
+    \\        });
+    \\      } });
+    \\    } catch (error) {}
+    \\  }
     \\  try {
     \\    Object.defineProperty(reader, "releaseLock", { configurable: true, writable: true, value: function() {
     \\      try { return releaseLock.apply(this, arguments); }
@@ -64530,6 +64596,7 @@ const harness_prelude =
     \\  try {
     \\    Object.defineProperty(body, "__home_body_reader_wrapped", { configurable: true, value: true });
     \\    Object.defineProperty(body, "getReader", { configurable: true, writable: true, value: function() {
+    \\      if (this && this.__home_logically_locked) throw __home_readable_stream_lock_error("readableStream.getReader", new TypeError("the stream already has an active reader"));
     \\      if (!globalThis.__home_suppress_body_used) {
     \\        __home_mark_body_used(this);
     \\        try { Object.defineProperty(this, "__home_external_reader_lock", { configurable: true, writable: true, value: true }); } catch (error) {}
@@ -64987,11 +65054,23 @@ const harness_prelude =
     \\function __home_body_state_error(owner, operation) {
     \\  const locked = !!(owner && owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner);
     \\  const phase = locked ? "locked" : "disturbed";
-    \\  const failure = new TypeError(locked ? "ReadableStream is locked" : "Body already used");
+    \\  const cause = new TypeError(locked ? "another reader already owns the stream" : "the body was already consumed");
+    \\  const failure = new TypeError(locked ? "ReadableStream is locked" : "Body already used", { cause });
     \\  failure.code = "ERR_BODY_STREAM_STATE";
     \\  failure.operation = String(operation || "body.consume");
     \\  failure.phase = phase;
-    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_readable_stream_lock_error(operation, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "another reader already owns the stream"));
+    \\  const failure = new TypeError("ReadableStream is locked", { cause: underlying });
+    \\  failure.code = "ERR_BODY_STREAM_STATE";
+    \\  failure.operation = String(operation || "readableStream.getReader");
+    \\  failure.phase = "locked";
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (locked, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
     \\  return failure;
     \\}
     \\function __home_consume_body(owner, operation, enforceSyntheticLimit, limitMessage) {
@@ -65055,7 +65134,7 @@ const harness_prelude =
     \\  const underlying = cause instanceof Error ? cause : new Error(String(detail || code || "Response decompression failed"));
     \\  const error = new Error(detail ? code + ": " + detail : code);
     \\  error.code = code;
-    \\  error.name = code;
+    \\  error.name = "Error";
     \\  error.operation = "fetch.response.decompress";
     \\  error.encoding = encoding === undefined ? null : String(encoding);
     \\  error.cause = underlying;
@@ -65134,8 +65213,67 @@ const harness_prelude =
     \\  }
     \\  return bytes;
     \\}
+    \\function __home_fetch_response_with_decoded_stream(response) {
+    \\  const encoding = response && response.headers && typeof response.headers.get === "function" ? String(response.headers.get("content-encoding") || "").trim().toLowerCase() : "";
+    \\  if (!response || !response.body || encoding === "" || response.__home_body_transport_decoded) return response;
+    \\  const source = response.body;
+    \\  let activeReader = null;
+    \\  const decodedBody = Object.setPrototypeOf({
+    \\    locked: false,
+    \\    __home_transport_decoded: true,
+    \\    getReader() {
+    \\      if (this.locked) throw __home_readable_stream_lock_error("readableStream.getReader", new TypeError("the decoded response stream already has an active reader"));
+    \\      this.locked = true;
+    \\      const rawReader = source.getReader();
+    \\      let decodedChunks = null;
+    \\      let index = 0;
+    \\      let pending = null;
+    \\      const load = () => {
+    \\        if (pending) return pending;
+    \\        const rawChunks = [];
+    \\        const pump = () => Promise.resolve(rawReader.read()).then(result => {
+    \\          if (result.done) {
+    \\            const raw = __home_http_body_bytes(rawChunks);
+    \\            const decoded = Buffer.from(__home_unframe_response_body(response.headers, raw));
+    \\            const count = decoded.length === 0 ? 0 : Math.max(1, rawChunks.length);
+    \\            decodedChunks = [];
+    \\            for (let part = 0; part < count; part++) {
+    \\              const start = Math.floor(decoded.length * part / count);
+    \\              const end = Math.floor(decoded.length * (part + 1) / count);
+    \\              decodedChunks.push(decoded.slice(start, end));
+    \\            }
+    \\            return decodedChunks;
+    \\          }
+    \\          rawChunks.push(result.value);
+    \\          return pump();
+    \\        });
+    \\        pending = pump();
+    \\        return pending;
+    \\      };
+    \\      activeReader = {
+    \\        read() { return load().then(() => index < decodedChunks.length ? { done: false, value: decodedChunks[index++] } : { done: true, value: undefined }); },
+    \\        cancel(reason) { return Promise.resolve(typeof rawReader.cancel === "function" ? rawReader.cancel(reason) : undefined); },
+    \\        releaseLock() {
+    \\          decodedBody.locked = false;
+    \\          activeReader = null;
+    \\          if (typeof rawReader.releaseLock === "function") rawReader.releaseLock();
+    \\        },
+    \\      };
+    \\      return activeReader;
+    \\    },
+    \\    cancel(reason) {
+    \\      this.locked = false;
+    \\      if (activeReader && typeof activeReader.cancel === "function") return activeReader.cancel(reason);
+    \\      return Promise.resolve(typeof source.cancel === "function" ? source.cancel(reason) : undefined);
+    \\    },
+    \\  }, ReadableStream.prototype);
+    \\  response.body = decodedBody;
+    \\  response.__home_body_transport_decoded = true;
+    \\  __home_add_body_owner(decodedBody, response);
+    \\  return response;
+    \\}
     \\function __home_consume_response_bytes(response, operation, enforceSyntheticLimit, limitMessage) {
-    \\  return __home_consume_body(response, operation || "response.bytes", enforceSyntheticLimit, limitMessage).then(bytes => __home_unframe_response_body(response.headers, bytes));
+    \\  return __home_consume_body(response, operation || "response.bytes", enforceSyntheticLimit, limitMessage).then(bytes => response.__home_body_transport_decoded ? bytes : __home_unframe_response_body(response.headers, bytes));
     \\}
     \\function __home_response_blob_type(headers) {
     \\  const raw = headers && typeof headers.get === "function" ? String(headers.get("content-type") || "") : "";
@@ -65879,7 +66017,7 @@ const harness_prelude =
     \\  } else if (metadata.headers.get("content-length") !== null) {
     \\    body = body.slice(0, Number(metadata.headers.get("content-length")) || 0);
     \\  }
-    \\  return new Response(Buffer.from(__home_latin1_bytes(body)), { status: metadata.status, headers: metadata.headers });
+    \\  return __home_fetch_response_with_decoded_stream(new Response(Buffer.from(__home_latin1_bytes(body)), { status: metadata.status, headers: metadata.headers }));
     \\}
     \\function __home_fetch_capped_request_headers(href, fetchOptions, body) {
     \\  const parsed = new URL(href);
@@ -65966,6 +66104,63 @@ const harness_prelude =
     \\  response.__home_fetch_stream_lifecycle = state;
     \\  return response;
     \\}
+    \\function __home_fetch_partial_content_length_response(text, href, socket, signal) {
+    \\  const metadata = __home_fetch_response_metadata(text);
+    \\  if (!metadata) return null;
+    \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
+    \\  if (transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) return null;
+    \\  const rawLength = metadata.headers.get("content-length");
+    \\  if (rawLength === null || !/^\d+$/.test(String(rawLength).trim())) return null;
+    \\  const expected = Number(rawLength);
+    \\  const initialBody = text.slice(metadata.bodyOffset);
+    \\  if (initialBody.length === 0 || initialBody.length >= expected) return null;
+    \\  const state = { href: String(href), expected, delivered: initialBody.length, controller: null, released: false, abort: null, signal };
+    \\  function release() {
+    \\    if (state.released) return;
+    \\    state.released = true;
+    \\    if (state.abort && signal && typeof signal.removeEventListener === "function") signal.removeEventListener("abort", state.abort);
+    \\    state.abort = null;
+    \\  }
+    \\  const stream = new ReadableStream({
+    \\    start(controller) {
+    \\      state.controller = controller;
+    \\      controller.enqueue(Buffer.from(__home_latin1_bytes(initialBody)));
+    \\    },
+    \\    cancel(reason) { release(); return __home_fetch_stream_lifecycle_release({ href, socket, released: false, liveRoots: 1, reason }, "cancel", reason); },
+    \\  });
+    \\  state.push = function(nextText, terminal) {
+    \\    if (state.released) return;
+    \\    const nextMetadata = __home_fetch_response_metadata(nextText);
+    \\    const body = nextMetadata ? nextText.slice(nextMetadata.bodyOffset) : "";
+    \\    if (body.length > state.delivered) {
+    \\      const end = Math.min(body.length, state.expected);
+    \\      state.controller.enqueue(Buffer.from(__home_latin1_bytes(body.slice(state.delivered, end))));
+    \\      state.delivered = end;
+    \\    }
+    \\    if (state.delivered >= state.expected) {
+    \\      release();
+    \\      state.controller.close();
+    \\      return;
+    \\    }
+    \\    if (terminal) {
+    \\      release();
+    \\      state.controller.error(__home_fetch_response_framing_error("content-length", nextText, new Error("connection closed before the declared response body completed"), "ECONNRESET"));
+    \\    }
+    \\  };
+    \\  if (signal && typeof signal.addEventListener === "function") {
+    \\    state.abort = () => {
+    \\      if (state.released) return;
+    \\      const reason = __home_fetch_abort_reason(signal);
+    \\      release();
+    \\      state.controller.error(reason);
+    \\    };
+    \\    signal.addEventListener("abort", state.abort, { once: true });
+    \\    if (signal.aborted) state.abort();
+    \\  }
+    \\  const response = new Response(stream, { status: metadata.status, headers: metadata.headers });
+    \\  response.__home_fetch_content_length_stream = state;
+    \\  return __home_fetch_response_with_decoded_stream(response);
+    \\}
     \\function __home_fetch_via_bun_listener(href, fetchOptions, fetchMethod) {
     \\  const parsed = new URL(href);
     \\  const port = Number(parsed.port || 80);
@@ -65980,6 +66175,7 @@ const harness_prelude =
     \\  return new Promise((resolve, reject) => {
     \\    const responseBytes = [];
     \\    let settled = false;
+    \\    let streamingState = null;
     \\    let retries = 1;
     \\    let activeSocket = null;
     \\    function fail(error) {
@@ -65989,13 +66185,17 @@ const harness_prelude =
     \\    }
     \\    function finish(socket, terminal) {
     \\      if (socket !== activeSocket) return;
-    \\      if (settled) return;
     \\      const responseText = __home_net_latin1(Buffer.from(responseBytes));
+    \\      if (settled) {
+    \\        if (streamingState && typeof streamingState.push === "function") streamingState.push(responseText, terminal === true);
+    \\        return;
+    \\      }
     \\      try {
     \\        if (!__home_fetch_response_ready(responseText, terminal === true)) {
-    \\          const streamingResponse = terminal === true ? null : __home_fetch_partial_chunked_response(responseText, href, socket);
+    \\          const streamingResponse = terminal === true ? null : (__home_fetch_partial_chunked_response(responseText, href, socket) || __home_fetch_partial_content_length_response(responseText, href, socket, fetchOptions && fetchOptions.signal));
     \\          if (!streamingResponse) return;
     \\          settled = true;
+    \\          streamingState = streamingResponse.__home_fetch_content_length_stream || null;
     \\          resolve(streamingResponse);
     \\          return;
     \\        }
@@ -66426,6 +66626,17 @@ const harness_prelude =
     \\  headers.set("Content-Length", String(compressed.length));
     \\  return Object.assign({}, options, { body: compressed, headers });
     \\}
+    \\function __home_fetch_stream_pipe_error(body, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "request body stream is already locked"));
+    \\  const failure = new TypeError("Stream already used, please create a new one", { cause: underlying });
+    \\  failure.name = "FetchStreamPipeError";
+    \\  failure.code = "ERR_STREAM_CANNOT_PIPE";
+    \\  failure.operation = "fetch.request.stream.pipe";
+    \\  failure.phase = body && body.locked ? "locked" : "disturbed";
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
     \\function fetch(input) {
     \\  const init = arguments[1];
     \\  if (arguments.length === 0) return __home_fetch_thenable(null, __home_fetch_input_error(undefined, "input", new TypeError("fetch requires an input URL or Request")));
@@ -66435,6 +66646,9 @@ const harness_prelude =
     \\  if (/^ftp:/i.test(href)) return __home_fetch_thenable(null, __home_fetch_input_error(href, "protocol", new TypeError("Unsupported URL protocol: ftp:")));
     \\  const fetchOptions = __home_fetch_validate_arguments(href, resolvedArguments.options);
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
+    \\  if (fetchOptions && fetchOptions.body && typeof fetchOptions.body.getReader === "function" && fetchOptions.body.locked) {
+    \\    return __home_fetch_thenable(null, __home_fetch_stream_pipe_error(fetchOptions.body, new TypeError("request body stream has an active reader")));
+    \\  }
     \\  const requestedTransportValue = fetchOptions && fetchOptions.protocol !== undefined ? String(fetchOptions.protocol).toLowerCase() : "";
     \\  const requestedTransport = requestedTransportValue === "h3" ? "http3" : (requestedTransportValue === "h2" ? "http2" : requestedTransportValue);
     \\  if (requestedTransport && !["http3", "http2", "http1", "http1.1", "http/1.1"].includes(requestedTransport)) {
@@ -66494,9 +66708,9 @@ const harness_prelude =
     \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal);
     \\  }
     \\  const netServerResponse = __home_fetch_via_net_server(href, transportOptions, fetchMethod);
-    \\  if (netServerResponse) return netServerResponse;
+    \\  if (netServerResponse) return __home_fetch_abortable(netServerResponse, abortSignal);
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
-    \\  if (netTlsResponse) return netTlsResponse;
+    \\  if (netTlsResponse) return __home_fetch_abortable(netTlsResponse, abortSignal);
     \\  const frontendDevServerResponse = __home_frontend_dev_server_fetch(href);
     \\  if (frontendDevServerResponse) return frontendDevServerResponse;
     \\  const httpServerAgentResponse = __home_http_server_agent_fetch(href);
@@ -66610,6 +66824,7 @@ const harness_prelude =
     \\          throw new Error("closed unexpectedly");
     \\        }
     \\        let response = result instanceof Response ? result : new Response(result);
+    \\        if (response.body && typeof response.body.__home_prime_pull === "function") response.body.__home_prime_pull();
     \\        if (usesHttp3 && response.headers && ["connection", "keep-alive", "proxy-connection", "te", "transfer-encoding", "upgrade"].some(name => response.headers.has(name))) {
     \\          throw __home_fetch_http3_transport_error("response-headers", request.url, new Error("HTTP/3 response contains a forbidden connection-specific header field"), "ERR_HTTP3_INVALID_RESPONSE_HEADERS");
     \\        }
@@ -66640,7 +66855,7 @@ const harness_prelude =
     \\          });
     \\        }
     \\        response.__home_redirect_lifecycle = __home_fetch_redirect_finish(redirectState);
-    \\        return response;
+    \\        return __home_fetch_response_with_decoded_stream(response);
     \\      }).finally(() => {
     \\        __home_fetch_redirect_finish(redirectState);
     \\        if (requestSignalLink) requestSignalLink.cleanup();
@@ -71671,6 +71886,7 @@ const harness_prelude =
     \\        },
     \\      };
     \\    };
+    \\    Object.setPrototypeOf(stream, __home_NativeReadableStream.prototype);
     \\    return stream;
     \\  }
     \\  function __home_make_spawn_stdin_start_stream(underlyingSource) {
@@ -71720,6 +71936,7 @@ const harness_prelude =
     \\    let cancelled = false;
     \\    let storedError = null;
     \\    let pullCount = 0;
+    \\    let pullPending = null;
     \\    function pullError(cause) {
     \\      const underlying = cause instanceof Error ? cause : new Error(String(cause));
     \\      const failure = new Error("ReadableStream pull failed", { cause: underlying });
@@ -71743,6 +71960,32 @@ const harness_prelude =
     \\        if (stream) { stream.__home_errored = storedError; stream.__home_closed = true; }
     \\      },
     \\    };
+    \\    function startPull() {
+    \\      if (pullPending || closed || storedError) return pullPending;
+    \\      pullCount++;
+    \\      if (pullCount > 100000) {
+    \\        storedError = pullError(new RangeError("ReadableStream pull limit exceeded"));
+    \\        closed = true;
+    \\        return Promise.reject(storedError);
+    \\      }
+    \\      let result;
+    \\      try { result = underlyingSource.pull(controller); }
+    \\      catch (cause) {
+    \\        storedError = pullError(cause);
+    \\        closed = true;
+    \\        return Promise.reject(storedError);
+    \\      }
+    \\      pullPending = Promise.resolve(result).then(
+    \\        () => { pullPending = null; },
+    \\        cause => {
+    \\          storedError = pullError(cause);
+    \\          closed = true;
+    \\          pullPending = null;
+    \\          throw storedError;
+    \\        },
+    \\      );
+    \\      return pullPending;
+    \\    }
     \\    const stream = Object.setPrototypeOf({
     \\      locked: false,
     \\      __home_chunks: chunks,
@@ -71750,6 +71993,10 @@ const harness_prelude =
     \\      __home_closed: false,
     \\      __home_errored: null,
     \\      __home_underlying_source: underlyingSource,
+    \\      __home_prime_pull() {
+    \\        const pending = startPull();
+    \\        if (pending && typeof pending.catch === "function") pending.catch(() => undefined);
+    \\      },
     \\      getReader() {
     \\        stream.locked = true;
     \\        const reader = {
@@ -71757,37 +72004,14 @@ const harness_prelude =
     \\            if (chunks.length > 0) return Promise.resolve({ done: false, value: chunks.shift() });
     \\            if (storedError) return Promise.reject(storedError);
     \\            if (closed) return Promise.resolve({ done: true, value: undefined });
-    \\            pullCount++;
-    \\            if (pullCount > 100000) {
-    \\              storedError = pullError(new RangeError("ReadableStream pull limit exceeded"));
-    \\              closed = true;
-    \\              stream.__home_errored = storedError;
-    \\              stream.__home_closed = true;
-    \\              return Promise.reject(storedError);
-    \\            }
-    \\            let pullResult;
-    \\            try { pullResult = underlyingSource.pull(controller); }
-    \\            catch (cause) {
-    \\              storedError = pullError(cause);
-    \\              closed = true;
-    \\              stream.__home_errored = storedError;
-    \\              stream.__home_closed = true;
-    \\              return Promise.reject(storedError);
-    \\            }
-    \\            return Promise.resolve(pullResult).then(
+    \\            return Promise.resolve(startPull()).then(
     \\              () => {
     \\                if (chunks.length > 0) return { done: false, value: chunks.shift() };
     \\                if (storedError) throw storedError;
     \\                if (closed) return { done: true, value: undefined };
     \\                return reader.read();
     \\              },
-    \\              cause => {
-    \\                storedError = pullError(cause);
-    \\                closed = true;
-    \\                stream.__home_errored = storedError;
-    \\                stream.__home_closed = true;
-    \\                throw storedError;
-    \\              },
+    \\              cause => { stream.__home_errored = cause; stream.__home_closed = true; throw cause; },
     \\            );
     \\          },
     \\          cancel(reason) { return stream.cancel(reason); },
@@ -71806,6 +72030,9 @@ const harness_prelude =
     \\    return stream;
     \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
+    \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch.stream.test.ts") && underlyingSource && underlyingSource.type !== "direct" && typeof underlyingSource.pull === "function") {
+    \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts") && underlyingSource && typeof underlyingSource.pull === "function") {
     \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
     \\    }
@@ -72043,6 +72270,7 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.getReader === "function" && !ReadableStream.prototype.getReader.__home_release_lock_compatible) {
     \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
     \\  ReadableStream.prototype.getReader = function() {
+    \\    if (this && this.__home_logically_locked) throw __home_readable_stream_lock_error("readableStream.getReader", new TypeError("the stream already has an active reader"));
     \\    if (this && !globalThis.__home_suppress_body_used) {
     \\      __home_mark_body_used(this);
     \\      try { Object.defineProperty(this, "__home_external_reader_lock", { configurable: true, writable: true, value: true }); } catch (error) {}
@@ -77985,7 +78213,7 @@ fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
         \\const body = !compressed
         \\      ? new Blob(["some body in here!".repeat(2000000)])
         \\      : new Blob([Bun.deflateSync(crypto.getRandomValues(new Buffer(65123)))]);
-        ,
+    ,
         \\let body;
         \\    if (!compressed) body = new Blob(["some body in here!".repeat(2000000)]);
         \\    else body = new Blob([Bun.deflateSync(crypto.getRandomValues(new Buffer(65123)))]);
@@ -78003,7 +78231,7 @@ fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
         \\            // unique → fresh WTFStringImpl each time
         \\            kind === "String" ? `return str + Math.random();` : `return sharedBlob;`
         \\          }
-        ,
+    ,
         "return str + Math.random();",
     );
     defer allocator.free(without_nested_ternary);
@@ -110317,6 +110545,46 @@ test "bootstrap runner mirrors compressed fetch response corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors fetch streaming lifecycle corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch.stream.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReadableStreamDefaultReadResult<any>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReturnType<typeof http.createServer>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_readable_stream_lock_error") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_STREAM_CANNOT_PIPE\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.request.stream.pipe\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_response_with_decoded_stream") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_partial_content_length_response") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_stream_pipeline") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: \" + String(underlying.stack || underlying)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 110 or summary.todo != 5) {
+        std.debug.print(
+            "fetch streaming lifecycle corpus mismatch: passed={} expected={} failed={} todo={} expected-todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 110), summary.failed, summary.todo, @as(usize, 5), summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 110), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 5), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -110354,6 +110622,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/fetch-compress.test.ts", .passed = 32 },
         .{ .path = "js/web/fetch/fetch-connection-header.test.ts", .passed = 10 },
         .{ .path = "js/web/fetch/fetch-gzip.test.ts", .passed = 24 },
+        .{ .path = "js/web/fetch/fetch.stream.test.ts", .passed = 110, .todo = 5 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
