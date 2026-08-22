@@ -3123,6 +3123,10 @@ const DeclarationEntry = struct {
     is_exported: bool = false,
     is_default_export: bool = false,
     is_ambient: bool = false,
+    /// First ambient function declaration in the overload group. TS2384
+    /// is anchored on the `declare` signature regardless of whether it
+    /// appears before or after a non-ambient overload.
+    ambient_fn: NodeId = hir_mod.none_node_id,
     duplicate_exported_var_reported: bool = false,
     duplicate_class_reported: bool = false,
     duplicate_function_body_reported: bool = false,
@@ -12297,6 +12301,7 @@ pub const Checker = struct {
                     .is_exported = exported,
                     .is_default_export = default_exported,
                     .is_ambient = is_ambient,
+                    .ambient_fn = if (is_fn and is_ambient) node else hir_mod.none_node_id,
                     .last_bodyless_fn = if (is_fn and !has_body and !is_ambient and !self.virtualSectionIsJsLike(node)) node else hir_mod.none_node_id,
                 };
                 continue;
@@ -12309,7 +12314,10 @@ pub const Checker = struct {
             // foo() { }` would self-trigger TS2393).
             if (is_fn) {
                 if (!has_body and !is_ambient and !self.virtualSectionIsJsLike(node)) gop.value_ptr.last_bodyless_fn = node;
-                if (is_ambient) gop.value_ptr.is_ambient = true;
+                if (is_ambient) {
+                    gop.value_ptr.is_ambient = true;
+                    if (gop.value_ptr.ambient_fn == hir_mod.none_node_id) gop.value_ptr.ambient_fn = node;
+                }
             }
 
             if (gop.value_ptr.is_type_alias or is_type_alias) {
@@ -12451,10 +12459,42 @@ pub const Checker = struct {
                     try self.reportDuplicateFunctionImplementation(node);
                 }
                 if (gop.value_ptr.is_exported != exported) {
-                    try self.report(node, TsCodes.overloads_must_all_be_exported_or_not, "Overload signatures must all be exported or non-exported.");
+                    try self.reportAt(node, self.declarationNameSpanStart(node), TsCodes.overloads_must_all_be_exported_or_not, "Overload signatures must all be exported or non-exported.");
                 }
                 if (gop.value_ptr.is_ambient != is_ambient) {
-                    try self.report(node, TsCodes.overloads_must_all_be_ambient_or_not, "Overload signatures must all be ambient or non-ambient.");
+                    try self.reportAt(node, self.declarationNameSpanStart(node), TsCodes.overloads_must_all_be_ambient_or_not, "Overload signatures must all be ambient or non-ambient.");
+                }
+                if (has_body and !is_ambient) {
+                    if (gop.value_ptr.is_exported != exported) {
+                        self.removePriorDiagnosticsInRange(
+                            self.hir.spanOf(gop.value_ptr.node).start,
+                            self.hir.spanOf(node).end,
+                            TsCodes.overloads_must_all_be_exported_or_not,
+                        );
+                        try self.reportAt(
+                            gop.value_ptr.node,
+                            self.declarationNameSpanStart(gop.value_ptr.node),
+                            TsCodes.overloads_must_all_be_exported_or_not,
+                            "Overload signatures must all be exported or non-exported.",
+                        );
+                    }
+                    if (gop.value_ptr.is_ambient != is_ambient) {
+                        self.removePriorDiagnosticsInRange(
+                            self.hir.spanOf(gop.value_ptr.node).start,
+                            self.hir.spanOf(node).end,
+                            TsCodes.overloads_must_all_be_ambient_or_not,
+                        );
+                        const ambient_anchor = if (gop.value_ptr.ambient_fn != hir_mod.none_node_id)
+                            gop.value_ptr.ambient_fn
+                        else
+                            gop.value_ptr.node;
+                        try self.reportAt(
+                            ambient_anchor,
+                            self.declarationNameSpanStart(ambient_anchor),
+                            TsCodes.overloads_must_all_be_ambient_or_not,
+                            "Overload signatures must all be ambient or non-ambient.",
+                        );
+                    }
                 }
                 // Promote `has_body` only AFTER the duplicate-impl
                 // check so a normal overload-implementation pair
@@ -24556,7 +24596,8 @@ pub const Checker = struct {
         defer body_vars.deinit(self.gpa);
         const fn_payload = hir_mod.fnDeclOf(self.hir, fn_node);
         try self.collectVarDeclNames(fn_payload.body, &body_vars);
-        for (hir_mod.fnParams(self.hir, fn_node)) |p| {
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        for (params, 0..) |p, param_index| {
             if (self.hir.kindOf(p) != .parameter) continue;
             const pp = hir_mod.parameterOf(self.hir, p);
             if (pp.name == hir_mod.none_node_id) continue;
@@ -24569,20 +24610,26 @@ pub const Checker = struct {
             }
             if (pp.default_value != hir_mod.none_node_id) {
                 _ = try self.checkExpression(pp.default_value);
+                const param_name_id: ?hir_mod.StringId = if (nk == .identifier)
+                    hir_mod.identifierOf(self.hir, pp.name).name
+                else
+                    null;
+                const pattern_node: ?NodeId = if (nk == .object_pattern or nk == .array_pattern)
+                    pp.name
+                else
+                    null;
+                try self.checkDefaultExprAgainstLaterParameters(
+                    pp.default_value,
+                    params[param_index + 1 ..],
+                    param_name_id,
+                    pattern_node,
+                );
                 if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) {
-                    const param_name_id: ?hir_mod.StringId = if (nk == .identifier)
-                        hir_mod.identifierOf(self.hir, pp.name).name
-                    else
-                        null;
                     // For object/array patterns, tsc renders the
                     // pattern's source text as the parameter's display
                     // name: `Parameter '{ b = a(), ...x }' cannot
                     // reference identifier 'a' declared after it.`.
                     // Mirrors `parameterInitializersForwardReferencing.2`.
-                    const pattern_node: ?NodeId = if (nk == .object_pattern or nk == .array_pattern)
-                        pp.name
-                    else
-                        null;
                     try self.checkDefaultExprAgainstBodyVarsWithPattern(pp.default_value, &body_vars, param_name_id, pattern_node);
                 }
                 // TS2372: `function f(x = x) {}` ÃÂ¢ÃÂÃÂ the default
@@ -24591,13 +24638,12 @@ pub const Checker = struct {
                 // at the offending reference node so the column matches
                 // upstream (`asyncFunctionDeclaration3_es2017.ts(1,20)`).
                 if (nk == .identifier) {
-                    const param_name_id = hir_mod.identifierOf(self.hir, pp.name).name;
                     var refs: std.ArrayListUnmanaged(NameRef) = .empty;
                     defer refs.deinit(self.gpa);
                     try self.collectIdentifierRefsWithNodes(pp.default_value, &refs);
                     for (refs.items) |ref| {
-                        if (ref.name == param_name_id) {
-                            try self.reportBindingDefaultReferenceNamed(ref.node, .parameter, true, param_name_id, ref.name);
+                        if (ref.name == param_name_id.?) {
+                            try self.reportBindingDefaultReferenceNamed(ref.node, .parameter, true, param_name_id.?, ref.name);
                             break;
                         }
                     }
@@ -24631,7 +24677,7 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectVarDeclNames(s, out),
-            .var_decl, .let_decl, .const_decl => {
+            .var_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 try self.collectBindingNames(v.name, out);
             },
@@ -24722,6 +24768,13 @@ pub const Checker = struct {
         for (refs.items) |ref| {
             if (param_name != null and ref.name == param_name.?) continue;
             if (body_vars.contains(ref.name)) {
+                if (self.findLocalValueDeclBeforeExpression(ref.node, ref.name)) |outer_decl| {
+                    const outer_kind = self.hir.kindOf(outer_decl);
+                    if (outer_kind == .var_decl or outer_kind == .let_decl) continue;
+                } else if (pattern_node == null) {
+                    try self.reportCannotFindNamePlainOnce(ref.node, ref.name);
+                    continue;
+                }
                 try self.reportBindingDefaultReferenceNamedWithPattern(
                     ref.node,
                     .parameter,
@@ -24731,6 +24784,39 @@ pub const Checker = struct {
                     pattern_node,
                 );
             }
+        }
+    }
+
+    fn checkDefaultExprAgainstLaterParameters(
+        self: *Checker,
+        default_value: NodeId,
+        later_params: []const NodeId,
+        param_name: ?hir_mod.StringId,
+        pattern_node: ?NodeId,
+    ) CheckError!void {
+        if (later_params.len == 0) return;
+        var later_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer later_names.deinit(self.gpa);
+        for (later_params) |later_param| {
+            if (self.hir.kindOf(later_param) != .parameter) continue;
+            const payload = hir_mod.parameterOf(self.hir, later_param);
+            try self.collectBindingNames(payload.name, &later_names);
+        }
+        if (later_names.count() == 0) return;
+
+        var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefsWithNodes(default_value, &refs);
+        for (refs.items) |ref| {
+            if (!later_names.contains(ref.name)) continue;
+            try self.reportBindingDefaultReferenceNamedWithPattern(
+                ref.node,
+                .parameter,
+                false,
+                param_name,
+                ref.name,
+                pattern_node,
+            );
         }
     }
 
@@ -74085,7 +74171,15 @@ pub const Checker = struct {
         const sp = self.hir.spanOf(operand);
         if (sp.end <= sp.start or sp.end > src.len) return;
         const text = src[sp.start..sp.end];
-        const lt = std.mem.indexOfScalar(u8, text, '<') orelse return;
+        // A call's callee can itself contain angle brackets, as in the
+        // direct IIFE `function <T>(x: T) {}(value)`. Only `<...>` after
+        // the callee span can be the call's own type-argument list.
+        const lt_search_start: usize = if (self.hir.kindOf(operand) == .call_expr) blk: {
+            const callee = hir_mod.callOf(self.hir, operand).callee;
+            const callee_end = self.hir.spanOf(callee).end;
+            break :blk if (callee_end > sp.start) callee_end - sp.start else 0;
+        } else 0;
+        const lt = std.mem.indexOfScalarPos(u8, text, lt_search_start, '<') orelse return;
         // The type-argument list must live entirely before the argument
         // list; any `<`/`>` at or past the first argument belongs to an
         // argument expression (e.g. a generic function/arrow argument) and
@@ -156877,6 +156971,19 @@ pub const Checker = struct {
         }
     }
 
+    fn removePriorDiagnosticsInRange(self: *Checker, start: u32, end: u32, code: u32) void {
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            const diagnostic = self.diagnostics.items[i];
+            const pos = self.diagnosticStart(diagnostic);
+            if (diagnostic.code == code and pos >= start and pos <= end) {
+                _ = self.diagnostics.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn dedupeExactDiagnostics(self: *Checker) void {
         var keep: usize = 0;
         outer: for (self.diagnostics.items) |d| {
@@ -170286,18 +170393,7 @@ pub const Checker = struct {
         const lhs_fresh = self.expressionIsFreshObjectReference(lhs);
         const rhs_fresh = self.expressionIsFreshObjectReference(rhs);
         if (!lhs_fresh and !rhs_fresh) return null;
-        if (!lhs_fresh and !self.expressionCouldBeObjectReference(lhs)) return null;
-        if (!rhs_fresh and !self.expressionCouldBeObjectReference(rhs)) return null;
         return op == .neq or op == .neq_strict;
-    }
-
-    fn expressionCouldBeObjectReference(self: *Checker, node: NodeId) bool {
-        if (node == hir_mod.none_node_id) return false;
-        return switch (self.hir.kindOf(node)) {
-            .identifier, .member_access, .element_access, .call_expr, .new_expr => true,
-            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => self.expressionCouldBeObjectReference(hir_mod.asExpressionOf(self.hir, node).expr),
-            else => self.expressionIsFreshObjectReference(node),
-        };
     }
 
     fn expressionIsFreshObjectReference(self: *Checker, node: NodeId) bool {
@@ -177879,6 +177975,8 @@ test "checker: generic function expression type parameter is in scope for its ow
         // Standalone forms (must keep working).
         "var f = function <U>(x: U) { return x; };",
         "var g = <U>(x: U) => x;",
+        // A prior declaration can contextually type a repeated `var` initializer.
+        "var n: number; var n = function <U>(x: U) { return x; }(4);",
     };
     for (cases) |src| {
         const b = try newBoundSetup(src);
@@ -181156,6 +181254,16 @@ test "checker: equality on fresh object references emits TS2839" {
         if (d.code == TsCodes.object_reference_comparison) count += 1;
     }
     try T.expectEqual(@as(usize, 3), count);
+}
+
+test "checker: fresh object equality reports against primitive operands" {
+    const s = try newSetup(
+        \\undefined === function () {};
+        \\null != {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_reference_comparison));
 }
 
 test "checker: JavaScript fresh object references only warn for strict equality" {
@@ -199558,6 +199666,30 @@ test "checker: overload signatures cannot have parameter initializers" {
     try T.expect(found);
 }
 
+test "checker: overload modifier mismatches use implementation as canonical" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  export function first();
+        \\  function first(x: string);
+        \\  function first() {}
+        \\  function second(x: string);
+        \\  export function second();
+        \\  export function second() {}
+        \\}
+        \\declare function ambientFirst();
+        \\function ambientFirst(x: string);
+        \\function ambientFirst() {}
+        \\function ambientSecond();
+        \\declare function ambientSecond(x: string);
+        \\function ambientSecond() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.overloads_must_all_be_exported_or_not));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.overloads_must_all_be_ambient_or_not));
+}
+
 test "checker: type signatures cannot have parameter initializers" {
     const s = try newSetup(
         \\interface I { (x = 1): void; foo(y: number = 1): void; }
@@ -217567,6 +217699,20 @@ test "checker: plain identifier parameter default cannot reference itself (TS237
         if (d.code == TsCodes.parameter_cannot_reference_self) saw_param_self = true;
     }
     try T.expect(saw_param_self);
+}
+
+test "checker: parameter defaults resolve later and body declarations by scope" {
+    const s = try newSetup(
+        \\function later(a = b, b = 1) {}
+        \\function unresolved(a = missing) { var missing; }
+        \\declare var outer: any;
+        \\function resolved(a = outer) { var outer; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_cannot_reference_later));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: parameter self default is not also a body var forward reference" {
