@@ -954,7 +954,11 @@ test "fromVLQ accepts negative deltas while absolutes remain non-negative" {
     var mappings = MutableString.initEmpty(std.testing.allocator);
     defer mappings.deinit();
 
-    const deltas = [_]i32{ 5, 0, 4, 7, -3, 0, -3, -7 };
+    // Mappings must stay sorted by generated position within a line (the
+    // source-map invariant `find` binary-searches over): generated column
+    // advances 2 -> 5 while original positions move backwards 4:7 -> 1:0,
+    // exercising negative deltas with every absolute staying non-negative.
+    const deltas = [_]i32{ 2, 0, 4, 7, 3, 0, -3, -7 };
     for (deltas, 0..) |delta, i| {
         if (i == 4) try mappings.appendChar(',');
         const encoded = VLQ.encode(delta);
@@ -966,11 +970,11 @@ test "fromVLQ accepts negative deltas while absolutes remain non-negative" {
     const map = InternalSourceMap{ .data = blob.ptr };
     try std.testing.expectEqual(@as(usize, 2), map.mappingCount());
 
-    const first = map.find(.fromZeroBased(0), .fromZeroBased(5)).?;
+    const first = map.find(.fromZeroBased(0), .fromZeroBased(2)).?;
     try std.testing.expectEqual(@as(i32, 4), first.original.lines.zeroBased());
     try std.testing.expectEqual(@as(i32, 7), first.original.columns.zeroBased());
 
-    const second = map.find(.fromZeroBased(0), .fromZeroBased(2)).?;
+    const second = map.find(.fromZeroBased(0), .fromZeroBased(5)).?;
     try std.testing.expectEqual(@as(i32, 1), second.original.lines.zeroBased());
     try std.testing.expectEqual(@as(i32, 0), second.original.columns.zeroBased());
 }

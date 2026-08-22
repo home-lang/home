@@ -82,6 +82,26 @@ fn stub_take(_: jsc.JSValue) callconv(.c) ?*anyopaque {
     return null;
 }
 
+// Recording slot for the create-routing test. The real C++ cell factory
+// requires a live VM (it dereferences `vm.clientData`), so the test swaps the
+// soft-link slot to this observer and asserts create() dispatches through it
+// with the exact global/context/tag arguments — then restores the original.
+var routing_test_recorded_ctx: ?*anyopaque = null;
+var routing_test_recorded_tag: u8 = 255;
+fn routing_test_create(_: *jsc.JSGlobalObject, ctx: *anyopaque, tag: u8) callconv(.c) jsc.JSValue {
+    routing_test_recorded_ctx = ctx;
+    routing_test_recorded_tag = tag;
+    return .zero;
+}
+
+// Recording slot for the take-routing test: mirrors whatever payload the test
+// plants so both the null path and the pointer-transfer path are observable
+// without a live JSC heap.
+var routing_test_take_result: ?*anyopaque = null;
+fn routing_test_take(_: jsc.JSValue) callconv(.c) ?*anyopaque {
+    return routing_test_take_result;
+}
+
 /// The caller must have already taken a ref on `ctx`. The returned cell owns
 /// that ref until `take()` transfers it back or GC runs the destructor.
 pub fn create(global: *jsc.JSGlobalObject, ctx: anytype) jsc.JSValue {
@@ -293,13 +313,32 @@ test "DeferredDerefTask.runFromJSThread dispatch table stays tag-complete" {
 }
 
 test "NativePromiseContext.create routes through the soft-linked fn-ptr" {
-    var dummy: u8 = 0;
-    var ctx_buf: [@sizeOf(server.HTTPServer.RequestContext)]u8 align(@alignOf(server.HTTPServer.RequestContext)) = undefined;
+    const original = Bun__NativePromiseContext__create_fn;
+    defer Bun__NativePromiseContext__create_fn = original;
+
+    var ctx_buf: [@sizeOf(server.HTTPServer.RequestContext)]u8 align(@alignOf(server.HTTPServer.RequestContext)) = @splat(0);
     const ctx: *server.HTTPServer.RequestContext = @ptrCast(&ctx_buf);
+    var dummy: u8 = 0;
     const g: *jsc.JSGlobalObject = @ptrCast(&dummy);
+
+    routing_test_recorded_ctx = null;
+    routing_test_recorded_tag = 255;
+    Bun__NativePromiseContext__create_fn = &routing_test_create;
     try std.testing.expectEqual(jsc.JSValue.zero, create(g, ctx));
+    try std.testing.expectEqual(@as(?*anyopaque, ctx), routing_test_recorded_ctx);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(Tag.HTTPServerRequestContext)), routing_test_recorded_tag);
 }
 
-test "NativePromiseContext.take returns null under the soft-linked stub" {
+test "NativePromiseContext.take transfers the cell payload through the soft-linked fn-ptr" {
+    const original = Bun__NativePromiseContext__take_fn;
+    defer Bun__NativePromiseContext__take_fn = original;
+
+    routing_test_take_result = null;
+    Bun__NativePromiseContext__take_fn = &routing_test_take;
     try std.testing.expect(take(StubRequest, .zero) == null);
+
+    var backing: StubRequest = .{};
+    routing_test_take_result = @ptrCast(&backing);
+    const out = take(StubRequest, .zero);
+    try std.testing.expectEqual(@as(*StubRequest, &backing), out.?);
 }

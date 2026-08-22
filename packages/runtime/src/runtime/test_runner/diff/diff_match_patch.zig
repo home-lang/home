@@ -2318,7 +2318,12 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         fn diffHalfMatchLeak(allocator: Allocator) !void {
-            const dmp: DiffMatchPatch = .default;
+            // diff_timeout must be 0 (unlimited): the deadline is wall-clock
+            // based, so under a loaded host one checkAllAllocationFailures
+            // iteration can cross it and change the allocation count,
+            // tripping NondeterministicMemoryUsage. Matches every other
+            // allocation-failure fixture in this file.
+            const dmp: DiffMatchPatch = .{ .config = .{ .diff_timeout = 0 } };
             const text1 = "The quick brown fox jumps over the lazy dog.";
             const text2 = "That quick brown fox jumped over a lazy dog.";
             var diffs = try dmp.diff(allocator, text2, text1, true);
