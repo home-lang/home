@@ -55297,7 +55297,8 @@ const harness_prelude =
     \\    const wantsUtf16 = normalizedEncoding === "utf16le" || normalizedEncoding === "utf-16le" || normalizedEncoding === "ucs2" || normalizedEncoding === "ucs-2";
     \\    const wantsByteString = normalizedEncoding === "ascii" || normalizedEncoding === "latin1" || normalizedEncoding === "binary";
     \\    if (!wantsBuffer && normalizedEncoding !== "utf8" && normalizedEncoding !== "utf-8" && !wantsUtf16 && !wantsByteString) __home_unsupported("Only utf8, utf16le, ascii, and latin1 node:fs.readFileSync are supported by the Home Bun corpus bootstrap runner");
-    \\    const normalizedPath = __home_fs_resolve_symlink_path(path);
+    \\    const inputPath = path instanceof URL ? __home_url_file_url_to_path(path) : path;
+    \\    const normalizedPath = __home_fs_resolve_symlink_path(inputPath);
     \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalizedPath)) {
     \\      const bytes = globalThis.__home_written_file_bytes[normalizedPath];
     \\      if (wantsBuffer) { const buffer = Buffer.from(bytes); Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath }); return buffer; }
@@ -55314,8 +55315,8 @@ const harness_prelude =
     \\      Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath });
     \\      return buffer;
     \\    }
-    \\    const text = __home_build_read_text(path);
-    \\    if (text === null) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", path);
+    \\    const text = __home_build_read_text(normalizedPath);
+    \\    if (text === null) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", normalizedPath);
     \\    if (wantsUtf16) {
     \\      const bytes = __home_text_to_utf8_bytes(text);
     \\      let result = "";
@@ -74872,8 +74873,13 @@ const harness_prelude =
     \\  } });
     \\}
     \\globalThis.__home_modules["home:abort-signal-support"] = { any: AbortSignal.any, createError: __home_abort_signal_any_error };
-    \\globalThis.__home_modules["abort-controller"] = {};
-    \\Object.defineProperty(globalThis.__home_modules["abort-controller"], "AbortController", { enumerable: true, get() { return AbortController; } });
+    \\globalThis.__home_modules["abort-controller"] = AbortController;
+    \\Object.defineProperties(globalThis.__home_modules["abort-controller"], {
+    \\  AbortController: { configurable: true, enumerable: true, value: AbortController },
+    \\  AbortSignal: { configurable: true, enumerable: true, value: AbortSignal },
+    \\  default: { configurable: true, enumerable: true, value: AbortController },
+    \\  __esModule: { configurable: true, value: true },
+    \\});
     \\if (typeof Promise.withResolvers !== "function") {
     \\  Promise.withResolvers = function() {
     \\    let resolve, reject;
@@ -113622,15 +113628,26 @@ test "bootstrap runner covers abort-controller require and dynamic import intero
     const source =
         \\import { expect, test } from "bun:test";
         \\const node_js_shim = require("./abort-controller-fixture");
+        \\const direct = require("abort-controller");
+        \\
+        \\test("abort-controller CommonJS export is the native constructor", () => {
+        \\  expect(direct).toBe(AbortController);
+        \\  expect(direct.AbortController).toBe(AbortController);
+        \\  expect(direct.AbortSignal).toBe(AbortSignal);
+        \\  expect(direct.default).toBe(AbortController);
+        \\});
         \\
         \\test("AbortController from abort-controller fixture works when used with ESM -> CJS -> ESM", () => {
         \\  expect(node_js_shim.AbortController).toBe(AbortController);
+        \\  expect(node_js_shim.AbortSignal).toBe(AbortSignal);
         \\});
         \\
         \\test("AbortController from abort-controller fixture works when used with ESM -> ESM", async () => {
         \\  delete require.cache["abort-controller"];
         \\  const node_js_shim = await import("abort-controller");
         \\  expect(node_js_shim.AbortController).toBe(AbortController);
+        \\  expect(node_js_shim.AbortSignal).toBe(AbortSignal);
+        \\  expect(node_js_shim.default).toBe(AbortController);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09739.test.ts");
@@ -113645,7 +113662,7 @@ test "bootstrap runner covers abort-controller require and dynamic import intero
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner covers mutable globalThis prototype smoke" {
@@ -135085,6 +135102,44 @@ test "Bun test import rewrite lowers import.meta metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dirname").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new URL(\"./fixture.js\", \"file:///\" + __home_import_meta_path)") != null);
+}
+
+test "bootstrap node fs reads corpus fixtures through import.meta URL objects" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { readFileSync } from "node:fs";
+        \\test("file URL fixture", () => {
+        \\  const fixture = new URL("./icu-locales.txt", import.meta.url);
+        \\  const contents = readFileSync(fixture, "utf8");
+        \\  expect(fixture.protocol).toBe("file:");
+        \\  expect(contents.split("\n")).toContain("en");
+        \\});
+        \\test("non-file URL preserves the Node error contract", () => {
+        \\  let caught;
+        \\  try { readFileSync(new URL("https://example.com/fixture.txt"), "utf8"); } catch (error) { caught = error; }
+        \\  expect(caught).toBeInstanceOf(TypeError);
+        \\  expect(caught.code).toBe("ERR_INVALID_URL_SCHEME");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/intl/intl.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print(
+            "file URL fs regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner preserves named exports for expression dynamic self imports" {
