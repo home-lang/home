@@ -420,12 +420,12 @@ const harness_prelude =
     \\    hasRef() { return !this.__home_unrefed; },
     \\    refresh() {
     \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
-    \\      if (!item || item.interval) return this;
-    \\      item.cleared = false;
+    \\      if (!item || item.interval || item.cleared) return this;
     \\      item.active = true;
     \\      item.refreshed = true;
     \\      item.time = __home_fake_timers_active ? __home_fake_timers_now + item.delay : Date.now() + item.delay;
     \\      if (__home_fake_timers_active) __home_fake_timer_records.set(id, item);
+    \\      else if (typeof item.schedule === "function") item.schedule();
     \\      return this;
     \\    },
     \\    valueOf() { return id; },
@@ -552,33 +552,31 @@ const harness_prelude =
     \\  if (arguments.length >= 2 && Number.isNaN(Number(delay)) && typeof process === "object" && process && typeof process.emitWarning === "function") {
     \\    Promise.resolve().then(() => process.emitWarning("Timeout duration was set to 1.", "TimeoutNaNWarning"));
     \\  }
-    \\  const delayMs = Math.max(0, Number(delay) || 0);
-    \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
+    \\  const delayMs = Math.max(1, Number(delay) || 0);
+    \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true, generation: 0 };
     \\  __home_all_timer_records.set(id, record);
-    \\  let remainingTurns = delayMs > 0 ? Math.min(256, Math.max(16, Math.ceil(delayMs))) : 0;
-    \\  const run = () => {
-    \\    if (__home_cancelled_timers.has(id)) return;
-    \\    if (record.cleared || !record.active) return;
-    \\    if (remainingTurns-- > 0) {
-    \\      Promise.resolve().then(run);
-    \\      return;
-    \\    }
-    \\    if (delayMs > 0 && delayMs <= 250) {
-    \\      const started = Date.now();
-    \\      while (Date.now() - started < delayMs) {}
-    \\    }
-    \\    if (typeof globalThis.__home_advance_performance_clock === "function") {
-    \\      globalThis.__home_advance_performance_clock(delayMs);
-    \\    } else {
-    \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
-    \\    }
-    \\    record.refreshed = false;
-    \\    if (typeof callback === "function") callback.apply(undefined, args);
-    \\    if (record.refreshed && record.active && !record.cleared) Promise.resolve().then(run);
-    \\    else record.active = false;
+    \\  record.schedule = () => {
+    \\    const generation = ++record.generation;
+    \\    let remainingTurns = Math.min(256, Math.max(16, Math.ceil(delayMs)));
+    \\    const run = () => {
+    \\      if (__home_cancelled_timers.has(id) || record.cleared || !record.active || generation !== record.generation) return;
+    \\      if (remainingTurns-- > 0) { Promise.resolve().then(run); return; }
+    \\      if (delayMs <= 250) {
+    \\        const started = Date.now();
+    \\        while (Date.now() - started < delayMs) {}
+    \\      }
+    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(delayMs);
+    \\      else globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
+    \\      record.active = false;
+    \\      record.refreshed = false;
+    \\      if (typeof callback === "function") callback.apply(record.handle, args);
+    \\    };
+    \\    Promise.resolve().then(run);
     \\  };
-    \\  Promise.resolve().then(run);
-    \\  return __home_timer_handle(id, record);
+    \\  record.schedule();
+    \\  const handle = __home_timer_handle(id, record);
+    \\  record.handle = handle;
+    \\  return handle;
     \\}
     \\function clearTimeout(id) {
     \\  __home_clear_fake_timer(id, "timer");
@@ -597,7 +595,7 @@ const harness_prelude =
     \\    } else {
     \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
     \\    }
-    \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\    if (typeof callback === "function") callback.apply(record.handle, args);
     \\    if (record.cleared || !record.active || __home_cancelled_timers.has(id)) return;
     \\    if (record.ticks >= 100) {
     \\      __home_clear_fake_timer(id);
@@ -608,6 +606,7 @@ const harness_prelude =
     \\  Promise.resolve().then(run);
     \\  __home_all_timer_records.set(id, record);
     \\  const handle = __home_timer_handle(id, record);
+    \\  record.handle = handle;
     \\  return handle;
     \\}
     \\function clearInterval(id) {
@@ -26322,9 +26321,10 @@ const harness_prelude =
     \\    while (performance.now() < deadline) {}
     \\  },
     \\  sleep(ms) {
-    \\    const duration = Number(ms) || 0;
+    \\    const duration = ms instanceof Date ? Math.max(0, ms.getTime() - Date.now()) : Math.max(0, Number(ms) || 0);
     \\    if (duration > 0) {
     \\      __home_virtual_time_ms += duration;
+    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(duration);
     \\      const records = globalThis.__home_abort_timeout_records;
     \\      if (Array.isArray(records)) {
     \\        for (const record of records.slice()) if (record && !record.settled && record.deadline <= __home_virtual_time_ms) record.dispatch();
@@ -62820,7 +62820,13 @@ const harness_prelude =
     \\    if (mimalloc) return mimalloc;
     \\    const objectTypeCounts = Object.create(null);
     \\    objectTypeCounts.string = 0;
-    \\    return { objectTypeCounts, protectedObjectTypeCounts: Object.create(null), extraMemorySize: 0 };
+    \\    const protectedObjectTypeCounts = Object.create(null);
+    \\    let activeTimeouts = 0;
+    \\    if (typeof __home_all_timer_records === "object" && __home_all_timer_records) {
+    \\      for (const timer of __home_all_timer_records.values()) if (timer && timer.kind === "timer" && timer.active && !timer.cleared) activeTimeouts++;
+    \\    }
+    \\    if (activeTimeouts > 0) protectedObjectTypeCounts.Timeout = activeTimeouts;
+    \\    return { objectTypeCounts, protectedObjectTypeCounts, extraMemorySize: 0 };
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
@@ -111233,6 +111239,7 @@ test "bootstrap runner covers current web timer regressions" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
+        \\const { heapStats } = globalThis.__home_import("bun:jsc");
         \\import { expect, it } from "bun:test";
         \\
         \\it("queueMicrotask.length is 1", () => {
@@ -111243,6 +111250,27 @@ test "bootstrap runner covers current web timer regressions" {
         \\  expect(() => new performance.now()).toThrow(TypeError);
         \\  expect(() => Reflect.construct(performance.now, [])).toThrow(TypeError);
         \\  expect(typeof performance.now()).toBe("number");
+        \\});
+        \\
+        \\it("sub-millisecond timeouts keep insertion order", async () => {
+        \\  const order = []; await new Promise(resolve => { setTimeout(() => order.push("one"), 1); setTimeout(() => { order.push("zero"); resolve(); }, 0); });
+        \\  expect(order).toEqual(["one", "zero"]);
+        \\});
+        \\
+        \\it("a fired timeout refreshes into a new generation", async () => {
+        \\  let timer; let fires = 0; await new Promise(resolve => { timer = setTimeout(() => { fires++; if (fires === 1) queueMicrotask(() => timer.refresh()); else resolve(); }, 1); });
+        \\  expect(fires).toBe(2); expect(timer._destroyed).toBe(true);
+        \\});
+        \\
+        \\it("clear is terminal and timeout protection follows callback lifetime", async () => {
+        \\  const initial = heapStats().protectedObjectTypeCounts.Timeout || 0; let receiver; let resolve; const completed = new Promise(done => { resolve = done; });
+        \\  const timer = setTimeout(function() { receiver = this; resolve(); }, 1); expect(heapStats().protectedObjectTypeCounts.Timeout || 0).toBe(initial + 1); await completed;
+        \\  expect(receiver).toBe(timer); expect(heapStats().protectedObjectTypeCounts.Timeout || 0).toBe(initial);
+        \\  let called = false; const cancelled = setTimeout(() => { called = true; }, 1); clearTimeout(cancelled); cancelled.refresh(); await new Promise(done => setTimeout(done, 2)); expect(called).toBe(false); expect(cancelled._destroyed).toBe(true);
+        \\});
+        \\
+        \\it("Bun.sleep Date deadlines advance the performance clock", async () => {
+        \\  const start = performance.now(); const deadline = new Date(Date.now() + 25); await Bun.sleep(deadline); expect(performance.now() - start).toBeGreaterThanOrEqual(25);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/timers/performance.test.js");
@@ -111260,7 +111288,7 @@ test "bootstrap runner covers current web timer regressions" {
         std.debug.print("current web timer regression failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
