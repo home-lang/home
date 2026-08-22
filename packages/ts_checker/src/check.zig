@@ -74038,7 +74038,7 @@ pub const Checker = struct {
                 std.mem.eql(u8, self.string_interner.get(resolved_path[0]), "React") and
                 self.sourceHasReactJsxReference())
             {
-                if (try self.syntheticReactQualifiedType(r.name)) |react_t| return react_t;
+                if (try self.syntheticReactQualifiedType(type_node, r.name)) |react_t| return react_t;
             }
             // Fallback for `JSX.<Type>` qualified refs in fixtures that
             // reference the lib's `react.d.ts` via `/// <reference path
@@ -74120,13 +74120,33 @@ pub const Checker = struct {
         };
     }
 
-    fn syntheticReactQualifiedType(self: *Checker, name: hir_mod.StringId) CheckError!?TypeId {
+    fn syntheticReactQualifiedType(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
         const text = self.string_interner.get(name);
-        if (!std.mem.eql(u8, text, "SFC") and !std.mem.eql(u8, text, "FunctionComponent")) return null;
+        if (!std.mem.eql(u8, text, "SFC") and
+            !std.mem.eql(u8, text, "FunctionComponent") and
+            !std.mem.eql(u8, text, "StatelessComponent")) return null;
         const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
         const prop_types_name = self.string_interner.intern("propTypes") catch return error.OutOfMemory;
         const default_props_name = self.string_interner.intern("defaultProps") catch return error.OutOfMemory;
-        const params = [_]TypeId{types.Primitive.any};
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+        const props_t = if (args.len > 0)
+            try self.lowererLowerWithTypeParams(args[0])
+        else
+            types.Primitive.any;
+        const callable_props_t = blk: {
+            if (self.typeIsAnyLike(props_t)) break :blk props_t;
+            const children_t = try self.jsxReactChildrenPropObjectType();
+            const pair = if (self.sourceHasReact16JsxReference())
+                [_]TypeId{ children_t, props_t }
+            else
+                [_]TypeId{ props_t, children_t };
+            break :blk self.interner.internIntersection(&pair) catch props_t;
+        };
+        const params = [_]TypeId{callable_props_t};
         const call_t = self.interner.internSignature(&params, types.Primitive.any, false) catch return error.OutOfMemory;
         return self.interner.internObjectType(&.{
             .{ .name = call_name, .type = call_t, .is_optional = false, .is_readonly = true, .is_method = true },
@@ -247260,6 +247280,37 @@ test "checker: JSX bare generic spreads retain intrinsic attributes relation" {
             "This type parameter might need an `extends JSX.IntrinsicAttributes` constraint.",
             diagnostic.related[0].message,
         );
+    }
+}
+
+test "checker: React StatelessComponent return context preserves generic props" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\const decorate = function <T>(Component: React.StatelessComponent<T>): React.StatelessComponent<T> {
+        \\  return props => <Component {...props} />;
+        \\};
+        \\const constrained = function <T extends { x: number }>(Component: React.StatelessComponent<T>): React.StatelessComponent<T> {
+        \\  return props => <Component {...props} x={2} />;
+        \\};
+        \\const overwritten = function <T extends { x: number }>(Component: React.StatelessComponent<T>): React.StatelessComponent<T> {
+        \\  return props => <Component x={2} {...props} />;
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_attribute_overwritten));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.jsx_attribute_overwritten) continue;
+        try T.expectEqual(@as(usize, 1), diagnostic.related.len);
+        try T.expectEqual(TsCodes.spread_always_overwrites_property, diagnostic.related[0].code);
     }
 }
 
