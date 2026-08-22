@@ -80691,7 +80691,8 @@ pub const Checker = struct {
         try self.report(target_node, TsCodes.type_not_array_or_string_type, msg);
     }
 
-    fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
+    fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_type: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
+        var source_t = source_type;
         if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .identifier) {
             const declared_source_t = self.annotatedTupleUnionForIdentifier(source_node) orelse
                 (self.visibleAnnotatedIdentifierType(source_node) orelse self.typeOfIdentifierDeclared(source_node));
@@ -80700,7 +80701,7 @@ pub const Checker = struct {
                 declared_source_t < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(declared_source_t).is_union)
             {
-                return try self.checkArrayDestructuringAssignment(target_node, declared_source_t, hir_mod.none_node_id, source_offset);
+                source_t = declared_source_t;
             }
         }
         if (source_node != hir_mod.none_node_id and
@@ -80745,7 +80746,9 @@ pub const Checker = struct {
                 break :blk access;
             } else null;
             const elem_t = if (union_access) |access| access.value_type else self.tupleElementType(source_t, source_offset + i);
-            const source_elem_t = if (try self.arrayLiteralSourceElementType(source_node, source_offset + i)) |literal_elem_t|
+            const source_elem_t = if (try self.narrowedArrayDestructuringSourceElementType(source_node, source_offset + i)) |narrowed_elem_t|
+                narrowed_elem_t
+            else if (try self.arrayLiteralSourceElementType(source_node, source_offset + i)) |literal_elem_t|
                 literal_elem_t
             else if (elem_t != types.Primitive.none)
                 elem_t
@@ -80835,6 +80838,14 @@ pub const Checker = struct {
                 try self.checkObjectDestructuringAssignment(el, source_elem_t, hir_mod.none_node_id);
             }
         }
+    }
+
+    fn narrowedArrayDestructuringSourceElementType(self: *Checker, source_node: NodeId, index: usize) CheckError!?TypeId {
+        if (source_node == hir_mod.none_node_id or self.hir.kindOf(source_node) != .identifier) return null;
+        const source_name = hir_mod.identifierOf(self.hir, source_node).name;
+        const numeric_index: f64 = @floatFromInt(index);
+        const property_name = try self.enumNumberToStringId(numeric_index);
+        return self.lookupMemberNarrow(.{ .obj_name = source_name, .prop_name = property_name });
     }
 
     /// The type captured by an array-destructuring REST element (`[...rest]`)
@@ -217687,6 +217698,22 @@ test "checker: array destructuring assignment checks iterator element assignabil
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: narrowed tuple union source drives destructuring assignment" {
+    const s = try newSetup(
+        \\function update(obj: [number, string] | null[]) {
+        \\  if (obj[0] && obj[1]) {
+        \\    let first = obj[0];
+        \\    let second = obj[1];
+        \\    ([first, second] = obj);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2501 fires for binding-pattern rest in object destructuring assignment" {
