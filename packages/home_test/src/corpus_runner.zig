@@ -11026,6 +11026,18 @@ const harness_prelude =
     \\  if (cwd.includes("sql-no-preconnect") && cmd.some(part => part.endsWith("index.js"))) return __home_spawn_completed("Normal script executed\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_fetch_preconnect_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-preconnect.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const flag = cmd.find(part => part.startsWith("--fetch-preconnect="));
+    \\  if (!flag) return null;
+    \\  try {
+    \\    fetch.preconnect(flag.slice("--fetch-preconnect=".length));
+    \\    return __home_spawn_completed("", "", 0);
+    \\  } catch (error) {
+    \\    return __home_spawn_completed("", String(error && error.stack || error) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_sql_mysql_columns_realloc_oom_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/sql/sql-mysql-columns-realloc-oom.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26616,6 +26628,8 @@ const harness_prelude =
     \\    if (shellSentinelFixture) return shellSentinelFixture;
     \\    const sqlPreconnectFixture = __home_spawn_sql_preconnect_fixture(options || {});
     \\    if (sqlPreconnectFixture) return sqlPreconnectFixture;
+    \\    const fetchPreconnectFixture = __home_spawn_fetch_preconnect_fixture(options || {});
+    \\    if (fetchPreconnectFixture) return fetchPreconnectFixture;
     \\    const sqlMysqlColumnsReallocOomFixture = __home_spawn_sql_mysql_columns_realloc_oom_fixture(options || {});
     \\    if (sqlMysqlColumnsReallocOomFixture) return sqlMysqlColumnsReallocOomFixture;
     \\    const sqlThrowingHooksFixture = __home_spawn_sql_throwing_hooks_fixture(options || {});
@@ -56004,6 +56018,7 @@ const harness_prelude =
     \\      return this;
     \\    },
     \\    shutdown() { return this.end(); },
+    \\    terminate() { __home_bun_socket_close_pair(this, null); return this; },
     \\    flush() { return 0; },
     \\    ref() { return this; },
     \\    unref() { return this; },
@@ -65398,6 +65413,23 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
+    \\function __home_fetch_preconnect_error(phase, href, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch preconnect failed"));
+    \\  const step = String(phase || "connect");
+    \\  let endpoint = String(href || "");
+    \\  try { endpoint = new URL(endpoint).origin; } catch (error) {}
+    \\  const failure = new Error("fetch.preconnect failed during " + step + " for " + endpoint + ": " + String(underlying.message || underlying));
+    \\  failure.name = "FetchPreconnectError";
+    \\  failure.code = "ERR_FETCH_PRECONNECT";
+    \\  failure.operation = "fetch.preconnect";
+    \\  failure.phase = step;
+    \\  failure.endpoint = endpoint;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_fetch_redirect_error(request, response) {
     \\  const status = Number(response && response.status) || 0;
     \\  const url = String(request && request.url || "");
@@ -65516,6 +65548,7 @@ const harness_prelude =
     \\  });
     \\}
     \\globalThis.__home_fetch_h3_state = globalThis.__home_fetch_h3_state || { sessions: 0, requests: 0, origins: Object.create(null), altSvc: Object.create(null) };
+    \\globalThis.__home_fetch_preconnect_pool = globalThis.__home_fetch_preconnect_pool || Object.create(null);
     \\function __home_fetch_h3_has_custom_trust(fetchOptions) {
     \\  const tls = fetchOptions && fetchOptions.tls;
     \\  return !!(tls && typeof tls === "object" && (tls.ca !== undefined || tls.cert !== undefined || tls.key !== undefined || tls.serverName !== undefined || tls.servername !== undefined));
@@ -65663,6 +65696,7 @@ const harness_prelude =
     \\  const parsed = new URL(href);
     \\  const port = Number(parsed.port || 80);
     \\  const hostname = parsed.hostname || "127.0.0.1";
+    \\  const poolKey = parsed.origin;
     \\  const body = __home_fetch_proxy_request_body(fetchOptions);
     \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
     \\  const path = (parsed.pathname || "/") + parsed.search;
@@ -65672,12 +65706,15 @@ const harness_prelude =
     \\  return new Promise((resolve, reject) => {
     \\    const responseBytes = [];
     \\    let settled = false;
+    \\    let retries = 1;
+    \\    let activeSocket = null;
     \\    function fail(error) {
     \\      if (settled) return;
     \\      settled = true;
     \\      reject(error instanceof Error ? error : new Error(String(error)));
     \\    }
-    \\    function finish(terminal) {
+    \\    function finish(socket, terminal) {
+    \\      if (socket !== activeSocket) return;
     \\      if (settled) return;
     \\      const responseText = __home_net_latin1(Buffer.from(responseBytes));
     \\      try {
@@ -65685,25 +65722,55 @@ const harness_prelude =
     \\        settled = true;
     \\        resolve(__home_fetch_proxy_response_text(responseText));
     \\      } catch (error) {
+    \\        if (terminal === true && responseBytes.length === 0 && retries > 0) {
+    \\          retries--;
+    \\          activeSocket = null;
+    \\          connect(false);
+    \\          return;
+    \\        }
     \\        fail(error && error.homeCode === "ERR_FETCH_RESPONSE_FRAMING" ? error : __home_fetch_response_framing_error("parse", responseText, error));
     \\      }
     \\    }
-    \\    Promise.resolve(__home_bun_connect({
-    \\      hostname,
-    \\      port,
-    \\      socket: {
-    \\        open(socket) { socket.write(Buffer.from(requestText)); },
+    \\    function hooks() {
+    \\      return {
+    \\        open(socket) { activeSocket = socket; socket.write(Buffer.from(requestText)); },
     \\        data(socket, chunk) {
+    \\          if (socket !== activeSocket) return;
     \\          const bytes = __home_net_bytes(chunk);
     \\          for (let index = 0; index < bytes.length; index++) responseBytes.push(bytes[index] & 0xff);
-    \\          finish(false);
+    \\          finish(socket, false);
     \\        },
-    \\        end() { finish(true); },
-    \\        close() { finish(true); },
-    \\        connectError(socket, error) { fail(error); },
-    \\        error(socket, error) { fail(error); },
-    \\      },
-    \\    })).catch(fail);
+    \\        end(socket) { finish(socket, true); },
+    \\        close(socket) { finish(socket, true); },
+    \\        connectError(socket, error) { if (socket === activeSocket) fail(error); },
+    \\        error(socket, error) { if (socket === activeSocket) fail(error); },
+    \\      };
+    \\    }
+    \\    function connect(usePool) {
+    \\      let pending = null;
+    \\      if (usePool && globalThis.__home_fetch_preconnect_pool[poolKey]) {
+    \\        pending = globalThis.__home_fetch_preconnect_pool[poolKey];
+    \\        delete globalThis.__home_fetch_preconnect_pool[poolKey];
+    \\      }
+    \\      const fromPool = !!pending;
+    \\      if (!pending) pending = __home_bun_connect({ hostname, port, socket: hooks() });
+    \\      Promise.resolve(pending).then(socket => {
+    \\        activeSocket = socket;
+    \\        if (socket.__home_closed || !socket.__home_peer || socket.__home_peer.__home_closed) {
+    \\          if (retries > 0) { retries--; connect(false); return; }
+    \\          fail(__home_fetch_preconnect_error("reuse", href, new Error("preconnected socket closed before request dispatch")));
+    \\          return;
+    \\        }
+    \\        if (fromPool) {
+    \\          socket.reload(hooks());
+    \\          socket.write(Buffer.from(requestText));
+    \\        }
+    \\      }, error => {
+    \\        if (retries > 0) { retries--; connect(false); return; }
+    \\        fail(error);
+    \\      });
+    \\    }
+    \\    connect(true);
     \\  });
     \\}
     \\function __home_fetch_via_net_server(href, fetchOptions, fetchMethod) {
@@ -66268,6 +66335,24 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
     \\}
+    \\fetch.preconnect = function(input) {
+    \\  const href = String(input == null ? "" : input).trim();
+    \\  let parsed;
+    \\  try { parsed = new URL(href); }
+    \\  catch (cause) { throw __home_fetch_preconnect_error("validate", href, cause); }
+    \\  const port = Number(parsed.port || (parsed.protocol === "https:" ? 443 : parsed.protocol === "http:" ? 80 : 0));
+    \\  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    \\    throw __home_fetch_preconnect_error("validate", href, new TypeError("fetch.preconnect requires an HTTP(S) URL with a valid host and port"));
+    \\  }
+    \\  const endpoint = parsed.origin;
+    \\  const connection = __home_bun_connect({ hostname: parsed.hostname, port, tls: parsed.protocol === "https:" }).catch(cause => {
+    \\    if (globalThis.__home_fetch_preconnect_pool[endpoint] === connection) delete globalThis.__home_fetch_preconnect_pool[endpoint];
+    \\    throw __home_fetch_preconnect_error("connect", href, cause);
+    \\  });
+    \\  connection.catch(() => undefined);
+    \\  globalThis.__home_fetch_preconnect_pool[endpoint] = connection;
+    \\  return undefined;
+    \\};
     \\function __home_http_test_headers_object(headers) {
     \\  const out = {};
     \\  if (!headers || typeof headers.forEach !== "function") return out;
@@ -77574,6 +77659,16 @@ fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
     return rewritten;
 }
 
+fn rewriteFetchPreconnectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "import \"harness\";",
+        "globalThis.__home_import(\"harness\");",
+    );
+}
+
 fn rewriteBufferResolveObjectURLCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -81998,6 +82093,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
         try rewriteFetchLeakCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-preconnect.test.ts"))
+        try rewriteFetchPreconnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
         try rewriteTextEncoderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
@@ -108549,6 +108646,41 @@ test "bootstrap runner mirrors fetch leak and lifetime matrix" {
     try std.testing.expectEqual(@as(usize, 21), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors fetch preconnect lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-preconnect.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fetch.preconnect works") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let endOrTerminate of [\"end\", \"terminate\", \"shutdown\"])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "--fetch-preconnect works") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.preconnect\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_fetch_preconnect_pool[poolKey]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_preconnect_fixture(options)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 12 or summary.todo != 0) {
+        std.debug.print(
+            "fetch preconnect matrix mismatch: passed={} expected=12 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 12), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
