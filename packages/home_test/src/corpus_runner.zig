@@ -26340,6 +26340,7 @@ const harness_prelude =
     \\    if (hasUnix && typeof options.unix !== "string") throw new TypeError("SocketOptions.unix must be a string");
     \\    const unix = hasUnix ? String(options.unix) : null;
     \\    if (hasUnix && unix.length === 0) throw new Error("unix must not be empty");
+    \\    if (hasUnix) __home_unix_socket_validate_path(unix, "listen");
     \\    if (!hasUnix && options.hostname !== undefined && options.hostname !== null && options.hostname !== false && String(options.hostname).length === 0) throw new Error('Expected a non-empty "hostname"');
     \\    const requested = hasUnix ? 0 : Number(options.port === undefined ? 0 : options.port);
     \\    if (!hasUnix && (!Number.isFinite(requested) || requested < 0 || requested > 65535)) throw new RangeError("port must be in the range [0, 65535]");
@@ -26416,7 +26417,7 @@ const harness_prelude =
     \\    handle.server = server;
     \\    if (hasUnix) {
     \\      globalThis.__home_listen_handles_by_unix[unix] = handle;
-    \\      if (unix.charCodeAt(0) !== 0) __home_build_write_text(unix, "");
+    \\      __home_bun_create_unix_socket_file(unix);
     \\    } else {
     \\      globalThis.__home_listen_handles_by_port[String(port)] = handle;
     \\    }
@@ -26428,6 +26429,8 @@ const harness_prelude =
     \\    if (tlsOption !== undefined && tlsOption !== null && typeof tlsOption !== "object") throw new TypeError("TLSOptions must be an object");
     \\    const hostname = __home_serve_coerce_hostname(options.hostname, "localhost");
     \\    if (options.unix !== undefined && options.unix !== null && String(options.unix) !== "" && options.hostname !== undefined && options.hostname !== null && options.hostname !== false && hostname !== "") throw new Error("hostname cannot be used with unix");
+    \\    const serveUnix = options.unix !== undefined && options.unix !== null && String(options.unix) !== "" ? String(options.unix) : null;
+    \\    if (serveUnix !== null) __home_unix_socket_validate_path(serveUnix, "listen");
     \\    let handle;
     \\    const hasUserFetch = typeof options.fetch === "function";
     \\    __home_serve_validate_routes(options.routes, hasUserFetch || !!options.static);
@@ -26469,13 +26472,15 @@ const harness_prelude =
     \\    }
     \\    handle.__home_websocket_topics = Object.create(null);
     \\    handle.__home_hmr_sockets = new Set();
-    \\    handle.__home_origins = [handle.origin];
-    \\    const localhostOrigin = __home_serve_protocol(options) + "://localhost:" + String(handle.port);
-    \\    const loopbackOrigin = __home_serve_protocol(options) + "://127.0.0.1:" + String(handle.port);
-    \\    const ipv6LoopbackOrigin = __home_serve_protocol(options) + "://[::1]:" + String(handle.port);
-    \\    if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
-    \\    if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
-    \\    if (!handle.__home_origins.includes(ipv6LoopbackOrigin)) handle.__home_origins.push(ipv6LoopbackOrigin);
+    \\    handle.__home_origins = serveUnix === null ? [handle.origin] : [];
+    \\    if (serveUnix === null) {
+    \\      const localhostOrigin = __home_serve_protocol(options) + "://localhost:" + String(handle.port);
+    \\      const loopbackOrigin = __home_serve_protocol(options) + "://127.0.0.1:" + String(handle.port);
+    \\      const ipv6LoopbackOrigin = __home_serve_protocol(options) + "://[::1]:" + String(handle.port);
+    \\      if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
+    \\      if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
+    \\      if (!handle.__home_origins.includes(ipv6LoopbackOrigin)) handle.__home_origins.push(ipv6LoopbackOrigin);
+    \\    }
     \\    for (const origin of handle.__home_origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
     \\    const url = new URL(handle.origin + "/");
     \\    const server = {
@@ -26541,16 +26546,16 @@ const harness_prelude =
     \\      },
     \\    };
     \\    if (options.unix !== undefined && options.unix !== null && String(options.unix) !== "") {
-    \\      const unix = String(options.unix);
+    \\      const unix = serveUnix;
     \\      if (globalThis.__home_serve_handles_by_unix[unix] || __home_build_file_exists(unix)) throw __home_bun_socket_system_error("EADDRINUSE", "listen", unix);
     \\      handle.unix = unix;
     \\      globalThis.__home_serve_handles_by_unix[unix] = handle;
-    \\      if (unix.charCodeAt(0) !== 0) __home_build_write_text(unix, "");
+    \\      __home_bun_create_unix_socket_file(unix);
     \\      server.address = unix;
     \\      server.port = undefined;
     \\      server.hostname = undefined;
     \\      if (typeof options.unix === "string") {
-    \\        server.url = new URL("unix:" + unix);
+    \\        server.url = unix.charCodeAt(0) === 0 ? new URL("abstract://" + unix.slice(1) + "/") : new URL("unix:" + unix);
     \\      } else {
     \\        Object.defineProperty(server, "url", {
     \\          configurable: true,
@@ -56224,6 +56229,54 @@ const harness_prelude =
     \\  if (port !== undefined) error.port = Number(port);
     \\  return error;
     \\}
+    \\function __home_unix_socket_path_limit() {
+    \\  return ({ darwin: 104, linux: 108, win32: 260, sunos: 104, aix: 104, freebsd: 104, openbsd: 104, netbsd: 104, plan9: 104, android: 104, haiku: 104, cygwin: 260 })[process.platform] || 104;
+    \\}
+    \\function __home_unix_socket_error(code, syscall, path, phase, cause) {
+    \\  const unix = String(path || "");
+    \\  const labels = { ENAMETOOLONG: "socket path is too long", ENOENT: "no such file or directory" };
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(code) + ": " + (labels[code] || "Unix socket error"));
+    \\  const failure = new Error(String(code) + ": " + (labels[code] || "Unix socket error") + ", " + String(syscall || "connect") + " '" + unix + "'", { cause: underlying });
+    \\  failure.name = "UnixSocketError";
+    \\  failure.code = String(code);
+    \\  failure.errno = ({ ENAMETOOLONG: -36, ENOENT: -2 })[code] || -1;
+    \\  failure.syscall = String(syscall || "connect");
+    \\  failure.path = unix;
+    \\  failure.address = unix;
+    \\  failure.operation = "unix.socket." + failure.syscall;
+    \\  failure.phase = String(phase || "path");
+    \\  failure.pathLength = __home_text_to_utf8_bytes(unix).length;
+    \\  failure.pathLimit = __home_unix_socket_path_limit();
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_unix_socket_validate_path(path, syscall) {
+    \\  const unix = String(path || "");
+    \\  const limit = __home_unix_socket_path_limit();
+    \\  const length = __home_text_to_utf8_bytes(unix).length;
+    \\  if (unix.charCodeAt(0) === 0) {
+    \\    if (length > limit) throw __home_unix_socket_error("ENAMETOOLONG", syscall, unix, "abstract-path-length", new RangeError("Abstract Unix socket path exceeds the platform limit of " + String(limit) + " bytes"));
+    \\    return unix;
+    \\  }
+    \\  const parent = __home_build_dirname(unix) || ".";
+    \\  const basenameLength = __home_text_to_utf8_bytes(__home_build_basename(unix)).length;
+    \\  const canUseLongDirectoryWorkaround = (process.platform === "linux" || process.platform === "darwin") && basenameLength < limit && __home_fs_dir_exists(parent);
+    \\  if (length >= limit && !canUseLongDirectoryWorkaround) throw __home_unix_socket_error("ENAMETOOLONG", syscall, unix, "path-length", new RangeError("Unix socket path exceeds the platform limit of " + String(limit - 1) + " bytes"));
+    \\  if (!__home_fs_dir_exists(parent)) throw __home_unix_socket_error("ENOENT", syscall, unix, "parent-directory", new Error("Parent directory does not exist: " + parent));
+    \\  return unix;
+    \\}
+    \\function __home_bun_create_unix_socket_file(path) {
+    \\  const unix = String(path || "");
+    \\  if (!unix || unix.charCodeAt(0) === 0) return;
+    \\  __home_fs_clear_deleted_path(unix);
+    \\  __home_fs_clear_deleted_ancestors(unix);
+    \\  __home_fs_mark_parent_dirs(unix);
+    \\  globalThis.__home_written_files[unix] = "";
+    \\  const writtenAt = Math.max(Date.now(), (globalThis.__home_last_write_time_ms || 0) + 1);
+    \\  globalThis.__home_last_write_time_ms = writtenAt;
+    \\  globalThis.__home_written_file_times[unix] = { atimeMs: writtenAt, mtimeMs: writtenAt, ctimeMs: writtenAt, birthtimeMs: writtenAt };
+    \\}
     \\function __home_bun_remove_unix_socket_file(path) {
     \\  const unix = String(path || "");
     \\  if (!unix || unix.charCodeAt(0) === 0) return;
@@ -56231,8 +56284,10 @@ const harness_prelude =
     \\  delete globalThis.__home_serve_handles_by_unix[unix];
     \\  if (globalThis.__home_written_files) delete globalThis.__home_written_files[unix];
     \\  if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[unix];
+    \\  if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[unix];
+    \\  if (globalThis.__home_written_file_modes) delete globalThis.__home_written_file_modes[unix];
+    \\  if (globalThis.__home_written_file_times) delete globalThis.__home_written_file_times[unix];
     \\  __home_fs_mark_deleted(unix);
-    \\  try { if (typeof globalThis.__home_removePathNative === "function") globalThis.__home_removePathNative(unix); } catch (error) {}
     \\}
     \\function __home_bun_socket_payload(bytes, hooks) {
     \\  const buffer = Buffer.from(bytes);
@@ -59124,7 +59179,9 @@ const harness_prelude =
     \\      const endArgs = __home_http_end_arguments(chunk, encoding, endCallback);
     \\      if (endArgs.chunk !== undefined) chunks.push(endArgs.chunk);
     \\      const finishRequest = () => __home_http_finish_outgoing(clientRequest, endArgs.callback);
-    \\      const serveHandle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\      const serveHandle = options.socketPath !== undefined && options.socketPath !== null
+    \\        ? globalThis.__home_serve_handles_by_unix[String(options.socketPath)]
+    \\        : globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\      if (serveHandle && typeof serveHandle.fetch === "function") {
     \\        if (serveHandle.__home_self_signed && options.rejectUnauthorized !== false) {
     \\          Promise.resolve().then(() => clientRequest.emit("error", __home_tls_renegotiation_error()));
@@ -59142,6 +59199,11 @@ const harness_prelude =
     \\            __home_http_emit_client_response(clientRequest, callback, response.status, headers, text);
     \\          });
     \\        }, error => clientRequest.emit("error", error));
+    \\        finishRequest();
+    \\        return this;
+    \\      }
+    \\      if (options.socketPath !== undefined && options.socketPath !== null) {
+    \\        Promise.resolve().then(() => clientRequest.emit("error", __home_unix_socket_error("ENOENT", "connect", String(options.socketPath), "lookup", new Error("No active Unix HTTP server matched the requested socket path"))));
     \\        finishRequest();
     \\        return this;
     \\      }
@@ -67252,6 +67314,7 @@ const harness_prelude =
     \\  const href = resolvedArguments.href;
     \\  if (/^ftp:/i.test(href)) return __home_fetch_thenable(null, __home_fetch_input_error(href, "protocol", new TypeError("Unsupported URL protocol: ftp:")));
     \\  const fetchOptions = __home_fetch_validate_arguments(href, resolvedArguments.options);
+    \\  const unixPath = fetchOptions && fetchOptions.unix !== undefined && fetchOptions.unix !== null ? String(fetchOptions.unix) : null;
     \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
     \\  if (fetchOptions && fetchOptions.body && typeof fetchOptions.body.getReader === "function" && fetchOptions.body.locked) {
     \\    return __home_fetch_thenable(null, __home_fetch_stream_pipe_error(fetchOptions.body, new TypeError("request body stream has an active reader")));
@@ -67322,21 +67385,21 @@ const harness_prelude =
     \\  const transportOptions = __home_fetch_compress_request(fetchOptions);
     \\  const pendingConnect = __home_fetch_wait_for_abort(href, fetchOptions);
     \\  if (pendingConnect) return pendingConnect;
-    \\  const proxyResponse = __home_fetch_via_http_proxy(href, transportOptions, fetchMethod);
+    \\  const proxyResponse = unixPath === null ? __home_fetch_via_http_proxy(href, transportOptions, fetchMethod) : null;
     \\  if (proxyResponse) return proxyResponse;
-    \\  if (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled)) {
+    \\  if (unixPath === null && (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled))) {
     \\    const http2ServerResponse = __home_fetch_via_http2_server(href, transportOptions, fetchMethod);
     \\    if (http2ServerResponse) return __home_fetch_abortable(http2ServerResponse, abortSignal, fetchOptions.body);
     \\    const http2TlsResponse = __home_fetch_via_http2_tls_server(href, transportOptions);
     \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal, fetchOptions.body);
     \\  }
-    \\  const netServerResponse = __home_fetch_via_net_server(href, transportOptions, fetchMethod);
+    \\  const netServerResponse = unixPath === null ? __home_fetch_via_net_server(href, transportOptions, fetchMethod) : null;
     \\  if (netServerResponse) return __home_fetch_abortable(__home_fetch_transport_redirect(netServerResponse, href, transportOptions, fetchMethod), abortSignal, fetchOptions.body);
-    \\  const netTlsResponse = __home_fetch_via_net_tls(href);
+    \\  const netTlsResponse = unixPath === null ? __home_fetch_via_net_tls(href) : null;
     \\  if (netTlsResponse) return __home_fetch_abortable(netTlsResponse, abortSignal, fetchOptions.body);
-    \\  const frontendDevServerResponse = __home_frontend_dev_server_fetch(href);
+    \\  const frontendDevServerResponse = unixPath === null ? __home_frontend_dev_server_fetch(href) : null;
     \\  if (frontendDevServerResponse) return frontendDevServerResponse;
-    \\  const httpServerAgentResponse = __home_http_server_agent_fetch(href);
+    \\  const httpServerAgentResponse = unixPath === null ? __home_http_server_agent_fetch(href) : null;
     \\  if (httpServerAgentResponse) return httpServerAgentResponse;
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
@@ -67344,10 +67407,10 @@ const harness_prelude =
     \\    const slash = href.indexOf("/", scheme + 3);
     \\    origin = slash === -1 ? href : href.slice(0, slash);
     \\  }
-    \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
-    \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
-    \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
-    \\  if (!handle) {
+    \\  let handle = unixPath !== null ? globalThis.__home_serve_handles_by_unix[unixPath] : globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (unixPath === null && !handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
+    \\  if (unixPath === null && !handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
+    \\  if (unixPath === null && !handle) {
     \\    try {
     \\      const parsedOrigin = new URL(href);
     \\      const protocol = parsedOrigin.protocol || "http:";
@@ -67355,7 +67418,7 @@ const harness_prelude =
     \\      if (port) handle = globalThis.__home_serve_handles_by_origin[protocol + "//localhost:" + port] || globalThis.__home_serve_handles_by_origin[protocol + "//127.0.0.1:" + port] || globalThis.__home_serve_handles_by_origin[protocol + "//[::1]:" + port];
     \\    } catch (error) {}
     \\  }
-    \\  if (!handle && origin.startsWith("https://")) {
+    \\  if (unixPath === null && !handle && origin.startsWith("https://")) {
     \\    const parsed = new URL(href);
     \\    const port = Number(parsed.port || 443);
     \\    const tlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
@@ -67363,7 +67426,10 @@ const harness_prelude =
     \\      return __home_fetch_abortable(__home_fetch_via_tls_server(href, transportOptions, fetchMethod, tlsServer), abortSignal, fetchOptions.body);
     \\    }
     \\  }
-    \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, __home_fetch_connection_error(href, new Error("No active local HTTP server matched the requested origin")));
+    \\  if (!handle || handle.stopped) {
+    \\    if (unixPath !== null) return __home_fetch_thenable(null, __home_unix_socket_error("ENOENT", "connect", unixPath, "lookup", new Error("No active Unix HTTP server matched the requested socket path")));
+    \\    return __home_fetch_thenable(null, __home_fetch_connection_error(href, new Error("No active local HTTP server matched the requested origin")));
+    \\  }
     \\  if (handle.__home_self_signed && (!fetchOptions.tls || fetchOptions.tls.rejectUnauthorized !== false)) {
     \\    return __home_fetch_thenable(null, __home_tls_renegotiation_error());
     \\  }
@@ -67482,6 +67548,7 @@ const harness_prelude =
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
     \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
     \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod), redirect: "follow", __home_redirect_state: redirectState });
+    \\          if (unixPath !== null && new URL(redirectedUrl).origin !== new URL(request.url).origin) delete redirectedInit.unix;
     \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) {
     \\            redirectedInit.body = transportOptions && transportOptions.__home_compression && transportOptions.body !== undefined ? transportOptions.body : request.__home_raw_body;
     \\          }
@@ -84361,6 +84428,19 @@ test "harness prelude exposes structured Bun socket lifecycle contracts" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "SocketOptions.unix must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_tcpListenNative(hostname, port)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_harness_tls_credentials()") != null);
+}
+
+test "harness prelude routes Unix HTTP transports through validated socket state" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_unix_socket_validate_path(path, syscall)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"unix.socket.\" + failure.syscall;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_serve_handles_by_unix[String(options.socketPath)]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "let handle = unixPath !== null ? globalThis.__home_serve_handles_by_unix[unixPath]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "delete redirectedInit.unix;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "new URL(\"abstract://\" + unix.slice(1) + \"/\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "handle.__home_origins = serveUnix === null ? [handle.origin] : [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const proxyResponse = unixPath === null ? __home_fetch_via_http_proxy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_bun_create_unix_socket_file(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_written_file_times[unix]") != null);
 }
 
 test "harness prelude surfaces ERR_INVALID_THIS from Request body methods" {
