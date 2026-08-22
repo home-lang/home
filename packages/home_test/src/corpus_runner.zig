@@ -65921,6 +65921,24 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + transport + ", " + encoding + ", " + step + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
+    \\function __home_fetch_http3_transport_error(phase, href, cause, code) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "HTTP/3 transport failed"));
+    \\  const step = String(phase || "transport");
+    \\  let endpoint = String(href || "");
+    \\  try { endpoint = new URL(endpoint).origin; } catch (error) {}
+    \\  const failure = new Error("HTTP/3 " + step + " failed for " + endpoint + ": " + String(underlying.message || underlying));
+    \\  failure.name = "HTTP3TransportError";
+    \\  failure.code = String(code || "ERR_HTTP3_TRANSPORT");
+    \\  failure.operation = "fetch.http3.transport";
+    \\  failure.protocol = "http3";
+    \\  failure.phase = step;
+    \\  failure.endpoint = endpoint;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_fetch_compression_config(value) {
     \\  if (value === undefined || value === null || value === false) return null;
     \\  let encoding;
@@ -66096,17 +66114,17 @@ const harness_prelude =
     \\  const h3AltSvcUpgrade = requestedTransport === "" && handle.__home_http3_enabled && __home_fetch_h3_experimental_enabled() && !!globalThis.__home_fetch_h3_state.altSvc[origin] && !__home_fetch_h3_has_custom_trust(fetchOptions);
     \\  const usesHttp3 = requestedTransport === "http3" || h3AltSvcUpgrade;
     \\  if (usesHttp3 && (!handle.__home_http3_enabled && handle.__home_transport_protocol !== "http3")) {
-    \\    return __home_fetch_thenable(null, new Error("HTTP/3 was requested from a server without HTTP/3 transport"));
+    \\    return __home_fetch_thenable(null, __home_fetch_http3_transport_error("negotiate", href, new Error("HTTP/3 was requested from a server without HTTP/3 transport"), "HTTP3Unsupported"));
     \\  }
     \\  if (usesHttp3) {
     \\    let parsedProtocol = "";
     \\    try { parsedProtocol = new URL(href).protocol; } catch (error) {}
-    \\    if (parsedProtocol !== "https:") return __home_fetch_thenable(null, new Error("HTTP/3 requires an https URL"));
+    \\    if (parsedProtocol !== "https:") return __home_fetch_thenable(null, __home_fetch_http3_transport_error("validate-url", href, new Error("HTTP/3 requires an https URL"), "HTTP3Unsupported"));
     \\    const tlsOptions = fetchOptions && fetchOptions.tls;
     \\    if (__home_fetch_h3_has_custom_trust(fetchOptions)) {
-    \\      return __home_fetch_thenable(null, new Error("HTTP/3 does not support per-request custom TLS trust options"));
+    \\      return __home_fetch_thenable(null, __home_fetch_http3_transport_error("tls-options", href, new Error("HTTP/3 does not support per-request custom TLS trust options"), "ERR_HTTP3_TLS_OPTIONS"));
     \\    }
-    \\    if (requestedTransport === "http3" && (!tlsOptions || tlsOptions.rejectUnauthorized !== false)) return __home_fetch_thenable(null, new Error("self-signed certificate"));
+    \\    if (requestedTransport === "http3" && (!tlsOptions || tlsOptions.rejectUnauthorized !== false)) return __home_fetch_thenable(null, __home_fetch_http3_transport_error("tls-handshake", href, new Error("self-signed certificate"), "ERR_HTTP3_TLS_CERTIFICATE"));
     \\    __home_fetch_h3_open_session(origin);
     \\  }
     \\  if (!usesHttp3 && requestedTransport !== "http2" && handle.__home_http1_enabled === false) {
@@ -66156,7 +66174,7 @@ const harness_prelude =
     \\        }
     \\        let response = result instanceof Response ? result : new Response(result);
     \\        if (usesHttp3 && response.headers && ["connection", "keep-alive", "proxy-connection", "te", "transfer-encoding", "upgrade"].some(name => response.headers.has(name))) {
-    \\          throw new Error("HTTP/3 response contains a forbidden connection-specific header field");
+    \\          throw __home_fetch_http3_transport_error("response-headers", request.url, new Error("HTTP/3 response contains a forbidden connection-specific header field"), "ERR_HTTP3_INVALID_RESPONSE_HEADERS");
     \\        }
     \\        if (request.method === "HEAD") response = new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
     \\        if (response.headers && typeof response.headers.get === "function" && response.headers.get("date") === null) response.headers.set("Date", new Date().toUTCString());
@@ -66168,8 +66186,10 @@ const harness_prelude =
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
     \\          const redirectedUrl = new URL(location, request.url).href;
-    \\          const redirectedInit = { method: request.method, headers: new Headers(fetchOptions.headers || {}), redirect: "manual", compress: fetchOptions.compress };
-    \\          if (request.method !== "GET" && request.method !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
+    \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
+    \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: new Headers(fetchOptions.headers || {}), redirect: "manual" });
+    \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
+    \\          else delete redirectedInit.body;
     \\          const redirectedResponse = fetch(redirectedUrl, redirectedInit);
     \\          return Promise.resolve(redirectedResponse).then(nextResult => {
     \\            const nextResponse = nextResult instanceof Response ? nextResult : new Response(nextResult);
@@ -70954,7 +70974,37 @@ const harness_prelude =
     \\        while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(stream.__home_errored);
     \\      },
     \\    };
+    \\    function pullIfNeeded() {
+    \\      if (stream.__home_pull_pending || stream.__home_closed || stream.__home_errored || stream.__home_read_waiters.length === 0) return;
+    \\      if (!stream.__home_underlying_source || typeof stream.__home_underlying_source.pull !== "function") return;
+    \\      stream.__home_pull_pending = true;
+    \\      let pullResult;
+    \\      try {
+    \\        pullResult = stream.__home_underlying_source.pull(controller);
+    \\      } catch (error) {
+    \\        stream.__home_pull_pending = false;
+    \\        stream.__home_errored = error;
+    \\        while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(error);
+    \\        return;
+    \\      }
+    \\      if (__home_is_thenable(pullResult)) {
+    \\        __home_then(pullResult,
+    \\          () => {
+    \\            stream.__home_pull_pending = false;
+    \\            pullIfNeeded();
+    \\          },
+    \\          error => {
+    \\            stream.__home_pull_pending = false;
+    \\            stream.__home_errored = error;
+    \\            while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(error);
+    \\          },
+    \\        );
+    \\      } else {
+    \\        stream.__home_pull_pending = false;
+    \\      }
+    \\    }
     \\    this.__home_controller = controller;
+    \\    this.__home_pull_if_needed = pullIfNeeded;
     \\    if (underlyingSource && typeof underlyingSource.start === "function") {
     \\      const startResult = underlyingSource.start(controller);
     \\      if (__home_is_thenable(startResult)) this.__home_start_pending = __home_then(startResult, () => {
@@ -70973,17 +71023,7 @@ const harness_prelude =
     \\        if (stream.__home_closed) return Promise.resolve({ done: true, value: undefined });
     \\        if (stream.__home_byte_stream) return __home_read_byte_stream(stream, new Uint8Array(stream.__home_auto_allocate_chunk_size));
     \\        const pending = new Promise((resolve, reject) => stream.__home_read_waiters.push({ resolve, reject }));
-    \\        if (!stream.__home_pull_pending && stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function") {
-    \\          stream.__home_pull_pending = true;
-    \\          Promise.resolve().then(() => stream.__home_underlying_source.pull(controller)).then(
-    \\            () => { stream.__home_pull_pending = false; },
-    \\            error => {
-    \\              stream.__home_pull_pending = false;
-    \\              stream.__home_errored = error;
-    \\              while (stream.__home_read_waiters.length > 0) stream.__home_read_waiters.shift().reject(error);
-    \\            },
-    \\          );
-    \\        }
+    \\        stream.__home_pull_if_needed();
     \\        return pending;
     \\      },
     \\      cancel(reason) {
@@ -108313,6 +108353,9 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_h3_open_session(origin)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 response contains a forbidden connection-specific header field") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 does not support per-request custom TLS trust options") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.http3.transport\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.__home_pull_if_needed = pullIfNeeded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.assign({}, fetchOptions, { method: redirectedMethod") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchH3Internals") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestedPort > 0 ? requestedPort") != null);
 
