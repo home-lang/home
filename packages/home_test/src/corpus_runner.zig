@@ -58298,9 +58298,97 @@ const harness_prelude =
     \\  };
     \\  return server;
     \\}
+    \\function __home_tls_certificate_dns_names(value) {
+    \\  const names = [];
+    \\  const seen = new Set();
+    \\  const certificates = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+    \\  for (const certificate of certificates) {
+    \\    const text = String(certificate || "");
+    \\    const blocks = text.match(/-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/g) || [];
+    \\    for (const block of blocks) {
+    \\      const encoded = block.replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s+/g, "");
+    \\      let der;
+    \\      try { der = Buffer.from(encoded, "base64"); } catch (error) { continue; }
+    \\      for (let index = 0; index + 2 < der.length; index++) {
+    \\        if (der[index] !== 0x82) continue;
+    \\        let length = der[index + 1];
+    \\        let start = index + 2;
+    \\        if (length & 0x80) {
+    \\          const octets = length & 0x7f;
+    \\          if (octets < 1 || octets > 2 || start + octets > der.length) continue;
+    \\          length = 0;
+    \\          for (let offset = 0; offset < octets; offset++) length = (length << 8) | der[start + offset];
+    \\          start += octets;
+    \\        }
+    \\        if (length < 1 || length > 253 || start + length > der.length) continue;
+    \\        const candidate = der.slice(start, start + length).toString("ascii");
+    \\        if (!candidate.includes(".") || !/^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(candidate)) continue;
+    \\        const normalized = candidate.toLowerCase().replace(/\.$/, "");
+    \\        if (!seen.has(normalized)) { seen.add(normalized); names.push(normalized); }
+    \\      }
+    \\    }
+    \\  }
+    \\  return names;
+    \\}
+    \\function __home_tls_peer_dns_names(cert) {
+    \\  if (!cert || typeof cert !== "object") return [];
+    \\  const source = String(cert.subjectaltname || cert.subjectAltName || "");
+    \\  const names = [];
+    \\  for (const entry of source.split(",")) {
+    \\    const match = String(entry).trim().match(/^DNS:\s*(.+)$/i);
+    \\    if (match) names.push(String(match[1]).trim().toLowerCase().replace(/\.$/, ""));
+    \\  }
+    \\  if (names.length === 0 && cert.subject && cert.subject.CN) names.push(String(cert.subject.CN).toLowerCase().replace(/\.$/, ""));
+    \\  return names;
+    \\}
+    \\function __home_tls_peer_ip_addresses(cert) {
+    \\  if (!cert || typeof cert !== "object") return [];
+    \\  const source = String(cert.subjectaltname || cert.subjectAltName || "");
+    \\  const addresses = [];
+    \\  for (const entry of source.split(",")) {
+    \\    const match = String(entry).trim().match(/^(?:IP Address|IP):\s*(.+)$/i);
+    \\    if (match) addresses.push(String(match[1]).trim().toLowerCase().replace(/^\[|\]$/g, ""));
+    \\  }
+    \\  return addresses;
+    \\}
+    \\function __home_tls_dns_identity_matches(hostname, pattern) {
+    \\  const host = String(hostname || "").toLowerCase().replace(/\.$/, "");
+    \\  const identity = String(pattern || "").toLowerCase().replace(/\.$/, "");
+    \\  if (!host || !identity) return false;
+    \\  if (!identity.includes("*")) return host === identity;
+    \\  if (!identity.startsWith("*.") || identity.indexOf("*", 1) !== -1) return false;
+    \\  const suffix = identity.slice(2);
+    \\  if (!suffix.includes(".")) return false;
+    \\  if (!host.endsWith("." + suffix)) return false;
+    \\  const matchedLabel = host.slice(0, -suffix.length - 1);
+    \\  return matchedLabel.length > 0 && !matchedLabel.includes(".");
+    \\}
+    \\function __home_tls_identity_error(hostname, patterns, cause) {
+    \\  const names = Array.isArray(patterns) ? patterns.map(String) : [];
+    \\  const underlying = cause instanceof Error ? cause : new Error("certificate DNS identities did not match");
+    \\  const failure = new Error("Hostname/IP does not match certificate's altnames: Host: " + String(hostname) + ". is not in the cert's altnames: " + (names.length ? names.join(", ") : "DNS name does not contain a DNS name"), { cause: underlying });
+    \\  failure.code = "ERR_TLS_CERT_ALTNAME_INVALID";
+    \\  failure.operation = "tls.connect.verifyHostname";
+    \\  failure.phase = "server-identity";
+    \\  failure.hostname = String(hostname || "");
+    \\  failure.certificateNames = names.slice();
+    \\  failure.certificatePattern = names.length === 1 ? names[0] : null;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + failure.hostname + ", certificate " + (failure.certificatePattern || "<none>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_tls_check_server_identity(hostname, cert) {
-    \\  if (!cert || typeof cert !== "object" || !cert.subjectaltname) return new Error("Hostname/IP does not match certificate's altnames: Host: " + String(hostname) + ". is not in the cert's altnames: DNS name does not contain a DNS name");
-    \\  return undefined;
+    \\  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+    \\  const addresses = __home_tls_peer_ip_addresses(cert);
+    \\  if (/^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]*:[0-9a-f:]+)$/i.test(host)) {
+    \\    if (addresses.includes(host)) return undefined;
+    \\    return __home_tls_identity_error(host, addresses.map(address => "IP Address:" + address), new Error(addresses.length ? "certificate IP identity mismatch" : "certificate has no IP identity"));
+    \\  }
+    \\  const names = __home_tls_peer_dns_names(cert);
+    \\  if (names.some(pattern => __home_tls_dns_identity_matches(host, pattern))) return undefined;
+    \\  return __home_tls_identity_error(host, names, new Error(names.length ? "certificate DNS identity mismatch" : "certificate has no DNS identity"));
     \\}
     \\function __home_tls_client_common_name(options) {
     \\  const tlsOptions = options && options.tls ? options.tls : options;
@@ -58435,6 +58523,7 @@ const harness_prelude =
     \\    if (tlsSocket.__home_peer_cn === "unknown" && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts")) tlsSocket.__home_peer_subjectaltname = 'DNS:"good.example.org\\u0000.evil.example.com", DNS:just-another.example.com, IP Address:8.8.8.8, IP Address:8.8.4.4, DNS:last.example.com';
     \\    tlsSocket.servername = options.servername || options.host;
     \\    let mismatch = String(options.host || "") === "localhost" && !options.servername && __home_tls_client_common_name(server.__home_options) === "agent1";
+    \\    let identityError = null;
     \\    const selectedSniContext = sniContext && sniContext.__home_secure_context_options ? sniContext.__home_secure_context_options : sniContext && sniContext.__home_tls_native_context ? sniContext.__home_secure_context_options || {} : null;
     \\    let selectedContext = selectedSniContext || server.__home_options || {};
     \\    let sniContextMatched = false;
@@ -58445,13 +58534,18 @@ const harness_prelude =
     \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\      if (matches) { selectedContext = entry.context || {}; sniContextMatched = true; break; }
     \\    }
+    \\    const certificateDnsNames = __home_tls_certificate_dns_names(selectedContext && selectedContext.cert);
+    \\    if (requestedServername && certificateDnsNames.length > 0 && !certificateDnsNames.some(pattern => __home_tls_dns_identity_matches(requestedServername, pattern))) {
+    \\      mismatch = true;
+    \\      identityError = __home_tls_identity_error(requestedServername, certificateDnsNames, new Error("certificate DNS identity mismatch"));
+    \\    }
     \\    if (selectedContext && selectedContext.cert !== undefined) tlsSocket.__home_peer_fingerprint256 = new __home_crypto_x509_certificate(selectedContext.cert).fingerprint256;
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && /(?:\.example\.com|\.test\.com)$/.test(requestedServername)) {
     \\      const namedContextExpected = requestedServername === "a.example.com" || requestedServername === "chain.example.com" || /^[^.]+\.test\.com$/.test(requestedServername);
     \\      mismatch = namedContextExpected && sniContextMatched;
     \\    }
-    \\    if (Array.isArray(server.__home_serve_sni_patterns)) {
-    \\      mismatch = server.__home_serve_sni_patterns.some(pattern => pattern === requestedServername || pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
+    \\    if (Array.isArray(server.__home_serve_sni_patterns) && server.__home_serve_sni_patterns.length > 0) {
+    \\      mismatch = mismatch || server.__home_serve_sni_patterns.some(pattern => pattern === requestedServername || pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\    }
     \\    const normalizeCa = value => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).join("\n");
     \\    const usesDefaultServerTrust = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/ssl-ctx-cache.test.ts") && selectedContext.ca === undefined && __home_tls_default_ca_certificates.length > 0;
@@ -58469,11 +58563,22 @@ const harness_prelude =
     \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-context.test.ts") && requestedServername.includes(".") && !mismatch) tlsSocket.authorizationError = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
     \\    if (typeof options.checkServerIdentity === "function") {
     \\      const peerCommonName = String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-cert.test.ts") ? "agent10.example.com" : __home_tls_client_common_name(server.__home_options);
-    \\      options.checkServerIdentity(String(options.servername || options.host || "localhost"), { subject: { CN: peerCommonName } });
+    \\      const peerCertificate = { subject: { CN: peerCommonName }, subjectaltname: certificateDnsNames.map(name => "DNS:" + name).join(", ") };
+    \\      try {
+    \\        const callbackError = options.checkServerIdentity(String(options.servername || options.host || "localhost"), peerCertificate);
+    \\        if (callbackError instanceof Error) {
+    \\          mismatch = true;
+    \\          identityError = __home_tls_identity_error(requestedServername || options.host, certificateDnsNames, callbackError);
+    \\        }
+    \\      } catch (cause) {
+    \\        mismatch = true;
+    \\        identityError = __home_tls_identity_error(requestedServername || options.host, certificateDnsNames, cause);
+    \\      }
     \\    }
     \\    if (mismatch && options.rejectUnauthorized !== false) {
-    \\      const error = new Error("Hostname/IP does not match certificate's altnames");
-    \\      error.code = "ERR_TLS_CERT_ALTNAME_INVALID";
+    \\      const error = identityError || __home_tls_identity_error(requestedServername || options.host, certificateDnsNames, new Error("certificate DNS identity mismatch"));
+    \\      tlsSocket.authorized = false;
+    \\      tlsSocket.authorizationError = error.code;
     \\      tlsSocket.emit("error", error);
     \\      return;
     \\    }
@@ -109898,6 +110003,42 @@ test "bootstrap runner mirrors the Bun fetch TLS matrix" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors the Bun TLS wildcard hostname matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch.tls.wildcard.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.tls.wildcard.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "sub.foo.example.com vs *.example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "FOO.EXAMPLE.COM vs *.example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_tls_certificate_dns_names") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_tls_dns_identity_matches") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "tls.connect.verifyHostname") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_TLS_CERT_ALTNAME_INVALID") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
+        std.debug.print(
+            "TLS wildcard hostname matrix mismatch: passed={} expected=7 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 7), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
