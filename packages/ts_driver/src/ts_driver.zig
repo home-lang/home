@@ -1531,6 +1531,21 @@ fn hasJsxFragmentSyntax(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "<>") != null;
 }
 
+fn firstJsxNodePosition(hir: *const Hir) u32 {
+    var first: ?u32 = null;
+    var node: NodeId = 0;
+    while (node < hir.nodeCount()) : (node += 1) {
+        switch (hir.kindOf(node)) {
+            .jsx_element, .jsx_self_closing, .jsx_fragment => {
+                const pos = hir.spanOf(node).start;
+                if (first == null or pos < first.?) first = pos;
+            },
+            else => {},
+        }
+    }
+    return first orelse 0;
+}
+
 fn jsxTransformEnabled(source: []const u8, options: CompileOptions) bool {
     // A `@jsx:` source directive (conformance fixtures) selects the JSX mode
     // directly and wins over tsconfig/emit defaults, mirroring
@@ -1670,7 +1685,7 @@ fn appendJsxDirectiveDiagnostics(
                 .{runtime},
             );
             defer gpa.free(msg);
-            const pos: u32 = @intCast(std.mem.indexOfScalar(u8, source, '<') orelse 0);
+            const pos = firstJsxNodePosition(&c.hir);
             try appendDriverDiagnostic(gpa, c, pos, 2875, msg);
         }
     }
@@ -5907,11 +5922,13 @@ test "driver: tsx multiline string attribute parses before JSX intrinsic diagnos
 }
 
 test "driver: automatic jsx import source reports missing runtime module" {
-    var c = try compileSource(T.allocator,
+    const source =
         \\// @jsx: react-jsx,react-jsxdev
         \\// @jsxImportSource: preact
+        \\/// <reference path="/.lib/react16.d.ts" />
         \\let v = <div />;
-    , .{ .is_tsx = true, .no_emit = true });
+    ;
+    var c = try compileSource(T.allocator, source, .{ .is_tsx = true, .no_emit = true });
     defer {
         c.deinit();
         T.allocator.destroy(c);
@@ -5921,6 +5938,7 @@ test "driver: automatic jsx import source reports missing runtime module" {
         if (d.code == 2875) {
             found = true;
             try T.expect(std.mem.indexOf(u8, d.message, "preact/jsx-runtime") != null);
+            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "<div") orelse unreachable)), d.pos);
         }
     }
     try T.expect(found);
