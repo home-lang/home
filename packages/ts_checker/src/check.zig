@@ -105661,6 +105661,14 @@ pub const Checker = struct {
                     result_t = try self.satisfiesResultType(a.expr, inner_t, target_t);
                 }
                 if (!ok and self.diagnostics.items.len == diag_start) {
+                    if (try self.tryReportReadonlyArrayLikeAssignment(
+                        node,
+                        self.satisfiesKeywordPos(node),
+                        inner_t,
+                        target_t,
+                    )) {
+                        break :blk result_t;
+                    }
                     // Prefer tsc's render shape:
                     // `Type 'X' does not satisfy the expected type 'Y'.`
                     // Fall back to the generic constraint wording when
@@ -149527,7 +149535,7 @@ pub const Checker = struct {
                                 emitted = true;
                             } else if (try self.tryReportNestedObjectLiteralPropertyMismatch(inner, param_t)) {
                                 emitted = true;
-                            } else if (try self.tryReportObjectLiteralPropertyMismatchForCall(inner, param_t)) {
+                            } else if (try self.tryReportObjectLiteralPropertyMismatchForSatisfiedCall(inner, param_t)) {
                                 emitted = true;
                             }
                         }
@@ -152124,7 +152132,9 @@ pub const Checker = struct {
         // not `'1' is not assignable to 'Date'`. The `param_t` literal
         // case still keeps its literal form so `string-literal -> "abc"`
         // mismatches preserve the precise label.
-        const display_arg_t = if (param_t != types.Primitive.never and self.shouldWidenForArgDiagnostic(arg_t, param_t))
+        const display_arg_t = if (try self.widenLiteralUnionForArgDiagnostic(arg_t, param_t)) |widened|
+            widened
+        else if (param_t != types.Primitive.never and self.shouldWidenForArgDiagnostic(arg_t, param_t))
             self.widenLiteralType(arg_t)
         else
             arg_t;
@@ -162852,7 +162862,7 @@ pub const Checker = struct {
             if (self.objectLiteralAssignableToTarget(inner, inner_t, target_t) catch false) return true;
             if (context == .assignment) {
                 if (!try self.tryReportSinglePropertyMissing(inner, inner, inner_t, target_t)) {
-                    _ = try self.tryReportObjectLiteralPropertyMismatch(inner, target_t);
+                    _ = try self.tryReportObjectLiteralPropertyMismatchForSatisfiedContext(inner, target_t);
                 }
             }
             return false;
@@ -163419,7 +163429,7 @@ pub const Checker = struct {
         init_node: NodeId,
         target_t: TypeId,
     ) !bool {
-        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false);
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false, false);
     }
 
     fn tryReportObjectLiteralPropertyMismatchForCall(
@@ -163427,7 +163437,23 @@ pub const Checker = struct {
         init_node: NodeId,
         target_t: TypeId,
     ) !bool {
-        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, true);
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, true, false);
+    }
+
+    fn tryReportObjectLiteralPropertyMismatchForSatisfiedCall(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, true, true);
+    }
+
+    fn tryReportObjectLiteralPropertyMismatchForSatisfiedContext(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false, true);
     }
 
     fn tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(
@@ -163435,6 +163461,7 @@ pub const Checker = struct {
         init_node: NodeId,
         target_t: TypeId,
         include_optional_undefined: bool,
+        widen_literal_sources: bool,
     ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
         const resolved_target = self.objectTypeFromMaybeOptional(target_t) orelse return false;
@@ -163457,6 +163484,7 @@ pub const Checker = struct {
                 try self.checkExpression(op.value);
             if (raw_value_t == types.Primitive.none) continue;
             var value_t = try self.diagnosticExpressionSourceTypeForTarget(op.value, raw_value_t, tm.type);
+            if (widen_literal_sources) value_t = self.widenLiteralType(value_t);
             const contextual_target_t = if (tm.is_optional) try self.unionWithUndefined(tm.type) else tm.type;
             if (try self.contextualGenericCallResult(op.value, raw_value_t, contextual_target_t)) |contextual_t| {
                 self.removeUnknownAssignabilityDiagnosticsForNode(op.value);
@@ -164260,6 +164288,26 @@ pub const Checker = struct {
         const param_flags = self.interner.pool.flagsOf(param_t);
         if (param_flags.is_template_literal) return false;
         return !param_flags.is_literal;
+    }
+
+    fn widenLiteralUnionForArgDiagnostic(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!?TypeId {
+        if (arg_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(arg_t).is_union) return null;
+        if (param_t != types.Primitive.void_t and self.typeIsNullishOnly(param_t)) return null;
+        if (param_t < self.interner.pool.typeCount()) {
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (param_flags.is_literal or param_flags.is_template_literal) return null;
+        }
+        var common: TypeId = types.Primitive.none;
+        for (self.interner.unionMembers(arg_t)) |member| {
+            const widened = self.widenLiteralType(member);
+            if (widened == member) return null;
+            if (common == types.Primitive.none) {
+                common = widened;
+            } else if (common != widened) {
+                return null;
+            }
+        }
+        return if (common == types.Primitive.none) null else common;
     }
 
     fn typeIsNullishOnly(self: *Checker, t: TypeId) bool {
@@ -221104,6 +221152,45 @@ test "checker: TypeScript satisfies elaborates one missing property" {
         try T.expectEqual(expected_pos, diagnostic.pos);
         missing_index += 1;
     }
+}
+
+test "checker: parity satisfaction batch widens decontextualized call displays" {
+    const b = try newBoundSetup(
+        \\function takes(value: { a: true }) {}
+        \\takes({ a: 1 } satisfies unknown);
+        \\((): { a: true } => ({ a: 1 }) satisfies unknown)();
+        \\const readonlyNumbers = [10, "20"] as const;
+        \\readonlyNumbers satisfies number[];
+        \\declare function rest(...args: number[]): void;
+        \\const readonlyStrings = ["10", "20"] as const;
+        \\rest(...(readonlyStrings satisfies readonly string[]));
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'true'.",
+    ));
+    var widened_property_errors: usize = 0;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.eql(u8, diagnostic.message, "Type 'number' is not assignable to type 'true'."))
+        {
+            widened_property_errors += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), widened_property_errors);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.readonly_type_to_mutable_type,
+        "The type 'readonly [10, \"20\"]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string' is not assignable to parameter of type 'number'.",
+    ));
 }
 
 test "checker: tsgo parity residual checkjs JSDoc missing property anchors on the tag" {
