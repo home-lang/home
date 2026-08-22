@@ -28463,14 +28463,7 @@ const harness_prelude =
     \\      return "[" + label + (name ? ": " + name : "") + "]";
     \\    }
     \\    if (typeof Headers === "function" && value instanceof Headers) {
-    \\      const json = value.toJSON();
-    \\      let keys = Object.keys(json);
-    \\      if (Object.prototype.hasOwnProperty.call(json, "user-agent")) keys = ["user-agent"].concat(keys.filter(key => key !== "user-agent"));
-    \\      if (keys.length === 0) return "Headers {}";
-    \\      const lines = ["Headers {"];
-    \\      for (const key of keys) lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(json[key]) + ",");
-    \\      lines.push("}");
-    \\      return lines.join("\n");
+    \\      return __home_headers_inspect(value);
     \\    }
     \\    if (typeof URL === "function" && value instanceof URL) {
     \\      const searchParamsText = Bun.inspect(value.searchParams);
@@ -63317,6 +63310,17 @@ const harness_prelude =
     \\  }
     \\  return json;
     \\}
+    \\function __home_headers_inspect(headers) {
+    \\  __home_headers_assert_instance(headers);
+    \\  const json = __home_header_json(headers);
+    \\  let keys = Object.keys(json);
+    \\  if (Object.prototype.hasOwnProperty.call(json, "user-agent")) keys = ["user-agent"].concat(keys.filter(key => key !== "user-agent"));
+    \\  if (keys.length === 0) return "Headers {}";
+    \\  const lines = ["Headers {"];
+    \\  for (const key of keys) lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(json[key]) + ",");
+    \\  lines.push("}");
+    \\  return lines.join("\n");
+    \\}
     \\function __home_iterator_to_array(value, iteratorMethod, description) {
     \\  if (typeof iteratorMethod !== "function") throw new TypeError(description + " must be iterable");
     \\  const iterator = iteratorMethod.call(value);
@@ -63458,7 +63462,7 @@ const harness_prelude =
     \\  __home_headers_assert_instance(this);
     \\  return __home_header_json(this);
     \\};
-    \\Object.defineProperty(Headers.prototype, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, value: function() { __home_headers_assert_instance(this); return this.toJSON(); } });
+    \\Object.defineProperty(Headers.prototype, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, value: function() { return __home_headers_inspect(this); } });
     \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() {
     \\  __home_headers_assert_instance(this);
     \\  let count = 0;
