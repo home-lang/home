@@ -63568,11 +63568,17 @@ const harness_prelude =
     \\  return "----WebKitFormBoundary" + counter.slice(-32);
     \\}
     \\function __home_formdata_file_name(value) {
-    \\  if (!value) return "blob";
-    \\  if (value.name) return String(value.name);
+    \\  if (!value) return "";
+    \\  if (!value.__home_file_ref && value.name !== undefined) return String(value.name);
     \\  const path = String(value.path || "");
     \\  const slash = path.lastIndexOf("/");
-    \\  return slash === -1 ? (path || "blob") : (path.slice(slash + 1) || "blob");
+    \\  return slash === -1 ? path : path.slice(slash + 1);
+    \\}
+    \\function __home_formdata_part_type(value) {
+    \\  let type = String(value && value.type || "");
+    \\  if (type === "") return "application/octet-stream";
+    \\  if (/^text\/[^;]+$/i.test(type)) type += ";charset=utf-8";
+    \\  return type;
     \\}
     \\function __home_file_ref_text(value) {
     \\  const path = String(value && value.path || "");
@@ -63582,33 +63588,43 @@ const harness_prelude =
     \\}
     \\function __home_formdata_serialize(form) {
     \\  const boundary = __home_formdata_boundary();
-    \\  const lines = [];
+    \\  const bytes = [];
+    \\  function appendText(value) {
+    \\    const encoded = __home_text_to_utf8_bytes(String(value));
+    \\    for (let index = 0; index < encoded.length; index++) bytes.push(encoded[index] & 0xff);
+    \\  }
+    \\  function appendBytes(value) {
+    \\    const encoded = __home_body_bytes_sync(value);
+    \\    for (let index = 0; index < encoded.length; index++) bytes.push(encoded[index] & 0xff);
+    \\  }
     \\  for (const entry of form.__home_entries || []) {
     \\    const value = entry[1];
     \\    const isFileRef = !!(value && value.__home_file_ref);
     \\    const isBlob = !!(value && (Array.isArray(value.__home_blob_bytes) || value.__home_blob_typed_bytes || Array.isArray(value.__home_blob_sparse_parts) || value.__home_file_slice_ref));
-    \\    lines.push("--" + boundary);
     \\    let disposition = 'Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"';
     \\    if (isBlob || isFileRef) disposition += '; filename="' + __home_formdata_escape_name(__home_formdata_file_name(value)) + '"';
-    \\    lines.push(disposition);
-    \\    if ((isBlob || isFileRef) && value.type) lines.push("Content-Type: " + value.type);
-    \\    lines.push("");
-    \\    lines.push(isBlob ? (value.__home_file_slice_ref ? __home_utf8_bytes_to_text(__home_file_slice_bytes(value.__home_file_slice_ref, "formdata.fileSlice", true)) : (Array.isArray(value.__home_blob_sparse_parts) ? __home_utf8_bytes_to_text(__home_sparse_blob_slice_bytes(value.__home_blob_sparse_parts, 0, value.size || 0, "formdata.sparseBlob", true, "Out of memory")) : __home_utf8_bytes_to_text(value.__home_blob_typed_bytes || value.__home_blob_bytes))) : (isFileRef ? __home_file_ref_text(value) : String(value)));
+    \\    appendText("--" + boundary + "\r\n" + disposition + "\r\n");
+    \\    if (isBlob || isFileRef) appendText("Content-Type: " + __home_formdata_part_type(value) + "\r\n");
+    \\    appendText("\r\n");
+    \\    if (isBlob) appendBytes(value);
+    \\    else if (isFileRef) {
+    \\      if (!__home_build_file_exists(value.path)) throw __home_bun_file_read_error("open", value.path);
+    \\      appendBytes(__home_file_bytes_sync(value.path));
+    \\    }
+    \\    else appendText(String(value));
+    \\    appendText("\r\n");
     \\  }
-    \\  lines.push("--" + boundary + "--");
-    \\  lines.push("");
-    \\  return { boundary, text: lines.join("\r\n") };
+    \\  appendText("--" + boundary + "--\r\n");
+    \\  return { boundary, bytes, text: __home_utf8_bytes_to_text(bytes), byteLength: bytes.length };
     \\}
-    \\function __home_formdata_serialize_request(form) {
+    \\function __home_formdata_serialize_checked(form, operation) {
     \\  try {
-    \\    const serialized = __home_formdata_serialize(form);
-    \\    serialized.byteLength = __home_text_to_utf8_bytes(serialized.text).length;
-    \\    return serialized;
+    \\    return __home_formdata_serialize(form);
     \\  } catch (cause) {
     \\    const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Unable to serialize FormData"));
-    \\    const failure = new TypeError("Unable to serialize FormData request body: " + String(underlying.message || underlying));
+    \\    const failure = new TypeError("Unable to serialize FormData body: " + String(underlying.message || underlying), { cause: underlying });
     \\    failure.code = "ERR_FORM_DATA_SERIALIZE";
-    \\    failure.operation = "fetch.request.formData.serialize";
+    \\    failure.operation = String(operation || "body.formData.serialize");
     \\    failure.phase = "serialize";
     \\    failure.cause = underlying;
     \\    const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
@@ -63616,6 +63632,9 @@ const harness_prelude =
     \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\    throw failure;
     \\  }
+    \\}
+    \\function __home_formdata_serialize_request(form) {
+    \\  return __home_formdata_serialize_checked(form, "fetch.request.formData.serialize");
     \\}
     \\function __home_url_to_usv_string(value) {
     \\  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
@@ -64947,7 +64966,7 @@ const harness_prelude =
     \\  if (body == null) return [];
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_body_bytes_sync(body.__home_body_value);
     \\  if (body && body.__home_logical_buffer) return body;
-    \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
+    \\  if (body && body.__home_is_formdata) return __home_formdata_serialize_checked(body, "body.formData.serialize").bytes;
     \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
     \\  const bodyTag = body == null ? "" : Object.prototype.toString.call(body);
@@ -65450,8 +65469,12 @@ const harness_prelude =
     \\    if (filenameMatch) {
     \\      const type = __home_multipart_file_type(headerText);
     \\      const filename = __home_multipart_header_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
-    \\      const file = new File([new Uint8Array(bodyBytes)], filename, { type });
-    \\      if (type && file.type !== type) file.type = type;
+    \\      const anonymousBlob = filename === "" && type === "application/octet-stream";
+    \\      const file = new File([new Uint8Array(bodyBytes)], filename, { type: anonymousBlob ? "" : type });
+    \\      if (anonymousBlob) {
+    \\        try { delete file.__home_blob_name; } catch (error) {}
+    \\      }
+    \\      if (!anonymousBlob && type && file.type !== type) file.type = type;
     \\      form.append(name, file);
     \\    } else {
     \\      form.append(name, __home_utf8_bytes_to_text(bodyBytes));
@@ -65558,8 +65581,8 @@ const harness_prelude =
     \\    this.headers = new Headers(options.headers);
     \\    this.bodyUsed = false;
     \\    if (body && body.__home_is_formdata && this.headers.get("content-type") === null) {
-    \\      const serialized = __home_formdata_serialize(body);
-    \\      this.body = __home_body_record({ __home_text: serialized.text });
+    \\      const serialized = __home_formdata_serialize_checked(body, "response.formData.serialize");
+    \\      this.body = __home_body_record(new Uint8Array(serialized.bytes));
     \\      this.__home_formdata = body;
     \\      this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\    } else if (typeof URLSearchParams === "function" && body instanceof URLSearchParams && this.headers.get("content-type") === null) {
@@ -65829,7 +65852,7 @@ const harness_prelude =
     \\};
     \\Response.prototype.formData = function() {
     \\  if (this.body == null) return Promise.reject(__home_body_formdata_error("response.formData", __home_content_type(this.headers), new TypeError("Body is null")));
-    \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
+    \\  return __home_consume_response_bytes(this, "response.formData", true, "Out of memory").then(bytes => __home_parse_formdata_bytes(bytes, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
     \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value")) {
@@ -69990,7 +70013,7 @@ const harness_prelude =
     \\      this.__home_text = serialized.text;
     \\      this.__home_formdata = bodyOption;
     \\      this.__home_serialized_formdata = serialized;
-    \\      this.body = __home_body_record({ __home_text: this.__home_text });
+    \\      this.body = __home_body_record(new Uint8Array(serialized.bytes));
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\      if (this.headers.get("content-length") === null) this.headers.set("content-length", String(serialized.byteLength));
     \\    } else if (bodyOption !== undefined && bodyOption !== null) {
@@ -113141,6 +113164,52 @@ test "bootstrap async resolves diagnostics preserve rejection causes" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_BUN_TEST_ASYNC_EXPECTATION") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.test.expect.resolves") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: \" + causeSummary") != null);
+}
+
+test "bootstrap FormData multipart serialization preserves wire bytes and metadata" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("multipart bytes and metadata", async () => {
+        \\  const bytes = new Uint8Array(256);
+        \\  for (let index = 0; index < bytes.length; index++) bytes[index] = index;
+        \\  const form = new FormData();
+        \\  form.append("anonymous", new Blob(["blob"]));
+        \\  form.append("payload", new Blob([bytes]), "payload.bin");
+        \\  form.append("typed", new File(["<p>x</p>"], "x.html", { type: "text/html" }));
+        \\  const wire = await new Response(form).text();
+        \\  expect(wire).toContain('name="anonymous"; filename=""\r\nContent-Type: application/octet-stream');
+        \\  expect(wire).toContain('filename="x.html"\r\nContent-Type: text/html;charset=utf-8');
+        \\  const parsed = await new Response(form).formData();
+        \\  const anonymous = parsed.get("anonymous");
+        \\  expect(anonymous).toBeInstanceOf(File);
+        \\  expect(anonymous.name).toBe(undefined);
+        \\  expect(anonymous.type).toBe("");
+        \\  const payload = parsed.get("payload");
+        \\  expect(payload.size).toBe(bytes.length);
+        \\  expect(new Uint8Array(await payload.arrayBuffer())).toEqual(bytes);
+        \\  expect(parsed.get("typed").type).toBe("text/html;charset=utf-8");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/FormData-multipart-serialization.home-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap FormData serialization failures retain operation and cause contracts" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_formdata_serialize_checked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_FORM_DATA_SERIALIZE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "response.formData.serialize") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetch.request.formData.serialize") != null);
 }
 
 test "bootstrap Bun unsafe array buffer helpers cover copied fixture shape" {
