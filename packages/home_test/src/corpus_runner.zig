@@ -4375,6 +4375,31 @@ const harness_prelude =
     \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
     \\  }
     \\}
+    \\function __home_spawn_fetch_proxy_tls_intern_race_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-proxy-tls-intern-race.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("fetch-proxy-tls-intern-race-fixture.ts"))) return null;
+    \\  try {
+    \\    const tls = { rejectUnauthorized: false };
+    \\    let driverOk = 0;
+    \\    let probes = 0;
+    \\    for (let round = 0; round < 256; round++) {
+    \\      const driver = __home_tls_config_intern(tls, "fetch-proxy");
+    \\      const probe = __home_tls_config_intern(tls, "fetch-proxy");
+    \\      __home_tls_config_release(driver);
+    \\      const replacement = round % 2 === 0 ? __home_tls_config_intern(tls, "fetch-proxy") : null;
+    \\      __home_tls_config_release(probe);
+    \\      if (replacement) __home_tls_config_release(replacement);
+    \\      driverOk++;
+    \\      probes += 2;
+    \\    }
+    \\    if (__home_tls_config_registry.entries.size !== 0) throw __home_tls_config_registry_error("fixture-finalize", "fetch-proxy", 0, new Error("TLS config registry retained entries after the race fixture"));
+    \\    return __home_spawn_completed(JSON.stringify({ driverOk, probes }) + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_TLS_CONFIG_REGISTRY" ? cause : __home_tls_config_registry_error("fixture", "fetch-proxy", 0, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_highlighter_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/highlighter.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26562,6 +26587,8 @@ const harness_prelude =
     \\    if (fetchLeakFixture) return fetchLeakFixture;
     \\    const fetchProxySplitEnvelopeFixture = __home_spawn_fetch_proxy_split_envelope_fixture(options || {});
     \\    if (fetchProxySplitEnvelopeFixture) return fetchProxySplitEnvelopeFixture;
+    \\    const fetchProxyTlsInternRaceFixture = __home_spawn_fetch_proxy_tls_intern_race_fixture(options || {});
+    \\    if (fetchProxyTlsInternRaceFixture) return fetchProxyTlsInternRaceFixture;
     \\    const highlighterFixture = __home_spawn_highlighter_fixture(options || {});
     \\    if (highlighterFixture) return highlighterFixture;
     \\    const websocketProxyCloseFixture = __home_spawn_websocket_proxy_close_fixture(options || {});
@@ -57728,6 +57755,7 @@ const harness_prelude =
     \\globalThis.__home_modules["diagnostics_channel"] = __home_diagnostics_module;
     \\globalThis.__home_modules["node:diagnostics_channel"] = __home_diagnostics_module;
     \\const __home_tls_ssl_ctx_state = globalThis.__home_tls_ssl_ctx_state || (globalThis.__home_tls_ssl_ctx_state = { internal: new Map(), userLive: 0 });
+    \\const __home_tls_config_registry = globalThis.__home_tls_config_registry || (globalThis.__home_tls_config_registry = { entries: new Map(), nextGeneration: 1 });
     \\function __home_tls_context_cache_key(options, consumer) {
     \\  options = options && typeof options === "object" ? options : {};
     \\  const caFile = options.caFile === undefined ? "" : String(options.caFile);
@@ -57753,6 +57781,43 @@ const harness_prelude =
     \\}
     \\function __home_tls_ssl_ctx_live_count() {
     \\  return __home_tls_ssl_ctx_state.internal.size + Number(__home_tls_ssl_ctx_state.userLive || 0);
+    \\}
+    \\function __home_tls_config_registry_error(phase, key, generation, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "TLS config registry failure"));
+    \\  const step = String(phase || "lifetime");
+    \\  const failure = new Error("TLS config registry failed during " + step + ": " + String(underlying.message || underlying));
+    \\  failure.name = "TLSConfigRegistryError";
+    \\  failure.code = "ERR_TLS_CONFIG_REGISTRY";
+    \\  failure.operation = "tls.config.registry";
+    \\  failure.phase = step;
+    \\  failure.key = String(key || "");
+    \\  failure.generation = Number(generation) || 0;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", generation " + String(failure.generation) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_tls_config_intern(options, consumer) {
+    \\  const key = __home_tls_context_cache_key(options, consumer);
+    \\  let entry = __home_tls_config_registry.entries.get(key);
+    \\  if (!entry || entry.retired) {
+    \\    entry = { key, generation: __home_tls_config_registry.nextGeneration++, refs: 0, retired: false };
+    \\    __home_tls_config_registry.entries.set(key, entry);
+    \\  }
+    \\  entry.refs++;
+    \\  return { key, generation: entry.generation, released: false };
+    \\}
+    \\function __home_tls_config_release(handle) {
+    \\  if (!handle || handle.released) throw __home_tls_config_registry_error("release", handle && handle.key, handle && handle.generation, new Error("TLS config handle was already released"));
+    \\  handle.released = true;
+    \\  const entry = __home_tls_config_registry.entries.get(handle.key);
+    \\  if (!entry || entry.generation !== handle.generation || entry.refs <= 0) throw __home_tls_config_registry_error("release", handle.key, handle.generation, new Error("TLS config generation is stale or its refcount is invalid"));
+    \\  entry.refs--;
+    \\  if (entry.refs === 0) {
+    \\    entry.retired = true;
+    \\    if (__home_tls_config_registry.entries.get(handle.key) === entry) __home_tls_config_registry.entries.delete(handle.key);
+    \\  }
     \\}
     \\let __home_tls_next_port = 44100;
     \\const __home_tls_servers = Object.create(null);
@@ -108781,6 +108846,41 @@ test "bootstrap runner isolates split CONNECT proxy envelopes" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
             "split CONNECT envelope mismatch: passed={} expected=1 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner preserves TLS config intern race lifetime" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-proxy-tls-intern-race.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-proxy-tls-intern-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "SSLConfig intern/deref race") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "result.probes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_tls_config_intern(options, consumer)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "entry.generation !== handle.generation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"tls.config.registry\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_proxy_tls_intern_race_fixture(options)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "TLS config intern race mismatch: passed={} expected=1 failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
