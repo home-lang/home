@@ -82,12 +82,53 @@ const install_glue =
     \\  var nowFn = globalThis.__home_perf_now;
     \\  var timeOrigin = globalThis.__home_perf_time_origin();
     \\  var perfEntries = [];
-    \\  globalThis.performance = {
+    \\  function illegalPerformanceConstructor(name) {
+    \\    var error = new TypeError("Illegal constructor: " + name);
+    \\    error.code = "ERR_ILLEGAL_CONSTRUCTOR";
+    \\    error.operation = "web.performance.construct";
+    \\    return error;
+    \\  }
+    \\  if (typeof globalThis.Performance !== "function") globalThis.Performance = function Performance() { throw illegalPerformanceConstructor("Performance"); };
+    \\  if (typeof globalThis.PerformanceEntry !== "function") globalThis.PerformanceEntry = function PerformanceEntry() { throw illegalPerformanceConstructor("PerformanceEntry"); };
+    \\  if (typeof globalThis.PerformanceMark !== "function") {
+    \\    globalThis.PerformanceMark = function PerformanceMark() { throw illegalPerformanceConstructor("PerformanceMark"); };
+    \\    PerformanceMark.prototype = Object.create(PerformanceEntry.prototype);
+    \\    PerformanceMark.prototype.constructor = PerformanceMark;
+    \\  }
+    \\  if (typeof globalThis.PerformanceMeasure !== "function") {
+    \\    globalThis.PerformanceMeasure = function PerformanceMeasure() { throw illegalPerformanceConstructor("PerformanceMeasure"); };
+    \\    PerformanceMeasure.prototype = Object.create(PerformanceEntry.prototype);
+    \\    PerformanceMeasure.prototype.constructor = PerformanceMeasure;
+    \\  }
+    \\  if (typeof globalThis.PerformanceObserver !== "function") {
+    \\    globalThis.PerformanceObserver = function PerformanceObserver(callback) {
+    \\      if (!(this instanceof PerformanceObserver)) throw new TypeError("PerformanceObserver requires 'new'");
+    \\      if (typeof callback !== "function") throw new TypeError("PerformanceObserver callback must be a function");
+    \\      this.callback = callback; this.options = null;
+    \\    };
+    \\    PerformanceObserver.prototype.observe = function(options) { this.options = options || {}; };
+    \\    PerformanceObserver.prototype.disconnect = function() { this.options = null; };
+    \\    PerformanceObserver.prototype.takeRecords = function() { return []; };
+    \\  }
+    \\  if (typeof globalThis.PerformanceObserverEntryList !== "function") {
+    \\    globalThis.PerformanceObserverEntryList = function PerformanceObserverEntryList() { throw illegalPerformanceConstructor("PerformanceObserverEntryList"); };
+    \\    PerformanceObserverEntryList.prototype.getEntries = function() { return []; };
+    \\    PerformanceObserverEntryList.prototype.getEntriesByName = function() { return []; };
+    \\    PerformanceObserverEntryList.prototype.getEntriesByType = function() { return []; };
+    \\  }
+    \\  if (typeof globalThis.PerformanceResourceTiming !== "function") {
+    \\    globalThis.PerformanceResourceTiming = function PerformanceResourceTiming() { throw illegalPerformanceConstructor("PerformanceResourceTiming"); };
+    \\    PerformanceResourceTiming.prototype = Object.create(PerformanceEntry.prototype);
+    \\    PerformanceResourceTiming.prototype.constructor = PerformanceResourceTiming;
+    \\  }
+    \\  if (typeof globalThis.PerformanceServerTiming !== "function") globalThis.PerformanceServerTiming = function PerformanceServerTiming() { throw illegalPerformanceConstructor("PerformanceServerTiming"); };
+    \\  if (typeof globalThis.PerformanceTiming !== "function") globalThis.PerformanceTiming = function PerformanceTiming() { throw illegalPerformanceConstructor("PerformanceTiming"); };
+    \\  globalThis.performance = Object.assign(Object.create(globalThis.Performance.prototype), {
     \\    now: function() { return nowFn(); },
     \\    timeOrigin: timeOrigin,
     \\    mark: function(name, options) {
     \\      var startTime = (options && typeof options.startTime === "number") ? options.startTime : nowFn();
-    \\      var e = { name: String(name), entryType: "mark", startTime: startTime, duration: 0, detail: (options && options.detail) || null };
+    \\      var e = Object.assign(Object.create(globalThis.PerformanceMark.prototype), { name: String(name), entryType: "mark", startTime: startTime, duration: 0, detail: (options && options.detail) || null });
     \\      perfEntries.push(e); return e;
     \\    },
     \\    measure: function(name, startOrOptions, endMark) {
@@ -101,7 +142,7 @@ const install_glue =
     \\        start = typeof startOrOptions === "number" ? startOrOptions : markTime(startOrOptions);
     \\        if (endMark !== undefined) end = typeof endMark === "number" ? endMark : markTime(endMark);
     \\      }
-    \\      var e = { name: String(name), entryType: "measure", startTime: start, duration: end - start, detail: null };
+    \\      var e = Object.assign(Object.create(globalThis.PerformanceMeasure.prototype), { name: String(name), entryType: "measure", startTime: start, duration: end - start, detail: null });
     \\      perfEntries.push(e); return e;
     \\    },
     \\    getEntries: function() { return perfEntries.slice(); },
@@ -111,7 +152,7 @@ const install_glue =
     \\    clearMeasures: function(name) { perfEntries = perfEntries.filter(function(e) { return e.entryType !== "measure" || (name !== undefined && e.name !== name); }); },
     \\    eventCounts: new Map(),
     \\    toJSON: function() { return { timeOrigin: timeOrigin }; },
-    \\  };
+    \\  });
     \\  // setImmediate/clearImmediate (Node) over the timer loop.
     \\  if (typeof globalThis.setImmediate !== "function" && typeof globalThis.setTimeout === "function") {
     \\    globalThis.setImmediate = function(fn) { var extra = Array.prototype.slice.call(arguments, 1); return globalThis.setTimeout(function() { fn.apply(undefined, extra); }, 0); };
@@ -124,7 +165,12 @@ const install_glue =
     \\    };
     \\  }
     \\  globalThis.global = globalThis;
-    \\  globalThis.self = globalThis;
+    \\  Object.defineProperty(globalThis, "self", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get: function() { return globalThis; },
+    \\    set: function(value) { Object.defineProperty(globalThis, "self", { configurable: true, enumerable: true, writable: true, value: value }); },
+    \\  });
     \\  globalThis.structuredClone = function(value) {
     \\    var seen = new Map();
     \\    function clone(v) {
@@ -249,8 +295,14 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_perf_now", performanceNowNative);
     callback.registerCallback(ctx, global, "__home_perf_time_origin", timeOriginNative);
 
-    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:misc-globals-install", 1) catch return;
-    result.deinit(allocator);
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:misc-globals-install", 1) catch |err| {
+        std.log.err("failed to evaluate miscellaneous web globals installer: {t}", .{err});
+        return;
+    };
+    defer result.deinit(allocator);
+    if (result.exception_message) |message| {
+        std.log.err("failed to install miscellaneous web globals: {s}", .{message});
+    }
 }
 
 fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
@@ -274,6 +326,31 @@ test "misc globals install exposes performance/global/self/structuredClone" {
         "globalThis.global === globalThis && globalThis.self === globalThis && " ++
         "typeof structuredClone === 'function' && " ++
         "typeof globalThis.__home_perf_now === 'undefined'"));
+}
+
+test "performance constructors and writable self accessor match the web realm" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
+        "  var names = ['Performance', 'PerformanceEntry', 'PerformanceMark', 'PerformanceMeasure', 'PerformanceObserver', 'PerformanceObserverEntryList', 'PerformanceResourceTiming', 'PerformanceServerTiming', 'PerformanceTiming'];" ++
+        "  if (!names.every(function(name) { return typeof globalThis[name] === 'function'; })) return false;" ++
+        "  var mark = performance.mark('ready');" ++
+        "  if (!(mark instanceof PerformanceMark) || !(mark instanceof PerformanceEntry)) return false;" ++
+        "  var failure = null; try { new PerformanceTiming(); } catch (error) { failure = error; }" ++
+        "  if (!(failure instanceof TypeError) || failure.code !== 'ERR_ILLEGAL_CONSTRUCTOR' || failure.operation !== 'web.performance.construct') return false;" ++
+        "  var descriptor = Object.getOwnPropertyDescriptor(globalThis, 'self');" ++
+        "  if (!descriptor || typeof descriptor.get !== 'function' || typeof descriptor.set !== 'function') return false;" ++
+        "  globalThis.self = 123; if (globalThis.self !== 123) return false;" ++
+        "  Object.defineProperty(globalThis, 'self', descriptor);" ++
+        "  return globalThis.self === globalThis;" ++
+        "})()"));
 }
 
 test "performance.now is monotonic non-decreasing and sub-ms resolution" {
@@ -363,6 +440,7 @@ test "URLPattern matches named groups, wildcards, and rejects non-matches" {
     defer engine.deinit();
 
     const ctx = engine.currentContext();
+    @import("url_global.zig").install(std.testing.allocator, ctx, engine.currentGlobalObject());
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++

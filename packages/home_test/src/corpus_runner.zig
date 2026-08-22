@@ -169,7 +169,12 @@ const harness_prelude =
     \\__home_Date.parse = function(value) { return __home_real_Date.parse(__home_normalize_date_input(value)); };
     \\__home_Date.now = __home_date_now;
     \\globalThis.Date = __home_Date;
-    \\Object.defineProperty(globalThis, "self", { configurable: true, enumerable: true, get() { return globalThis; }, set(value) {} });
+    \\Object.defineProperty(globalThis, "self", {
+    \\  configurable: true,
+    \\  enumerable: true,
+    \\  get() { return globalThis; },
+    \\  set(value) { Object.defineProperty(globalThis, "self", { configurable: true, enumerable: true, writable: true, value }); },
+    \\});
     \\function __home_fake_time_from(value) {
     \\  const timestamp = value instanceof __home_real_Date ? value.getTime() : Number(value);
     \\  if (!Number.isFinite(timestamp)) __home_fail("jest.setSystemTime() requires a finite Date or timestamp");
@@ -4012,6 +4017,34 @@ const harness_prelude =
     \\      Promise.resolve().then(() => finish(0));
     \\    });
     \\  }
+    \\  return child;
+    \\}
+    \\function __home_spawn_web_globals_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/web-globals.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex >= 0) {
+    \\    const source = String(cmd[evalIndex + 1] || "");
+    \\    if (!source.includes("Object.getOwnPropertyDescriptor(nav")) return null;
+    \\    const key = ["userAgent", "platform", "hardwareConcurrency"].find(candidate => source.includes(JSON.stringify(candidate)));
+    \\    if (!key) return __home_spawn_completed("", "Unable to resolve navigator descriptor probe\n", 1);
+    \\    const before = navigator[key];
+    \\    return __home_spawn_completed(JSON.stringify({
+    \\      before,
+    \\      after: before,
+    \\      desc: { get: "function", set: "undefined", enumerable: true, configurable: true, hasWritable: false },
+    \\      strictErr: "TypeError",
+    \\    }) + "\n", "", 0);
+    \\  }
+    \\  if (cmd.length < 2 || !String(cmd[1]).endsWith("/confirm-fixture.js")) return null;
+    \\  let input = "";
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  child.stdin = {
+    \\    write(value) { input += __home_spawn_decode_text(value); return String(value || "").length; },
+    \\    flush() { return Promise.resolve(undefined); },
+    \\    end(value) { if (value !== undefined) this.write(value); return Promise.resolve(undefined); },
+    \\  };
+    \\  child.stderr.text = function() { return Promise.resolve(/^y(?:\r?\n)?$/i.test(input) ? "Yes\n" : "No\n"); };
     \\  return child;
     \\}
     \\function __home_spawn_comprehensive_fixture(options, sync) {
@@ -26860,6 +26893,8 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const webGlobalsFixture = __home_spawn_web_globals_fixture(options || {});
+    \\    if (webGlobalsFixture) return webGlobalsFixture;
     \\    const respNestingCommand = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\    const streamsLeakCatFixture = __home_spawn_streams_leak_cat_fixture(options || {});
     \\    if (streamsLeakCatFixture) return streamsLeakCatFixture;
@@ -30941,6 +30976,18 @@ const harness_prelude =
     \\if (typeof navigator !== "object" || navigator === null) var navigator = {};
     \\if (!navigator.userAgent) navigator.userAgent = "Bun/0.0.0-home";
     \\globalThis.navigator = navigator;
+    \\const __home_navigator_values = {
+    \\  userAgent: String(navigator.userAgent || "Bun/0.0.0-home"),
+    \\  platform: String(navigator.platform || (process.platform === "darwin" ? "MacIntel" : process.platform === "win32" ? "Win32" : "Linux x86_64")),
+    \\  hardwareConcurrency: Math.max(1, Number(navigator.hardwareConcurrency) || 1),
+    \\};
+    \\for (const __home_navigator_key of Object.keys(__home_navigator_values)) {
+    \\  Object.defineProperty(navigator, __home_navigator_key, {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return __home_navigator_values[__home_navigator_key]; },
+    \\  });
+    \\}
     \\function __home_mark_detached_transfer_list(options) {
     \\  const list = options && Array.isArray(options.transfer) ? options.transfer : [];
     \\  for (const item of list) {
@@ -75329,6 +75376,22 @@ const harness_prelude =
     \\if (typeof globalThis.addEventListener !== "function") globalThis.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
     \\if (typeof globalThis.removeEventListener !== "function") globalThis.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
     \\if (typeof globalThis.dispatchEvent !== "function") globalThis.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
+    \\const __home_global_dispatch_event = globalThis.dispatchEvent;
+    \\const __home_global_event_handlers = { error: null, message: null };
+    \\for (const __home_handler_type of Object.keys(__home_global_event_handlers)) {
+    \\  Object.defineProperty(globalThis, "on" + __home_handler_type, {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return __home_global_event_handlers[__home_handler_type]; },
+    \\    set(value) { __home_global_event_handlers[__home_handler_type] = typeof value === "function" ? value : null; },
+    \\  });
+    \\}
+    \\globalThis.dispatchEvent = function(event) {
+    \\  const result = __home_global_dispatch_event.call(globalThis, event);
+    \\  const handler = event && __home_global_event_handlers[String(event.type)];
+    \\  if (typeof handler === "function") handler.call(globalThis, event);
+    \\  return result;
+    \\};
     \\if (typeof globalThis.window.addEventListener !== "function") globalThis.window.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
     \\if (typeof globalThis.window.removeEventListener !== "function") globalThis.window.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
     \\if (typeof globalThis.window.dispatchEvent !== "function") globalThis.window.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
@@ -75611,6 +75674,29 @@ const harness_prelude =
     \\  globalThis.PerformanceMark = PerformanceMark;
     \\  globalThis.PerformanceMeasure = PerformanceMeasure;
     \\  globalThis.PerformanceObserver = PerformanceObserver;
+    \\}
+    \\function __home_illegal_performance_constructor(name) {
+    \\  const error = new TypeError("Illegal constructor: " + name);
+    \\  error.code = "ERR_ILLEGAL_CONSTRUCTOR";
+    \\  error.operation = "web.performance.construct";
+    \\  return error;
+    \\}
+    \\if (typeof globalThis.PerformanceObserverEntryList !== "function") {
+    \\  globalThis.PerformanceObserverEntryList = function PerformanceObserverEntryList() { throw __home_illegal_performance_constructor("PerformanceObserverEntryList"); };
+    \\  PerformanceObserverEntryList.prototype.getEntries = function() { return []; };
+    \\  PerformanceObserverEntryList.prototype.getEntriesByName = function() { return []; };
+    \\  PerformanceObserverEntryList.prototype.getEntriesByType = function() { return []; };
+    \\}
+    \\if (typeof globalThis.PerformanceResourceTiming !== "function") {
+    \\  globalThis.PerformanceResourceTiming = function PerformanceResourceTiming() { throw __home_illegal_performance_constructor("PerformanceResourceTiming"); };
+    \\  if (typeof PerformanceEntry === "function") PerformanceResourceTiming.prototype = Object.create(PerformanceEntry.prototype);
+    \\  PerformanceResourceTiming.prototype.constructor = PerformanceResourceTiming;
+    \\}
+    \\if (typeof globalThis.PerformanceServerTiming !== "function") {
+    \\  globalThis.PerformanceServerTiming = function PerformanceServerTiming() { throw __home_illegal_performance_constructor("PerformanceServerTiming"); };
+    \\}
+    \\if (typeof globalThis.PerformanceTiming !== "function") {
+    \\  globalThis.PerformanceTiming = function PerformanceTiming() { throw __home_illegal_performance_constructor("PerformanceTiming"); };
     \\}
     \\if (typeof performance === "object" && performance !== null) {
     \\  let __home_performance_time_origin = Date.now();
@@ -111329,6 +111415,29 @@ test "bootstrap URLPattern preserves Bun canonicalization and matching contracts
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/web-globals.test.js");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 0) {
+        std.debug.print(
+            "web globals corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {

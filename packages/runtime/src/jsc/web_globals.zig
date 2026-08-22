@@ -63,7 +63,7 @@ fn textEncodeNative(
                 const buf = allocator.alloc(u8, capacity) catch return makeUint8Array(c, "");
                 const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
                 owned = buf;
-                utf8 = buf[0 .. if (written > 0) written - 1 else 0];
+                utf8 = buf[0..if (written > 0) written - 1 else 0];
             }
         }
     }
@@ -1291,9 +1291,23 @@ const install_glue =
     \\  // delegate the three methods, binding `this` so the event target is global.
     \\  if (typeof globalThis.addEventListener !== "function") {
     \\    var __globalET = new EventTarget();
+    \\    var __globalHandlers = { error: null, message: null };
     \\    globalThis.addEventListener = function(type, listener, opts) { return EventTarget.prototype.addEventListener.call(__globalET, type, listener, opts); };
     \\    globalThis.removeEventListener = function(type, listener) { return EventTarget.prototype.removeEventListener.call(__globalET, type, listener); };
-    \\    globalThis.dispatchEvent = function(event) { return EventTarget.prototype.dispatchEvent.call(__globalET, event); };
+    \\    globalThis.dispatchEvent = function(event) {
+    \\      var result = EventTarget.prototype.dispatchEvent.call(__globalET, event);
+    \\      var handler = event && __globalHandlers[String(event.type)];
+    \\      if (typeof handler === "function") handler.call(globalThis, event);
+    \\      return result;
+    \\    };
+    \\    ["error", "message"].forEach(function(type) {
+    \\      Object.defineProperty(globalThis, "on" + type, {
+    \\        configurable: true,
+    \\        enumerable: true,
+    \\        get: function() { return __globalHandlers[type]; },
+    \\        set: function(value) { __globalHandlers[type] = typeof value === "function" ? value : null; },
+    \\      });
+    \\    });
     \\  }
     \\})();
 ;
@@ -1326,8 +1340,7 @@ test "web globals install exposes the expected surface" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof queueMicrotask === 'function' && typeof btoa === 'function' && typeof atob === 'function' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof queueMicrotask === 'function' && typeof btoa === 'function' && typeof atob === 'function' && " ++
         "typeof TextEncoder === 'function' && typeof TextDecoder === 'function' && " ++
         "typeof globalThis.__home_text_encode === 'undefined'"));
 }
@@ -1342,8 +1355,7 @@ test "globalThis is an EventTarget (add/remove/dispatchEvent)" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof addEventListener !== 'function' || typeof dispatchEvent !== 'function') return false;" ++
         "  var hits = 0; var saw = null;" ++
         "  function on(e) { hits++; saw = e; }" ++
@@ -1360,6 +1372,30 @@ test "globalThis is an EventTarget (add/remove/dispatchEvent)" {
         "})()"));
 }
 
+test "global onerror and onmessage properties participate in event dispatch" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
+        "  var errors = 0, messages = 0;" ++
+        "  onerror = function(event) { if (event.error === 'boom') errors++; };" ++
+        "  onmessage = function(event) { if (event.data === 'hello') messages++; };" ++
+        "  dispatchEvent(new ErrorEvent('error', { error: 'boom' }));" ++
+        "  dispatchEvent(new MessageEvent('message', { data: 'hello' }));" ++
+        "  if (errors !== 1 || messages !== 1) return false;" ++
+        "  onerror = null; onmessage = null;" ++
+        "  dispatchEvent(new ErrorEvent('error', { error: 'boom' }));" ++
+        "  dispatchEvent(new MessageEvent('message', { data: 'hello' }));" ++
+        "  return errors === 1 && messages === 1 && onerror === null && onmessage === null;" ++
+        "})()"));
+}
+
 test "Event subclasses (Message/Close/Error/Progress) carry their init fields" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -1370,8 +1406,7 @@ test "Event subclasses (Message/Close/Error/Progress) carry their init fields" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var me = new MessageEvent('message', { data: { x: 1 }, origin: 'o', lastEventId: '7' });" ++
         "  if (!(me instanceof Event) || me.type !== 'message' || me.data.x !== 1 || me.origin !== 'o' || me.lastEventId !== '7') return false;" ++
         "  var ce = new CloseEvent('close', { wasClean: true, code: 1000, reason: 'bye' });" ++
@@ -1395,8 +1430,7 @@ test "TextEncoder/TextDecoder round-trip UTF-8 including multibyte" {
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     // ASCII byte length, a known UTF-8 multibyte length, and a full round-trip.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var enc = new TextEncoder();" ++
         "  var a = enc.encode('abc');" ++
         "  if (!(a instanceof Uint8Array) || a.length !== 3 || a[0] !== 97) return false;" ++
@@ -1417,8 +1451,7 @@ test "btoa/atob round-trip and match known vectors" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "btoa('hello') === 'aGVsbG8=' && btoa('Man') === 'TWFu' && btoa('Ma') === 'TWE=' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "btoa('hello') === 'aGVsbG8=' && btoa('Man') === 'TWFu' && btoa('Ma') === 'TWE=' && " ++
         "atob('aGVsbG8=') === 'hello' && atob(btoa('any carnal pleasure.')) === 'any carnal pleasure.'"));
 }
 
@@ -1446,8 +1479,7 @@ test "web streams surface is installed" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof ReadableStream === 'function' && typeof WritableStream === 'function' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof ReadableStream === 'function' && typeof WritableStream === 'function' && " ++
         "typeof TransformStream === 'function' && typeof CountQueuingStrategy === 'function' && " ++
         "typeof ByteLengthQueuingStrategy === 'function' && typeof ReadableStream.from === 'function'"));
 }
@@ -1462,9 +1494,7 @@ test "ReadableStream getReader().read() collects enqueued chunks then done" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_a = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue('x');c.enqueue('y');c.enqueue('z');c.close();}});var reader = rs.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__rs_a = out.join(',');return;}out.push(r.value);return loop();});}loop();})();",
-        "home:rs-read-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_a = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue('x');c.enqueue('y');c.enqueue('z');c.close();}});var reader = rs.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__rs_a = out.join(',');return;}out.push(r.value);return loop();});}loop();})();", "home:rs-read-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_a === 'x,y,z'"));
 }
 
@@ -1478,9 +1508,7 @@ test "ReadableStream supports for-await async iteration" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_b = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue(1);c.enqueue(2);c.enqueue(3);c.close();}});(async function(){var out = [];for await (var ch of rs) out.push(ch);globalThis.__rs_b = out.join('-');})();})();",
-        "home:rs-foreach-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_b = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue(1);c.enqueue(2);c.enqueue(3);c.close();}});(async function(){var out = [];for await (var ch of rs) out.push(ch);globalThis.__rs_b = out.join('-');})();})();", "home:rs-foreach-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_b === '1-2-3'"));
 }
 
@@ -1494,9 +1522,7 @@ test "ReadableStream.from collects a sync iterable" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_c = '';(function(){var rs = ReadableStream.from(['a','b']);var reader = rs.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__rs_c = out.join('');return;}out.push(r.value);return loop();});}loop();})();",
-        "home:rs-from-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_c = '';(function(){var rs = ReadableStream.from(['a','b']);var reader = rs.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__rs_c = out.join('');return;}out.push(r.value);return loop();});}loop();})();", "home:rs-from-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_c === 'ab'"));
 }
 
@@ -1510,9 +1536,7 @@ test "WritableStream collects writes then close fires" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_d = '';(function(){var written = [];var closed = false;var ws = new WritableStream({write: function(ch){written.push(ch);},close: function(){closed = true;}});var w = ws.getWriter();w.write('a');w.write('b');w.write('c');w.close().then(function(){globalThis.__rs_d = written.join('') + ':' + (closed ? 'closed' : 'open');});})();",
-        "home:ws-write-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_d = '';(function(){var written = [];var closed = false;var ws = new WritableStream({write: function(ch){written.push(ch);},close: function(){closed = true;}});var w = ws.getWriter();w.write('a');w.write('b');w.write('c');w.close().then(function(){globalThis.__rs_d = written.join('') + ':' + (closed ? 'closed' : 'open');});})();", "home:ws-write-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_d === 'abc:closed'"));
 }
 
@@ -1526,9 +1550,7 @@ test "TransformStream uppercases via pipeThrough" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_e = '';(function(){var ts = new TransformStream({transform: function(ch, c){c.enqueue(ch.toUpperCase());}});var source = new ReadableStream({start: function(c){c.enqueue('foo');c.enqueue('bar');c.close();}});var out = source.pipeThrough(ts);(async function(){var collected = [];for await (var ch of out) collected.push(ch);globalThis.__rs_e = collected.join(',');})();})();",
-        "home:ts-pipethrough-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_e = '';(function(){var ts = new TransformStream({transform: function(ch, c){c.enqueue(ch.toUpperCase());}});var source = new ReadableStream({start: function(c){c.enqueue('foo');c.enqueue('bar');c.close();}});var out = source.pipeThrough(ts);(async function(){var collected = [];for await (var ch of out) collected.push(ch);globalThis.__rs_e = collected.join(',');})();})();", "home:ts-pipethrough-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_e === 'FOO,BAR'"));
 }
 
@@ -1542,9 +1564,7 @@ test "ReadableStream.tee yields two independent readers of the same data" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rs_f = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue('m');c.enqueue('n');c.close();}});var b = rs.tee();var r1 = b[0].getReader(), r2 = b[1].getReader();var o1 = [], o2 = [];var d1 = false, d2 = false;function fin(){if (d1 && d2) globalThis.__rs_f = o1.join('') + '|' + o2.join('');}function loop(reader, out, done){return reader.read().then(function(r){if (r.done){done();return;}out.push(r.value);return loop(reader, out, done);});}loop(r1, o1, function(){d1 = true; fin();});loop(r2, o2, function(){d2 = true; fin();});})();",
-        "home:rs-tee-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rs_f = '';(function(){var rs = new ReadableStream({start: function(c){c.enqueue('m');c.enqueue('n');c.close();}});var b = rs.tee();var r1 = b[0].getReader(), r2 = b[1].getReader();var o1 = [], o2 = [];var d1 = false, d2 = false;function fin(){if (d1 && d2) globalThis.__rs_f = o1.join('') + '|' + o2.join('');}function loop(reader, out, done){return reader.read().then(function(r){if (r.done){done();return;}out.push(r.value);return loop(reader, out, done);});}loop(r1, o1, function(){d1 = true; fin();});loop(r2, o2, function(){d2 = true; fin();});})();", "home:rs-tee-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rs_f === 'mn|mn'"));
 }
 
@@ -1558,8 +1578,7 @@ test "CountQueuingStrategy and ByteLengthQueuingStrategy report size and highWat
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var cqs = new CountQueuingStrategy({ highWaterMark: 5 });" ++
         "  if (cqs.highWaterMark !== 5 || cqs.size('anything') !== 1) return false;" ++
         "  var bqs = new ByteLengthQueuingStrategy({ highWaterMark: 16 });" ++
@@ -1577,9 +1596,7 @@ test "TextEncoderStream pipes string chunks to UTF-8 bytes" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__es_a = '';(function(){var tes = new TextEncoderStream();var w = tes.writable.getWriter();var reader = tes.readable.getReader();var chunks = [];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_a = new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();w.write('hé');w.write('llo ✓');w.close();})();",
-        "home:es-encstream-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__es_a = '';(function(){var tes = new TextEncoderStream();var w = tes.writable.getWriter();var reader = tes.readable.getReader();var chunks = [];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_a = new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();w.write('hé');w.write('llo ✓');w.close();})();", "home:es-encstream-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_a === 'héllo ✓'"));
 }
 
@@ -1594,9 +1611,7 @@ test "TextDecoderStream buffers a multibyte sequence split across chunks" {
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     // "✓" = U+2713 = bytes E2 9C 93, written as [E2,9C] then [93].
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__es_b = '';(function(){var tds = new TextDecoderStream();var w = tds.writable.getWriter();var reader = tds.readable.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__es_b = out.join('');return;}out.push(r.value);return loop();});}loop();w.write(new Uint8Array([0xE2,0x9C]));w.write(new Uint8Array([0x93]));w.close();})();",
-        "home:es-decstream-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__es_b = '';(function(){var tds = new TextDecoderStream();var w = tds.writable.getWriter();var reader = tds.readable.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__es_b = out.join('');return;}out.push(r.value);return loop();});}loop();w.write(new Uint8Array([0xE2,0x9C]));w.write(new Uint8Array([0x93]));w.close();})();", "home:es-decstream-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_b === '✓'"));
 }
 
@@ -1612,9 +1627,7 @@ test "CompressionStream then DecompressionStream round-trips gzip" {
     install(std.testing.allocator, ctx, global);
     @import("node_modules.zig").installZlibOnly(std.testing.allocator, ctx, global);
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();",
-        "home:es-gzip-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();", "home:es-gzip-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_c === 'hello hello hello'"));
 }
 
@@ -1648,8 +1661,7 @@ test "EventTarget addEventListener/dispatchEvent fires with event.type, once rem
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var et = new EventTarget();" ++
         "  var seen = [];" ++
         "  var onceCount = 0;" ++
@@ -1682,8 +1694,7 @@ test "CustomEvent carries detail and extends Event" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var ce = new CustomEvent('thing', { detail: { n: 42 } });" ++
         "  if (!(ce instanceof Event)) return false;" ++
         "  if (ce.type !== 'thing') return false;" ++
@@ -1703,8 +1714,7 @@ test "AbortController.abort sets aborted+reason, fires 'abort' listener, throwIf
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var ac = new AbortController();" ++
         "  var sig = ac.signal;" ++
         "  if (sig.aborted !== false) return false;" ++
@@ -1730,8 +1740,7 @@ test "AbortSignal.abort returns an already-aborted signal" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var s = AbortSignal.abort('x');" ++
         "  if (s.aborted !== true || s.reason !== 'x') return false;" ++
         "  var d = AbortSignal.abort();" ++
@@ -1749,8 +1758,7 @@ test "AbortSignal.any aborts when an input is already aborted" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var combined = AbortSignal.any([AbortSignal.abort('pre')]);" ++
         "  if (combined.aborted !== true || combined.reason !== 'pre') return false;" ++
         "  var ac = new AbortController();" ++
@@ -1773,13 +1781,11 @@ test "AbortSignal.timeout aborts after the timer fires (drained via timers_globa
     install(std.testing.allocator, ctx, global);
     @import("timers_global.zig").install(std.testing.allocator, ctx, global);
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__abrt = '';" ++
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__abrt = '';" ++
         "(function(){" ++
         "  var s = AbortSignal.timeout(1);" ++
         "  s.addEventListener('abort', function(){ globalThis.__abrt = s.aborted && s.reason && s.reason.name === 'TimeoutError' ? 'timeout' : 'wrong'; });" ++
-        "})();",
-        "home:abort-timeout-setup", 1, null);
+        "})();", "home:abort-timeout-setup", 1, null);
 
     // Not aborted yet: the timer is pending until the loop is pumped.
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__abrt === ''"));
@@ -1799,8 +1805,7 @@ test "DOMException is Error-derived with legacy name->code mapping and static co
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var e = new DOMException('x', 'AbortError');" ++
         "  if (!(e instanceof Error)) return false;" ++
         "  if (!(e instanceof DOMException)) return false;" ++
@@ -1835,8 +1840,7 @@ test "AbortController.abort default reason is a DOMException named AbortError" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function(){" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function(){" ++
         "  var ac = new AbortController();" ++
         "  ac.abort();" ++
         "  var r = ac.signal.reason;" ++
@@ -1857,9 +1861,7 @@ test "MessageChannel port1.postMessage delivers to port2.onmessage on a microtas
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__mc = '';globalThis.__mcEv = false;(function(){var mc = new MessageChannel();var got = [];mc.port2.onmessage = function(e){ globalThis.__mcEv = (e instanceof MessageEvent); got.push('2:' + e.data); };mc.port1.onmessage = function(e){ got.push('1:' + e.data); };mc.port1.postMessage('ping');mc.port2.postMessage('pong');queueMicrotask(function(){ queueMicrotask(function(){ globalThis.__mc = got.join(','); }); });})();",
-        "home:mc-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__mc = '';globalThis.__mcEv = false;(function(){var mc = new MessageChannel();var got = [];mc.port2.onmessage = function(e){ globalThis.__mcEv = (e instanceof MessageEvent); got.push('2:' + e.data); };mc.port1.onmessage = function(e){ got.push('1:' + e.data); };mc.port1.postMessage('ping');mc.port2.postMessage('pong');queueMicrotask(function(){ queueMicrotask(function(){ globalThis.__mc = got.join(','); }); });})();", "home:mc-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc === '2:ping,1:pong' && globalThis.__mcEv === true"));
 }
 
@@ -1873,8 +1875,6 @@ test "MessagePort addEventListener('message') receives postMessage from the pair
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__mc2 = '';(function(){var mc = new MessageChannel();mc.port2.addEventListener('message', function(e){ globalThis.__mc2 = String(e.data); });mc.port1.postMessage('hello');})();",
-        "home:mc2-setup", 1, null);
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__mc2 = '';(function(){var mc = new MessageChannel();mc.port2.addEventListener('message', function(e){ globalThis.__mc2 = String(e.data); });mc.port1.postMessage('hello');})();", "home:mc2-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc2 === 'hello'"));
 }

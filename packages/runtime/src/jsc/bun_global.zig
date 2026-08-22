@@ -39,7 +39,7 @@ fn argToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Alloca
     const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
     const buf = allocator.alloc(u8, capacity) catch return null;
     const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
-    return buf[0 .. if (written > 0) written - 1 else 0];
+    return buf[0..if (written > 0) written - 1 else 0];
 }
 
 fn makeUint8Array(ctx: *JSContextRef, bytes: []const u8) ?*JSValue {
@@ -904,11 +904,20 @@ const install_glue =
     \\  if (typeof globalThis.navigator !== "object" || !globalThis.navigator) {
     \\    var __nav = {};
     \\    Object.defineProperty(__nav, Symbol.toStringTag, { value: "Navigator", enumerable: false, configurable: true });
-    \\    __nav.userAgent = "Bun/" + __HOME_BUN_VERSION__;
-    \\    __nav.platform = "__HOME_PLATFORM__";
-    \\    __nav.hardwareConcurrency = (typeof globalThis.__home_hw_concurrency === "function") ? globalThis.__home_hw_concurrency() : 1;
     \\    globalThis.navigator = __nav;
     \\  }
+    \\  var __navigatorValues = {
+    \\    userAgent: "Bun/" + __HOME_BUN_VERSION__,
+    \\    platform: "__HOME_PLATFORM__",
+    \\    hardwareConcurrency: (typeof globalThis.__home_hw_concurrency === "function") ? globalThis.__home_hw_concurrency() : 1,
+    \\  };
+    \\  Object.keys(__navigatorValues).forEach(function(key) {
+    \\    Object.defineProperty(globalThis.navigator, key, {
+    \\      configurable: true,
+    \\      enumerable: true,
+    \\      get: function() { return __navigatorValues[key]; },
+    \\    });
+    \\  });
     \\  delete globalThis.__home_hw_concurrency;
     \\  delete globalThis.__home_bun_write_file;
     \\})();
@@ -929,17 +938,29 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
 
     // Inject the version + platform literals into the glue (kept out of the raw
     // string). navigator.platform mirrors WebKit's values per OS.
-    const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch return;
+    const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch |err| {
+        std.log.err("failed to allocate Bun global installer source: {t}", .{err});
+        return;
+    };
     defer allocator.free(glue);
     const platform_str = switch (builtin.target.os.tag) {
         .macos => "MacIntel",
         .windows => "Win32",
         else => "Linux x86_64",
     };
-    const glue2 = std.mem.replaceOwned(u8, allocator, glue, "__HOME_PLATFORM__", platform_str) catch return;
+    const glue2 = std.mem.replaceOwned(u8, allocator, glue, "__HOME_PLATFORM__", platform_str) catch |err| {
+        std.log.err("failed to specialize Bun global installer source: {t}", .{err});
+        return;
+    };
     defer allocator.free(glue2);
-    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, glue2, "home:bun-install", 1) catch return;
-    result.deinit(allocator);
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, glue2, "home:bun-install", 1) catch |err| {
+        std.log.err("failed to evaluate Bun global installer: {t}", .{err});
+        return;
+    };
+    defer result.deinit(allocator);
+    if (result.exception_message) |message| {
+        std.log.err("failed to install Bun globals: {s}", .{message});
+    }
 }
 
 fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
@@ -975,8 +996,7 @@ test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (!Bun.deepEquals({ a: 1, b: [2, 3] }, { a: 1, b: [2, 3] })) return false;" ++
         "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
         "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
@@ -994,8 +1014,7 @@ test "Bun.stringWidth handles wide chars, emoji, combining marks, ANSI (corpus p
     // Mirrors js/bun/util/stringWidth.test.ts behaviors (matched against the
     // string-width npm package): East Asian Wide = 2, emoji = 2, combining
     // marks = 0, and ANSI escapes excluded by default / counted on request.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var w = Bun.stringWidth;" ++
         "  if (w('') !== 0 || w(undefined) !== 0) return false;" ++
         "  if (w('abc') !== 3) return false;" ++
@@ -1023,8 +1042,7 @@ test "Bun.ArrayBufferSink write/end/flush (corpus parity + stream/asUint8Array)"
 
     // Mirrors js/bun/util/arraybuffersink.test.ts (multi-write rope + mixed
     // string/Uint8Array array) plus the documented stream/asUint8Array modes.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var enc = new TextEncoder();" ++
         "  function sameBytes(u8, exp) { if (u8.byteLength !== exp.length) return false; for (var i = 0; i < exp.length; i++) if (u8[i] !== exp[i]) return false; return true; }" ++
         // rope: many string writes concatenate; end() returns an ArrayBuffer
@@ -1064,8 +1082,7 @@ test "Bun.sleepSync sleeps and validates args (corpus parity)" {
     // Mirrors js/bun/util/sleepSync.test.ts: a real sleep elapses, and missing
     // / non-number / negative arguments throw; extra args are ignored so that
     // `[1,2,3].map(Bun.sleepSync)` works.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
         "  var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;" ++
         "  Bun.sleepSync(8);" ++
@@ -1089,8 +1106,7 @@ test "Bun.indexOfLine finds newline byte offsets (corpus parity)" {
 
     // Mirrors js/bun/util/index-of-line.test.ts: non-number offsets coerce, an
     // empty buffer is -1, and a newline is located at its byte index.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (Bun.indexOfLine(new Uint8ClampedArray(), {}) !== -1) return false;" ++
         "  if (Bun.indexOfLine(new Uint8Array(), null) !== -1) return false;" ++
         "  if (Bun.indexOfLine(new Uint8Array(), NaN) !== -1) return false;" ++
@@ -1109,8 +1125,7 @@ test "Bun.hash family (native std.hash): crc32 vector + types/determinism" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { var h = Bun.hash;" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { var h = Bun.hash;" ++
         "  if (typeof h('abc') !== 'bigint' || h('abc') !== h('abc') || h('abc') === h('abd')) return false;" ++
         "  if (h.crc32('hello') !== 907060870) return false;" ++ // known CRC-32 (IsoHdlc) of 'hello'
         "  if (typeof h.crc32('x') !== 'number' || typeof h.adler32('x') !== 'number') return false;" ++
@@ -1130,8 +1145,7 @@ test "Bun.hash full variant set matches Bun's exact vectors (corpus parity)" {
     // Exact expected values from js/bun/util/hash.test.js for "hello world",
     // including xxHash32/64/3, murmur32v2, and the >u32 seed for xxHash64
     // (which must survive as a precise u64, not an f64).
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { var h = Bun.hash; var s = 'hello world';" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { var h = Bun.hash; var s = 'hello world';" ++
         "  if (h(s) !== 0x668d5e431c3b2573n) return false;" ++
         "  if (h.wyhash(new TextEncoder().encode(s)) !== 0x668d5e431c3b2573n) return false;" ++
         "  if (h.adler32(s) !== 0x1a0b045d) return false;" ++
@@ -1156,8 +1170,7 @@ test "Bun.Glob.match (wildcards, globstar, braces, char classes)" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { var G = Bun.Glob;" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { var G = Bun.Glob;" ++
         "  if (!new G('*.ts').match('foo.ts') || new G('*.ts').match('foo.js')) return false;" ++
         "  if (!new G('src/**/*.ts').match('src/a/b/c.ts')) return false;" ++
         "  if (!new G('**/*.ts').match('a/b.ts')) return false;" ++
@@ -1174,8 +1187,7 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
     const ctx = engine.currentContext();
     installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { var B = Bun;" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { var B = Bun;" ++
         "  if (B.fileURLToPath('file:///tmp/a%20b.txt') !== '/tmp/a b.txt') return false;" ++
         "  if (B.isMainThread !== true || B.gc() !== 0 || B.allocUnsafe(4).length !== 4) return false;" ++
         "  var ab = B.concatArrayBuffers([new Uint8Array([1, 2]).buffer, new Uint8Array([3, 4]).buffer]);" ++
@@ -1192,13 +1204,18 @@ test "navigator exposes userAgent/hardwareConcurrency/platform" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var n = globalThis.navigator;" ++
         "  if (typeof n !== 'object' || !n) return false;" ++
         "  if (n.userAgent !== 'Bun/' + Bun.version) return false;" ++
         "  if (typeof n.hardwareConcurrency !== 'number' || n.hardwareConcurrency < 1) return false;" ++
         "  if (typeof n.platform !== 'string' || n.platform.length === 0) return false;" ++
+        "  for (var key of ['userAgent', 'platform', 'hardwareConcurrency']) {" ++
+        "    var descriptor = Object.getOwnPropertyDescriptor(n, key);" ++
+        "    if (!descriptor || typeof descriptor.get !== 'function' || descriptor.set !== undefined || descriptor.enumerable !== true || descriptor.configurable !== true || 'writable' in descriptor) return false;" ++
+        "    var before = n[key], threw = false; try { (function() { 'use strict'; n[key] = 'overwritten'; })(); } catch (error) { threw = error instanceof TypeError; }" ++
+        "    if (!threw || n[key] !== before) return false;" ++
+        "  }" ++
         "  return Object.prototype.toString.call(n) === '[object Navigator]';" ++
         "})()"));
 }
@@ -1214,8 +1231,7 @@ test "Bun.stripANSI strips CSI/OSC/C1 sequences (corpus parity)" {
     // Cases drawn from js/bun/util/stripANSI.test.ts, including OSC with BEL/ST
     // terminators, single-char escapes, partial sequences, C1 CSI (0x9b), and
     // identity for plain strings.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var S = Bun.stripANSI;" ++
         "  function eq(a, b) { return a === b; }" ++
         "  if (!eq(S('\\u001b[31mred\\u001b[39m'), 'red')) return false;" ++
@@ -1246,8 +1262,7 @@ test "Bun.randomUUIDv5 is deterministic + matches the canonical uuid vector" {
     // Mirrors js/bun/util/randomUUIDv5.test.ts: version-5 layout, determinism,
     // 'dns' alias == its literal UUID, and the canonical uuid.v5 vector for
     // "www.example.com" under the DNS namespace.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var dns = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';" ++
         "  var u = Bun.randomUUIDv5('www.example.com', dns);" ++
         "  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)) return false;" ++
@@ -1268,8 +1283,7 @@ test "Bun.randomUUIDv7 layout, timestamp, encodings, monotonic (corpus parity)" 
     // Mirrors js/bun/util/randomUUIDv7.test.ts: hex layout + version 7, a known
     // custom-timestamp prefix, base64/buffer encodings, and monotonicity within
     // the same timestamp.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var u = Bun.randomUUIDv7();" ++
         "  if (typeof u !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)) return false;" ++
         "  if (u[14] !== '7') return false;" ++ // version nibble
@@ -1296,8 +1310,7 @@ test "Bun.concatArrayBuffers maxLength + asUint8Array (corpus parity)" {
 
     // Mirrors js/bun/util/concat.test.js: ArrayBuffer/TypedArray mix, trimming
     // to a max length, and the asUint8Array flag.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
         "  function bytesEq(u8, exp) { if (u8.length !== exp.length) return false; for (var i = 0; i < exp.length; i++) if (u8[i] !== exp[i]) return false; return true; }" ++
         "  var a = Uint8Array.from([1, 2, 3]), b = Uint8Array.from([4, 5, 6]);" ++
@@ -1330,8 +1343,7 @@ test "Bun.pathToFileURL/fileURLToPath mirror Node (corpus parity)" {
 
     // Mirrors js/bun/util/fileUrl.test.js: absolute round-trip, relative paths
     // resolve against cwd, type validation, and non-file: schemes throw.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
         "  if (Bun.pathToFileURL('/path/to/file.js').href !== 'file:///path/to/file.js') return false;" ++
         "  if (Bun.fileURLToPath('file:///path/to/file.js') !== '/path/to/file.js') return false;" ++
@@ -1358,12 +1370,10 @@ test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
     const ctx = engine.currentContext();
     installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__bu = '';" ++
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__bu = '';" ++
         "var ok = (Bun.env === process.env) && (typeof Bun.nanoseconds() === 'number') &&" ++
         "  (Bun.inspect({ a: 1 }).indexOf('a') >= 0);" ++
-        "Bun.sleep(1).then(function() { globalThis.__bu = ok ? 'slept' : 'no'; });",
-        "home:bun-util-setup", 1, null);
+        "Bun.sleep(1).then(function() { globalThis.__bu = ok ? 'slept' : 'no'; });", "home:bun-util-setup", 1, null);
     @import("timers_global.zig").drain(ctx);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bu === 'slept'"));
 }
@@ -1376,8 +1386,7 @@ test "Bun global exposes version + file/write surface" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof Bun === 'object' && Bun.version === '1.3.14' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof Bun === 'object' && Bun.version === '1.3.14' && " ++
         "typeof Bun.file === 'function' && typeof Bun.write === 'function' && " ++
         "typeof globalThis.__home_bun_read_file === 'undefined'"));
 }
@@ -1394,15 +1403,12 @@ test "Bun.write then Bun.file round-trips through native fs" {
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     // Write natively, then read the bytes back and check size/exists/text.
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__w = null;" ++
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__w = null;" ++
         "Bun.write('/tmp/home_bun_unit_test.txt', 'bun-fs-roundtrip').then(function(n) {" ++
         "  var f = Bun.file('/tmp/home_bun_unit_test.txt');" ++
         "  return f.text().then(function(t) { globalThis.__w = n + ':' + f.size + ':' + t; });" ++
-        "});",
-        "home:bun-write-setup", 1, null);
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "globalThis.__w === '16:16:bun-fs-roundtrip'"));
+        "});", "home:bun-write-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__w === '16:16:bun-fs-roundtrip'"));
 }
 
 test "Bun.file.exists reflects presence; missing file text() rejects" {
@@ -1413,12 +1419,10 @@ test "Bun.file.exists reflects presence; missing file text() rejects" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__e = null;" ++
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__e = null;" ++
         "Bun.file('/tmp/home_definitely_missing_zzz.txt').exists().then(function(ex) {" ++
         "  Bun.file('/tmp/home_definitely_missing_zzz.txt').text().then(function() { globalThis.__e = 'resolved'; }, function() { globalThis.__e = ex + ':rejected'; });" ++
-        "});",
-        "home:bun-exists-setup", 1, null);
+        "});", "home:bun-exists-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__e === 'false:rejected'"));
 }
 
@@ -1433,8 +1437,7 @@ test "Bun.readableStreamToText/Array drain a web ReadableStream" {
     // A minimal pull-based ReadableStream over ["foo", "bar"]; the consumers
     // only touch getReader()/read(), and reads resolve via already-settled
     // promises so the whole chain drains within this single evaluateUtf8.
-    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__rsText = null; globalThis.__rsArr = null;" ++
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__rsText = null; globalThis.__rsArr = null;" ++
         "function makeStream(items) {" ++
         "  var i = 0;" ++
         "  return { getReader: function() { return {" ++
@@ -1442,8 +1445,6 @@ test "Bun.readableStreamToText/Array drain a web ReadableStream" {
         "  }; } };" ++
         "}" ++
         "Bun.readableStreamToText(makeStream(['foo', 'bar'])).then(function(t) { globalThis.__rsText = t; });" ++
-        "Bun.readableStreamToArray(makeStream(['foo', 'bar'])).then(function(a) { globalThis.__rsArr = JSON.stringify(a); });",
-        "home:bun-rs-consumers-setup", 1, null);
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "globalThis.__rsText === 'foobar' && globalThis.__rsArr === '[\"foo\",\"bar\"]'"));
+        "Bun.readableStreamToArray(makeStream(['foo', 'bar'])).then(function(a) { globalThis.__rsArr = JSON.stringify(a); });", "home:bun-rs-consumers-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rsText === 'foobar' && globalThis.__rsArr === '[\"foo\",\"bar\"]'"));
 }
