@@ -5807,7 +5807,10 @@ pub const Checker = struct {
                     },
                     .object_property => {
                         const op = hir_mod.objectPropertyOf(self.hir, member);
-                        name = try self.classMemberNameFromPropertyKey(op.key, op.is_computed);
+                        name = if (op.is_computed and self.hir.typeOf(op.key) == types.Primitive.none)
+                            null
+                        else
+                            try self.classMemberNameFromPropertyKey(op.key, op.is_computed);
                         is_static = op.is_static;
                         is_protected = op.visibility == .protected;
                     },
@@ -30071,6 +30074,7 @@ pub const Checker = struct {
         if (t == types.Primitive.none) return true;
         if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.never) return true;
         if (t >= self.interner.pool.typeCount()) return true;
+        if (self.fixedTupleLength(t) != null) return true;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_any or flags.is_unknown or flags.is_never) return true;
         if (flags.is_tuple) return true;
@@ -59202,6 +59206,24 @@ pub const Checker = struct {
         return null;
     }
 
+    fn virtualCommonJsHasDirectNamedAssignment(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (!self.virtualSectionMatchesResolvedModule(statement, resolved, spec) or
+                self.hir.kindOf(statement) != .assignment) continue;
+            if (self.commonJsExportsAssignmentName(statement) == member_name) return true;
+        }
+        return false;
+    }
+
     fn virtualCommonJsRepeatedWholeObjectExportType(
         self: *Checker,
         anchor: NodeId,
@@ -59572,6 +59594,7 @@ pub const Checker = struct {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
             if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
             if ((try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, leaf)) == .value) {
+                const has_direct_named_assignment = try self.virtualCommonJsHasDirectNamedAssignment(anchor, spec, leaf);
                 if (try self.virtualCommonJsExportedMemberClassInstanceType(anchor, spec, leaf)) |class_t| {
                     return class_t;
                 }
@@ -59579,10 +59602,12 @@ pub const Checker = struct {
                     const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_export);
                     if (jsdoc_t != value_export) return jsdoc_t;
                 }
-                if (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) |module_t| {
-                    if (try self.lookupObjectMember(module_t, leaf)) |value_export| {
-                        const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_export);
-                        if (jsdoc_t != value_export) return jsdoc_t;
+                if (has_direct_named_assignment) {
+                    if (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) |module_t| {
+                        if (try self.lookupObjectMember(module_t, leaf)) |value_export| {
+                            const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_export);
+                            if (jsdoc_t != value_export) return jsdoc_t;
+                        }
                     }
                 }
                 if (try self.virtualModuleHasWholeCommonJsExport(anchor, spec)) {
@@ -59600,8 +59625,10 @@ pub const Checker = struct {
         const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
         const value_t = (try self.lookupObjectMember(module_t, leaf)) orelse return null;
         if (space == .value) return value_t;
-        const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_t);
-        if (jsdoc_t != value_t) return jsdoc_t;
+        if (try self.virtualCommonJsHasDirectNamedAssignment(anchor, spec, leaf)) {
+            const jsdoc_t = try self.commonJsValueExportAsJsDocType(value_t);
+            if (jsdoc_t != value_t) return jsdoc_t;
+        }
         try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
         return types.Primitive.any;
     }
@@ -148365,7 +148392,7 @@ pub const Checker = struct {
             // Mirrors `iterableArrayPattern25`. Unbounded array rests
             // (`...args: number[]`, where the number index gives a real
             // element type) keep their per-arg checks.
-            if (too_few and elem_t == types.Primitive.none and self.fixedTupleLength(rest_arr_t) != null) return;
+            if (too_few and self.fixedTupleLength(rest_arr_t) != null) return;
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
             if (target_t >= self.interner.pool.typeCount()) return;
             // tsc emits at most one TS2345 for a rest slot ÃÂ¢ÃÂÃÂ once the
