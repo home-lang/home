@@ -58576,6 +58576,24 @@ const harness_prelude =
     \\    responseEvents.emit("end");
     \\  });
     \\}
+    \\function __home_http_server_response_error(phase, request, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "Node HTTP server response failed"));
+    \\  const step = String(phase || "handler");
+    \\  const method = String(request && request.method || "GET").toUpperCase();
+    \\  const url = String(request && request.url || "/");
+    \\  const failure = new Error("Node HTTP server response failed during " + step + " for " + method + " " + url + ": " + String(underlying.message || underlying));
+    \\  failure.name = "NodeHTTPServerResponseError";
+    \\  failure.code = "ERR_HTTP_SERVER_RESPONSE";
+    \\  failure.operation = "node.http.server.response";
+    \\  failure.phase = step;
+    \\  failure.method = method;
+    \\  failure.url = url;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + method + " " + url + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_http_server_response(request) {
     \\  const response = __home_http_event_target();
     \\  response.req = request;
@@ -58629,7 +58647,7 @@ const harness_prelude =
     \\        origin,
     \\        stopped: false,
     \\        fetch(request) {
-    \\          return new Promise(resolve => {
+    \\          return new Promise((resolve, reject) => {
     \\            const parsedRequestUrl = new URL(request && request.url || origin + "/");
     \\            const serverRequest = Object.assign(__home_http_event_target(), {
     \\              method: String(request && request.method || "GET").toUpperCase(),
@@ -58647,6 +58665,7 @@ const harness_prelude =
     \\            const responseEvents = __home_http_event_target();
     \\            const responseChunks = [];
     \\            const serverResponse = Object.assign(responseEvents, {
+    \\              req: serverRequest,
     \\              statusCode: 200,
     \\              headers: {},
     \\              setHeader(name, value) {
@@ -58656,9 +58675,11 @@ const harness_prelude =
     \\              setHeaders(headers) {
     \\                return __home_http_apply_headers(this, headers);
     \\              },
-    \\              writeHead(statusCode, headers) {
+    \\              writeHead(statusCode, statusMessage, headers) {
     \\                this.statusCode = Number(statusCode) || 200;
+    \\                if (typeof statusMessage === "object") headers = statusMessage;
     \\                __home_http_apply_headers(this, headers);
+    \\                return this;
     \\              },
     \\              write(chunk, encoding, callback) {
     \\                return __home_http_write_outgoing(this, responseChunks, chunk, encoding, callback);
@@ -58666,12 +58687,17 @@ const harness_prelude =
     \\              end(chunk, encoding, callback) {
     \\                const args = __home_http_end_arguments(chunk, encoding, callback);
     \\                if (args.chunk !== undefined) this.write(args.chunk, args.encoding);
-    \\                resolve(new Response(__home_http_body_bytes(responseChunks), { status: this.statusCode, headers: __home_http_fetch_response_headers(this.headers) }));
+    \\                try {
+    \\                  resolve(new Response(__home_http_body_bytes(responseChunks), { status: this.statusCode, headers: __home_http_fetch_response_headers(this.headers) }));
+    \\                } catch (cause) {
+    \\                  reject(__home_http_server_response_error("serialize", serverRequest, cause));
+    \\                }
     \\                __home_http_finish_outgoing(this, args.callback);
     \\                return this;
     \\              },
     \\            });
-    \\            self.__home_handler(serverRequest, serverResponse);
+    \\            try { self.__home_handler(serverRequest, serverResponse); }
+    \\            catch (cause) { reject(__home_http_server_response_error("handler", serverRequest, cause)); }
     \\            const requestBody = request && request.__home_raw_body !== undefined ? request.__home_raw_body : request && request.body;
     \\            Promise.resolve(__home_body_bytes(requestBody)).then(bytes => {
     \\              if (bytes && bytes.length > 0) serverRequest.emit("data", typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes));
@@ -65556,6 +65582,23 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (HTTP " + String(status) + ", " + url + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
+    \\function __home_fetch_redirect_location(location) {
+    \\  const raw = String(location || "");
+    \\  let hasRawBytes = false;
+    \\  for (let index = 0; index < raw.length; index++) {
+    \\    const code = raw.charCodeAt(index);
+    \\    if (code > 255) return raw;
+    \\    if (code >= 128) hasRawBytes = true;
+    \\  }
+    \\  if (!hasRawBytes) return raw;
+    \\  try {
+    \\    const bytes = new Uint8Array(raw.length);
+    \\    for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index) & 255;
+    \\    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    \\  } catch (error) {
+    \\    return raw;
+    \\  }
+    \\}
     \\function __home_fetch_redirect_lifecycle_error(phase, href, state, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch redirect lifecycle failed"));
     \\  const step = String(phase || "transition");
@@ -66582,7 +66625,7 @@ const harness_prelude =
     \\        }
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
-    \\          const redirectedUrl = new URL(location, request.url).href;
+    \\          const redirectedUrl = new URL(__home_fetch_redirect_location(location), request.url).href;
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
     \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
     \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: new Headers(fetchOptions.headers || {}), redirect: "follow", __home_redirect_state: redirectState });
@@ -109038,6 +109081,42 @@ test "bootstrap runner aborts TLS fetches on timeout deadlines" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 6), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner preserves final fetch URLs after redirects" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-url-after-redirect.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-url-after-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "after redirecting the url of the response") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "non-ASCII character redirects") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "res.req.url") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "req: serverRequest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_redirect_location(location)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"node.http.server.response\"") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "fetch URL after redirect mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
