@@ -152125,6 +152125,20 @@ pub const Checker = struct {
                 .{arg_name},
             );
         }
+        if (self.enumIdentityInfo(arg_t)) |arg_enum| {
+            if (self.enumIdentityInfo(param_t)) |param_enum| {
+                if (!self.stringIdsHaveSameText(arg_enum.name, param_enum.name)) {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{
+                            self.string_interner.get(arg_enum.name),
+                            self.string_interner.get(param_enum.name),
+                        },
+                    );
+                }
+            }
+        }
         // Mirror tsc's diagnostic widening: when the source side is a
         // literal type (e.g. `1`) but the target is its base primitive
         // (`number`), upstream renders the source as the base type so
@@ -240768,6 +240782,22 @@ test "checker: const enum assignment keeps literal source and enum target names"
         s,
         TsCodes.type_not_assignable,
         "Type '\"bad\"' is not assignable to type 'E'.",
+    ));
+}
+
+test "checker: distinct enum arguments retain owning enum names" {
+    const b = try newBoundSetup(
+        \\enum E1 { X }
+        \\enum E2 { X }
+        \\declare function takes(value: E1): void;
+        \\takes(E2.X);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'E2' is not assignable to parameter of type 'E1'.",
     ));
 }
 
