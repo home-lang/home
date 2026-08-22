@@ -1001,8 +1001,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_missing_comma_operand_priority = a.code == 2695 and b.code == 1109;
             const b_missing_comma_operand_priority = b.code == 2695 and a.code == 1109;
             if (a_missing_comma_operand_priority != b_missing_comma_operand_priority) return a_missing_comma_operand_priority;
-            const a_missing_typedef_priority = a.code == 2300 and b.code == 1005;
-            const b_missing_typedef_priority = b.code == 2300 and a.code == 1005;
+            const preserve_missing_typedef_order = isJsLikeVirtualFile(a.file);
+            const a_missing_typedef_priority = preserve_missing_typedef_order and a.code == 2300 and b.code == 1005;
+            const b_missing_typedef_priority = preserve_missing_typedef_order and b.code == 2300 and a.code == 1005;
             if (a_missing_typedef_priority != b_missing_typedef_priority) return a_missing_typedef_priority;
             const a_missing_binding_priority = a.code == 7031 and b.code == 1005;
             const b_missing_binding_priority = b.code == 7031 and a.code == 1005;
@@ -1094,8 +1095,9 @@ const ActualDiagnosticLine = struct {
         }
         if (a.line != b.line) return a.line < b.line;
         if (a.col != b.col) return a.col < b.col;
-        if ((a.code == 2300 and b.code == 1005) or
-            (a.code == 1005 and b.code == 2300))
+        if (isJsLikeVirtualFile(a.file) and
+            ((a.code == 2300 and b.code == 1005) or
+                (a.code == 1005 and b.code == 2300)))
         {
             return a.code == 2300;
         }
@@ -1159,6 +1161,20 @@ test "conformance: malformed JSDoc typedef diagnostics preserve bind order" {
 
     try std.testing.expectEqual(@as(u32, 2300), lines[0].code);
     try std.testing.expectEqual(@as(u32, 1005), lines[1].code);
+}
+
+test "conformance: TypeScript recovery diagnostics preserve syntax order" {
+    var parse_text = [_]u8{'p'};
+    var bind_text = [_]u8{'b'};
+    var lines = [_]ActualDiagnosticLine{
+        .{ .file = "a.ts", .line = 1, .col = 1, .code = 2300, .order = 0, .text = &bind_text },
+        .{ .file = "a.ts", .line = 1, .col = 1, .code = 1005, .order = 1, .text = &parse_text },
+    };
+
+    std.mem.sort(ActualDiagnosticLine, &lines, {}, ActualDiagnosticLine.lessThan);
+
+    try std.testing.expectEqual(@as(u32, 1005), lines[0].code);
+    try std.testing.expectEqual(@as(u32, 2300), lines[1].code);
 }
 
 test "conformance: recovered binding diagnostics preserve tsgo precedence" {
@@ -45675,8 +45691,7 @@ test "conformance: symbolProperty37 reports duplicate well-known symbol members"
         \\}
         ,
         .expects_error = true,
-        .expected_errors =
-        "symbolProperty37.ts(2,5): error TS2300: Duplicate identifier '[Symbol.isConcatSpreadable]'.\n" ++
+        .expected_errors = "symbolProperty37.ts(2,5): error TS2300: Duplicate identifier '[Symbol.isConcatSpreadable]'.\n" ++
             "symbolProperty37.ts(3,5): error TS2300: Duplicate identifier '[Symbol.isConcatSpreadable]'.",
         .use_exact_errors = true,
     });
