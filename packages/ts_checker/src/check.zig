@@ -16192,7 +16192,7 @@ pub const Checker = struct {
                         try self.recordNarrow(id.name, narrowed);
                     }
                 }
-            } else if (is_disc_narrowable) {
+            } else if (is_disc_narrowable and !self.expressionIsOptionalChain(sw.discriminant)) {
                 has_default = true;
                 // `default:` ÃÂ¢ÃÂÃÂ narrow to the union minus every
                 // listed case. Each call to `applyDiscriminatedNarrow`
@@ -117842,6 +117842,13 @@ pub const Checker = struct {
             return;
         }
         const target = try self.instantiatePredicateTarget(stmt, pred);
+        if (self.expressionIsOptionalChain(arg) and
+            !self.typeIsAnyLike(target) and
+            !self.typeIsOrContainsUnknown(target) and
+            !self.typeIncludesUndefined(target))
+        {
+            try self.narrowOptionalChainReceivers(arg);
+        }
         _ = try self.recordPredicateNarrowForExpression(arg, target, true);
     }
 
@@ -118362,6 +118369,12 @@ pub const Checker = struct {
         comparison: NodeId,
         positive: bool,
     ) CheckError!bool {
+        if (self.expressionIsOptionalChain(operand)) {
+            if (try self.staticStringValue(comparison)) |type_name| {
+                const skipped_matches = std.mem.eql(u8, self.string_interner.get(type_name), "undefined");
+                if (positive != skipped_matches) try self.narrowOptionalChainReceivers(operand);
+            }
+        }
         if (try self.applyTypeofPropertyGuard(operand, comparison, positive)) return true;
         if (self.hir.kindOf(operand) != .identifier) return false;
 
@@ -119508,7 +119521,9 @@ pub const Checker = struct {
                 // RHS == null
                 if (self.hir.kindOf(b.rhs) == .literal_null) {
                     const obj_static = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
-                    if (obj_static < self.interner.pool.typeCount()) {
+                    const receiver_was_evaluated = !self.expressionIsOptionalChain(b.lhs) or
+                        try self.optionalChainComparisonRequiresEvaluation(b.lhs, b.rhs, b.op, positive);
+                    if (receiver_was_evaluated and obj_static < self.interner.pool.typeCount()) {
                         const obj_flags = self.interner.pool.flagsOf(obj_static);
                         if (obj_flags.is_union or obj_flags.is_intersection) {
                             try self.applyDiscriminatedNarrowByType(
@@ -119537,7 +119552,11 @@ pub const Checker = struct {
                     const rhs2_name = self.string_interner.get(rhs2.name);
                     if (std.mem.eql(u8, rhs2_name, "undefined")) {
                         const obj_static = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
-                        try self.applyDiscriminatedNarrowByType(obj_id.name, obj_static, m.name, types.Primitive.undefined_t, positive);
+                        const receiver_was_evaluated = !self.expressionIsOptionalChain(b.lhs) or
+                            try self.optionalChainComparisonRequiresEvaluation(b.lhs, b.rhs, b.op, positive);
+                        if (receiver_was_evaluated) {
+                            try self.applyDiscriminatedNarrowByType(obj_id.name, obj_static, m.name, types.Primitive.undefined_t, positive);
+                        }
                         if (positive) {
                             try self.recordMemberNarrow(key, types.Primitive.undefined_t);
                         } else {
@@ -248281,11 +248300,54 @@ test "checker: optional-chain branch facts narrow receivers without committing s
         \\let assigned: number;
         \\maybe?.[assigned = 1];
         \\assigned.toFixed();
+        \\declare function assert(value: unknown): asserts value;
+        \\declare function assertNonNull<T>(value: T): asserts value is NonNullable<T>;
+        \\declare const o: undefined | { (): unknown };
+        \\function parameterFlow(o: { foo: string | number; baz: object } | undefined) {
+        \\  if (typeof o?.foo === "number") o.foo;
+        \\  if (o?.baz instanceof Error) o.baz;
+        \\  assert(typeof o?.foo === "number");
+        \\  o.foo;
+        \\  assertNonNull(o?.foo);
+        \\  o.foo;
+        \\}
+        \\function strictNull(o: { foo: string | number } | undefined) {
+        \\  if (o?.foo !== null) {
+        \\    o.foo;
+        \\  }
+        \\}
+        \\function switchFlow(o: { foo: string | number } | undefined) {
+        \\  switch (o?.foo) {
+        \\    case "value":
+        \\      o.foo;
+        \\      break;
+        \\    case 1:
+        \\      o.foo;
+        \\      break;
+        \\    case undefined:
+        \\      o.foo;
+        \\      break;
+        \\    default:
+        \\      o.foo;
+        \\      break;
+        \\  }
+        \\}
+        \\type Shape =
+        \\  | { type: "rectangle"; width: number; height: number }
+        \\  | { type: "circle"; radius: number };
+        \\function area(shape?: Shape) {
+        \\  switch (shape?.type) {
+        \\    case "circle": return shape.radius ** 2;
+        \\    case "rectangle": return shape.width * shape.height;
+        \\    default: return 0;
+        \\  }
+        \\}
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
