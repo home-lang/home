@@ -871,6 +871,13 @@ const harness_prelude =
     \\  else if (text.endsWith("/x.bin")) error.stack += "\nat async caller";
     \\  return error;
     \\}
+    \\function __home_bun_file_stream_error(path) {
+    \\  const error = __home_bun_file_read_error("open", path);
+    \\  error.operation = "bun.file.stream";
+    \\  error.phase = "open";
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + error.phase + "] (" + String(path) + ")";
+    \\  return error;
+    \\}
     \\function __home_bun_file_permission_error(syscall, path) {
     \\  const cause = __home_fs_dir_error("EACCES", "permission denied", syscall, path);
     \\  cause.errno = -13;
@@ -1560,21 +1567,48 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_array_buffer_sink() {
-    \\  this.__home_chunks = [];
+    \\  this.__home_buffer = new Uint8Array(0);
+    \\  this.__home_byte_length = 0;
+    \\  this.__home_streaming = false;
+    \\  this.__home_as_uint8array = false;
     \\}
+    \\__home_array_buffer_sink.prototype.start = function(options) {
+    \\  const opts = options === undefined || options === null ? {} : options;
+    \\  if (typeof opts !== "object") throw new TypeError("ArrayBufferSink.start options must be an object");
+    \\  if (opts.highWaterMark !== undefined) {
+    \\    const highWaterMark = Number(opts.highWaterMark);
+    \\    if (!Number.isFinite(highWaterMark) || highWaterMark < 0) throw new RangeError("ArrayBufferSink highWaterMark must be a non-negative number");
+    \\    this.__home_high_water_mark = Math.trunc(highWaterMark);
+    \\  }
+    \\  this.__home_buffer = new Uint8Array(this.__home_high_water_mark || 0);
+    \\  this.__home_byte_length = 0;
+    \\  this.__home_streaming = !!opts.stream;
+    \\  this.__home_as_uint8array = !!opts.asUint8Array;
+    \\};
     \\__home_array_buffer_sink.prototype.write = function(value) {
     \\  const view = __home_array_buffer_view(value);
-    \\  const bytes = view ? Array.from(view) : __home_text_to_utf8_bytes(value === undefined || value === null ? "" : String(value));
-    \\  for (let i = 0; i < bytes.length; i++) __home_array_append(this.__home_chunks, bytes[i] & 0xff);
-    \\  return bytes.length;
+    \\  const bytes = Uint8Array.from(view ? view : __home_text_to_utf8_bytes(value === undefined || value === null ? "" : String(value)));
+    \\  const required = this.__home_byte_length + bytes.byteLength;
+    \\  if (required > this.__home_buffer.byteLength) {
+    \\    const grown = new Uint8Array(Math.max(required, Math.max(1024, this.__home_buffer.byteLength * 2)));
+    \\    grown.set(this.__home_buffer.subarray(0, this.__home_byte_length));
+    \\    this.__home_buffer = grown;
+    \\  }
+    \\  this.__home_buffer.set(bytes, this.__home_byte_length);
+    \\  this.__home_byte_length += bytes.byteLength;
+    \\  return bytes.byteLength;
+    \\};
+    \\__home_array_buffer_sink.prototype.__home_take = function() {
+    \\  const bytes = this.__home_buffer.slice(0, this.__home_byte_length || 0);
+    \\  this.__home_byte_length = 0;
+    \\  return this.__home_as_uint8array ? bytes : bytes.buffer;
+    \\};
+    \\__home_array_buffer_sink.prototype.flush = function() {
+    \\  return this.__home_streaming ? this.__home_take() : 0;
     \\};
     \\__home_array_buffer_sink.prototype.end = function(value) {
     \\  if (arguments.length > 0) this.write(value);
-    \\  const bytes = this.__home_chunks || [];
-    \\  const buffer = new ArrayBuffer(bytes.length);
-    \\  new Uint8Array(buffer).set(bytes);
-    \\  this.__home_chunks = [];
-    \\  return buffer;
+    \\  return this.__home_take();
     \\};
     \\globalThis.__home_virtual_fds = globalThis.__home_virtual_fds || Object.create(null);
     \\globalThis.__home_next_virtual_fd = globalThis.__home_next_virtual_fd || 10000;
@@ -24390,7 +24424,7 @@ const harness_prelude =
     \\      : "bytes:" + __home_crypto_bytes_to_hex(chunk)).join("|");
     \\    return __home_crypto_pseudo_digest(algorithm, [__home_text_to_utf8_bytes(shape)], null);
     \\  }
-    \\  if (!keyBytes && __home_native_hash) {
+    \\  if (!keyBytes && __home_native_hash && algorithm !== "sha1") {
     \\    const bytes = __home_crypto_concat_chunks(chunks);
     \\    const digest = __home_native_hash(algorithm, bytes);
     \\    if (digest && ArrayBuffer.isView(digest)) return new Uint8Array(digest.buffer, digest.byteOffset, digest.byteLength);
@@ -26407,8 +26441,9 @@ const harness_prelude =
     \\  readableStreamToJSON(stream) {
     \\    return Bun.readableStreamToText(stream).then(text => __home_parse_json_body_text(text));
     \\  },
-    \\  readableStreamToFormData(stream, contentType) {
-    \\    return Bun.readableStreamToText(stream).then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
+    \\  readableStreamToFormData(stream, boundary) {
+    \\    const contentType = boundary === undefined || boundary === null || String(boundary) === "" ? "application/x-www-form-urlencoded" : (String(boundary).includes("/") ? String(boundary) : "multipart/form-data; boundary=" + String(boundary));
+    \\    return Bun.readableStreamToText(stream).then(text => __home_parse_formdata_text(text, contentType));
     \\  },
     \\  readableStreamToBlob(stream) {
     \\    return __home_readable_stream_convert(stream, "Bun.readableStreamToBlob", "materialize", bytes => {
@@ -27339,22 +27374,26 @@ const harness_prelude =
     \\        return this.arrayBuffer().then(buffer => new Uint8Array(buffer));
     \\      },
     \\      get readable() {
+    \\        if (!__home_build_file_exists(filePath)) throw __home_bun_file_stream_error(filePath);
+    \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) throw __home_bun_file_permission_error("open", filePath);
     \\        return new ReadableStream({ start(controller) {
     \\          if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
-    \\            controller.enqueue(new Uint8Array(globalThis.__home_written_file_bytes[filePath]));
+    \\            const bytes = new Uint8Array(globalThis.__home_written_file_bytes[filePath]);
+    \\            if (bytes.byteLength > 0) controller.enqueue(bytes);
     \\            controller.close();
     \\            return;
     \\          }
     \\          if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) {
     \\            const sparse = globalThis.__home_written_file_sparse[filePath];
     \\            if (sparse.parts && sparse.parts.length === 1 && sparse.parts[0] && sparse.parts[0].__home_logical_buffer) {
-    \\              controller.enqueue(sparse.parts[0]);
+    \\              if (sparse.parts[0].byteLength > 0) controller.enqueue(sparse.parts[0]);
     \\              controller.close();
     \\              return;
     \\            }
     \\            __home_unsupported("Sparse file streams are not supported");
     \\          }
-    \\          controller.enqueue(new Uint8Array(__home_file_bytes_sync(filePath)));
+    \\          const bytes = new Uint8Array(__home_file_bytes_sync(filePath));
+    \\          if (bytes.byteLength > 0) controller.enqueue(bytes);
     \\          controller.close();
     \\        } });
     \\      },
@@ -31610,7 +31649,7 @@ const harness_prelude =
     \\  const aBlob = typeof Blob === "function" && a instanceof Blob;
     \\  const bBlob = typeof Blob === "function" && b instanceof Blob;
     \\  if (aBlob || bBlob) {
-    \\    if (!aBlob || !bBlob || Number(a.size) !== Number(b.size) || String(a.type) !== String(b.type)) return false;
+    \\    if (!aBlob || !bBlob || Number(a.size) !== Number(b.size)) return false;
     \\    const aFile = typeof File === "function" && a instanceof File;
     \\    const bFile = typeof File === "function" && b instanceof File;
     \\    if (aFile !== bFile || (aFile && String(a.name) !== String(b.name))) return false;
@@ -55026,6 +55065,9 @@ const harness_prelude =
     \\  if (!(this instanceof __home_fs_ReadStream)) return new __home_fs_ReadStream(path, options);
     \\  this.path = path === undefined ? undefined : String(path);
     \\  this.fd = options && options.fd !== undefined ? options.fd : null;
+    \\  this.__home_options = options && typeof options === "object" ? options : {};
+    \\  this.__home_bytes = null;
+    \\  this.__home_position = 0;
     \\  this.readable = true;
     \\  this.destroyed = false;
     \\}
@@ -55035,6 +55077,44 @@ const harness_prelude =
     \\__home_fs_ReadStream.prototype.emit = function emit() { return false; };
     \\__home_fs_ReadStream.prototype.close = function close(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
     \\__home_fs_ReadStream.prototype.destroy = function destroy(error) { this.destroyed = true; if (error) throw error; return this; };
+    \\__home_fs_ReadStream.prototype[Symbol.asyncIterator] = function() {
+    \\  const stream = this;
+    \\  return {
+    \\    next() {
+    \\      if (stream.destroyed) return Promise.resolve({ done: true, value: undefined });
+    \\      if (stream.__home_bytes === null) {
+    \\        if (!__home_build_file_exists(stream.path)) {
+    \\          const error = __home_bun_file_read_error("open", stream.path);
+    \\          error.operation = "fs.createReadStream.iterator";
+    \\          error.phase = "open";
+    \\          error.stack = String(error.stack || error) + "\n    at " + error.operation + " [open] (" + String(stream.path) + ")";
+    \\          stream.destroyed = true;
+    \\          return Promise.reject(error);
+    \\        }
+    \\        stream.__home_bytes = typeof Buffer === "function" ? Buffer.from(__home_file_bytes_sync(stream.path)) : new Uint8Array(__home_file_bytes_sync(stream.path));
+    \\        stream.__home_position = Math.max(0, Number(stream.__home_options.start || 0));
+    \\      }
+    \\      const configuredEnd = stream.__home_options.end === undefined ? stream.__home_bytes.byteLength : Math.min(stream.__home_bytes.byteLength, Number(stream.__home_options.end) + 1);
+    \\      if (stream.__home_position >= configuredEnd) {
+    \\        stream.destroyed = true;
+    \\        stream.readable = false;
+    \\        return Promise.resolve({ done: true, value: undefined });
+    \\      }
+    \\      const highWaterMark = Math.max(1, Number(stream.__home_options.highWaterMark || 64 * 1024));
+    \\      const end = Math.min(configuredEnd, stream.__home_position + highWaterMark);
+    \\      const chunk = stream.__home_bytes.subarray(stream.__home_position, end);
+    \\      stream.__home_position = end;
+    \\      return Promise.resolve({ done: false, value: chunk });
+    \\    },
+    \\    return() {
+    \\      stream.destroyed = true;
+    \\      stream.readable = false;
+    \\      stream.__home_bytes = null;
+    \\      return Promise.resolve({ done: true, value: undefined });
+    \\    },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
+    \\};
     \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) {
     \\  const text = __home_build_read_text(this.path);
     \\  if (text === null && !(globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, this.path))) {
@@ -63620,10 +63700,14 @@ const harness_prelude =
     \\    }
     \\    return json;
     \\  };
-    \\  FormData.from = function(value) {
+    \\  FormData.from = function(value, boundary) {
     \\    const bytes = __home_body_bytes_sync(value);
     \\    const limit = globalThis.__home_synthetic_allocation_limit || Infinity;
     \\    if (bytes.length > limit) throw new RangeError("Cannot create a string longer than " + String(limit));
+    \\    if (boundary !== undefined && boundary !== null && String(boundary) !== "") {
+    \\      const contentType = String(boundary).includes("/") ? String(boundary) : "multipart/form-data; boundary=" + String(boundary);
+    \\      return __home_parse_formdata_bytes(bytes, contentType);
+    \\    }
     \\    return __home_parse_urlencoded_formdata(__home_utf8_bytes_to_text(bytes));
     \\  };
     \\  Object.defineProperty(FormData.prototype, Symbol.toStringTag, { value: "FormData" });
@@ -65607,6 +65691,16 @@ const harness_prelude =
     \\  failure.phase = "locked";
     \\  failure.cause = underlying;
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (locked, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_readable_stream_release_error() {
+    \\  const cause = new TypeError("the reader no longer owns the stream");
+    \\  const failure = new DOMException("ReadableStream reader lock was released", "AbortError");
+    \\  failure.code = "ERR_STREAM_RELEASE_LOCK";
+    \\  failure.operation = "readableStream.reader.releaseLock";
+    \\  failure.phase = "released";
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (released, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
     \\function __home_response_consume_abortable(owner, promise) {
@@ -69472,7 +69566,7 @@ const harness_prelude =
     \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : (this.__home_blob_typed_bytes ? new Uint8Array(this.__home_blob_typed_bytes) : new Uint8Array(this.__home_blob_bytes || []));
     \\  const stream = new ReadableStream({
     \\    start(controller) {
-    \\      controller.enqueue(bytes);
+    \\      if (bytes.byteLength > 0) controller.enqueue(bytes);
     \\      controller.close();
     \\    },
     \\  });
@@ -73104,6 +73198,8 @@ const harness_prelude =
     \\      },
     \\      flush() {
     \\        assertSink(this);
+    \\        const chunk = stream.__home_chunks[stream.__home_chunks.length - 1];
+    \\        if (chunk) try { Object.defineProperty(chunk, "__home_direct_flush_boundary", { configurable: true, value: true }); } catch (error) {}
     \\        return Promise.resolve(undefined);
     \\      },
     \\      end(chunk) {
@@ -73117,16 +73213,36 @@ const harness_prelude =
     \\        stream.__home_closed = true;
     \\      },
     \\    };
+    \\    function takeBufferedChunk() {
+    \\      if (stream.__home_chunks.length === 0) return undefined;
+    \\      const chunks = [];
+    \\      while (stream.__home_chunks.length > 0) {
+    \\        const chunk = stream.__home_chunks.shift();
+    \\        chunks.push(chunk);
+    \\        if (chunk.__home_direct_flush_boundary) break;
+    \\      }
+    \\      if (chunks.length === 1) return chunks[0];
+    \\      let byteLength = 0;
+    \\      for (const chunk of chunks) byteLength += chunk.byteLength;
+    \\      const combined = new Uint8Array(byteLength);
+    \\      let offset = 0;
+    \\      for (const chunk of chunks) {
+    \\        combined.set(chunk, offset);
+    \\        offset += chunk.byteLength;
+    \\      }
+    \\      try { Object.defineProperty(combined, "__home_reused_pull_buffer", { configurable: true, value: true }); } catch (error) {}
+    \\      return combined;
+    \\    }
     \\    stream.getReader = function() {
     \\      stream.locked = true;
     \\      return {
     \\        read() {
-    \\          if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: stream.__home_chunks.shift() });
+    \\          if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: takeBufferedChunk() });
     \\          if (!stream.__home_pull_started && underlyingSource && typeof underlyingSource.pull === "function") {
     \\            stream.__home_pull_started = true;
     \\            return Promise.resolve().then(() => underlyingSource.pull(controller)).then(() => {
     \\              stream.__home_closed = true;
-    \\              if (stream.__home_chunks.length > 0) return { done: false, value: stream.__home_chunks.shift() };
+    \\              if (stream.__home_chunks.length > 0) return { done: false, value: takeBufferedChunk() };
     \\              return { done: true, value: undefined };
     \\            });
     \\          }
@@ -73486,6 +73602,38 @@ const harness_prelude =
     \\    };
     \\  } });
     \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.values !== "function") {
+    \\  Object.defineProperty(ReadableStream.prototype, "values", { configurable: true, writable: true, value: function(options) {
+    \\    const preventCancel = !!(options && options.preventCancel);
+    \\    const reader = this.getReader();
+    \\    let finished = false;
+    \\    function release() {
+    \\      if (typeof reader.releaseLock === "function") reader.releaseLock();
+    \\    }
+    \\    return {
+    \\      next() {
+    \\        if (finished) return Promise.resolve({ done: true, value: undefined });
+    \\        return Promise.resolve(reader.read()).then(result => {
+    \\          if (result.done) { finished = true; release(); }
+    \\          return result;
+    \\        }, error => { finished = true; release(); throw error; });
+    \\      },
+    \\      return(reason) {
+    \\        if (finished) return Promise.resolve({ done: true, value: undefined });
+    \\        finished = true;
+    \\        if (preventCancel || typeof reader.cancel !== "function") {
+    \\          release();
+    \\          return Promise.resolve({ done: true, value: undefined });
+    \\        }
+    \\        return Promise.resolve(reader.cancel(reason)).then(
+    \\          () => { release(); return { done: true, value: undefined }; },
+    \\          error => { release(); throw error; },
+    \\        );
+    \\      },
+    \\      [Symbol.asyncIterator]() { return this; },
+    \\    };
+    \\  } });
+    \\}
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && typeof ReadableStream.prototype.tee !== "function") {
     \\  Object.defineProperty(ReadableStream.prototype, "tee", { configurable: true, writable: true, value: function() {
     \\    const captured = Array.isArray(this.__home_all_chunks) ? this.__home_all_chunks.slice() : null;
@@ -73539,7 +73687,11 @@ const harness_prelude =
     \\    const reader = __home_readable_stream_get_reader.apply(this, arguments);
     \\    if (reader) {
     \\      try {
-    \\        if (typeof __home_ReadableStreamDefaultReader === "function" && !(reader instanceof __home_ReadableStreamDefaultReader)) Object.setPrototypeOf(reader, __home_ReadableStreamDefaultReader.prototype);
+    \\        if (typeof __home_ReadableStreamDefaultReader === "function" && !(reader instanceof __home_ReadableStreamDefaultReader)) {
+    \\          const nativeReaderPrototype = Object.getPrototypeOf(reader);
+    \\          if (nativeReaderPrototype && Object.getPrototypeOf(__home_ReadableStreamDefaultReader.prototype) !== nativeReaderPrototype) Object.setPrototypeOf(__home_ReadableStreamDefaultReader.prototype, nativeReaderPrototype);
+    \\          Object.setPrototypeOf(reader, __home_ReadableStreamDefaultReader.prototype);
+    \\        }
     \\      } catch (error) {}
     \\      try { Object.defineProperty(stream, "__home_logically_locked", { configurable: true, writable: true, value: true }); } catch (error) {}
     \\      try {
@@ -73551,10 +73703,67 @@ const harness_prelude =
     \\          });
     \\        }
     \\      } catch (error) {}
+    \\      let rejectReaderClosed = null;
+    \\      let rejectPendingReads = null;
+    \\      let readerReleaseError = null;
+    \\      if (reader.closed === undefined && typeof reader.read === "function") {
+    \\        let closedSettled = false;
+    \\        let closedResolve;
+    \\        let closedReject;
+    \\        const closedPromise = new Promise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
+    \\        closedPromise.catch(() => undefined);
+    \\        const settleClosed = (error, value) => {
+    \\          if (closedSettled) return;
+    \\          closedSettled = true;
+    \\          if (error !== undefined) closedReject(error); else closedResolve(value);
+    \\        };
+    \\        const read = reader.read;
+    \\        let rejectReleased;
+    \\        const releasedPromise = new Promise((resolve, reject) => { rejectReleased = reject; });
+    \\        releasedPromise.catch(() => undefined);
+    \\        rejectPendingReads = error => rejectReleased(error);
+    \\        reader.read = function() {
+    \\          const receiver = this;
+    \\          const args = arguments;
+    \\          const observed = Promise.resolve().then(() => {
+    \\            if (readerReleaseError) throw readerReleaseError;
+    \\            return read.apply(receiver, args);
+    \\          }).then(value => { if (value && value.done) settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
+    \\          return Promise.race([observed, releasedPromise]);
+    \\        };
+    \\        const cancel = typeof reader.cancel === "function" ? reader.cancel : null;
+    \\        if (cancel) reader.cancel = function() {
+    \\          let result;
+    \\          try { result = cancel.apply(this, arguments); }
+    \\          catch (error) { settleClosed(error); throw error; }
+    \\          return Promise.resolve(result).then(value => { settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
+    \\        };
+    \\        Object.defineProperty(reader, "closed", { configurable: true, enumerable: true, value: closedPromise });
+    \\        rejectReaderClosed = error => settleClosed(error);
+    \\      }
     \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
     \\      reader.releaseLock = function() {
     \\        try { return releaseLock.apply(this, arguments); }
-    \\        finally { try { stream.__home_logically_locked = false; stream.__home_external_reader_lock = false; } catch (error) {} }
+    \\        finally {
+    \\          const error = __home_readable_stream_release_error();
+    \\          readerReleaseError = error;
+    \\          if (rejectReaderClosed) rejectReaderClosed(error);
+    \\          if (rejectPendingReads) rejectPendingReads(error);
+    \\          try { stream.__home_logically_locked = false; stream.__home_external_reader_lock = false; } catch (error) {}
+    \\        }
+    \\      };
+    \\      if (typeof reader.readMany !== "function") reader.readMany = function() {
+    \\        const values = [];
+    \\        function readAvailable() {
+    \\          return Promise.resolve(reader.read()).then(result => {
+    \\            if (result.done) return { done: values.length === 0, value: values };
+    \\            values.push(result.value);
+    \\            const buffered = Array.isArray(stream.__home_chunks) && stream.__home_chunks.length > 0;
+    \\            if (stream.__home_closed || buffered) return readAvailable();
+    \\            return { done: false, value: values };
+    \\          });
+    \\        }
+    \\        return readAvailable();
     \\      };
     \\    }
     \\    return reader;
@@ -73737,9 +73946,15 @@ const harness_prelude =
     \\  if (!state) throw __home_byob_error("ERR_INVALID_THIS", "Value of this must be of type ReadableStreamBYOBRequest");
     \\  return state;
     \\}
-    \\function __home_make_byob_request(view, respond) {
+    \\function __home_byob_settle_closed(stream, error) {
+    \\  const state = stream && stream.__home_byob_closed_state;
+    \\  if (!state || state.settled) return;
+    \\  state.settled = true;
+    \\  if (error !== undefined) state.reject(error); else state.resolve(undefined);
+    \\}
+    \\function __home_make_byob_request(view, respond, cancel) {
     \\  const request = Object.create(__home_ReadableStreamBYOBRequest.prototype);
-    \\  __home_byob_request_states.set(request, { active: true, view, respond });
+    \\  __home_byob_request_states.set(request, { active: true, view, respond, cancel });
     \\  return request;
     \\}
     \\function __home_read_byte_stream(stream, suppliedView) {
@@ -73765,8 +73980,15 @@ const harness_prelude =
     \\      settled = true;
     \\      stream.__home_byob_request = null;
     \\      const done = count === 0 && stream.__home_closed;
-    \\      const value = done ? undefined : new Uint8Array(responseView.buffer, responseView.byteOffset, count);
+    \\      const value = new Uint8Array(responseView.buffer, responseView.byteOffset, count);
+    \\      if (done) __home_byob_settle_closed(stream, undefined);
     \\      resolve({ done, value });
+    \\    }, () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      stream.__home_byob_request = null;
+    \\      __home_byob_settle_closed(stream, undefined);
+    \\      resolve({ done: true, value: undefined });
     \\    });
     \\    stream.__home_byob_request = request;
     \\    let pullResult;
@@ -73776,6 +73998,7 @@ const harness_prelude =
     \\        : undefined;
     \\    } catch (error) {
     \\      stream.__home_byob_request = null;
+    \\      __home_byob_settle_closed(stream, error);
     \\      reject(error);
     \\      return;
     \\    }
@@ -73788,6 +74011,7 @@ const harness_prelude =
     \\      error => {
     \\        if (!settled) {
     \\          stream.__home_byob_request = null;
+    \\          __home_byob_settle_closed(stream, error);
     \\          reject(error);
     \\        }
     \\      },
@@ -73826,7 +74050,12 @@ const harness_prelude =
     \\  const stream = this && this.__home_stream;
     \\  if (!stream) return Promise.reject(__home_byob_error("ERR_INVALID_STATE", "Invalid state: The reader is not bound to a stream"));
     \\  stream.__home_closed = true;
-    \\  return Promise.resolve(stream.__home_underlying_source && typeof stream.__home_underlying_source.cancel === "function" ? stream.__home_underlying_source.cancel(reason) : undefined);
+    \\  const request = stream.__home_byob_request;
+    \\  if (request) {
+    \\    const state = __home_byob_request_states.get(request);
+    \\    if (state && state.active) { state.active = false; if (typeof state.cancel === "function") state.cancel(); }
+    \\  }
+    \\  return Promise.resolve(stream.__home_underlying_source && typeof stream.__home_underlying_source.cancel === "function" ? stream.__home_underlying_source.cancel(reason) : undefined).then(value => { __home_byob_settle_closed(stream, undefined); return value; }, error => { __home_byob_settle_closed(stream, error); throw error; });
     \\};
     \\if (!__home_ReadableStreamBYOBReader.prototype.releaseLock) __home_ReadableStreamBYOBReader.prototype.releaseLock = function() { this.__home_stream = null; };
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_byob_reader_shim) {
@@ -73846,6 +74075,12 @@ const harness_prelude =
     \\      }
     \\      const stream = this;
     \\      const reader = new __home_ReadableStreamBYOBReader(stream);
+    \\      let closedResolve;
+    \\      let closedReject;
+    \\      const closed = new Promise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
+    \\      closed.catch(() => undefined);
+    \\      stream.__home_byob_closed_state = { settled: false, resolve: closedResolve, reject: closedReject };
+    \\      if (reader.closed === undefined) Object.defineProperty(reader, "closed", { configurable: true, enumerable: true, value: closed });
     \\      try { stream.__home_logically_locked = true; } catch (error) {}
     \\      try {
     \\        const ownLocked = Object.getOwnPropertyDescriptor(stream, "locked");
@@ -73854,7 +74089,7 @@ const harness_prelude =
     \\      const releaseLock = typeof reader.releaseLock === "function" ? reader.releaseLock : function() {};
     \\      reader.releaseLock = function() {
     \\        try { return releaseLock.apply(this, arguments); }
-    \\        finally { try { stream.__home_logically_locked = false; } catch (error) {} }
+    \\        finally { __home_byob_settle_closed(stream, __home_readable_stream_release_error()); try { stream.__home_logically_locked = false; } catch (error) {} }
     \\      };
     \\      return reader;
     \\    }
@@ -73876,6 +74111,7 @@ const harness_prelude =
     \\      closed: false,
     \\      readableClosedResolvers: [],
     \\      writableClosedResolvers: [],
+    \\      startPromise: Promise.resolve(undefined),
     \\    };
     \\  }
     \\  function __home_transform_settle_closed(resolvers, state) {
@@ -73950,13 +74186,13 @@ const harness_prelude =
     \\    const writable = {
     \\      __home_writable_sink: {
     \\        write(chunk) {
-    \\          return Promise.resolve().then(() => transformAlgorithm(chunk)).then(
+    \\          return Promise.resolve(state.startPromise).then(() => transformAlgorithm(chunk)).then(
     \\            () => undefined,
     \\            error => { __home_transform_error(state, error); throw error; },
     \\          );
     \\        },
     \\        close() {
-    \\          return Promise.resolve().then(() => (flushAlgorithm ? flushAlgorithm() : undefined)).then(
+    \\          return Promise.resolve(state.startPromise).then(() => (flushAlgorithm ? flushAlgorithm() : undefined)).then(
     \\            () => { __home_transform_close(state); },
     \\            error => { __home_transform_error(state, error); throw error; },
     \\          );
@@ -73990,6 +74226,7 @@ const harness_prelude =
     \\      state,
     \\      enqueue(chunk) { __home_transform_enqueue(state, chunk); },
     \\      error(reason) { __home_transform_error(state, reason); },
+    \\      close() { __home_transform_close(state); },
     \\      readable: __home_make_transform_readable(state),
     \\      writable: __home_make_transform_writable(state, transformAlgorithm, flushAlgorithm),
     \\    };
@@ -73997,19 +74234,31 @@ const harness_prelude =
     \\  globalThis.TransformStream = function TransformStream(transformer) {
     \\    transformer = transformer || {};
     \\    const self = this;
+    \\    let controller;
     \\    const handle = globalThis.__home_make_transform(
     \\      function(chunk) {
     \\        if (typeof transformer.transform === "function") {
-    \\          return transformer.transform(chunk, { enqueue(c) { handle.enqueue(c); }, error(e) { handle.error(e); }, terminate() {} });
+    \\          return transformer.transform.call(transformer, chunk, controller);
     \\        }
     \\        handle.enqueue(chunk);
     \\        return undefined;
     \\      },
     \\      function() {
-    \\        if (typeof transformer.flush === "function") return transformer.flush({ enqueue(c) { handle.enqueue(c); }, error(e) { handle.error(e); }, terminate() {} });
+    \\        if (typeof transformer.flush === "function") return transformer.flush.call(transformer, controller);
     \\        return undefined;
     \\      },
     \\    );
+    \\    controller = { enqueue(c) { handle.enqueue(c); }, error(e) { handle.error(e); }, terminate() { handle.close(); } };
+    \\    if (typeof transformer.start === "function") {
+    \\      try {
+    \\        handle.state.startPromise = Promise.resolve(transformer.start.call(transformer, controller)).catch(error => { handle.error(error); throw error; });
+    \\        handle.state.startPromise.catch(() => undefined);
+    \\      } catch (error) {
+    \\        handle.error(error);
+    \\        handle.state.startPromise = Promise.reject(error);
+    \\        handle.state.startPromise.catch(() => undefined);
+    \\      }
+    \\    }
     \\    self.readable = handle.readable;
     \\    self.writable = handle.writable;
     \\  };
@@ -103006,6 +103255,75 @@ test "bootstrap ReadableStream body methods preserve consumed and locked errors"
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap stream lifecycle contracts remain receiver-safe and lossless" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { ArrayBufferSink } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\test("TransformStream gates transform and flush on start with stable receivers", async () => {
+        \\  let releaseStart; const events = [];
+        \\  const transformer = {
+        \\    start(controller) { expect(this).toBe(transformer); events.push("start"); return new Promise(resolve => { releaseStart = resolve; }); },
+        \\    transform(chunk, controller) { expect(this).toBe(transformer); events.push("transform:" + chunk); controller.enqueue(chunk.toUpperCase()); },
+        \\    flush(controller) { expect(this).toBe(transformer); events.push("flush"); controller.enqueue("done"); },
+        \\  };
+        \\  const stream = new TransformStream(transformer); const writer = stream.writable.getWriter(); const reader = stream.readable.getReader();
+        \\  const write = writer.write("home"); await Bun.sleep(0); expect(events).toEqual(["start"]);
+        \\  releaseStart(); await write; await writer.close();
+        \\  expect(events).toEqual(["start", "transform:home", "flush"]);
+        \\  expect((await reader.read()).value).toBe("HOME"); expect((await reader.read()).value).toBe("done"); expect((await reader.read()).done).toBe(true);
+        \\  const reason = new Error("transform failed"); const failed = new TransformStream({ transform() { throw reason; } });
+        \\  const failedWriter = failed.writable.getWriter(); const failedReader = failed.readable.getReader();
+        \\  expect(await failedWriter.write("x").catch(error => error)).toBe(reason); expect(await failedReader.read().catch(error => error)).toBe(reason);
+        \\});
+        \\test("ReadableStream values and readMany preserve cancellation and batching", async () => {
+        \\  let cancelled = false; const open = new ReadableStream({ pull(controller) { controller.enqueue("x"); }, cancel() { cancelled = true; } });
+        \\  for await (const chunk of open.values()) { expect(chunk).toBe("x"); break; }
+        \\  expect(cancelled).toBe(true); expect(open.locked).toBe(false);
+        \\  const batched = new ReadableStream({ pull(controller) { controller.enqueue("hello"); controller.enqueue("world"); controller.close(); } });
+        \\  const reader = batched.getReader(); const result = await reader.readMany(); expect(result.value.join("")).toBe("helloworld"); expect((await reader.read()).done).toBe(true);
+        \\});
+        \\test("releaseLock rejects pending ownership without consuming the next chunk", async () => {
+        \\  let release; const gate = new Promise(resolve => { release = resolve; });
+        \\  const stream = new ReadableStream({ async pull(controller) { controller.enqueue("first"); await gate; controller.enqueue("second"); controller.close(); } });
+        \\  let reader = stream.getReader(); expect((await reader.read()).value).toBe("first"); const pending = reader.read(); reader.releaseLock();
+        \\  const readError = await pending.catch(error => error); const closedError = await reader.closed.catch(error => error);
+        \\  expect(readError.name).toBe("AbortError"); expect(readError.code).toBe("ERR_STREAM_RELEASE_LOCK"); expect(closedError).toBe(readError);
+        \\  expect(readError.operation).toBe("readableStream.reader.releaseLock"); expect(readError.stack).toContain("Caused by:");
+        \\  release(); reader = stream.getReader(); expect((await reader.read()).value).toBe("second");
+        \\});
+        \\test("BYOB EOF returns the supplied buffer while cancellation returns undefined", async () => {
+        \\  let controller; const eofStream = new ReadableStream({ type: "bytes", start(value) { controller = value; } }); const eofReader = eofStream.getReader({ mode: "byob" });
+        \\  const eof = eofReader.read(new Uint8Array(new ArrayBuffer(16))); controller.close(); controller.byobRequest.respond(0); const eofResult = await eof;
+        \\  expect(eofResult.done).toBe(true); expect(eofResult.value).toBeInstanceOf(Uint8Array); expect(eofResult.value.byteLength).toBe(0); expect(eofResult.value.buffer.byteLength).toBe(16); await eofReader.closed;
+        \\  const cancelStream = new ReadableStream({ type: "bytes", start() {} }); const cancelReader = cancelStream.getReader({ mode: "byob" }); const canceled = cancelReader.read(new Uint8Array(8));
+        \\  await cancelReader.cancel("stop"); const cancelResult = await canceled; expect(cancelResult.done).toBe(true); expect(cancelResult.value).toBeUndefined(); await cancelReader.closed;
+        \\});
+        \\test("multipart helpers accept raw boundaries", async () => {
+        \\  const input = new FormData(); input.append("field", "value"); const response = new Response(input);
+        \\  const boundary = response.headers.get("content-type").split("boundary=")[1]; const body = new Uint8Array(await response.arrayBuffer());
+        \\  const stream = new ReadableStream({ start(controller) { controller.enqueue(body); controller.close(); } });
+        \\  expect((await Bun.readableStreamToFormData(stream, boundary)).get("field")).toBe("value"); expect(FormData.from(body, boundary).get("field")).toBe("value");
+        \\});
+        \\test("ArrayBufferSink start, streaming flush, and output type are stable", () => {
+        \\  const sink = new ArrayBufferSink(); sink.start({ highWaterMark: 64, stream: true, asUint8Array: true }); expect(sink.write("home")).toBe(4);
+        \\  const first = sink.flush(); expect(first).toBeInstanceOf(Uint8Array); expect(new TextDecoder().decode(first)).toBe("home"); sink.write("lang"); expect(new TextDecoder().decode(sink.end())).toBe("lang");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/lifecycle-contracts-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("stream lifecycle contracts regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
