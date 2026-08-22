@@ -66007,6 +66007,7 @@ const harness_prelude =
     \\    try {
     \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
+    \\      if (!usesHttp3 && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
@@ -74240,6 +74241,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<string, { bytesInOutput: number }>", .replacement = "" },
         .{ .needle = ": Uint8Array[] =", .replacement = " =" },
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
+        .{ .needle = "(fetchOptions: RequestInit): Promise<Record<string, string>> =>", .replacement = "fetchOptions =>" },
+        .{ .needle = "const capturedHeaders: Record<string, string> = {};", .replacement = "const capturedHeaders = {};" },
         .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
         .{ .needle = ": Array<{ length: number; flags: number }> =", .replacement = " =" },
@@ -109082,6 +109085,42 @@ test "bootstrap runner mirrors fetch request compression corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors fetch Connection header corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-connection-header.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(fetchOptions: RequestInit)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise<Record<string, string>>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "capturedHeaders: Record<string, string>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request.headers.get(\"connection\") === null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request.headers.set(\"Connection\", \"keep-alive\")") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
+        std.debug.print(
+            "fetch Connection header corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 10), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 10), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -109117,6 +109156,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/cookies.test.ts", .passed = 3, .todo = 1 },
         .{ .path = "js/web/fetch/fetch-args.test.ts", .passed = 47 },
         .{ .path = "js/web/fetch/fetch-compress.test.ts", .passed = 32 },
+        .{ .path = "js/web/fetch/fetch-connection-header.test.ts", .passed = 10 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },
