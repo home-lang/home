@@ -45042,19 +45042,21 @@ pub const Checker = struct {
             if (self.hir.kindOf(m.object) == .identifier) {
                 const ident = hir_mod.identifierOf(self.hir, m.object);
                 if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) {
-                    if (static_class == null and self.classOrAncestorHasInstanceProperty(declaring_class, prop_name)) return;
-                    // Check member kind: data property is suppressed,
-                    // method falls through. Use obj_t's structural
-                    // members to classify.
-                    const members = self.interner.objectMembers(obj_t);
-                    var is_data_property = false;
-                    for (members) |om| {
-                        if (om.name == prop_name) {
-                            is_data_property = !om.is_method;
-                            break;
+                    if (static_class == null) {
+                        if (self.classOrAncestorHasInstanceProperty(declaring_class, prop_name)) return;
+                        // Check member kind: instance data properties are
+                        // suppressed, while methods and private static
+                        // fields retain TS2341.
+                        const members = self.interner.objectMembers(obj_t);
+                        var is_data_property = false;
+                        for (members) |om| {
+                            if (om.name == prop_name) {
+                                is_data_property = !om.is_method;
+                                break;
+                            }
                         }
+                        if (is_data_property) return;
                     }
-                    if (is_data_property) return;
                 }
             }
         }
@@ -84621,6 +84623,18 @@ pub const Checker = struct {
                 "The initializer of an 'await using' declaration must be either an object with a '[Symbol.asyncDispose]()' or '[Symbol.dispose]()' method, or be 'null' or 'undefined'.",
             );
         } else {
+            if (!try self.typeHasWellKnownMember(init_t, "Symbol.dispose")) {
+                const source_name = (try self.allocSimpleTypeName(init_t)) orelse
+                    (try self.allocObjectTypeShapeWithUndefined(init_t)) orelse
+                    "unknown";
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '[Symbol.dispose]' is missing in type '{s}' but required in type 'Disposable'.",
+                    .{source_name},
+                );
+                try self.report(init_node, TsCodes.property_missing_required, msg);
+                return;
+            }
             try self.report(
                 init_node,
                 TsCodes.using_initializer_disposable,
@@ -84694,6 +84708,25 @@ pub const Checker = struct {
         const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
         const member_t = (try self.lookupObjectMember(t, member_name)) orelse return false;
         return self.typeHasNonConstructCallSignature(member_t);
+    }
+
+    fn typeHasWellKnownMember(self: *Checker, t: TypeId, name: []const u8) CheckError!bool {
+        if (self.typeIsAnyLike(t) or
+            t == types.Primitive.never or
+            t == types.Primitive.null_t or
+            t == types.Primitive.undefined_t)
+        {
+            return true;
+        }
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (self.interner.pool.flagsOf(t).is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!try self.typeHasWellKnownMember(member, name)) return false;
+            }
+            return true;
+        }
+        const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+        return (try self.lookupObjectMember(t, member_name)) != null;
     }
 
     /// `let await;` inside a `class C { static { ... } }` block fires
@@ -124978,8 +125011,28 @@ pub const Checker = struct {
         const any_t = types.Primitive.any;
         const string_t = types.Primitive.string_t;
         const number_t = types.Primitive.number_t;
+        const boolean_t = types.Primitive.boolean_t;
         const string_arr = self.interner.internArrayType(self.string_interner, string_t) catch return error.OutOfMemory;
         const any_arr = self.interner.internArrayType(self.string_interner, any_t) catch return error.OutOfMemory;
+        const optional_boolean_t = self.interner.internUnion(&.{ boolean_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const options_t = self.interner.internObjectType(&.{.{
+            .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory,
+            .type = optional_boolean_t,
+            .is_optional = true,
+            .is_readonly = false,
+            .is_method = false,
+        }}) catch return error.OutOfMemory;
+        try self.alias_display_names.put(self.gpa, options_t, "NumberFormatOptions");
+        const resolved_options_t = self.interner.internObjectType(&.{.{
+            .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory,
+            .type = boolean_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }}) catch return error.OutOfMemory;
+        try self.alias_display_names.put(self.gpa, resolved_options_t, "ResolvedNumberFormatOptions");
+        const sig_construct = self.interner.internSignature(&[_]TypeId{ any_t, options_t }, any_t, true) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_construct, &.{ true, true });
         // format(value: number): string — also accepts bigint/string in
         // lib.d.ts; modeled with the dominant numeric arg until a union
         // accepting `number | bigint | string` is wired.
@@ -124989,9 +125042,10 @@ pub const Checker = struct {
         // formatRange(start, end): string — ES2023.
         const sig_format_range = self.interner.internSignature(&[_]TypeId{ number_t, number_t }, string_t, false) catch return error.OutOfMemory;
         const sig_format_range_to_parts = self.interner.internSignature(&[_]TypeId{ number_t, number_t }, any_arr, false) catch return error.OutOfMemory;
-        const sig_resolved = try self.seedAnySig0(any_t);
+        const sig_resolved = try self.seedAnySig0(resolved_options_t);
         const sig_supported = self.interner.internSignature(&[_]TypeId{ any_t, any_t }, string_arr, false) catch return error.OutOfMemory;
         const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = sig_construct, .is_optional = false, .is_readonly = true, .is_method = true },
             .{ .name = self.string_interner.intern("format") catch return error.OutOfMemory, .type = sig_format, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("formatToParts") catch return error.OutOfMemory, .type = sig_format_to_parts, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("formatRange") catch return error.OutOfMemory, .type = sig_format_range, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -185298,6 +185352,23 @@ test "checker: modern shared-memory and intl globals are recognized" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
+test "checker: Intl NumberFormat validates useGrouping options" {
+    const s = try newSetup(
+        \\new Intl.NumberFormat("en-GB", { useGrouping: true });
+        \\new Intl.NumberFormat("en-GB", { useGrouping: "true" });
+        \\new Intl.NumberFormat("en-GB", { useGrouping: "always" });
+        \\const { useGrouping } = new Intl.NumberFormat("en-GB").resolvedOptions();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'string' is not assignable to type 'boolean | undefined'.",
+    ));
+}
+
 test "checker: Atomics waitAsync requires the es2024 library" {
     const s = try newSetup(
         \\// @lib: es2022
@@ -187075,6 +187146,21 @@ test "checker: private static member access outside class emits TS2341" {
         if (d.code == TsCodes.private_member_access) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: private static fields accessed through super retain TS2341" {
+    const s = try newSetup(
+        \\class Base { private static field: number; private static method() {} }
+        \\class Derived extends Base {
+        \\  static read() {
+        \\    super.field = 1;
+        \\    super.method();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.private_member_access));
 }
 
 test "checker: plain function class field this stays loose under strict false" {
@@ -233418,7 +233504,7 @@ test "checker: for-await await-using same-name source does not emit TS7022" {
     }
 }
 
-test "checker: TS2850 validates using initializer disposable shape" {
+test "checker: using initializer relation distinguishes missing and non-callable dispose members" {
     const s = try newSetup(
         \\function f() {
         \\  using bad = {};
@@ -233430,14 +233516,19 @@ test "checker: TS2850 validates using initializer disposable shape" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var count: usize = 0;
+    var invalid_member_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.using_initializer_disposable) {
-            count += 1;
+            invalid_member_count += 1;
             try T.expectEqualStrings("The initializer of a 'using' declaration must be either an object with a '[Symbol.dispose]()' method, or be 'null' or 'undefined'.", d.message);
         }
     }
-    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqual(@as(usize, 1), invalid_member_count);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property '[Symbol.dispose]' is missing in type '{}' but required in type 'Disposable'.",
+    ));
 }
 
 test "checker: TS2851 validates await using initializer disposable shape" {
@@ -233539,7 +233630,8 @@ test "checker: iterator objects inherit disposable protocols" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.using_initializer_disposable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.using_initializer_disposable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.await_using_initializer_disposable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
 }
