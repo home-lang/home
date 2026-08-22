@@ -6502,7 +6502,34 @@ pub const DirectoryLoadOptions = struct {
     /// outside the requested slice.
     load_start: usize = 0,
     load_limit: ?usize = null,
+    /// Optional comma-separated fixture-name filter. Matching this while
+    /// walking avoids reading and normalizing every unselected fixture.
+    name_filter: ?[]const u8 = null,
 };
+
+fn fixtureNameIncluded(name: []const u8, filters: []const u8) bool {
+    var fit = std.mem.splitScalar(u8, filters, ',');
+    var has_include = false;
+    var included = false;
+    var excluded = false;
+    while (fit.next()) |filter| {
+        if (filter.len == 0) continue;
+        if (filter[0] == '!') {
+            if (filter.len > 1 and std.mem.indexOf(u8, name, filter[1..]) != null) excluded = true;
+        } else {
+            has_include = true;
+            if (std.mem.indexOf(u8, name, filter) != null) included = true;
+        }
+    }
+    return !excluded and (!has_include or included);
+}
+
+test "conformance: fixture name filter preserves include and exclude semantics" {
+    try T.expect(fixtureNameIncluded("jsxCustomImport", "jsx,module"));
+    try T.expect(!fixtureNameIncluded("parserRecovery", "jsx,module"));
+    try T.expect(fixtureNameIncluded("jsxCustomImport", "!parser"));
+    try T.expect(!fixtureNameIncluded("jsxParserRecovery", "jsx,!Recovery"));
+}
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
 /// file as an `OwnedCorpusEntry`. Convention for `.errors.ts` is
@@ -6542,7 +6569,10 @@ pub fn loadDirectoryWithOptions(
         const is_ts = std.mem.endsWith(u8, entry.basename, ".ts");
         const basename_is_tsx = std.mem.endsWith(u8, entry.basename, ".tsx");
         if (!is_ts and !basename_is_tsx) continue;
-        const include_entry = code_index >= options.load_start and code_index < load_end;
+        const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
+        const stem = entry.basename[0..ext_dot];
+        const include_entry = code_index >= options.load_start and code_index < load_end and
+            (options.name_filter == null or fixtureNameIncluded(stem, options.name_filter.?));
         code_index += 1;
         if (!include_entry) continue;
         if (std.c.getenv("HOME_TS_COMPILER_LOAD_TRACE") != null) {
@@ -6589,8 +6619,6 @@ pub fn loadDirectoryWithOptions(
         const stripped = try stripNonCodeVirtualSections(gpa, src);
         const case_src: []u8 = stripped orelse src;
         const raw_source: []u8 = if (stripped != null) src else &.{};
-        const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
-        const stem = entry.basename[0..ext_dot];
         var baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
         // tsgo writes a full `<stem>.errors.txt` whenever its result has
         // diagnostics. When it intentionally removes every inherited tsc
@@ -56770,6 +56798,7 @@ fn runOptInTsSuiteFamily(
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
+        .name_filter = name_filter,
     });
     defer {
         for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
@@ -56785,23 +56814,7 @@ fn runOptInTsSuiteFamily(
     var stats: Stats = .{};
     const display_total = requested_start + corpus.len;
     for (corpus, requested_start..) |entry, idx| {
-        if (name_filter) |filters| {
-            var fit = std.mem.splitScalar(u8, filters, ',');
-            var has_include = false;
-            var included = false;
-            var excluded = false;
-            while (fit.next()) |f| {
-                if (f.len == 0) continue;
-                if (f[0] == '!') {
-                    if (f.len > 1 and std.mem.indexOf(u8, entry.name, f[1..]) != null) excluded = true;
-                } else {
-                    has_include = true;
-                    if (std.mem.indexOf(u8, entry.name, f) != null) included = true;
-                }
-            }
-            if (excluded) continue;
-            if (has_include and !included) continue;
-        }
+        if (name_filter) |filters| if (!fixtureNameIncluded(entry.name, filters)) continue;
         if (trace_fixtures) {
             std.debug.print("[ts_suite {s}] RUN {d}/{d} {s}\n", .{ label, idx + 1, display_total, entry.name });
         }
@@ -56911,6 +56924,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
 
     const requested_start = envUsize("HOME_TS_CONFORMANCE_START", 0);
     const requested_limit = envUsizeOpt("HOME_TS_CONFORMANCE_LIMIT");
+    const name_filter: ?[]const u8 = if (std.c.getenv("HOME_TS_CONFORMANCE_FILTER")) |p| std.mem.span(p) else null;
     // Opt-in exact `.errors.txt` baseline comparison. Default off so
     // the long-running coarse `HOME_TS_CONFORMANCE_FULL=1` gate keeps
     // its 5907/5907 saturation while the exact-mode ratchet starts
@@ -56933,6 +56947,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
+        .name_filter = name_filter,
     });
     defer {
         for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
@@ -56951,25 +56966,8 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // pattern EXCLUDES matching entries instead — `!parserRealSource14`
     // alone runs the whole corpus minus that fixture (useful to route a
     // full survey around a known-slow case).
-    const name_filter: ?[]const u8 = if (std.c.getenv("HOME_TS_CONFORMANCE_FILTER")) |p| std.mem.span(p) else null;
     for (corpus[start..end], requested_start..) |entry, idx| {
-        if (name_filter) |filters| {
-            var fit = std.mem.splitScalar(u8, filters, ',');
-            var has_include = false;
-            var included = false;
-            var excluded = false;
-            while (fit.next()) |f| {
-                if (f.len == 0) continue;
-                if (f[0] == '!') {
-                    if (f.len > 1 and std.mem.indexOf(u8, entry.name, f[1..]) != null) excluded = true;
-                } else {
-                    has_include = true;
-                    if (std.mem.indexOf(u8, entry.name, f) != null) included = true;
-                }
-            }
-            if (excluded) continue;
-            if (has_include and !included) continue;
-        }
+        if (name_filter) |filters| if (!fixtureNameIncluded(entry.name, filters)) continue;
         if (trace_fixtures) {
             std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
         }
