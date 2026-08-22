@@ -65504,14 +65504,20 @@ const harness_prelude =
     \\  state.sessions = Math.max(0, state.sessions - 1);
     \\}
     \\let __home_fetch_next_client_port = 47000;
-    \\function __home_fetch_tls_keepalive_key(fetchOptions) {
-    \\  const tls = fetchOptions && fetchOptions.tls;
-    \\  if (!tls || typeof tls !== "object") return "";
-    \\  return Object.keys(tls).sort().map(key => key + ":" + String(tls[key])).join("|");
+    \\function __home_fetch_effective_authority(href, fetchOptions) {
+    \\  const headers = new Headers(fetchOptions && fetchOptions.headers || {});
+    \\  const override = headers.get("host");
+    \\  if (override !== null && String(override).trim() !== "") return String(override).trim().toLowerCase();
+    \\  try { return String(new URL(href).host || "").toLowerCase(); } catch (error) { return ""; }
     \\}
-    \\function __home_fetch_client_port(handle, fetchOptions) {
-    \\  if (!fetchOptions || !fetchOptions.keepalive) return __home_fetch_next_client_port++;
-    \\  const key = __home_fetch_tls_keepalive_key(fetchOptions);
+    \\function __home_fetch_tls_keepalive_key(href, fetchOptions) {
+    \\  const tls = fetchOptions && fetchOptions.tls;
+    \\  const tlsKey = !tls || typeof tls !== "object" ? "" : Object.keys(tls).sort().map(key => key + ":" + String(tls[key])).join("|");
+    \\  return "authority:" + __home_fetch_effective_authority(href, fetchOptions) + "|tls:" + tlsKey;
+    \\}
+    \\function __home_fetch_client_port(handle, href, fetchOptions) {
+    \\  if (fetchOptions && fetchOptions.keepalive === false) return __home_fetch_next_client_port++;
+    \\  const key = __home_fetch_tls_keepalive_key(href, fetchOptions);
     \\  const ports = handle.__home_keepalive_ports || (handle.__home_keepalive_ports = Object.create(null));
     \\  if (ports[key] === undefined) ports[key] = __home_fetch_next_client_port++;
     \\  return ports[key];
@@ -66139,7 +66145,7 @@ const harness_prelude =
     \\    try {
     \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
-    \\      if (!usesHttp3 && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
+    \\      if (!usesHttp3 && fetchOptions.keepalive === true && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
@@ -66153,7 +66159,7 @@ const harness_prelude =
     \\          return __home_fetch_thenable(new Response("", { status: 413 }), null);
     \\        }
     \\      }
-    \\      request.__home_client_port = __home_fetch_client_port(handle, fetchOptions);
+    \\      request.__home_client_port = __home_fetch_client_port(handle, href, fetchOptions);
     \\      const response = handle.fetch(request, handle.server);
     \\      const deinitCallback = __home_run_bake_deinit_callback(handle);
     \\      if (deinitCallback && deinitCallback.error) throw deinitCallback.error;
@@ -108384,6 +108390,40 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
     }
+}
+
+test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-keepalive.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-keepalive.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "keepalive: false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "different Host header") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_effective_authority(href, fetchOptions)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive === true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive === false") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "fetch keepalive matrix mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime matrices" {
