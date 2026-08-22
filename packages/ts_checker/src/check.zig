@@ -91110,6 +91110,7 @@ pub const Checker = struct {
             var omittable: std.ArrayListUnmanaged(bool) = .empty;
             defer omittable.deinit(self.gpa);
             var has_rest = false;
+            var explicit_this_t: TypeId = types.Primitive.none;
             var splitter = JsDocTopLevelSplitter.init(params_part[1 .. params_part.len - 1], ',');
             while (splitter.next()) |raw_param| {
                 const param = std.mem.trim(u8, raw_param, " \t\r\n");
@@ -91119,6 +91120,12 @@ pub const Checker = struct {
                 const param_t = (try self.jsDocFunctionType(param_type_text)) orelse
                     (try self.jsDocTypeTextToType(self.source orelse "", param_type_text)) orelse
                     types.Primitive.any;
+                if (jsDocFunctionParamName(param)) |name| {
+                    if (std.mem.eql(u8, name, "this")) {
+                        explicit_this_t = param_t;
+                        continue;
+                    }
+                }
                 try params.append(self.gpa, param_t);
                 if (jsDocFunctionParamName(param)) |name| {
                     try param_names.append(self.gpa, self.string_interner.intern(name) catch return error.OutOfMemory);
@@ -91131,7 +91138,11 @@ pub const Checker = struct {
             const ret_t = (try self.jsDocFunctionType(ret_text)) orelse
                 (try self.jsDocTypeTextToType(self.source orelse "", ret_text)) orelse
                 types.Primitive.any;
-            const sig = self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+            const sig = if (explicit_this_t != types.Primitive.none)
+                self.interner.internSignatureWithThisType(params.items, ret_t, false, false, explicit_this_t) catch return error.OutOfMemory
+            else
+                self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+            if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
             try self.recordGenericSignatureParams(sig, inline_type_params.items);
             try self.recordJsDocSignatureArity(sig, omittable.items, has_rest);
             if (names_complete and param_names.items.len == params.items.len and param_names.items.len > 0) {
@@ -91286,6 +91297,19 @@ pub const Checker = struct {
             text = std.mem.trim(u8, text[0..eq], " \t\r\n");
         }
         return std.mem.indexOfScalar(u8, text, '.') != null;
+    }
+
+    fn jsDocTagPositionAtIndex(body: []const u8, tag: []const u8, wanted_index: usize) ?usize {
+        var search_start: usize = 0;
+        var seen: usize = 0;
+        while (std.mem.indexOfPos(u8, body, search_start, tag)) |tag_pos| {
+            search_start = tag_pos + tag.len;
+            if (tag_pos > 0 and isJsDocIdentChar(body[tag_pos - 1])) continue;
+            if (search_start < body.len and isJsDocIdentChar(body[search_start])) continue;
+            if (seen == wanted_index) return tag_pos;
+            seen += 1;
+        }
+        return null;
     }
 
     fn jsDocParamTagAtIndexNamesNestedProperty(body: []const u8, wanted_index: usize) bool {
@@ -91645,6 +91669,7 @@ pub const Checker = struct {
             var omittable: std.ArrayListUnmanaged(bool) = .empty;
             defer omittable.deinit(self.gpa);
             var ret_t: TypeId = types.Primitive.any;
+            var has_rest = false;
             var param_tag_index: usize = 0;
             for (tags) |tag| {
                 if (tag.kind == .param_tag) {
@@ -91653,20 +91678,43 @@ pub const Checker = struct {
                         continue;
                     }
                     param_tag_index += 1;
-                    var param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, self.jsdoc_diagnostic_anchor, tag.name)) orelse types.Primitive.any;
-                    if (!tag.optional) {
+                    const raw_type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+                    const is_rest = std.mem.startsWith(u8, raw_type_text, "...");
+                    const type_text = if (is_rest)
+                        std.mem.trim(u8, raw_type_text[3..], " \t\r\n")
+                    else
+                        raw_type_text;
+                    var param_t = (try self.jsDocParamTypeTextToTypeAt(src, type_text, self.jsdoc_diagnostic_anchor, tag.name)) orelse types.Primitive.any;
+                    if (!tag.optional and !is_rest) {
                         if (try self.jsDocObjectParamTypeFromDottedTags(src, tags, self.jsdoc_diagnostic_anchor, tag.name)) |object_t| {
                             param_t = object_t;
                         }
                     }
+                    if (is_rest) {
+                        has_rest = true;
+                        if (!self.restParamTypeIsValidArrayLike(param_t)) {
+                            const pos: ?u32 = if (jsDocTagPositionAtIndex(body, "@param", param_tag_index - 1)) |rel|
+                                @intCast(body_start + rel)
+                            else
+                                self.sliceStartPos(src, tag.type_text);
+                            if (pos == null or !self.hasDiagnosticAtPosition(TsCodes.rest_parameter_must_be_array_type, pos.?)) {
+                                try self.reportAt(
+                                    self.jsdoc_diagnostic_anchor,
+                                    pos,
+                                    TsCodes.rest_parameter_must_be_array_type,
+                                    "A rest parameter must be of an array type.",
+                                );
+                            }
+                        }
+                    }
                     try params.append(self.gpa, param_t);
-                    try omittable.append(self.gpa, tag.optional);
+                    try omittable.append(self.gpa, tag.optional or is_rest);
                 } else if (tag.kind == .returns_tag) {
                     ret_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
                 }
             }
             const sig = self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
-            try self.recordJsDocSignatureArity(sig, omittable.items, false);
+            try self.recordJsDocSignatureArity(sig, omittable.items, has_rest);
             return sig;
         }
         return null;
@@ -91795,6 +91843,14 @@ pub const Checker = struct {
 
     fn varStatementStartForDeclarator(self: *Checker, src: []const u8, decl_start: u32) ?u32 {
         _ = self;
+        const at_decl = src[@min(@as(usize, decl_start), src.len)..];
+        inline for (.{ "var", "let", "const" }) |keyword| {
+            if (std.mem.startsWith(u8, at_decl, keyword) and
+                (at_decl.len == keyword.len or !isJsDocIdentChar(at_decl[keyword.len])))
+            {
+                return decl_start;
+            }
+        }
         var start = @min(@as(usize, decl_start), src.len);
         while (start > 0) : (start -= 1) {
             const c = src[start - 1];
@@ -102981,7 +103037,7 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
-                if (obj_t == types.Primitive.any) {
+                if (obj_t == types.Primitive.any and !self.nodeIsThisReference(m.object)) {
                     if (self.visibleActiveAnnotatedIdentifierType(m.object)) |declared_t| {
                         if (declared_t != types.Primitive.any and
                             declared_t != types.Primitive.unknown and
@@ -120806,6 +120862,7 @@ pub const Checker = struct {
             }
             if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
+            if (self.jsDocContextualThisType(node) catch null) |this_t| return this_t;
             // TS2331: `this` referenced directly inside a namespace
             // body (without an intervening function/class frame) is
             // illegal ÃÂ¢ÃÂÃÂ mirrors upstream tsc for `thisTypeErrors.ts(36)`
@@ -134544,6 +134601,7 @@ pub const Checker = struct {
         }
         if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
+        if (try self.jsDocContextualThisType(node)) |this_t| return this_t;
         if (self.thisInsideEnumInitializer(node)) {
             try self.report(node, TsCodes.this_in_current_location, "'this' cannot be referenced in current location.");
             return types.Primitive.any;
@@ -134581,6 +134639,46 @@ pub const Checker = struct {
             try self.reportThisImplicitlyAny(node);
         }
         return types.Primitive.any;
+    }
+
+    fn jsDocContextualThisType(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            switch (self.hir.kindOf(current)) {
+                .arrow_fn => continue,
+                .fn_decl, .fn_expr => {
+                    if (self.jsDocFunctionHasClosureTypeSyntax(current)) return null;
+                    const signature = (try self.jsDocContextualSignatureForFunction(current)) orelse return null;
+                    const this_t = self.signatureThisParam(signature) orelse return null;
+                    return self.thisTypeMarkerConstraint(this_t) orelse this_t;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn jsDocFunctionHasClosureTypeSyntax(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return false;
+        if (jsDocBlockTagBracedTypeText(body, "@type")) |raw_type_text| {
+            const type_text = std.mem.trim(u8, raw_type_text, " \t\r\n");
+            if (std.mem.indexOf(u8, type_text, "=>") == null and
+                jsDocClosureFunctionOpen(type_text) != null)
+            {
+                return true;
+            }
+        }
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag) continue;
+            const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            return std.mem.indexOf(u8, type_text, "=>") == null and
+                jsDocClosureFunctionOpen(type_text) != null;
+        }
+        return false;
     }
 
     fn contextualObjectLiteralMethodThisType(self: *Checker, node: NodeId) ?TypeId {
@@ -148495,6 +148593,22 @@ pub const Checker = struct {
             return .not_applicable;
         }
         const target_t = self.restRelationTarget(params[params.len - 1], 0);
+        if (!self.restParamTypeIsValidArrayLike(target_t)) {
+            const source_name = (try self.restArgsTupleAnnotationDisplay(args, arg_types, fixed_count)) orelse
+                return .not_applicable;
+            const target_name = (try self.allocSimpleTypeName(target_t)) orelse return .not_applicable;
+            const anchor = if (fixed_count < args.len) args[fixed_count] else call_node;
+            try self.diagnostics.append(self.gpa, .{
+                .node = anchor,
+                .code = TsCodes.argument_type_mismatch,
+                .message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                    .{ source_name, target_name },
+                ),
+            });
+            return .reported;
+        }
         const tuple_union_target = self.isTupleLikeUnionType(target_t);
         const named_property_target = self.restTargetHasRequiredNamedProperty(target_t);
         if (!tuple_union_target and !named_property_target) return .not_applicable;
@@ -217353,6 +217467,33 @@ test "checker: checkjs JSDoc @callback declares a function-typed alias" {
     }
 }
 
+test "checker: checkjs JSDoc callback variadic types preserve rest calls" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @outDir: bin/
+        \\// @checkJs: true
+        \\// @filename: callbackTagVariadicType.js
+        \\/**
+        \\ * @callback Foo
+        \\ * @param {...string} args
+        \\ * @returns {number}
+        \\ */
+        \\/** @type {Foo} */
+        \\export const x = () => 1
+        \\var res = x('a', 'b')
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .declaration = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_parameter_must_be_array_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
 test "checker: qualified JSDoc aliases retain their complete namespace paths" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -219764,6 +219905,38 @@ test "checker: checkjs function JSDoc @this tag suppresses implicit this" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+}
+
+test "checker: checkjs JSDoc callable types contextually type this" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @filename: /types.d.ts
+        \\export interface Foo { foo(): void; }
+        \\export type Method = (this: Foo) => void;
+        \\// @filename: /a.js
+        \\/** @type {import('./types').Method} */
+        \\export const first = function () { this.test(); };
+        \\/** @type {import('./types').Method} */
+        \\export function second() { this.test(); }
+        \\/** @type {(this: import('./types').Foo) => void} */
+        \\export const third = function () { this.test(); };
+        \\/** @type {(this: import('./types').Foo) => void} */
+        \\export function fourth() { this.test(); }
+        \\/** @type {function(this: import('./types').Foo): void} */
+        \\export const fifth = function () { this.test(); };
+        \\/** @type {function(this: import('./types').Foo): void} */
+        \\export function sixth() { this.test(); }
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setAllowJsEnabled(true);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .no_implicit_this = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checked JavaScript parameter named this remains an ordinary parameter" {
