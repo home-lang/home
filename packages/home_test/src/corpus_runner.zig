@@ -65522,11 +65522,11 @@ const harness_prelude =
     \\  return value && Array.isArray(value.__home_blob_sparse_parts) ? value : null;
     \\}
     \\function __home_body_state_error(owner, operation) {
-    \\  const locked = !!(owner && owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner);
+    \\  const locked = !!(owner && owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner && !owner.body.__home_body_consumed);
     \\  const phase = locked ? "locked" : "disturbed";
     \\  const cause = new TypeError(locked ? "another reader already owns the stream" : "the body was already consumed");
     \\  const failure = new TypeError(locked ? "ReadableStream is locked" : "Body already used", { cause });
-    \\  failure.code = "ERR_BODY_STREAM_STATE";
+    \\  failure.code = locked ? "ERR_BODY_STREAM_STATE" : "ERR_BODY_ALREADY_USED";
     \\  failure.operation = String(operation || "body.consume");
     \\  failure.phase = phase;
     \\  failure.cause = cause;
@@ -74382,9 +74382,15 @@ const harness_prelude =
     \\  if (!stream || typeof stream.getReader !== "function") {
     \\    return Promise.reject(__home_readable_stream_conversion_error(operation, "validate", new TypeError("Expected ReadableStream")));
     \\  }
+    \\  const consumed = !!stream.__home_consumed_by_owner || !!stream.__home_body_consumed;
+    \\  if (consumed || stream.locked) {
+    \\    return Promise.reject(__home_body_state_error({ body: stream, bodyUsed: consumed }, operation));
+    \\  }
     \\  if (stream.__home_errored) {
     \\    return Promise.reject(__home_readable_stream_conversion_error(operation, "read", stream.__home_errored));
     \\  }
+    \\  try { Object.defineProperty(stream, "__home_body_consumed", { configurable: true, value: true }); }
+    \\  catch (cause) { return Promise.reject(__home_readable_stream_conversion_error(operation, "disturb", cause)); }
     \\  let fastBytes;
     \\  try {
     \\    fastBytes = __home_readable_stream_fast_bytes(stream);
@@ -102862,6 +102868,44 @@ test "bootstrap pipeTo AbortSignal preserves reasons and releases lifecycle stat
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) {
         std.debug.print("pipeTo AbortSignal lifecycle regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap ReadableStream body methods preserve consumed and locked errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("owner consumption rejects stream conversions with structured context", async () => {
+        \\  const response = new Response("Hello World"); const body = response.body;
+        \\  await response.arrayBuffer();
+        \\  const promise = body.blob(); expect(promise).toBeInstanceOf(Promise);
+        \\  const error = await promise.catch(error => error);
+        \\  expect(error).toBeInstanceOf(TypeError); expect(error.message).toBe("Body already used");
+        \\  expect(error.code).toBe("ERR_BODY_ALREADY_USED"); expect(error.operation).toBe("readableStream.blob");
+        \\  expect(error.phase).toBe("disturbed"); expect(error.cause).toBeInstanceOf(TypeError); expect(error.stack).toContain("Caused by:");
+        \\});
+        \\test("direct conversion disturbs once and external readers remain distinct", async () => {
+        \\  const consumed = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("42")); controller.close(); } });
+        \\  expect(await consumed.text()).toBe("42");
+        \\  const usedError = await consumed.bytes().catch(error => error);
+        \\  expect(usedError.code).toBe("ERR_BODY_ALREADY_USED"); expect(usedError.operation).toBe("readableStream.bytes"); expect(usedError.phase).toBe("disturbed");
+        \\  const locked = new ReadableStream({ pull() { return new Promise(() => {}); } }); const reader = locked.getReader();
+        \\  const lockedError = await locked.blob().catch(error => error);
+        \\  expect(lockedError.code).toBe("ERR_BODY_STREAM_STATE"); expect(lockedError.message).toBe("ReadableStream is locked"); expect(lockedError.phase).toBe("locked");
+        \\  await reader.cancel();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/readable-stream-body-state-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("ReadableStream body state regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
