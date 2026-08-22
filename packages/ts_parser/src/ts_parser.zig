@@ -5130,7 +5130,7 @@ pub const Parser = struct {
                     try self.recordParameterPatternNames(name_node, &seen_names, &pattern_names);
                 }
                 var type_ann: NodeId = hir_mod.none_node_id;
-                if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
+                if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) {
                     self.param_initializer_depth += 1;
@@ -11377,7 +11377,7 @@ pub const Parser = struct {
         const start_span_start = self.peek().span.start;
         // `asserts <ident>` ...
         if (self.peek().kind == .kw_asserts and
-            self.peekAt(1).kind == .identifier and
+            (self.peekAt(1).kind == .identifier or self.peekAt(1).kind == .kw_this) and
             !self.peekAt(1).flags.preceded_by_newline)
         {
             _ = self.advance(); // asserts
@@ -11456,6 +11456,21 @@ pub const Parser = struct {
             return try self.parseReturnTypeAnnotation(&.{});
         }
         return try self.parseTypeAnnotation();
+    }
+
+    fn parseParameterTypeAnnotation(self: *Parser) ParseError!NodeId {
+        const starts_assertion = self.peek().kind == .kw_asserts and
+            (self.peekAt(1).kind == .identifier or self.peekAt(1).kind == .kw_this) and
+            !self.peekAt(1).flags.preceded_by_newline;
+        const starts_this_predicate = self.peek().kind == .kw_this and
+            self.peekAt(1).kind == .kw_is and
+            !self.peekAt(1).flags.preceded_by_newline;
+        if (!starts_assertion and !starts_this_predicate) return self.parseTypeAnnotation();
+
+        const predicate_start = self.peek();
+        const predicate = try self.parseReturnTypeAnnotation(&.{});
+        try self.reportCodeAt(predicate_start.span.start, predicate_start.line, 1228, "A type predicate is only allowed in return type position for functions and methods.");
+        return predicate;
     }
 
     /// Look up a parameter by interned name; return its 0-based
@@ -12595,7 +12610,7 @@ pub const Parser = struct {
                     name_node = try self.parseBindingPattern();
                     name_span = self.hir.spanOf(name_node);
                     if (self.match(.question)) flags.is_optional = true;
-                    if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
+                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
                 } else if (self.peek().kind == .identifier or
                     self.peek().kind == .kw_this or
                     (self.peek().kind.isKeyword() and (self.peekAt(1).kind == .colon or self.peekAt(1).kind == .question)))
@@ -12603,7 +12618,7 @@ pub const Parser = struct {
                     const name_tok = self.advance();
                     name_span = tokenSpan(name_tok);
                     if (self.match(.question)) flags.is_optional = true;
-                    if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
+                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
                     const name_id = try self.internToken(name_tok);
                     name_node = try self.builder.addIdentifier(name_span, name_id);
                     seen_name = name_id;
@@ -12812,7 +12827,7 @@ pub const Parser = struct {
             var labeled_optional = false;
             var saw_label_before_type = false;
             var element_label = string_interner.empty_string_id;
-            if (self.peek().kind == .identifier and
+            if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
                 (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
             {
@@ -12832,7 +12847,7 @@ pub const Parser = struct {
             // Tolerate a labeled rest: `[...rest: T[]]` and recover
             // optional rest labels so TS5085 can be reported at the
             // same tuple member rather than cascading into `] expected`.
-            if (has_rest and self.peek().kind == .identifier) {
+            if (has_rest and (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword())) {
                 if (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon))
                 {
@@ -14478,6 +14493,10 @@ pub const Parser = struct {
         defer self.gpa.free(params);
         _ = try self.expect(.arrow, "'=>' in constructor type");
         const ret = try self.parseReturnTypeAnnotation(params);
+        if (self.hir.kindOf(ret) == .type_predicate_type) {
+            const predicate_span = self.hir.spanOf(ret);
+            try self.reportCodeAt(predicate_span.start, self.lineAt(predicate_span.start), 1228, "A type predicate is only allowed in return type position for functions and methods.");
+        }
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
         return try self.builder.addFnType(sp, tps, params, ret, true, is_abstract_constructor);
     }
@@ -24589,6 +24608,20 @@ test "parser: labeled tuple elements allow optional marker" {
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(hir_mod.optionalTypeOf(&s.hir, elems[1]).operand));
 }
 
+test "parser: contextual keywords label tuples in rest parameter unions" {
+    var s = try newTestSetup(
+        \\type Handler = {
+        \\  method(...args:
+        \\    [type: "str", cb: (e: string) => void] |
+        \\    [type: "num", cb: (e: number) => void]
+        \\  ): void;
+        \\};
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: labeled tuple optional type marker emits TS5086" {
     var s = try newTestSetup("type T = [element: string?];");
     defer destroyTestSetup(s);
@@ -29190,6 +29223,26 @@ test "parser: assertion return type — `asserts x is string`" {
     try T.expect(pred.target_type != hir_mod.none_node_id);
 }
 
+test "parser: assertion method return types accept this targets" {
+    var s = try newTestSetup(
+        \\class Base {
+        \\  assertThis(): asserts this {}
+        \\  assertDerived(): asserts this is Derived {}
+        \\}
+        \\class Derived extends Base {}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const members = hir_mod.classMembers(&s.hir, hir_mod.blockStmts(&s.hir, root)[0]);
+    const truthy = hir_mod.typePredicateOf(&s.hir, hir_mod.fnDeclOf(&s.hir, members[0]).return_type);
+    const typed = hir_mod.typePredicateOf(&s.hir, hir_mod.fnDeclOf(&s.hir, members[1]).return_type);
+    try T.expect(truthy.is_asserts);
+    try T.expectEqual(hir_mod.none_node_id, truthy.target_type);
+    try T.expect(typed.is_asserts);
+    try T.expect(typed.target_type != hir_mod.none_node_id);
+}
+
 test "parser: non-assertion `x is T` is still a type predicate (is_asserts=false)" {
     var s = try newTestSetup("function isStr(x: unknown): x is string { return true; }");
     defer destroyTestSetup(s);
@@ -29332,6 +29385,26 @@ test "parser: predicates on constructors and accessors prefer TS1228" {
         try T.expect(diagnostic.code != 1095);
     }
     try T.expectEqual(@as(usize, 4), predicate_position_errors);
+}
+
+test "parser: assertion predicates on constructors and accessor parameters recover as TS1228" {
+    var s = try newTestSetup(
+        \\declare let Q1: new (x: unknown) => x is string;
+        \\declare let Q2: new (x: boolean) => asserts x;
+        \\declare let Q3: new (x: unknown) => asserts x is string;
+        \\declare class Wat {
+        \\  get p1(): this is string;
+        \\  set p1(x: this is string);
+        \\  get p2(): asserts this is string;
+        \\  set p2(x: asserts this is string);
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 7), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 1228), diagnostic.code);
+    }
 }
 
 test "parser: malformed index predicate leaves interface brace for recovery" {
