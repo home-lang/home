@@ -38835,6 +38835,7 @@ pub const Checker = struct {
         // instance type registered in `class_instance_types` BEFORE
         // their bodies are typed so `this` resolves.
         const parent_instance_t: ?TypeId = if (c.extends != hir_mod.none_node_id) blk: {
+            try self.reportClassExtendsTypeOnlyImportValue(c.extends);
             const bare_base_type_param = self.bareTypeNodeIsTypeParam(c.extends, type_params);
             const base_type_param_ref = self.baseClassExpressionTypeParamReferenceNode(c.extends, type_params);
             if (base_type_param_ref != hir_mod.none_node_id and !bare_base_type_param) {
@@ -51607,6 +51608,35 @@ pub const Checker = struct {
         }
         if (subs.count() == 0) return null;
         return try self.substituteTypeNoCycles(info.body, &subs);
+    }
+
+    fn reportClassExtendsTypeOnlyImportValue(self: *Checker, extends_expr: NodeId) CheckError!void {
+        if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, extends_expr);
+        const import_decl = self.typeOnlyImportLocalDecl(id.name, extends_expr) orelse return;
+        if (self.diagnosticExists(extends_expr, TsCodes.type_only_import_used_as_value)) return;
+        const name = self.string_interner.get(id.name);
+        const related_message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' was imported here.",
+            .{name},
+        );
+        const related = try self.diag_arena.allocator().dupe(RelatedInfo, &.{.{
+            .node = import_decl,
+            .code = TsCodes.name_was_imported_here,
+            .message = related_message,
+        }});
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' cannot be used as a value because it was imported using 'import type'.",
+            .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = extends_expr,
+            .code = TsCodes.type_only_import_used_as_value,
+            .message = message,
+            .related = related,
+        });
     }
 
     fn classExtendsAbstractConstructTypeVariable(self: *Checker, extends_expr: NodeId) CheckError!bool {
@@ -185194,6 +185224,34 @@ test "checker: import type binding cannot be used as a value" {
         if (d.code == TsCodes.type_only_import_used_as_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: class extends reports a named type-only import value use" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @Filename: types.ts
+        \\export class C {}
+        \\// @Filename: index.ts
+        \\import type { C } from './types';
+        \\interface Shape extends C {}
+        \\class Derived extends C {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+    var saw_related = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_only_import_used_as_value) continue;
+        try T.expectEqualStrings("'C' cannot be used as a value because it was imported using 'import type'.", diagnostic.message);
+        for (diagnostic.related) |related| {
+            if (related.code == TsCodes.name_was_imported_here and
+                std.mem.eql(u8, related.message, "'C' was imported here."))
+            {
+                saw_related = true;
+            }
+        }
+    }
+    try T.expect(saw_related);
 }
 
 test "checker: reference lib directives validate known library names" {
