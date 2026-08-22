@@ -87223,6 +87223,12 @@ pub const Checker = struct {
         return null;
     }
 
+    fn nonNullishAccessType(self: *Checker, t: TypeId) CheckError!TypeId {
+        const reduced = try self.subtractNullUndefined(t);
+        if (reduced != t) return reduced;
+        return (try self.nonNullableBaseConstraint(t)) orelse reduced;
+    }
+
     fn standardMappedUtilityInstantiationRelation(
         self: *Checker,
         source_t: TypeId,
@@ -99351,6 +99357,10 @@ pub const Checker = struct {
         }
         if (self.typeIsAnyLike(target)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
+        if (self.isBareTypeParameter(current)) {
+            const constraint = self.typeParameterConstraint(current) orelse return current;
+            if (constraint != current) return try self.narrowTypeByPredicate(constraint, target);
+        }
         if (current_flags.is_union) {
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
@@ -99401,11 +99411,18 @@ pub const Checker = struct {
         if (current == types.Primitive.never or current == target) return types.Primitive.never;
         if (self.typeIsAny(current)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
+        if (self.isBareTypeParameter(current)) {
+            const constraint = self.typeParameterConstraint(current) orelse return current;
+            if (constraint != current) return try self.subtractTypeByPredicate(constraint, target);
+        }
         if (current_flags.is_union) {
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
             for (self.interner.unionMembers(current)) |member| {
-                const remove = self.typeMatchesPredicateTarget(member, target);
+                const remove = self.typeMatchesPredicateTarget(member, target) or
+                    (!self.isNullishType(member) and
+                        !self.isNullishType(target) and
+                        (self.engine.isComparableTo(member, target) catch false));
                 if (!remove) try kept.append(self.gpa, member);
             }
             if (kept.items.len == 0) return types.Primitive.never;
@@ -103529,8 +103546,14 @@ pub const Checker = struct {
                 const access_obj_t = self.typeParameterBaseConstraint(obj_t) orelse obj_t;
                 const missing_access_obj_t = if (obj_t < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(obj_t).is_type_parameter and
-                    self.hir.kindOf(m.object) != .call_expr)
-                    obj_t
+                    self.hir.kindOf(m.object) != .call_expr) blk_missing: {
+                    if (access_obj_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(access_obj_t).is_union)
+                    {
+                        break :blk_missing access_obj_t;
+                    }
+                    break :blk_missing obj_t;
+                }
                 else
                     access_obj_t;
                 if (try self.checkJsPrototypeConstructorThisMemberType(node, m.name)) |member_t| {
@@ -104325,7 +104348,7 @@ pub const Checker = struct {
                 };
                 const resolved_raw_obj_t = self.resolvedRecursiveInterfaceType(raw_obj_t);
                 const obj_t = if (element_is_optional_chain)
-                    self.subtractNullUndefined(resolved_raw_obj_t) catch resolved_raw_obj_t
+                    self.nonNullishAccessType(resolved_raw_obj_t) catch resolved_raw_obj_t
                 else if (self.strict_flags.strict_null_checks and
                     self.typeIsPossiblyNullishStrict(resolved_raw_obj_t))
                 blk_non_nullish: {
@@ -104336,7 +104359,7 @@ pub const Checker = struct {
                             try self.reportPossiblyNullishMember(e.object, resolved_raw_obj_t);
                         }
                     }
-                    break :blk_non_nullish self.subtractNullUndefined(resolved_raw_obj_t) catch resolved_raw_obj_t;
+                    break :blk_non_nullish self.nonNullishAccessType(resolved_raw_obj_t) catch resolved_raw_obj_t;
                 } else
                     resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
@@ -118721,7 +118744,7 @@ pub const Checker = struct {
                 if (current == types.Primitive.unknown)
                     try self.unknownEmptyObjectType()
                 else
-                    self.subtractNullUndefined(current) catch current
+                    self.nonNullishAccessType(current) catch current
             else
                 try self.logicalAndFalsyType(current);
             if (narrowed != current) try self.recordNarrow(id.name, narrowed);
@@ -118767,29 +118790,12 @@ pub const Checker = struct {
         // form, so any later `obj.x` access inside the branch picks
         // up the same narrow ÃÂ¢ÃÂÃÂ and vice versa.
         if (self.hir.kindOf(cond) == .element_access and when_true) {
-            const e = hir_mod.elementOf(self.hir, cond);
-            if (self.hir.kindOf(e.object) == .identifier and
-                self.hir.kindOf(e.index) == .literal_string)
-            {
-                const obj_id = hir_mod.identifierOf(self.hir, e.object);
-                const lit = hir_mod.literalStringOf(self.hir, e.index);
-                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = lit.value };
-                const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(e.object);
-                const looked_up = (try self.lookupObjectMember(obj_t, lit.value));
-                var static_t = looked_up orelse types.Primitive.none;
-                if (static_t != types.Primitive.none and
-                    self.strict_flags.strict_null_checks and
-                    self.objectMemberAccessIsOptional(obj_t, lit.value))
-                {
-                    static_t = self.unionWithUndefined(static_t) catch static_t;
-                }
-                const current = self.lookupMemberNarrow(key) orelse static_t;
-                if (current != types.Primitive.none) {
-                    const narrowed = self.subtractNullUndefined(current) catch current;
-                    if (narrowed != current) try self.recordMemberNarrow(key, narrowed);
-                }
-                return;
-            }
+            const target = (try self.memberNarrowTargetFromAccess(cond)) orelse return;
+            const current = self.lookupMemberNarrow(target.key) orelse target.current;
+            if (current == types.Primitive.none) return;
+            const narrowed = self.nonNullishAccessType(current) catch current;
+            if (narrowed != current) try self.recordMemberNarrow(target.key, narrowed);
+            return;
         }
         if (self.hir.kindOf(cond) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, cond);
@@ -119351,10 +119357,16 @@ pub const Checker = struct {
                 const key = (try self.elementAccessNarrowKey(access)) orelse return null;
                 const obj_id = hir_mod.identifierOf(self.hir, e.object);
                 const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(e.object);
-                const current = if (try self.staticStringValue(e.index)) |prop_name|
-                    (try self.lookupObjectMember(obj_t, prop_name)) orelse self.hir.typeOf(access)
-                else
-                    self.hir.typeOf(access);
+                const current = if (try self.staticStringValue(e.index)) |prop_name| blk: {
+                    var member_t = (try self.lookupObjectMember(obj_t, prop_name)) orelse self.hir.typeOf(access);
+                    if (member_t != types.Primitive.none and
+                        self.strict_flags.strict_null_checks and
+                        self.objectMemberAccessIsOptional(obj_t, prop_name))
+                    {
+                        member_t = self.unionWithUndefined(member_t) catch member_t;
+                    }
+                    break :blk member_t;
+                } else self.hir.typeOf(access);
                 return .{ .key = key, .current = current };
             },
             else => return null,
@@ -119520,9 +119532,15 @@ pub const Checker = struct {
             },
             .identifier => {
                 const obj_id = hir_mod.identifierOf(self.hir, object);
-                const static_t = self.typeOfIdentifier(object);
+                var static_t = self.typeOfIdentifier(object);
                 if (static_t == types.Primitive.never) return;
-                const f = self.interner.pool.flagsOf(static_t);
+                var f = self.interner.pool.flagsOf(static_t);
+                if (self.isBareTypeParameter(static_t)) {
+                    const constraint = self.typeParameterConstraint(static_t) orelse return;
+                    if (constraint == static_t) return;
+                    static_t = constraint;
+                    f = self.interner.pool.flagsOf(static_t);
+                }
                 if (!f.is_union and !f.is_object_type) return;
                 try self.applyDiscriminatedNarrowByType(obj_id.name, static_t, prop, lit_t, positive);
             },
@@ -119859,6 +119877,11 @@ pub const Checker = struct {
         positive: bool,
     ) CheckError!?TypeId {
         const flags = self.interner.pool.flagsOf(static_t);
+        if (self.isBareTypeParameter(static_t)) {
+            const constraint = self.typeParameterConstraint(static_t) orelse return null;
+            if (constraint == static_t) return null;
+            return try self.discriminatedNarrowResult(constraint, prop_name, lit_t, positive);
+        }
         const single_buf = [_]TypeId{static_t};
         const members: []const TypeId = if (flags.is_union)
             self.interner.unionMembers(static_t)
@@ -119944,7 +119967,7 @@ pub const Checker = struct {
         const key = self.identifierRootedMemberKey(member_node) orelse return;
         var current = self.lookupMemberNarrow(key) orelse self.hir.typeOf(member_node);
         if (current == types.Primitive.none) current = try self.checkExpression(member_node);
-        const narrowed = self.subtractNullUndefined(current) catch current;
+        const narrowed = self.nonNullishAccessType(current) catch current;
         if (narrowed != current) try self.recordMemberNarrow(key, narrowed);
     }
 
@@ -121196,7 +121219,7 @@ pub const Checker = struct {
                     if (visible_annotation_node == null or has_incompatible_weak_narrow) {
                         if (narrow_t) |flow_t| {
                             if (!has_incompatible_weak_narrow and
-                                (self.checkerAssignableTo(flow_t, declared_t) catch false)) return flow_t;
+                                self.flowTypeFitsDeclaredType(flow_t, declared_t)) return flow_t;
                         }
                         return declared_t;
                     }
@@ -121273,7 +121296,7 @@ pub const Checker = struct {
                             !self.unionContainsExactType(declared_t, t) and
                             !self.instanceofFallthroughUnionCoversIntersection(t, declared_t) and
                             !self.narrowedNamedTypeFitsDeclaredUnion(node, declared_t, t) and
-                            !(self.checkerAssignableTo(t, declared_t) catch true))
+                            !self.flowTypeFitsDeclaredType(t, declared_t))
                         {
                             return declared_t;
                         }
@@ -122951,6 +122974,27 @@ pub const Checker = struct {
             }
         }
         return types.Primitive.any;
+    }
+
+    fn flowTypeFitsDeclaredType(self: *Checker, flow_t: TypeId, declared_t: TypeId) bool {
+        if (self.checkerAssignableTo(flow_t, declared_t) catch false) return true;
+        if (declared_t >= self.interner.pool.typeCount()) return false;
+
+        const declared_flags = self.interner.pool.flagsOf(declared_t);
+        if (self.isBareTypeParameter(declared_t)) {
+            const constraint = self.typeParameterConstraint(declared_t) orelse return false;
+            if (constraint == declared_t) return false;
+            return self.flowTypeFitsDeclaredType(flow_t, constraint);
+        }
+        if (!declared_flags.is_union) return false;
+        for (self.interner.unionMembers(declared_t)) |member| {
+            if (member == flow_t or self.sameTypeParameterName(member, flow_t)) return true;
+            if (self.isBareTypeParameter(member)) {
+                const constraint = self.typeParameterConstraint(member) orelse continue;
+                if (constraint != member and self.flowTypeFitsDeclaredType(flow_t, constraint)) return true;
+            }
+        }
+        return false;
     }
 
     fn identifierIsAccessibilityMemberRoot(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
@@ -144619,6 +144663,58 @@ pub const Checker = struct {
         return self.no_infer_types.get(t);
     }
 
+    fn negativePredicateGenericInferenceType(self: *Checker, arg_node: NodeId, flow_t: TypeId) CheckError!?TypeId {
+        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .identifier) return null;
+        const arg_name = hir_mod.identifierOf(self.hir, arg_node).name;
+        var child = arg_node;
+        var current = self.hir.parentOf(arg_node);
+        while (current != hir_mod.none_node_id) : ({
+            child = current;
+            current = self.hir.parentOf(current);
+        }) {
+            const kind = self.hir.kindOf(current);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) return null;
+            if (kind != .if_stmt) continue;
+
+            const statement = hir_mod.ifOf(self.hir, current);
+            const branch_truth = if (child == statement.then_branch)
+                true
+            else if (child == statement.else_branch)
+                false
+            else
+                continue;
+            var condition = statement.cond;
+            var negated = false;
+            while (self.hir.kindOf(condition) == .unary_op) {
+                const unary = hir_mod.unaryOf(self.hir, condition);
+                if (unary.op != .not) break;
+                negated = !negated;
+                condition = unary.operand;
+            }
+            if (self.hir.kindOf(condition) != .call_expr) continue;
+            if (branch_truth != negated) return null;
+
+            const call = hir_mod.callOf(self.hir, condition);
+            const predicate = if (self.hir.kindOf(call.callee) == .identifier)
+                self.fn_predicates.get(hir_mod.identifierOf(self.hir, call.callee).name)
+            else blk: {
+                const callee_t = self.hir.typeOf(call.callee);
+                if (callee_t == types.Primitive.none) break :blk null;
+                break :blk try self.assignmentExpressionPredicate(call.callee, callee_t);
+            };
+            const pred = predicate orelse continue;
+            const args = hir_mod.callArgs(self.hir, condition);
+            if (pred.param_index >= args.len or self.hir.kindOf(args[pred.param_index]) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, args[pred.param_index]).name != arg_name) continue;
+
+            const declared_t = self.visibleAnnotatedIdentifierType(arg_node) orelse return null;
+            if (!self.isBareTypeParameter(declared_t) or declared_t == flow_t) return null;
+            const constraint = self.typeParameterConstraint(declared_t) orelse return null;
+            return if (constraint == declared_t) null else constraint;
+        }
+        return null;
+    }
+
     fn inferFromArgument(
         self: *Checker,
         param_t: TypeId,
@@ -144627,6 +144723,10 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
         if (self.noInferInnerType(param_t) != null) return;
+        if (try self.negativePredicateGenericInferenceType(arg_node, arg_t)) |inference_t| {
+            try self.inferFromPair(param_t, inference_t, subs);
+            return;
+        }
         const nested_array_inference_fixed = try self.seedRecursiveArrayInferenceFromNestedElements(param_t, arg_node, subs);
         _ = try self.inferFromArgumentToTrailingMappedVariadic(param_t, arg_t, arg_node, subs);
         if (param_t >= types.Primitive.first_dynamic and
@@ -154623,7 +154723,9 @@ pub const Checker = struct {
     fn symbolicIndexedAccessKeyRelation(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?bool {
         if (!self.containsFreeTypeParameter(object_t) or !self.typeContainsKeyof(index_t, 0)) return null;
         if (self.directKeyofOperand(index_t)) |operand| {
-            if (operand == object_t or self.sameTypeParameterName(operand, object_t)) return true;
+            if (operand == object_t or
+                self.sameTypeParameterName(operand, object_t) or
+                self.sameAliasOrNamedType(operand, object_t)) return true;
             const object_base = self.typeParameterEmptyObjectIntersectionBase(object_t);
             const operand_base = self.typeParameterEmptyObjectIntersectionBase(operand);
             if (object_base) |base| {
@@ -154638,6 +154740,16 @@ pub const Checker = struct {
                 (operand_base.? == object_t or self.sameTypeParameterName(operand_base.?, object_t)))
             {
                 return null;
+            }
+        }
+        if (self.constrainedKeyofOperand(index_t, 0)) |operand| {
+            if (operand == object_t or
+                self.sameTypeParameterName(operand, object_t) or
+                self.sameAliasOrNamedType(operand, object_t)) return true;
+        }
+        if (self.isBareTypeParameter(object_t)) {
+            if (try self.nonNullableBaseConstraint(object_t)) |constraint| {
+                if ((try self.resolveObjectIndexedAccessType(constraint, index_t)) != null) return true;
             }
         }
         const index_keys = try self.normalizeKeyofAlgebra(index_t);
@@ -154791,7 +154903,7 @@ pub const Checker = struct {
     fn indexedAccessBaseConstraint(self: *Checker, t: TypeId, depth: u8) CheckError!?TypeId {
         if (depth >= 24 or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) {
+        if (self.isBareTypeParameter(t)) {
             const constraint = self.typeParameterConstraint(t) orelse return null;
             return if (constraint == t) null else constraint;
         }
@@ -172703,8 +172815,13 @@ pub const Checker = struct {
         prop_name: hir_mod.StringId,
         keep_with_prop: bool,
     ) !TypeId {
-        if (!self.interner.pool.flagsOf(t).is_union) {
-            if (self.interner.pool.flagsOf(t).is_object_type) {
+        const flags = self.interner.pool.flagsOf(t);
+        if (self.isBareTypeParameter(t)) {
+            const constraint = self.typeParameterConstraint(t) orelse return t;
+            if (constraint != t) return try self.narrowByPropertyPresence(constraint, prop_name, keep_with_prop);
+        }
+        if (!flags.is_union) {
+            if (flags.is_object_type) {
                 if (self.interner.objectMemberInfo(t, prop_name)) |info| {
                     const is_optional = info.is_optional or self.typeIncludesUndefined(info.type);
                     if (!keep_with_prop and !is_optional) return types.Primitive.never;
@@ -174233,6 +174350,10 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_any or f.is_unknown) return false;
+        if (self.isBareTypeParameter(t)) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            return constraint != t and self.typeIsPossiblyNullishStrict(constraint);
+        }
         if (f.is_union) {
             if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
             for (self.interner.unionMembers(t)) |m| {
@@ -174262,6 +174383,11 @@ pub const Checker = struct {
     const NullishKind = enum { only_null, only_undefined, both };
 
     fn nullishKindOf(self: *Checker, t: TypeId) NullishKind {
+        if (self.isBareTypeParameter(t)) {
+            if (self.typeParameterConstraint(t)) |constraint| {
+                if (constraint != t) return self.nullishKindOf(constraint);
+            }
+        }
         // Use the existing typeIncludesNull/typeIncludesUndefined
         // helpers, but with the any/unknown gate the strict caller
         // already performed, so they're safe to combine here. They
@@ -175202,7 +175328,14 @@ pub const Checker = struct {
     /// `=== "literal"`, etc.
     fn subtractType(self: *Checker, t: TypeId, to_remove: TypeId) !TypeId {
         if (t == to_remove) return types.Primitive.never;
-        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (self.isBareTypeParameter(t)) {
+            const constraint = self.typeParameterConstraint(t) orelse return t;
+            if (constraint == t) return t;
+            const narrowed = try self.subtractType(constraint, to_remove);
+            return if (narrowed == constraint) t else narrowed;
+        }
+        if (!flags.is_union) return t;
         const members = self.interner.unionMembers(t);
         var kept: std.ArrayListUnmanaged(TypeId) = .empty;
         defer kept.deinit(self.gpa);
@@ -203493,6 +203626,76 @@ test "checker: generic indexed assignments follow constraint direction and mappe
         TsCodes.type_not_assignable,
         "Type 'T[keyof T] | undefined' is not assignable to type 'T[keyof T]'.",
     ));
+}
+
+test "checker: generic control flow narrows through union constraints" {
+    const b = try newBoundSetup(
+        \\interface Box<T> { item: T; }
+        \\declare function isBox(x: any): x is Box<unknown>;
+        \\declare function isUndefined(x: unknown): x is undefined;
+        \\declare function unbox<T>(x: Box<T>): T;
+        \\function g1<T extends Box<T> | undefined>(x: T) { if (isBox(x)) unbox(x); }
+        \\function g2<T extends Box<T> | undefined>(x: T) { if (!isUndefined(x)) unbox(x); }
+        \\function g3<T extends Box<T> | undefined>(x: T) { if (!isBox(x)) unbox(x); }
+        \\function g4<T extends Box<T> | undefined>(x: T) { if (isUndefined(x)) unbox(x); }
+        \\type AA = { tag: "A"; id: number };
+        \\type BB = { tag: "B"; id: number; foo: number };
+        \\type MyUnion = AA | BB;
+        \\function inspect<T extends MyUnion>(value: T) {
+        \\  value.foo;
+        \\  if ("foo" in value) value.foo;
+        \\  if (value.tag === "B") value.foo;
+        \\}
+        \\function nullableIndex<T extends Record<keyof T, string> | undefined, K extends keyof T>(obj: T, key: K) {
+        \\  obj[key];
+        \\  obj && obj[key];
+        \\}
+        \\class GenericIndex<
+        \\  PublicSpec extends Record<keyof InternalSpec, any>,
+        \\  InternalSpec extends Record<keyof PublicSpec, any> | undefined = undefined> {
+        \\  m() {
+        \\    let value = null! as InternalSpec;
+        \\    value[null! as keyof InternalSpec];
+        \\    value[null! as keyof PublicSpec];
+        \\    if (value === undefined) return;
+        \\    value[null! as keyof InternalSpec];
+        \\    value[null! as keyof PublicSpec];
+        \\  }
+        \\}
+        \\type Column<T> = (keyof T extends never ? { id?: number | string } : { id: T }) & { title?: string };
+        \\function getColumnProperty<T>(column: Column<T>, key: keyof Column<T>) { return column[key]; }
+        \\type Control = { type: "button"; text: string } | { type: "checkbox"; checked: boolean };
+        \\function update<T extends Control, K extends keyof T>(control: T | undefined, key: K, value: T[K]) {
+        \\  if (control !== undefined) control[key] = value;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    const is_undefined_name = try b.base.sint.intern("isUndefined");
+    const is_undefined_predicate = b.base.checker.fn_predicates.get(is_undefined_name) orelse
+        return error.MissingPredicate;
+    try T.expectEqual(types.Primitive.undefined_t, is_undefined_predicate.target_type);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'undefined' is not assignable to parameter of type 'Box<T>'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'undefined' is not assignable to parameter of type 'Box<unknown>'.",
+    ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.property_does_not_exist,
+        "Property 'foo' does not exist on type 'MyUnion'.",
+    ));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_cannot_be_used_to_index_type));
 }
 
 test "checker: type-level indexed access distinguishes invalid keys signatures and properties" {
