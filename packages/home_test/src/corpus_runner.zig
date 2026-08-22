@@ -78038,6 +78038,65 @@ fn rewriteFetchPreconnectCorpus(allocator: std.mem.Allocator, source: []const u8
     );
 }
 
+fn rewriteFileAttributeImports(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    relative_path: []const u8,
+) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    const dirname = std.fs.path.dirname(relative_path) orelse ".";
+    var cursor: usize = 0;
+    while (cursor < source.len) {
+        const newline = std.mem.indexOfScalarPos(u8, source, cursor, '\n');
+        const line_end = newline orelse source.len;
+        const line = source[cursor..line_end];
+        var line_trim_start: usize = 0;
+        while (line_trim_start < line.len and (line[line_trim_start] == ' ' or line[line_trim_start] == '\t')) line_trim_start += 1;
+        const trimmed = line[line_trim_start..];
+        var rewritten = false;
+        if (std.mem.startsWith(u8, trimmed, "import ")) {
+            if (std.mem.indexOf(u8, trimmed, " from ")) |from_index| {
+                const binding = std.mem.trim(u8, trimmed["import ".len..from_index], " \t");
+                const untrimmed_remainder = trimmed[from_index + " from ".len ..];
+                var remainder_trim_start: usize = 0;
+                while (remainder_trim_start < untrimmed_remainder.len and (untrimmed_remainder[remainder_trim_start] == ' ' or untrimmed_remainder[remainder_trim_start] == '\t')) remainder_trim_start += 1;
+                const remainder = untrimmed_remainder[remainder_trim_start..];
+                const valid_binding = binding.len > 0 and isJsIdentifierStart(binding[0]) and for (binding[1..]) |byte| {
+                    if (!isJsIdentifierContinue(byte)) break false;
+                } else true;
+                if (valid_binding and remainder.len > 2 and (remainder[0] == '"' or remainder[0] == '\'')) {
+                    const quote = remainder[0];
+                    if (std.mem.indexOfScalar(u8, remainder[1..], quote)) |relative_quote_end| {
+                        const quote_end = relative_quote_end + 1;
+                        const tail = std.mem.trim(u8, remainder[quote_end + 1 ..], " \t\r");
+                        if (std.mem.eql(u8, tail, "with { type: \"file\" };")) {
+                            const specifier_with_query = remainder[1..quote_end];
+                            const query = std.mem.indexOfScalar(u8, specifier_with_query, '?') orelse specifier_with_query.len;
+                            const specifier = specifier_with_query[0..query];
+                            const normalized_specifier = if (std.mem.startsWith(u8, specifier, "./")) specifier[2..] else specifier;
+                            const asset_path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/bun-corpus", dirname, normalized_specifier });
+                            defer allocator.free(asset_path);
+                            try out.appendSlice(allocator, line[0 .. line.len - trimmed.len]);
+                            try out.appendSlice(allocator, "const ");
+                            try out.appendSlice(allocator, binding);
+                            try out.appendSlice(allocator, " = ");
+                            try appendJsStringLiteral(&out, allocator, asset_path);
+                            try out.append(allocator, ';');
+                            rewritten = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (!rewritten) try out.appendSlice(allocator, line);
+        if (newline != null) try out.append(allocator, '\n');
+        cursor = if (newline) |index| index + 1 else source.len;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn rewriteBufferResolveObjectURLCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -82464,6 +82523,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteFetchLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-preconnect.test.ts"))
         try rewriteFetchPreconnectCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch.brotli.test.ts"))
+        try rewriteFileAttributeImports(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
         try rewriteTextEncoderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
@@ -109117,6 +109178,41 @@ test "bootstrap runner preserves final fetch URLs after redirects" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner lowers compressed fetch file imports" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch.brotli.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"file\" }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts.br") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts.gzip") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "decompress: false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.operation = \"fetch.response.decompress\"") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "compressed fetch file import mismatch: passed={} expected=1 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
