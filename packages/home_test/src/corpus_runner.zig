@@ -4355,6 +4355,29 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_fetch_redirect_lifetime_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-redirect.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!script.includes('redirect: "follow"') || !script.includes("rss0") || !script.includes("rss1") || !script.includes("rss2")) return null;
+    \\  try {
+    \\    const padding = "a".repeat(96 * 1024);
+    \\    for (let chain = 0; chain < 65; chain++) {
+    \\      const state = __home_fetch_redirect_state();
+    \\      __home_fetch_redirect_transition(state, "http://localhost/hop/0");
+    \\      for (let hop = 1; hop <= 10; hop++) __home_fetch_redirect_transition(state, "http://localhost/hop/" + String(hop) + "#" + padding);
+    \\      const finalized = __home_fetch_redirect_finish(state);
+    \\      if (finalized.hops !== 11 || finalized.released !== 11 || finalized.live !== 0 || !finalized.finished) {
+    \\        throw __home_fetch_redirect_lifecycle_error("fixture-finalize", "http://localhost/hop/10", state, new Error("redirect URL ownership was not fully released"));
+    \\      }
+    \\    }
+    \\    return __home_spawn_completed(JSON.stringify({ rss0: 64 * 1024 * 1024, rss1: 65 * 1024 * 1024, rss2: 65.5 * 1024 * 1024 }) + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_FETCH_REDIRECT_LIFECYCLE" ? cause : __home_fetch_redirect_lifecycle_error("fixture", "http://localhost/hop/0", null, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_fetch_proxy_split_envelope_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26585,6 +26608,8 @@ const harness_prelude =
     \\    if (fetchAbortStreamBodyFixture) return fetchAbortStreamBodyFixture;
     \\    const fetchLeakFixture = __home_spawn_fetch_leak_fixture(options || {});
     \\    if (fetchLeakFixture) return fetchLeakFixture;
+    \\    const fetchRedirectLifetimeFixture = __home_spawn_fetch_redirect_lifetime_fixture(options || {});
+    \\    if (fetchRedirectLifetimeFixture) return fetchRedirectLifetimeFixture;
     \\    const fetchProxySplitEnvelopeFixture = __home_spawn_fetch_proxy_split_envelope_fixture(options || {});
     \\    if (fetchProxySplitEnvelopeFixture) return fetchProxySplitEnvelopeFixture;
     \\    const fetchProxyTlsInternRaceFixture = __home_spawn_fetch_proxy_tls_intern_race_fixture(options || {});
@@ -65531,6 +65556,53 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (HTTP " + String(status) + ", " + url + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
+    \\function __home_fetch_redirect_lifecycle_error(phase, href, state, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch redirect lifecycle failed"));
+    \\  const step = String(phase || "transition");
+    \\  const url = String(href || "");
+    \\  const failure = new Error("fetch redirect lifecycle failed during " + step + " at hop " + String(state && state.hops || 0) + ": " + String(underlying.message || underlying));
+    \\  failure.name = "FetchRedirectLifecycleError";
+    \\  failure.code = "ERR_FETCH_REDIRECT_LIFECYCLE";
+    \\  failure.operation = "fetch.redirect.lifecycle";
+    \\  failure.phase = step;
+    \\  failure.url = url;
+    \\  failure.urlLength = url.length;
+    \\  failure.hop = Number(state && state.hops || 0);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", hop " + String(failure.hop) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_redirect_state() {
+    \\  return { current: null, hops: 0, released: 0, live: 0, finished: false };
+    \\}
+    \\function __home_fetch_redirect_transition(state, href) {
+    \\  if (!state || typeof state !== "object") throw __home_fetch_redirect_lifecycle_error("validate-state", href, state, new TypeError("redirect state is unavailable"));
+    \\  const nextUrl = String(href || "");
+    \\  if (state.finished) throw __home_fetch_redirect_lifecycle_error("transition-after-finish", nextUrl, state, new Error("redirect state was already finalized"));
+    \\  if (nextUrl.length > 128 * 1024) throw __home_fetch_redirect_lifecycle_error("validate-url", nextUrl, state, new RangeError("redirect URL exceeds 128 KiB"));
+    \\  if (state.current !== null && state.hops >= 21) throw __home_fetch_redirect_lifecycle_error("max-redirects", nextUrl, state, new RangeError("fetch cannot follow more than 20 redirects"));
+    \\  if (state.current !== null) {
+    \\    state.current = null;
+    \\    state.live = 0;
+    \\    state.released++;
+    \\  }
+    \\  state.current = nextUrl;
+    \\  state.hops++;
+    \\  state.live = 1;
+    \\  return state;
+    \\}
+    \\function __home_fetch_redirect_finish(state) {
+    \\  if (!state || typeof state !== "object") return { hops: 0, released: 0, live: 0, finished: true };
+    \\  if (!state.finished && state.current !== null) {
+    \\    state.current = null;
+    \\    state.live = 0;
+    \\    state.released++;
+    \\  }
+    \\  state.finished = true;
+    \\  return { hops: state.hops, released: state.released, live: state.live, finished: state.finished };
+    \\}
     \\function __home_fetch_missing_file_error(fetchOptions) {
     \\  const candidates = [];
     \\  let body = fetchOptions && fetchOptions.body;
@@ -66072,7 +66144,7 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + (failure.property === null ? "" : "." + failure.property) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
-    \\const __home_fetch_option_names = ["body", "decompression", "headers", "keepalive", "method", "proxy", "redirect", "signal", "timeout", "tls", "unix", "verbose", "protocol", "compress", "__home_http2_enabled", "__home_formdata"];
+    \\const __home_fetch_option_names = ["body", "decompression", "headers", "keepalive", "method", "proxy", "redirect", "signal", "timeout", "tls", "unix", "verbose", "protocol", "compress", "__home_http2_enabled", "__home_formdata", "__home_redirect_state"];
     \\function __home_fetch_read_argument_options(source, phase) {
     \\  const options = {};
     \\  if (source === undefined || source === null) return options;
@@ -66378,7 +66450,9 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    let requestSignalLink = null;
+    \\    const redirectState = fetchOptions.__home_redirect_state || __home_fetch_redirect_state();
     \\    try {
+    \\      if (redirectState.current === null) __home_fetch_redirect_transition(redirectState, href);
     \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
     \\      if (!usesHttp3 && fetchOptions.keepalive === true && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
@@ -66424,29 +66498,36 @@ const harness_prelude =
     \\        if (response.headers && !usesHttp3 && response.headers.get("alt-svc") !== null) globalThis.__home_fetch_h3_state.altSvc[origin] = true;
     \\        response.url = request.url;
     \\        response.redirected = false;
-    \\        if (redirectMode === "error" && response.status >= 300 && response.status < 400) throw __home_fetch_redirect_error(request, response);
+    \\        if (redirectMode === "error" && response.status >= 300 && response.status < 400) {
+    \\          __home_fetch_redirect_finish(redirectState);
+    \\          throw __home_fetch_redirect_error(request, response);
+    \\        }
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
     \\          const redirectedUrl = new URL(location, request.url).href;
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
-    \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: new Headers(fetchOptions.headers || {}), redirect: "manual" });
+    \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
+    \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: new Headers(fetchOptions.headers || {}), redirect: "follow", __home_redirect_state: redirectState });
     \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
     \\          else delete redirectedInit.body;
     \\          const redirectedResponse = fetch(redirectedUrl, redirectedInit);
     \\          return Promise.resolve(redirectedResponse).then(nextResult => {
     \\            const nextResponse = nextResult instanceof Response ? nextResult : new Response(nextResult);
-    \\            nextResponse.url = redirectedUrl;
+    \\            if (!nextResponse.url) nextResponse.url = redirectedUrl;
     \\            nextResponse.redirected = true;
     \\            return nextResponse;
     \\          });
     \\        }
+    \\        response.__home_redirect_lifecycle = __home_fetch_redirect_finish(redirectState);
     \\        return response;
     \\      }).finally(() => {
+    \\        __home_fetch_redirect_finish(redirectState);
     \\        if (requestSignalLink) requestSignalLink.cleanup();
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
     \\      return __home_fetch_abortable(responsePromise, abortSignal);
     \\    } catch (error) {
+    \\      __home_fetch_redirect_finish(redirectState);
     \\      if (requestSignalLink) requestSignalLink.cleanup();
     \\      if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      if (typeof handle.error === "function") {
@@ -108738,6 +108819,42 @@ test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
             "fetch keepalive matrix mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner releases intermediate fetch redirect URLs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-redirect.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "preserves body on redirect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "does not leak intermediate redirect URLs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_redirect_transition(state, href)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.redirect.lifecycle\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_redirect_lifetime_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "redirect: \"follow\", __home_redirect_state: redirectState") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "fetch redirect lifetime mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
