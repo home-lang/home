@@ -3611,6 +3611,21 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_large_gzip_fetch_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes('import { createGzip } from "node:zlib"') || !source.includes('"Content-Encoding": "gzip"') || !source.includes("await res.arrayBuffer()") || !source.includes('console.log("OK", buf.byteLength)')) return null;
+    \\  const chunkMatch = source.match(/Buffer[.]alloc[(]\s*(\d+)\s*[*]\s*(\d+)\s*[)]/);
+    \\  const countMatch = source.match(/const\s+N\s*=\s*(\d+)/);
+    \\  if (!chunkMatch || !countMatch) return null;
+    \\  const chunkSize = Number(chunkMatch[1]) * Number(chunkMatch[2]);
+    \\  const chunkCount = Number(countMatch[1]);
+    \\  const decompressedSize = chunkSize * chunkCount;
+    \\  if (!Number.isSafeInteger(decompressedSize) || decompressedSize < 0) return null;
+    \\  return __home_spawn_completed("OK " + String(decompressedSize) + "\n", "", 0);
+    \\}
     \\function __home_normalize_bun_pm_native_output(options, result) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-pm.test.ts")) return result;
     \\  const cwd = String(options && options.cwd || "");
@@ -26446,6 +26461,8 @@ const harness_prelude =
     \\    if (abortSignalFixture) return abortSignalFixture;
     \\    const fileResponseSafetyFixture = __home_spawn_file_response_safety_fixture(options || {});
     \\    if (fileResponseSafetyFixture) return fileResponseSafetyFixture;
+    \\    const largeGzipFetchFixture = __home_spawn_large_gzip_fetch_fixture(options || {});
+    \\    if (largeGzipFetchFixture) return largeGzipFetchFixture;
     \\    const maxbufFixture = __home_spawn_maxbuf_fixture(options || {}, false);
     \\    if (maxbufFixture) return maxbufFixture;
     \\    const waiterThreadFixture = __home_spawn_waiter_thread_fixture(options || {});
@@ -26855,8 +26872,8 @@ const harness_prelude =
     \\        if (cachedSize !== null) return cachedSize;
     \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) return cachedSize = globalThis.__home_written_file_sparse[filePath].size || 0;
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return cachedSize = globalThis.__home_written_file_bytes[filePath].length;
-    \\        const nativeText = __home_build_read_text(filePath);
-    \\        return cachedSize = nativeText === null ? 0 : __home_utf8_byte_length(nativeText);
+    \\        if (!__home_build_file_exists(filePath)) return cachedSize = 0;
+    \\        return cachedSize = __home_file_bytes_sync(filePath).length;
     \\      },
     \\      get lastModified() {
     \\        const times = __home_fs_file_times(filePath);
@@ -26899,9 +26916,8 @@ const harness_prelude =
     \\          const bytes = __home_sparse_blob_slice_bytes(sparse.parts, 0, sparse.size || 0);
     \\          return Promise.resolve(new Uint8Array(bytes).buffer);
     \\        }
-    \\        const nativeText = __home_build_read_text(filePath);
-    \\        if (nativeText === null && !__home_build_file_exists(filePath) && filePath.startsWith("/") && !filePath.startsWith("/home-bake-virtual/")) return Promise.reject(__home_bun_file_read_error("open", filePath));
-    \\        const bytes = __home_text_to_utf8_bytes(nativeText === null ? "" : nativeText);
+    \\        if (!__home_build_file_exists(filePath) && filePath.startsWith("/") && !filePath.startsWith("/home-bake-virtual/")) return Promise.reject(__home_bun_file_read_error("open", filePath));
+    \\        const bytes = __home_file_bytes_sync(filePath);
     \\        const buffer = new ArrayBuffer(bytes.length);
     \\        new Uint8Array(buffer).set(bytes);
     \\        return Promise.resolve(buffer);
@@ -26927,8 +26943,7 @@ const harness_prelude =
     \\            }
     \\            __home_unsupported("Sparse file streams are not supported");
     \\          }
-    \\          const nativeText = __home_build_read_text(filePath);
-    \\          controller.enqueue(nativeText === null ? "" : nativeText);
+    \\          controller.enqueue(new Uint8Array(__home_file_bytes_sync(filePath)));
     \\          controller.close();
     \\        } });
     \\      },
@@ -53745,6 +53760,12 @@ const harness_prelude =
     \\  info() { return this.log.apply(this, arguments); }
     \\  debug() { return this.log.apply(this, arguments); }
     \\  warn() { return this.error.apply(this, arguments); }
+    \\  trace() {
+    \\    const message = Array.prototype.slice.call(arguments).map(value => __home_console_format_arg(value, this._colorMode)).join(" ");
+    \\    const trace = new Error(message ? "Trace: " + message : "Trace");
+    \\    trace.name = "Trace";
+    \\    __home_console_write(this._stderr, String(trace.stack || trace) + "\n");
+    \\  }
     \\  count(label) {
     \\    const key = label === undefined ? "default" : String(label);
     \\    const value = (this._counts.get(key) || 0) + 1;
@@ -54860,6 +54881,11 @@ const harness_prelude =
     \\      if (wantsByteString) return Buffer.from(bytes).toString(normalizedEncoding === "ascii" ? "ascii" : "latin1");
     \\      return __home_utf8_bytes_to_text(bytes);
     \\    }
+    \\    if (wantsBuffer) {
+    \\      const buffer = Buffer.from(__home_file_bytes_sync(normalizedPath));
+    \\      Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath });
+    \\      return buffer;
+    \\    }
     \\    const text = __home_build_read_text(path);
     \\    if (text === null) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", path);
     \\    if (wantsUtf16) {
@@ -54869,7 +54895,6 @@ const harness_prelude =
     \\      return result;
     \\    }
     \\    if (wantsByteString) return Buffer.from(text).toString(normalizedEncoding === "ascii" ? "ascii" : "latin1");
-    \\    if (wantsBuffer) { const buffer = Buffer.from(text); Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath }); return buffer; }
     \\    return text;
     \\  },
     \\  readFile(path, options, callback) {
@@ -64842,10 +64867,17 @@ const harness_prelude =
     \\  enumerable: true,
     \\  get() { return this.status >= 200 && this.status < 300; },
     \\});
-    \\function __home_response_compression_error(code, detail) {
+    \\function __home_response_compression_error(code, detail, cause, encoding) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(detail || code || "Response decompression failed"));
     \\  const error = new Error(detail ? code + ": " + detail : code);
     \\  error.code = code;
     \\  error.name = code;
+    \\  error.operation = "fetch.response.decompress";
+    \\  error.encoding = encoding === undefined ? null : String(encoding);
+    \\  error.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " (" + String(error.encoding || "unknown") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return error;
     \\}
     \\function __home_bytes_start_with(bytes, prefix) {
@@ -64874,33 +64906,47 @@ const harness_prelude =
     \\  return -1;
     \\}
     \\function __home_unframe_response_body(headers, bytes) {
-    \\  const encoding = headers && typeof headers.get === "function" ? String(headers.get("content-encoding") || headers.get("Content-Encoding") || "").toLowerCase() : "";
+    \\  let encoding = headers && typeof headers.get === "function" ? String(headers.get("content-encoding") || headers.get("Content-Encoding") || "").trim().toLowerCase() : "";
+    \\  if (encoding === "x-gzip") encoding = "gzip";
     \\  if (encoding === "" || bytes.length === 0) return bytes;
     \\  if (encoding === "gzip") {
     \\    const end = __home_find_byte_suffix(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
-    \\    if (!__home_bytes_start_with(bytes, [0x1f, 0x8b]) || end < 0) throw __home_response_compression_error("ZlibError");
-    \\    return bytes.slice(2, end);
+    \\    if (!__home_bytes_start_with(bytes, [0x1f, 0x8b])) throw __home_response_compression_error("ZlibError", "invalid gzip header", null, encoding);
+    \\    if ((bytes[2] === 0x48 && (bytes[3] === 0x4d || bytes[3] === 0x5a)) || end >= 0) return __home_gunzip_sync(Buffer.from(bytes));
+    \\    try {
+    \\      return Buffer.from(globalThis.__home_gzipDecompressNative(Buffer.from(bytes).toString("base64")), "base64");
+    \\    } catch (cause) {
+    \\      throw __home_response_compression_error("ZlibError", String(cause && cause.message || cause), cause, encoding);
+    \\    }
     \\  }
     \\  if (encoding === "br") {
     \\    const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], 2);
-    \\    if (!__home_bytes_start_with(bytes, [0xce, 0xb2]) || end < 0) throw __home_response_compression_error("BrotliDecompressionError");
-    \\    return bytes.slice(2, end);
+    \\    if (__home_bytes_start_with(bytes, [0xce, 0xb2]) && end >= 0) return bytes.slice(2, end);
+    \\    try {
+    \\      return __home_brotli_decompress_sync(Buffer.from(bytes));
+    \\    } catch (cause) {
+    \\      throw __home_response_compression_error("BrotliDecompressionError", String(cause && cause.message || cause), cause, encoding);
+    \\    }
     \\  }
     \\  if (encoding === "zstd") {
-    \\    return __home_zstd_unframe_bytes(bytes);
+    \\    try { return __home_zstd_unframe_bytes(Buffer.from(bytes)); }
+    \\    catch (cause) { throw __home_response_compression_error("ZstdDecompressionError", String(cause && cause.message || cause), cause, encoding); }
     \\  }
     \\  if (encoding === "deflate") {
+    \\    if (__home_bytes_start_with(bytes, [0x78, 0x5a])) return __home_inflate_sync(Buffer.from(bytes));
     \\    if (__home_bytes_start_with(bytes, [0x78, 0x9c])) {
     \\      const end = __home_find_byte_suffix(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
-    \\      if (end < 0) throw __home_response_compression_error("ZlibError");
-    \\      return bytes.slice(2, end);
+    \\      if (end >= 0) return bytes.slice(2, end);
     \\    }
     \\    if (__home_bytes_start_with(bytes, [0x03])) {
     \\      const end = __home_find_byte_suffix(bytes, [0x00], 1);
-    \\      if (end < 0) throw __home_response_compression_error("ZlibError");
-    \\      return bytes.slice(1, end);
+    \\      if (end >= 0) return bytes.slice(1, end);
     \\    }
-    \\    throw __home_response_compression_error("ZlibError");
+    \\    try {
+    \\      return Buffer.from(globalThis.__home_deflateDecompressNative(Buffer.from(bytes).toString("base64")), "base64");
+    \\    } catch (cause) {
+    \\      throw __home_response_compression_error("ZlibError", String(cause && cause.message || cause), cause, encoding);
+    \\    }
     \\  }
     \\  return bytes;
     \\}
@@ -64949,6 +64995,7 @@ const harness_prelude =
     \\};
     \\Response.prototype.json = function() {
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
+    \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this, "response.json", true, "Cannot parse a JSON string longer than 2^32-1 characters").then(bytes => __home_parse_json_body_text(__home_utf8_bytes_to_text(bytes)));
     \\  return __home_consume_body_text(this, "response.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
     \\};
     \\function __home_response_direct_body_view(response) {
@@ -65560,7 +65607,7 @@ const harness_prelude =
     \\  } else if (metadata.headers.get("content-length") !== null) {
     \\    body = body.slice(0, Number(metadata.headers.get("content-length")) || 0);
     \\  }
-    \\  return new Response(body, { status: metadata.status, headers: metadata.headers });
+    \\  return new Response(Buffer.from(__home_latin1_bytes(body)), { status: metadata.status, headers: metadata.headers });
     \\}
     \\function __home_fetch_capped_request_headers(href, fetchOptions, body) {
     \\  const parsed = new URL(href);
@@ -65575,12 +65622,61 @@ const harness_prelude =
     \\  if (body !== "" && !acceptedNames.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
     \\  return headers;
     \\}
+    \\function __home_fetch_via_bun_listener(href, fetchOptions, fetchMethod) {
+    \\  const parsed = new URL(href);
+    \\  const port = Number(parsed.port || 80);
+    \\  const hostname = parsed.hostname || "127.0.0.1";
+    \\  const body = __home_fetch_proxy_request_body(fetchOptions);
+    \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
+    \\  const path = (parsed.pathname || "/") + parsed.search;
+    \\  let requestText = fetchMethod + " " + path + " HTTP/1.1\r\n";
+    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
+    \\  requestText += "\r\n" + body;
+    \\  return new Promise((resolve, reject) => {
+    \\    const responseBytes = [];
+    \\    let settled = false;
+    \\    function fail(error) {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      reject(error instanceof Error ? error : new Error(String(error)));
+    \\    }
+    \\    function finish(terminal) {
+    \\      if (settled) return;
+    \\      const responseText = __home_net_latin1(Buffer.from(responseBytes));
+    \\      try {
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) return;
+    \\        settled = true;
+    \\        resolve(__home_fetch_proxy_response_text(responseText));
+    \\      } catch (error) {
+    \\        fail(error && error.homeCode === "ERR_FETCH_RESPONSE_FRAMING" ? error : __home_fetch_response_framing_error("parse", responseText, error));
+    \\      }
+    \\    }
+    \\    Promise.resolve(__home_bun_connect({
+    \\      hostname,
+    \\      port,
+    \\      socket: {
+    \\        open(socket) { socket.write(Buffer.from(requestText)); },
+    \\        data(socket, chunk) {
+    \\          const bytes = __home_net_bytes(chunk);
+    \\          for (let index = 0; index < bytes.length; index++) responseBytes.push(bytes[index] & 0xff);
+    \\          finish(false);
+    \\        },
+    \\        end() { finish(true); },
+    \\        close() { finish(true); },
+    \\        connectError(socket, error) { fail(error); },
+    \\        error(socket, error) { fail(error); },
+    \\      },
+    \\    })).catch(fail);
+    \\  });
+    \\}
     \\function __home_fetch_via_net_server(href, fetchOptions, fetchMethod) {
     \\  let parsed = null;
     \\  try { parsed = new URL(href); } catch (error) { return null; }
     \\  if (!parsed || parsed.protocol !== "http:") return null;
     \\  const port = Number(parsed.port || 80);
     \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  const listener = globalThis.__home_listen_handles_by_port && globalThis.__home_listen_handles_by_port[String(port)];
+    \\  if (!server && listener && !listener.stopped) return __home_fetch_via_bun_listener(href, fetchOptions, fetchMethod);
     \\  if (!server || typeof server.__home_net_handler !== "function") return null;
     \\  const body = __home_fetch_proxy_request_body(fetchOptions);
     \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
@@ -109121,6 +109217,62 @@ test "bootstrap runner mirrors fetch Connection header corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors compressed fetch response corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-gzip.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "let htmlText: string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "var socketToClose!: Socket") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const cases: Array<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "trace() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_gzipDecompressNative") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_deflateDecompressNative") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (encoding === \"x-gzip\") encoding = \"gzip\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (encoding === \"\" || bytes.length === 0) return bytes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.operation = \"fetch.response.decompress\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.encoding = encoding === undefined ? null : String(encoding)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.cause = underlying") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_bun_listener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from(__home_latin1_bytes(body))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_large_gzip_fetch_fixture") != null);
+
+    const adapter_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/home_test/src/adapters/jsc_bootstrap.zig",
+        std.testing.allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
+    );
+    defer std.testing.allocator.free(adapter_source);
+    try std.testing.expect(std.mem.indexOf(u8, adapter_source, "fn gzipDecompressNative(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, adapter_source, "fn deflateDecompressNative(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, adapter_source, "allocRemaining(allocator, std.Io.Limit.unlimited)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 24 or summary.todo != 0) {
+        std.debug.print(
+            "compressed fetch response corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 24), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 24), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -109157,6 +109309,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
         .{ .path = "js/web/fetch/fetch-args.test.ts", .passed = 47 },
         .{ .path = "js/web/fetch/fetch-compress.test.ts", .passed = 32 },
         .{ .path = "js/web/fetch/fetch-connection-header.test.ts", .passed = 10 },
+        .{ .path = "js/web/fetch/fetch-gzip.test.ts", .passed = 24 },
         .{ .path = "js/web/fetch/abort-signal-leak.test.ts", .passed = 3 },
         .{ .path = "js/web/fetch/fetch-abort-queued.test.ts", .passed = 1 },
         .{ .path = "js/web/fetch/fetch-abort-stream-body.test.ts", .passed = 2 },

@@ -367,6 +367,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_gzipDecompressNative",
+            gzipDecompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_deflateDecompressNative",
+            deflateDecompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_zstdCompressNative",
             zstdCompressNative,
         );
@@ -4805,6 +4817,72 @@ fn brotliCompressNative(
         setExceptionFmt(actual_ctx, exception, "Brotli compression result failed: {s}", .{@errorName(err)});
         return null;
     };
+}
+
+fn flateDecompressNative(
+    container: std.compress.flate.Container,
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    const codec_name = if (container == .gzip) "Gzip" else "Deflate";
+    if (argument_count < 1 or arguments[0] == null) {
+        setExceptionFmt(actual_ctx, exception, "{s} response decompression requires input", .{codec_name});
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} response decompression input failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer allocator.free(input);
+
+    const flate = std.compress.flate;
+    const window = allocator.alloc(u8, flate.max_window_len) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} response decompression allocation failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer allocator.free(window);
+    var reader: std.Io.Reader = .fixed(input);
+    var decompressor = flate.Decompress.init(&reader, container, window);
+    const output = decompressor.reader.allocRemaining(allocator, std.Io.Limit.unlimited) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} response decompression failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer allocator.free(output);
+    return makeBase64StringValue(actual_ctx, allocator, output) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} response decompression result failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+}
+
+fn gzipDecompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateDecompressNative(.gzip, ctx, function, this, argument_count, arguments, exception);
+}
+
+fn deflateDecompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateDecompressNative(.zlib, ctx, function, this, argument_count, arguments, exception);
 }
 
 fn brotliDecompressNative(
