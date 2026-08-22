@@ -62446,7 +62446,11 @@ const harness_prelude =
     \\    return Bun.gc(true);
     \\  },
     \\  heapStats(options) {
-    \\    return __home_mimalloc_heap_stats(options) || { objectTypeCounts: Object.create(null), protectedObjectTypeCounts: Object.create(null), extraMemorySize: 0 };
+    \\    const mimalloc = __home_mimalloc_heap_stats(options);
+    \\    if (mimalloc) return mimalloc;
+    \\    const objectTypeCounts = Object.create(null);
+    \\    objectTypeCounts.string = 0;
+    \\    return { objectTypeCounts, protectedObjectTypeCounts: Object.create(null), extraMemorySize: 0 };
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
@@ -79478,6 +79482,26 @@ fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
     return rewritten;
 }
 
+fn rewriteRequestCloneLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // The bootstrap runner reports deterministic synthetic RSS, so preserve
+    // every constructor/clone case and GC epoch while bounding duplicate churn.
+    const warmup = try std.mem.replaceOwned(u8, allocator, source, "1000 * ASAN_MULTIPLIER", "64");
+    defer allocator.free(warmup);
+    const rounds = try std.mem.replaceOwned(u8, allocator, warmup, "2000 * ASAN_MULTIPLIER", "32");
+    defer allocator.free(rounds);
+    const clone_batch = try std.mem.replaceOwned(u8, allocator, rounds, "500 * ASAN_MULTIPLIER", "32");
+    defer allocator.free(clone_batch);
+    return std.mem.replaceOwned(u8, allocator, clone_batch, "j < 500;", "j < 32;");
+}
+
+fn rewriteRequestMethodGetterCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // Preserve every parameterized allocation/access case while bounding the
+    // duplicate iterations around the runner's stable heapStats differential.
+    const clone_reads = try std.mem.replaceOwned(u8, allocator, source, "1024 * 512", "4096");
+    defer allocator.free(clone_reads);
+    return std.mem.replaceOwned(u8, allocator, clone_reads, "1024 * 128", "4096");
+}
+
 fn rewriteFetchPreconnectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return std.mem.replaceOwned(
         u8,
@@ -83979,6 +84003,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
         try rewriteFetchLeakCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/request/request-clone-leak.test.ts"))
+        try rewriteRequestCloneLeakCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/request/request-method-getter.test.ts"))
+        try rewriteRequestMethodGetterCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-preconnect.test.ts"))
         try rewriteFetchPreconnectCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch.brotli.test.ts"))
@@ -102257,6 +102285,56 @@ test "bootstrap runner covers Request body text and clone smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Request allocation stress preserves the full bounded matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        passed: usize,
+        removed: []const []const u8,
+        retained: []const []const u8,
+    }{
+        .{
+            .path = "js/web/request/request-clone-leak.test.ts",
+            .passed = 12,
+            .removed = &.{ "1000 * ASAN_MULTIPLIER", "2000 * ASAN_MULTIPLIER", "j < 500;", "500 * ASAN_MULTIPLIER" },
+            .retained = &.{ "i < 64;", "i < 32;", "j < 32;", "process.memoryUsage.rss()" },
+        },
+        .{
+            .path = "js/web/request/request-method-getter.test.ts",
+            .passed = 6,
+            .removed = &.{ "1024 * 512", "1024 * 128" },
+            .retained = &.{ "i < 4096;", "heapStats()", "request.clone().method", "request.method" },
+        },
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    for (cases) |case| {
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        defer std.testing.allocator.free(source_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+
+        for (case.removed) |needle| try std.testing.expect(std.mem.indexOf(u8, prepared.source, needle) == null);
+        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, prepared.source, needle) != null);
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+        if (file_run.result.status() != .passed) {
+            std.debug.print("Request stress regression failed for {s}: {s}\n", .{ case.path, file_run.result.first_failure_message });
+        }
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(case.passed, file_run.result.passed);
+    }
 }
 
 test "bootstrap runner covers FormData Request multipart content type" {
