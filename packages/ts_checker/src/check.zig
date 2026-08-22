@@ -61102,6 +61102,19 @@ pub const Checker = struct {
         return false;
     }
 
+    fn localImportBindingExistsAt(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(statement) != section) continue;
+            if (self.importDeclBindsLocal(statement, local_name)) return true;
+        }
+        return false;
+    }
+
     fn virtualNamespaceImportExportsMember(self: *Checker, local_name: hir_mod.StringId, member_name: hir_mod.StringId, anchor: NodeId) CheckError!bool {
         if (!self.sourceHasVirtualFilenameSections()) return false;
         const root = self.rootBlockFor(anchor);
@@ -72354,6 +72367,7 @@ pub const Checker = struct {
                 // in the `.type_ref` arm and `localScopedTypeForNameAt`.
                 // Must precede `resolveForwardClassInstanceType`.
                 if (self.localScopedTypeForNameAt(id.name, type_node)) |t| return t;
+                if (try self.importedTypeRefForLocal(id.name, type_node)) |t| return t;
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (std.mem.eql(u8, name_str, "Object")) {
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
@@ -75309,6 +75323,13 @@ pub const Checker = struct {
                         if (self.virtualSectionTypeDeclNamed(raw, sp.imported)) |local_decl| {
                             return try self.typeOfExportedTypeDecl(local_decl, sp.imported);
                         }
+                    }
+                } else if (ex.named_len > 0) {
+                    for (hir_mod.exportNamed(self.hir, raw)) |spec_node| {
+                        if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                        const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                        if (self.exportSpecifierExportedName(spec_node, sp) != leaf_name) continue;
+                        return try self.virtualRelativeModuleExportType(raw, ex.module, &.{}, sp.imported);
                     }
                 }
                 const decl_name = self.declarationName(decl) orelse continue;
@@ -134018,6 +134039,7 @@ pub const Checker = struct {
                         t != types.Primitive.any and
                         t != types.Primitive.unknown) break :blk false;
                 }
+                if (self.localImportBindingExistsAt(id.name, type_node)) break :blk false;
                 if (self.visibleTypeDeclarationExistsAt(type_node, id.name)) break :blk false;
                 break :blk true;
             },
@@ -134028,6 +134050,7 @@ pub const Checker = struct {
                 }
                 if (r.qualifier_len != 0 or r.args_len != 0) break :blk false;
                 if (self.nameHasEnclosingTypeParameter(r.name, type_node)) break :blk false;
+                if (self.localImportBindingExistsAt(r.name, type_node)) break :blk false;
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) break :blk false;
                 const raw = self.string_interner.get(r.name);
                 if (std.mem.eql(u8, raw, "super")) break :blk true;
@@ -227855,6 +227878,29 @@ test "checker: import equals namespaces resolve virtual module types" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
+}
+
+test "checker: type-only imports follow renamed re-export chains" {
+    const s = try newSetup(
+        \\// @strict: true
+        \\// @filename: /a.ts
+        \\class A { a!: string }
+        \\export type { A as B };
+        \\// @filename: /b.ts
+        \\export type { B as C } from './a';
+        \\// @filename: /c.ts
+        \\import type { C as D } from './b';
+        \\const d: D = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'a' is missing in type '{}' but required in type 'A'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: namespace import typeof includes named exported values" {
