@@ -19315,6 +19315,21 @@ pub const Checker = struct {
         defer pending.deinit(self.gpa);
         try self.preseedHoistedVarAssignments(stmts, &pending);
         for (stmts) |s| try self.scanForUsedBeforeAssign(s, &pending);
+        self.removePlainAssignmentTargetUsedBeforeAssignmentDiagnostics();
+    }
+
+    fn removePlainAssignmentTargetUsedBeforeAssignmentDiagnostics(self: *Checker) void {
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            const diagnostic = self.diagnostics.items[i];
+            if (diagnostic.code == TsCodes.used_before_assignment and
+                self.isPlainAssignmentTarget(diagnostic.node))
+            {
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
     }
 
     fn preseedHoistedVarAssignments(
@@ -21418,6 +21433,7 @@ pub const Checker = struct {
         pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) CheckError!void {
         const decl_node = pending.get(name) orelse return;
+        if (self.isPlainAssignmentTarget(ref_node)) return;
         const may_be_unassigned_in_catch = self.varDeclMayBeUnassignedInCatch(decl_node, ref_node);
         if (self.sourceHasStrictFalseDirective() and
             !self.nodeHasAncestorKind(ref_node, .as_expr) and
@@ -84368,10 +84384,16 @@ pub const Checker = struct {
         if (v.name != hir_mod.none_node_id and
             v.init != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
-            !self.nodeIsDirectSourceFileStatement(node))
+            (!self.nodeIsDirectSourceFileStatement(node) or
+                (self.hir.kindOf(node) == .const_decl and !self.sourceHasVirtualFilenameSections())))
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
-            const flow_t = try self.flowTypeForAssignmentValue(v.init, init_type);
+            const contextual_array_flow_t = if (self.hir.kindOf(node) == .const_decl and
+                self.hir.kindOf(v.init) == .array_literal)
+                try self.contextualArrayLiteralUnionMember(v.init, final_type)
+            else
+                null;
+            const flow_t = contextual_array_flow_t orelse try self.flowTypeForAssignmentValue(v.init, init_type);
             const flow_ok = (try self.literalExpressionAssignableToTarget(v.init, final_type)) or
                 (self.engine.isAssignableTo(flow_t, final_type) catch true);
             const mutable_unannotated_decl = v.type_annotation == hir_mod.none_node_id and
@@ -84382,7 +84404,8 @@ pub const Checker = struct {
                 record_t != types.Primitive.unknown and
                 final_type != types.Primitive.any and
                 final_type != types.Primitive.unknown and
-                (try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, record_t, final_type)) and
+                (contextual_array_flow_t != null or
+                    try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, record_t, final_type)) and
                 flow_ok)
             {
                 try self.recordNarrow(id.name, record_t);
@@ -84907,6 +84930,31 @@ pub const Checker = struct {
         if (flow_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(flow_t).is_literal) return false;
         return self.engine.isAssignableTo(flow_t, final_type) catch false;
+    }
+
+    fn contextualArrayLiteralUnionMember(
+        self: *Checker,
+        initializer: NodeId,
+        declared_type: TypeId,
+    ) CheckError!?TypeId {
+        if (declared_type >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(declared_type).is_union)
+        {
+            return null;
+        }
+        var match: ?TypeId = null;
+        for (self.interner.unionMembers(declared_type)) |member| {
+            if (member >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(member).is_object_type or
+                self.interner.objectNumberIndex(member) == types.Primitive.none or
+                !try self.arrayLiteralAssignableToTargetInner(initializer, member, false))
+            {
+                continue;
+            }
+            if (match != null) return null;
+            match = member;
+        }
+        return match;
     }
 
     /// True when `node` is a member-access expression statement in a checked-JS
@@ -101955,7 +102003,8 @@ pub const Checker = struct {
                                 self.shouldWidenForArgDiagnostic(source_for_report, target_t) and
                                 target_t != types.Primitive.never and
                                 self.enumNameFromNominal(target_t) == null and
-                                !self.typeIsEnumNominal(target_t))
+                                !self.typeIsEnumNominal(target_t) and
+                                self.enumAnnotationNameForIdentifier(a.target) == null)
                             {
                                 // Cross-primitive literal-to-non-literal
                                 // assignment mismatch ÃÂ¢ÃÂÃÂ render the
@@ -104962,25 +105011,23 @@ pub const Checker = struct {
                 // forms (`(x as any)[i]`) take the default flow.
                 if (self.hir.kindOf(e.object) == .identifier) {
                     const obj_id = hir_mod.identifierOf(self.hir, e.object);
+                    // TS2476 must win before numeric enum reverse mapping:
+                    // `E[E.A]` has a numeric index type, but a const enum
+                    // still requires a string-literal computed key.
+                    if (self.const_enums.contains(obj_id.name) and
+                        self.hir.kindOf(e.index) != .literal_string)
+                    {
+                        try self.report(
+                            e.index,
+                            2476,
+                            "A const enum member can only be accessed using a string literal.",
+                        );
+                    }
                     if (self.enumIsNumeric(obj_id.name)) |is_numeric| {
                         if (is_numeric) {
                             const idx_flags = self.interner.pool.flagsOf(idx_t);
                             if (idx_flags.is_number) break :blk types.Primitive.string_t;
                         }
-                    }
-                    // TS2476: a const-enum member can only be accessed via
-                    // an identifier (`E.A`) or a string-literal element
-                    // access (`E["A"]`). Dynamic computed access can't be
-                    // inlined at emit-time so upstream rejects it.
-                    // Anchored at the element-access node.
-                    if (self.const_enums.contains(obj_id.name) and
-                        self.hir.kindOf(e.index) != .literal_string)
-                    {
-                        try self.report(
-                            node,
-                            2476,
-                            "A const enum member can only be accessed using a string literal.",
-                        );
                     }
                 }
                 const obj_flags_for_index = self.interner.pool.flagsOf(obj_t);
@@ -141218,7 +141265,9 @@ pub const Checker = struct {
     }
 
     fn updateOperandRequiresVariableDiagnostic(self: *Checker, target: NodeId, target_t: TypeId) bool {
-        if (self.updateOperandIsEnumBinaryExpression(target)) return false;
+        if (self.updateOperandIsEnumBinaryExpression(target)) {
+            return self.diagnosticCodeInNodeSpan(target, TsCodes.property_does_not_exist);
+        }
         if (self.typeIsExactUndefined(target_t)) return false;
         if (self.nodeSourceTextIs(target, "undefined")) return false;
         return switch (self.hir.kindOf(target)) {
@@ -182463,6 +182512,20 @@ test "checker: update operands validate arithmetic before reference shape" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.update_operand_not_variable));
 }
 
+test "checker: invalid enum member updates prefer reference-shape diagnostics" {
+    const s = try newSetup(
+        \\enum E {}
+        \\--(E["A"] + E.B);
+        \\(E.A + E["B"])--;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.update_operand_not_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_operand_type));
+}
+
 test "checker: null update operands retain nullish and reference diagnostics" {
     const s = try newSetup(
         \\++null;
@@ -189512,6 +189575,25 @@ test "checker: typed var used in control-flow condition emits TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: assignment and top-level const initializer update flow types" {
+    const s = try newSetup(
+        \\let x: string | number | boolean | RegExp;
+        \\x = "";
+        \\x;
+        \\let source: string[];
+        \\for (x of source) {}
+        \\type OneOrMany<T> = T | T[];
+        \\const values: OneOrMany<{ value?: "ok" }> = [{ value: "ok" }];
+        \\values.push({ value: "ok" });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: positive type guards satisfy branch-local TS2454 flow" {
@@ -240292,10 +240374,11 @@ test "checker: TS2476 fires for const enum dynamic element access" {
         \\let key = "A";
         \\let bad1 = E[key];
         \\let bad2 = E[0];
+        \\let bad3 = E[E.A];
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 2476));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, 2476));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == 2476) {
             try T.expectEqualStrings(
@@ -240304,6 +240387,21 @@ test "checker: TS2476 fires for const enum dynamic element access" {
             );
         }
     }
+}
+
+test "checker: const enum assignment keeps literal source and enum target names" {
+    const s = try newSetup(
+        \\const enum E { A = 1 }
+        \\let value: E;
+        \\value = "bad";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '\"bad\"' is not assignable to type 'E'.",
+    ));
 }
 
 test "checker: TS2476 does NOT fire for legal const enum access" {
