@@ -86543,6 +86543,7 @@ pub const Checker = struct {
         if (try self.deferredConditionalAssignableToConditional(source_t, target_t)) |ok| return ok;
         if (try self.sourceAssignableToDeferredConditionalTarget(source_t, target_t)) |ok| return ok;
         if (try self.deferredConditionalSourceAssignableToTarget(source_t, target_t)) |ok| return ok;
+        if (try self.intersectionDeferredConditionalConstituentAssignableToTarget(source_t, target_t)) return true;
         if (try self.intersectionCombinedConstraint(source_t)) |constraint_t| {
             if (constraint_t != source_t and (try self.checkerAssignableTo(constraint_t, target_t))) return true;
         }
@@ -88112,6 +88113,25 @@ pub const Checker = struct {
         if (!try self.checkerAssignableTo(c.true_branch, target_t)) return false;
         if (!try self.checkerAssignableTo(c.false_branch, target_t)) return false;
         return true;
+    }
+
+    fn intersectionDeferredConditionalConstituentAssignableToTarget(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(source_t).is_intersection)
+        {
+            return false;
+        }
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source_t));
+        defer self.gpa.free(members);
+        for (members) |member| {
+            if (self.interner.conditionalPayloadOrNull(member) == null) continue;
+            if ((try self.deferredConditionalSourceAssignableToTarget(member, target_t)) orelse false) return true;
+        }
+        return false;
     }
 
     fn reduceConditionalSourceOverConstraint(self: *Checker, source_t: TypeId, c: types.ConditionalPayload) CheckError!?TypeId {
@@ -239204,6 +239224,28 @@ test "checker: TS2677 defers for a generic predicate type (Extract)" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_predicate_type_not_assignable));
+}
+
+test "checker: generic Extract predicate narrows to its constraint through an intersection" {
+    const s = try newSetup(
+        \\function isFunction<T>(value: T): value is Extract<T, Function> {
+        \\  return typeof value === "function";
+        \\}
+        \\declare function acceptsObjectOrFunction(value: object | Function): void;
+        \\declare function acceptsFunction(value: Function): void;
+        \\function f<T>(value: T) {
+        \\  if (isFunction(value)) {
+        \\    const fn: Function = value;
+        \\    acceptsObjectOrFunction(value);
+        \\    acceptsFunction(value);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: generic Extract argument diagnostics preserve symbolic source" {
