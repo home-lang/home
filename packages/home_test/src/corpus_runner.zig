@@ -1877,6 +1877,7 @@ const harness_prelude =
     \\  if (text.endsWith(".css")) return "text/css;charset=utf-8";
     \\  if (text.endsWith(".json")) return "application/json;charset=utf-8";
     \\  if (text.endsWith(".bin")) return "application/octet-stream";
+    \\  if (text.endsWith(".wasm")) return "application/wasm";
     \\  if (text.endsWith(".js") || text.endsWith(".jsx") || text.endsWith(".mjs") || text.endsWith(".cjs") || text.endsWith(".ts") || text.endsWith(".tsx")) return "text/javascript;charset=utf-8";
     \\  return "";
     \\}
@@ -30882,6 +30883,19 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at bun.test.expect (" + (failure.testName || "<unregistered test>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
     \\  throw failure;
     \\}
+    \\function __home_expect_resolves_error(reason) {
+    \\  const underlying = reason instanceof Error ? reason : new Error(__home_format(reason));
+    \\  const failure = new Error("Expected promise to resolve, but it rejected with " + String(underlying.name || "Error") + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.code = "ERR_BUN_TEST_ASYNC_EXPECTATION";
+    \\  failure.operation = "bun.test.expect.resolves";
+    \\  failure.phase = "resolve";
+    \\  failure.testName = String(globalThis.__home_current_snapshot_name || "");
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + (failure.testName || "<unregistered test>") + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_expect_label_message(label, message) {
     \\  let text = String(message);
     \\  text = text.replace(/\s+to be\s+/g, "\n").replace(/\s+to equal\s+/g, "\n");
@@ -32784,7 +32798,7 @@ const harness_prelude =
     \\      }
     \\      const state = __home_promise_states.get(value);
     \\      if (state) {
-    \\        if (state.status === "rejected") __home_fail("Expected promise to resolve");
+    \\        if (state.status === "rejected") throw __home_expect_resolves_error(state.value);
     \\        __home_make_expectation(state.value, isNot, label)[key].apply(undefined, args);
     \\        return;
     \\      }
@@ -32804,12 +32818,8 @@ const harness_prelude =
     \\            __home_record_async_failure(error);
     \\          }
     \\        },
-    \\        function() {
-    \\          try {
-    \\            __home_fail("Expected promise to resolve");
-    \\          } catch (error) {
-    \\            __home_record_async_failure(error);
-    \\          }
+    \\        function(rejection) {
+    \\          __home_record_async_failure(__home_expect_resolves_error(rejection));
     \\        },
     \\      ).then(
     \\        function() { clearPendingMessage(); __home_bun_tests.pending--; },
@@ -48622,11 +48632,8 @@ const harness_prelude =
     \\globalThis.__home_modules["../common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir.js"] = __home_node_test_common_tmpdir;
-    \\globalThis.__home_modules["assert/strict"] = {
-    \\  deepStrictEqual(actual, expected) {
-    \\    return __home_assert_module.deepStrictEqual(actual, expected);
-    \\  },
-    \\};
+    \\globalThis.__home_modules["assert/strict"] = __home_assert_strict;
+    \\globalThis.__home_modules["node:assert/strict"] = __home_assert_strict;
     \\globalThis.__home_modules["node-harness"] = {
     \\  createTest(path) {
     \\    void path;
@@ -65883,6 +65890,192 @@ const harness_prelude =
     \\  return response;
     \\};
     \\globalThis.Response = Response;
+    \\function __home_wasm_streaming_context(error, operation, phase, response) {
+    \\  if (!(error instanceof Error)) return error;
+    \\  try {
+    \\    if (error.code === undefined) error.code = "ERR_WEBASSEMBLY_STREAMING";
+    \\    if (error.operation === undefined) error.operation = String(operation);
+    \\    if (error.phase === undefined) error.phase = String(phase);
+    \\    if (error.url === undefined) error.url = response && typeof response.url === "string" ? response.url : null;
+    \\    const marker = "    at " + String(operation) + " [" + String(phase) + "]";
+    \\    if (!String(error.stack || "").includes(marker)) error.stack = String(error.stack || error) + "\n" + marker + " (" + String(error.url || globalThis.__home_current_filename || "<anonymous response>") + ")";
+    \\  } catch (ignored) {}
+    \\  return error;
+    \\}
+    \\function __home_wasm_streaming_failure(message, operation, phase, response, cause, Constructor) {
+    \\  const ErrorConstructor = typeof Constructor === "function" ? Constructor : TypeError;
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || message));
+    \\  const failure = new ErrorConstructor(String(message), { cause: underlying });
+    \\  failure.code = "ERR_WEBASSEMBLY_STREAMING";
+    \\  failure.operation = String(operation);
+    \\  failure.phase = String(phase);
+    \\  failure.url = response && typeof response.url === "string" ? response.url : null;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(failure.url || globalThis.__home_current_filename || "<anonymous response>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_wasm_streaming_resolve_response(source, operation) {
+    \\  return Promise.resolve(source).then(response => {
+    \\    if (!(response instanceof Response)) {
+    \\      const name = response && response.constructor && response.constructor.name ? response.constructor.name : typeof response;
+    \\      throw __home_wasm_streaming_failure(
+    \\        'The "source" argument must be an instance of Response or an Promise resolving to Response. Received ' + (/^[A-Z]/.test(String(name)) ? "an instance of " + name : "type " + name),
+    \\        operation,
+    \\        "validate-source",
+    \\        null,
+    \\        new TypeError("source is not a Response"),
+    \\      );
+    \\    }
+    \\    const contentType = String(response.headers && response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    \\    if (contentType !== "application/wasm") {
+    \\      throw __home_wasm_streaming_failure(
+    \\        "WebAssembly response has unsupported MIME type '" + contentType + "'",
+    \\        operation,
+    \\        "validate-mime",
+    \\        response,
+    \\        new TypeError("expected application/wasm"),
+    \\      );
+    \\    }
+    \\    if (!response.ok) {
+    \\      throw __home_wasm_streaming_failure(
+    \\        "WebAssembly response has status code " + String(response.status),
+    \\        operation,
+    \\        "validate-status",
+    \\        response,
+    \\        new TypeError("response is not successful"),
+    \\      );
+    \\    }
+    \\    if (response.bodyUsed) {
+    \\      throw __home_wasm_streaming_failure(
+    \\        "WebAssembly response body has already been used",
+    \\        operation,
+    \\        "validate-body",
+    \\        response,
+    \\        new TypeError("response body is disturbed"),
+    \\      );
+    \\    }
+    \\    return response;
+    \\  }, cause => { throw __home_wasm_streaming_context(cause, operation, "resolve-source", null); });
+    \\}
+    \\function __home_wasm_streaming_chunk_view(chunk, operation, response) {
+    \\  const tag = chunk == null ? "" : Object.prototype.toString.call(chunk);
+    \\  const isBuffer = chunk instanceof ArrayBuffer || tag === "[object ArrayBuffer]";
+    \\  const isView = ArrayBuffer.isView(chunk);
+    \\  if (!isBuffer && !isView) {
+    \\    throw __home_wasm_streaming_failure(
+    \\      "chunk must be an ArrayBufferView or an ArrayBuffer",
+    \\      operation,
+    \\      "validate-chunk",
+    \\      response,
+    \\      new TypeError("stream yielded " + (chunk && chunk.constructor && chunk.constructor.name || typeof chunk)),
+    \\    );
+    \\  }
+    \\  const buffer = isBuffer ? chunk : chunk.buffer;
+    \\  if (!buffer || buffer.__home_detached === true || (isView && (chunk.byteOffset + chunk.byteLength > buffer.byteLength))) {
+    \\    throw __home_wasm_streaming_failure(
+    \\      "Underlying ArrayBuffer has been detached from the view or out-of-bounds",
+    \\      operation,
+    \\      "validate-chunk",
+    \\      response,
+    \\      new TypeError("detached or out-of-bounds ArrayBuffer"),
+    \\    );
+    \\  }
+    \\  try {
+    \\    return isBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer, chunk.byteOffset, chunk.byteLength);
+    \\  } catch (cause) {
+    \\    throw __home_wasm_streaming_failure(
+    \\      "Underlying ArrayBuffer has been detached from the view or out-of-bounds",
+    \\      operation,
+    \\      "validate-chunk",
+    \\      response,
+    \\      cause,
+    \\    );
+    \\  }
+    \\}
+    \\function __home_wasm_streaming_response_bytes(response, operation) {
+    \\  const body = response.body;
+    \\  if (!body || Object.prototype.hasOwnProperty.call(body, "__home_body_value")) {
+    \\    return response.arrayBuffer().then(value => new Uint8Array(value));
+    \\  }
+    \\  let reader;
+    \\  try { reader = body.getReader(); }
+    \\  catch (cause) { return Promise.reject(__home_wasm_streaming_context(cause, operation, "acquire-reader", response)); }
+    \\  response.bodyUsed = true;
+    \\  const bytes = [];
+    \\  function release() {
+    \\    try { if (reader && typeof reader.releaseLock === "function") reader.releaseLock(); } catch (ignored) {}
+    \\  }
+    \\  function fail(cause) {
+    \\    try { if (reader && typeof reader.cancel === "function") Promise.resolve(reader.cancel(cause)).catch(() => undefined); } catch (ignored) {}
+    \\    release();
+    \\    if (cause instanceof Error && /(?:already |is )?detached/i.test(String(cause.message || cause))) {
+    \\      throw __home_wasm_streaming_failure(
+    \\        "Underlying ArrayBuffer has been detached from the view or out-of-bounds",
+    \\        operation,
+    \\        "validate-chunk",
+    \\        response,
+    \\        cause,
+    \\      );
+    \\    }
+    \\    throw __home_wasm_streaming_context(cause, operation, "read-stream", response);
+    \\  }
+    \\  function pump() {
+    \\    return Promise.resolve(reader.read()).then(result => {
+    \\      if (result.done) {
+    \\        release();
+    \\        return new Uint8Array(bytes);
+    \\      }
+    \\      let view;
+    \\      try { view = __home_wasm_streaming_chunk_view(result.value, operation, response); }
+    \\      catch (cause) { return fail(cause); }
+    \\      for (let index = 0; index < view.byteLength; index++) bytes.push(view[index]);
+    \\      return pump();
+    \\    }, fail);
+    \\  }
+    \\  return pump();
+    \\}
+    \\function __home_wasm_compile_streaming(source) {
+    \\  const operation = "WebAssembly.compileStreaming";
+    \\  return __home_wasm_streaming_resolve_response(source, operation).then(response =>
+    \\    __home_wasm_streaming_response_bytes(response, operation).then(bytes => {
+    \\      try { return new WebAssembly.Module(bytes); }
+    \\      catch (cause) { throw __home_wasm_streaming_context(cause, operation, "compile", response); }
+    \\    }),
+    \\  );
+    \\}
+    \\function __home_wasm_instantiate_streaming(source, imports) {
+    \\  const operation = "WebAssembly.instantiateStreaming";
+    \\  return __home_wasm_streaming_resolve_response(source, operation).then(response =>
+    \\    __home_wasm_streaming_response_bytes(response, operation).then(bytes => {
+    \\      let module;
+    \\      try { module = new WebAssembly.Module(bytes); }
+    \\      catch (cause) { throw __home_wasm_streaming_context(cause, operation, "compile", response); }
+    \\      if ((imports === undefined || imports === null) && WebAssembly.Module.imports(module).length !== 0) {
+    \\        const Constructor = typeof WebAssembly.LinkError === "function" ? WebAssembly.LinkError : TypeError;
+    \\        throw __home_wasm_streaming_failure(
+    \\          "can't make WebAssembly.Instance because there is no imports Object and the WebAssembly.Module requires imports",
+    \\          operation,
+    \\          "instantiate",
+    \\          response,
+    \\          new TypeError("missing WebAssembly imports"),
+    \\          Constructor,
+    \\        );
+    \\      }
+    \\      try {
+    \\        const instance = new WebAssembly.Instance(module, imports);
+    \\        return { module, instance };
+    \\      } catch (cause) {
+    \\        throw __home_wasm_streaming_context(cause, operation, "instantiate", response);
+    \\      }
+    \\    }),
+    \\  );
+    \\}
+    \\if (typeof WebAssembly === "object") {
+    \\  if (typeof WebAssembly.compileStreaming !== "function") WebAssembly.compileStreaming = __home_wasm_compile_streaming;
+    \\  if (typeof WebAssembly.instantiateStreaming !== "function") WebAssembly.instantiateStreaming = __home_wasm_instantiate_streaming;
+    \\}
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
     \\globalThis.__home_listen_handles_by_port = Object.create(null);
     \\globalThis.__home_listen_handles_by_unix = Object.create(null);
@@ -81317,6 +81510,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { tmpdirSync } from \"harness\";",
             .replacement = "const { tmpdirSync } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { ok } from \"node:assert/strict\";",
+            .replacement = "const { ok } = globalThis.__home_import(\"node:assert/strict\");",
         },
         .{
             .needle = "import { tmpdirSync } from \"../../../harness\";",
@@ -112901,6 +113098,49 @@ test "bootstrap Blob stream conversions preserve fast-path state, metadata, and 
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap WebAssembly streaming validates responses, bytes, and failure context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\const wasm = "data:application/wasm;base64,AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=";
+        \\test("compile and instantiate streaming", async () => {
+        \\  const module = await WebAssembly.compileStreaming(await fetch(wasm));
+        \\  expect(module).toBeInstanceOf(WebAssembly.Module);
+        \\  const result = await WebAssembly.instantiateStreaming(await fetch(wasm));
+        \\  expect(result.instance.exports.add(20, 22)).toBe(42);
+        \\});
+        \\test("streaming validation failure context", async () => {
+        \\  const response = new Response(new ReadableStream({
+        \\    pull(controller) { controller.enqueue("not bytes"); },
+        \\  }), { headers: { "content-type": "application/wasm" } });
+        \\  const failure = await WebAssembly.compileStreaming(response).catch(error => error);
+        \\  expect(failure.code).toBe("ERR_WEBASSEMBLY_STREAMING");
+        \\  expect(failure.operation).toBe("WebAssembly.compileStreaming");
+        \\  expect(failure.phase).toBe("validate-chunk");
+        \\  expect(failure.cause).toBeInstanceOf(Error);
+        \\  expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/wasm-streaming.home-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap async resolves diagnostics preserve rejection causes" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_BUN_TEST_ASYNC_EXPECTATION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.test.expect.resolves") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: \" + causeSummary") != null);
 }
 
 test "bootstrap Bun unsafe array buffer helpers cover copied fixture shape" {
