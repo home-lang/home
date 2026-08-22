@@ -98411,11 +98411,23 @@ pub const Checker = struct {
     /// TS2351 ("This expression is not constructable.") header carrying
     /// tsc's TS2761 ("Type '{0}' has no construct signatures.") chain
     /// detail. Additive (chain child only).
+    fn newCalleeAnchorPos(self: *Checker, callee: NodeId) ?u32 {
+        const source = self.source orelse return null;
+        const new_expr = self.hir.parentOf(callee);
+        if (new_expr == hir_mod.none_node_id or self.hir.kindOf(new_expr) != .new_expr) return null;
+        const span = self.hir.spanOf(new_expr);
+        var pos: usize = span.start;
+        if (pos + 3 > source.len or !std.mem.eql(u8, source[pos .. pos + 3], "new")) return null;
+        pos += 3;
+        while (pos < source.len and isAsciiWhitespace(source[pos])) : (pos += 1) {}
+        return @intCast(pos);
+    }
+
     fn reportNotConstructableWithNoConstructSignatures(self: *Checker, callee: NodeId, callee_t: TypeId) CheckError!void {
         const chain = try self.notConstructableNoConstructSignaturesChain(callee_t);
         try self.diagnostics.append(self.gpa, .{
             .node = callee,
-            .pos = null,
+            .pos = self.newCalleeAnchorPos(callee),
             .code = 2351,
             .message = try self.diag_arena.allocator().dupe(u8, "This expression is not constructable."),
             .chain = chain,
@@ -101522,14 +101534,14 @@ pub const Checker = struct {
                             // NOT as the generic TS2469 from
                             // `checkCompoundAdditionAssignment`. Mirrors
                             // `symbolType4.ts(2,1)` / `(3,1)`.
-                            if (assignment_target_diag_fired) {
+                            if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
+                                try self.reportNullishRelationalOperand(a.target, target_t);
+                            } else if (assignment_target_diag_fired) {
                                 // Target-kind errors (class/enum/namespace
                                 // names and `undefined`) win over the
                                 // synthetic `+= 1` operand diagnostics.
                             } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
-                            } else if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
-                                try self.reportNullishRelationalOperand(a.target, target_t);
                             } else if (is_synth_update and
                                 !self.isArithmeticOperandAllowed(target_t))
                             {
@@ -101572,13 +101584,13 @@ pub const Checker = struct {
                                 !value_is_untyped_uninit and
                                 !self.typeIsExactNullish(value_t) and
                                 self.isArithmeticOperandAllowed(value_t);
-                            if (assignment_target_diag_fired) {
+                            if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
+                                try self.reportNullishRelationalOperand(a.target, target_t);
+                            } else if (assignment_target_diag_fired) {
                                 // Reference-target diagnostics win once the
                                 // update operand's arithmetic type is valid.
                             } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
-                            } else if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
-                                try self.reportNullishRelationalOperand(a.target, target_t);
                             } else if (!is_synth_update and self.typeIsExactNullish(target_t)) {
                                 try self.reportNullishRelationalOperand(a.target, target_t);
                             } else if (!assignment_target_diag_fired and !self.isArithmeticOperandAllowed(target_t)) {
@@ -141112,7 +141124,7 @@ pub const Checker = struct {
     }
 
     fn updateOperandRequiresVariableDiagnostic(self: *Checker, target: NodeId, target_t: TypeId) bool {
-        if (self.updateOperandIsEnumBinaryExpression(target)) return true;
+        if (self.updateOperandIsEnumBinaryExpression(target)) return false;
         if (self.typeIsExactUndefined(target_t)) return false;
         if (self.nodeSourceTextIs(target, "undefined")) return false;
         return switch (self.hir.kindOf(target)) {
@@ -142550,12 +142562,24 @@ pub const Checker = struct {
                 //   arithmeticOperatorWithNullValueAndInvalidOperands.
                 const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
                 const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
+                const lhs_void_undefined = self.strict_flags.strict_null_checks and
+                    self.typeIsExactUndefined(lhs) and self.hir.kindOf(b.lhs) == .unary_op and
+                    hir_mod.unaryOf(self.hir, b.lhs).op == .void_;
+                const rhs_void_undefined = self.strict_flags.strict_null_checks and
+                    self.typeIsExactUndefined(rhs) and self.hir.kindOf(b.rhs) == .unary_op and
+                    hir_mod.unaryOf(self.hir, b.rhs).op == .void_;
                 if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
                 if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
-                if (lhs_nullish == null and !self.isArithmeticOperandAllowed(lhs)) {
+                if (lhs_void_undefined) {
+                    try self.reportAt(b.lhs, self.symbolOperandAnchorPos(b.lhs), TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                }
+                if (rhs_void_undefined) {
+                    try self.reportAt(b.rhs, self.symbolOperandAnchorPos(b.rhs), TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                }
+                if (lhs_nullish == null and !lhs_void_undefined and !self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (rhs_nullish == null and !self.isArithmeticOperandAllowed(rhs)) {
+                if (rhs_nullish == null and !rhs_void_undefined and !self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 // TS2791 — exponentiation (`**`) on two bigint operands
@@ -142897,7 +142921,7 @@ pub const Checker = struct {
                     },
                     .literal_number => {
                         const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(u.operand), " \t\r\n");
-                        if (!std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "1")) {
+                        if (text.len > 0 and !std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "1")) {
                             try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                         }
                     },
@@ -182316,6 +182340,35 @@ test "checker: compound addition reports nullish rhs where TS disallows it" {
     try T.expectEqual(@as(usize, 2), nullish_errors);
 }
 
+test "checker: update operands validate arithmetic before reference shape" {
+    const s = try newSetup(
+        \\enum E { A, B }
+        \\++(E[0] + E[1]);
+        \\(E[0] + E[1])++;
+        \\--(E[0] + E[1]);
+        \\(E[0] + E[1])--;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.arithmetic_operand_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.update_operand_not_variable));
+}
+
+test "checker: null update operands retain nullish and reference diagnostics" {
+    const s = try newSetup(
+        \\++null;
+        \\null++;
+        \\--null;
+        \\null--;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.nullish_relational_operand));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.update_operand_not_variable));
+}
+
 test "checker: new expression rejects primitive callee expressions" {
     const s = try newSetup(
         \\declare var a: any;
@@ -182330,6 +182383,41 @@ test "checker: new expression rejects primitive callee expressions" {
         if (d.code == 2351) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: parenthesized new anchors TS2351 at callee token" {
+    const source =
+        \\declare var a: any;
+        \\declare var b: any;
+        \\new (a ** b);
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const expected: u32 = @intCast(std.mem.lastIndexOf(u8, source, "(a **") orelse unreachable);
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 2351) continue;
+        found = true;
+        try T.expectEqual(expected, s.checker.diagnosticStart(diagnostic));
+    }
+    try T.expect(found);
+}
+
+test "checker: strict exponentiation reports void operands as possibly undefined" {
+    const source =
+        \\(void 1) ** 2;
+        \\2 ** (void 1);
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_left_operand_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_right_operand_type));
 }
 
 test "checker: new expression rejects non-void call signature without construct signature" {
@@ -182651,6 +182739,13 @@ test "checker: negated numeric literals other than zero and one are always truth
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_always_truthy));
+}
+
+test "checker: missing negation operand does not report always truthy" {
+    const s = try newSetup("const value = !;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_always_truthy));
 }
 
 test "checker: unreachable JS reports TS7027 per unreachable run" {
