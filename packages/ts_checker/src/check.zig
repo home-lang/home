@@ -99589,7 +99589,8 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(target)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
         if (self.isBareTypeParameter(current)) {
-            const constraint = self.typeParameterConstraint(current) orelse return current;
+            const constraint = self.typeParameterConstraint(current) orelse
+                return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
             if (constraint != current) return try self.narrowTypeByPredicate(constraint, target);
         }
         if (current_flags.is_union) {
@@ -103933,15 +103934,15 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     }
-                    if ((try self.futureCommonJsExportAssignmentValue(node, key)) != null) {
-                        try self.reportExpandoPropertyUsedBeforeAssignment(node, key.prop_name);
-                        break :blk types.Primitive.any;
-                    }
                     // A property write defines a CommonJS expando only when
                     // the section has no whole export assignment. Current
                     // tsgo diagnoses the mixed form and checks
                     // `module.exports.X` against the assigned value.
                     if (self.isInAssignmentTargetChain(node)) {
+                        break :blk types.Primitive.any;
+                    }
+                    if ((try self.futureCommonJsExportAssignmentValue(node, key)) != null) {
+                        try self.reportExpandoPropertyUsedBeforeAssignment(node, key.prop_name);
                         break :blk types.Primitive.any;
                     }
                     try self.reportCommonJsExportMissingMember(node, m.name);
@@ -208706,6 +208707,31 @@ test "checker: generic predicate infers type parameter from union remainder" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: primitive guards intersect unconstrained type parameters" {
+    const s = try newSetup(
+        \\class C { prop: string = ""; }
+        \\function byInstance<T>(x: T) {
+        \\  if (x instanceof C) {
+        \\    const generic: T = x;
+        \\    const concrete: C = x;
+        \\    x.prop;
+        \\  }
+        \\}
+        \\function byTypeof<T>(x: T) {
+        \\  if (typeof x === "string") {
+        \\    const generic: T = x;
+        \\    const concrete: string = x;
+        \\    x.length;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: NonNullable preserves inferred enum member candidate" {
     const s = try newSetup(
         \\declare function f<T>(x: T): NonNullable<T>;
@@ -248951,6 +248977,32 @@ test "checker: CommonJS export reads before later writes report definite assignm
         TsCodes.property_used_before_assigned,
         "Property 'j' is used before being assigned.",
     ));
+}
+
+test "checker: CommonJS export declaration writes are not early reads" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @declaration: true
+        \\// @filename: exports.js
+        \\exports.apply = undefined;
+        \\function apply() {}
+        \\exports.apply = apply;
+        \\exports.apply();
+        \\// @filename: module.js
+        \\module.exports.apply = undefined;
+        \\module.exports.apply = apply;
+        \\module.exports.apply();
+        \\// @filename: chained.js
+        \\exports.y = exports.x = void 0;
+        \\exports.x = 1;
+        \\exports.y = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_used_before_assigned));
 }
 
 test "checker: checked JS whole CommonJS exports reject later expandos" {
