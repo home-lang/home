@@ -65851,6 +65851,78 @@ const harness_prelude =
     \\  if (body !== "" && !acceptedNames.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
     \\  return headers;
     \\}
+    \\globalThis.__home_fetch_stream_lifecycles = globalThis.__home_fetch_stream_lifecycles || new Set();
+    \\function __home_fetch_stream_lifecycle_error(phase, href, state, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch response stream lifecycle failed"));
+    \\  const step = String(phase || "cancel");
+    \\  let endpoint = String(href || "");
+    \\  try { endpoint = new URL(endpoint).origin; } catch (error) {}
+    \\  const failure = new Error("fetch response stream lifecycle failed during " + step + " for " + endpoint + ": " + String(underlying.message || underlying));
+    \\  failure.name = "FetchStreamLifecycleError";
+    \\  failure.code = "ERR_FETCH_STREAM_LIFECYCLE";
+    \\  failure.operation = "fetch.response.stream.lifecycle";
+    \\  failure.phase = step;
+    \\  failure.endpoint = endpoint;
+    \\  failure.released = !!(state && state.released);
+    \\  failure.liveRoots = Number(state && state.liveRoots || 0);
+    \\  failure.reason = state && state.reason !== undefined ? state.reason : null;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_stream_lifecycle_release(state, phase, reason) {
+    \\  if (!state || state.released) return Promise.resolve(undefined);
+    \\  state.phase = String(phase || "cancel");
+    \\  state.reason = reason === undefined ? null : reason;
+    \\  state.released = true;
+    \\  state.liveRoots = 0;
+    \\  globalThis.__home_fetch_stream_lifecycles.delete(state);
+    \\  const socket = state.socket;
+    \\  state.socket = null;
+    \\  state.stream = null;
+    \\  try {
+    \\    if (socket && !socket.__home_closed && typeof socket.terminate === "function") socket.terminate();
+    \\  } catch (cause) {
+    \\    return Promise.reject(__home_fetch_stream_lifecycle_error(state.phase, state.href, state, cause));
+    \\  }
+    \\  return Promise.resolve(undefined);
+    \\}
+    \\function __home_fetch_partial_chunked_response(text, href, socket) {
+    \\  const metadata = __home_fetch_response_metadata(text);
+    \\  if (!metadata) return null;
+    \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
+    \\  if (!transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) return null;
+    \\  const body = text.slice(metadata.bodyOffset);
+    \\  const chunks = [];
+    \\  let cursor = 0;
+    \\  while (cursor < body.length) {
+    \\    const sizeEnd = body.indexOf("\r\n", cursor);
+    \\    if (sizeEnd === -1) break;
+    \\    const sizeToken = String(body.slice(cursor, sizeEnd).split(";", 1)[0] || "").trim();
+    \\    if (!/^[0-9a-f]+$/i.test(sizeToken)) throw __home_fetch_response_framing_error("chunk-size", text, new Error("invalid chunk size in streaming response"));
+    \\    const size = Number.parseInt(sizeToken, 16);
+    \\    if (size === 0) return null;
+    \\    const chunkStart = sizeEnd + 2;
+    \\    const chunkEnd = chunkStart + size;
+    \\    if (chunkEnd + 2 > body.length) break;
+    \\    if (body.slice(chunkEnd, chunkEnd + 2) !== "\r\n") throw __home_fetch_response_framing_error("chunk-data", text, new Error("streaming chunk payload is not followed by CRLF"));
+    \\    chunks.push(Buffer.from(__home_latin1_bytes(body.slice(chunkStart, chunkEnd))));
+    \\    cursor = chunkEnd + 2;
+    \\  }
+    \\  if (chunks.length === 0) return null;
+    \\  const state = { href: String(href), phase: "read", reason: null, released: false, liveRoots: 1, socket, stream: null };
+    \\  const stream = new ReadableStream({
+    \\    start(controller) { for (const chunk of chunks) controller.enqueue(chunk); },
+    \\    cancel(reason) { return __home_fetch_stream_lifecycle_release(state, "cancel", reason); },
+    \\  });
+    \\  state.stream = stream;
+    \\  globalThis.__home_fetch_stream_lifecycles.add(state);
+    \\  const response = new Response(stream, { status: metadata.status, headers: metadata.headers });
+    \\  response.__home_fetch_stream_lifecycle = state;
+    \\  return response;
+    \\}
     \\function __home_fetch_via_bun_listener(href, fetchOptions, fetchMethod) {
     \\  const parsed = new URL(href);
     \\  const port = Number(parsed.port || 80);
@@ -65877,7 +65949,13 @@ const harness_prelude =
     \\      if (settled) return;
     \\      const responseText = __home_net_latin1(Buffer.from(responseBytes));
     \\      try {
-    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) return;
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) {
+    \\          const streamingResponse = terminal === true ? null : __home_fetch_partial_chunked_response(responseText, href, socket);
+    \\          if (!streamingResponse) return;
+    \\          settled = true;
+    \\          resolve(streamingResponse);
+    \\          return;
+    \\        }
     \\        settled = true;
     \\        resolve(__home_fetch_proxy_response_text(responseText));
     \\      } catch (error) {
@@ -108855,6 +108933,42 @@ test "bootstrap runner releases intermediate fetch redirect URLs" {
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
             "fetch redirect lifetime mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner releases canceled fetch response stream roots" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-stream-cancel-leak.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-stream-cancel-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "after reader.cancel()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "after body.cancel()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Transfer-Encoding: chunked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_partial_chunked_response(text, href, socket)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_fetch_stream_lifecycles.delete(state)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.response.stream.lifecycle\"") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "fetch stream cancel lifetime mismatch: passed={} expected=2 failed={} todo={} unsupported={} message={s}\n",
             .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
