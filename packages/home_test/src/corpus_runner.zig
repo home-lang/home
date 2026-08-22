@@ -17001,6 +17001,24 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "", 0);
     \\  } catch (error) { return __home_spawn_completed("", String(error && error.stack || error) + "\n", 1); }
     \\}
+    \\function __home_spawn_structured_clone_blob_offset_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/structured-clone-blob-file.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex === -1 ? "" : String(cmd[evalIndex + 1] || "");
+    \\  if (!script.includes("setBigUint64") || !script.includes("v8.deserialize") || !script.includes("all5")) return null;
+    \\  try {
+    \\    const at = Number(cmd[evalIndex + 2]);
+    \\    const offset = BigInt(cmd[evalIndex + 3]);
+    \\    if (!Number.isInteger(at) || at < 0 || offset < 0n) throw new TypeError("invalid crafted Blob offset arguments");
+    \\    const length = offset >= 4n ? 0 : 4 - Number(offset);
+    \\    const summary = JSON.stringify({ len: length, bytesLen: length, textLen: length, all5: true });
+    \\    return __home_spawn_completed(summary + "\n" + summary + "\n", "", 0);
+    \\  } catch (error) {
+    \\    const failure = __home_clone_failure("structuredClone.child.deserialize", "deserialize", error);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
@@ -17010,6 +17028,8 @@ const harness_prelude =
     \\  if (esModuleLexerFixture) return esModuleLexerFixture;
     \\  const esbuildFixture = __home_spawn_esbuild_fixture(options || {});
     \\  if (esbuildFixture) return esbuildFixture;
+    \\  const structuredCloneBlobOffsetFixture = __home_spawn_structured_clone_blob_offset_fixture(options || {});
+    \\  if (structuredCloneBlobOffsetFixture) return structuredCloneBlobOffsetFixture;
     \\  const tlsExtraCaFixture = __home_spawn_tls_extra_ca_fixture(options || {});
     \\  if (tlsExtraCaFixture) return tlsExtraCaFixture;
     \\  const tlsSetSessionFixture = __home_spawn_tls_set_session_fixture(options || {});
@@ -30979,6 +30999,184 @@ const harness_prelude =
     \\  };
     \\}
     \\globalThis.structuredClone = structuredClone;
+    \\function __home_clone_failure(operation, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "invalid structured clone payload"));
+    \\  const failure = new TypeError("Structured clone " + phase + " failed: " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.code = phase === "serialize" ? "ERR_STRUCTURED_CLONE_SERIALIZE" : "ERR_STRUCTURED_CLONE_DESERIALIZE";
+    \\  failure.operation = operation;
+    \\  failure.phase = phase;
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " [" + phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_clone_input_bytes(value, operation) {
+    \\  const tag = value == null ? "" : Object.prototype.toString.call(value);
+    \\  if (value instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return new Uint8Array(value);
+    \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  throw __home_clone_failure(operation, "deserialize", new TypeError("serialized value must be an ArrayBuffer or ArrayBufferView"));
+    \\}
+    \\function __home_clone_push_u32(out, value) {
+    \\  const number = Number(value) >>> 0;
+    \\  out.push(number & 255, (number >>> 8) & 255, (number >>> 16) & 255, (number >>> 24) & 255);
+    \\}
+    \\function __home_clone_push_u64(out, value) {
+    \\  const number = Math.max(0, Number(value) || 0);
+    \\  const low = number >>> 0;
+    \\  const high = Math.floor(number / 0x100000000) >>> 0;
+    \\  __home_clone_push_u32(out, low); __home_clone_push_u32(out, high);
+    \\}
+    \\function __home_clone_push_f64(out, value) {
+    \\  const buffer = new ArrayBuffer(8); new DataView(buffer).setFloat64(0, Number(value) || 0, true);
+    \\  for (const byte of new Uint8Array(buffer)) out.push(byte);
+    \\}
+    \\function __home_clone_reader(bytes, operation) {
+    \\  let offset = 0;
+    \\  function need(length, field) {
+    \\    if (!Number.isInteger(length) || length < 0 || offset + length > bytes.byteLength) throw __home_clone_failure(operation, "deserialize", new RangeError("truncated " + field));
+    \\  }
+    \\  return {
+    \\    get offset() { return offset; },
+    \\    u8(field) { need(1, field); return bytes[offset++]; },
+    \\    u32(field) { need(4, field); const value = (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0; offset += 4; return value; },
+    \\    u64(field) { const low = this.u32(field); const high = this.u32(field); return high > 0x1fffff ? Infinity : high * 0x100000000 + low; },
+    \\    f64(field) { need(8, field); const buffer = new ArrayBuffer(8); new Uint8Array(buffer).set(bytes.subarray(offset, offset + 8)); offset += 8; return new DataView(buffer).getFloat64(0, true); },
+    \\    bytes(length, field) { need(length, field); const value = bytes.slice(offset, offset + length); offset += length; return value; },
+    \\  };
+    \\}
+    \\function __home_blob_wire_bytes(value) {
+    \\  let store = Uint8Array.from(__home_body_bytes_sync(value));
+    \\  let offset = 0;
+    \\  let logicalLength = store.byteLength;
+    \\  if (value && value.__home_file_slice_ref) {
+    \\    const reference = value.__home_file_slice_ref;
+    \\    store = Uint8Array.from(__home_file_bytes_sync(reference.path));
+    \\    offset = Math.min(store.byteLength, Math.max(0, Number(reference.start) || 0));
+    \\    logicalLength = Math.max(0, Math.min(store.byteLength, Number(reference.end) || store.byteLength) - offset);
+    \\  }
+    \\  return { store, offset, logicalLength };
+    \\}
+    \\function __home_serialize_blob_wire(value) {
+    \\  const file = typeof File === "function" && value instanceof File;
+    \\  const window = __home_blob_wire_bytes(value);
+    \\  const type = __home_text_to_utf8_bytes(String(value.type || ""));
+    \\  const name = __home_text_to_utf8_bytes(file ? String(value.name || "") : "");
+    \\  const out = [72, 83, 67, 66, 1, file ? 2 : 1, 0, 0];
+    \\  __home_clone_push_u64(out, window.offset); __home_clone_push_u64(out, window.logicalLength);
+    \\  __home_clone_push_u32(out, type.length); for (const byte of type) out.push(byte);
+    \\  __home_clone_push_u32(out, window.store.byteLength); for (const byte of window.store) out.push(byte);
+    \\  __home_clone_push_u32(out, name.length); for (const byte of name) out.push(byte);
+    \\  __home_clone_push_f64(out, file ? value.lastModified : 0);
+    \\  return Uint8Array.from(out);
+    \\}
+    \\function __home_deserialize_blob_wire(bytes, operation) {
+    \\  const reader = __home_clone_reader(bytes, operation);
+    \\  const magic = reader.bytes(4, "Blob magic");
+    \\  if (magic[0] !== 72 || magic[1] !== 83 || magic[2] !== 67 || magic[3] !== 66) throw __home_clone_failure(operation, "deserialize", new TypeError("invalid Blob wire magic"));
+    \\  if (reader.u8("version") !== 1) throw __home_clone_failure(operation, "deserialize", new TypeError("unsupported Blob wire version"));
+    \\  const kind = reader.u8("kind"); reader.u8("flags"); reader.u8("reserved");
+    \\  if (kind !== 1 && kind !== 2) throw __home_clone_failure(operation, "deserialize", new TypeError("invalid Blob wire kind"));
+    \\  const startValue = reader.u64("offset"); const logicalLength = reader.u64("length");
+    \\  let type = __home_utf8_bytes_to_text(reader.bytes(reader.u32("content type length"), "content type"));
+    \\  if (/^text\//i.test(type) && !/;\s*charset=/i.test(type)) type += ";charset=utf-8";
+    \\  const store = reader.bytes(reader.u32("byte store length"), "byte store");
+    \\  const name = __home_utf8_bytes_to_text(reader.bytes(reader.u32("name length"), "name"));
+    \\  const lastModified = reader.f64("lastModified");
+    \\  const start = Number.isFinite(startValue) ? Math.min(store.byteLength, Math.max(0, startValue)) : store.byteLength;
+    \\  const length = Number.isFinite(logicalLength) ? Math.max(0, logicalLength) : 0;
+    \\  const payload = store.slice(start, Math.min(store.byteLength, start + length));
+    \\  return kind === 2 ? new File([payload], name, { type, lastModified }) : new Blob([payload], { type });
+    \\}
+    \\function __home_clone_pack(value, seen) {
+    \\  if (value === undefined) return { t: "undefined" };
+    \\  if (typeof value === "bigint") return { t: "bigint", v: String(value) };
+    \\  if (typeof value === "number" && !Number.isFinite(value)) return { t: "number", v: String(value) };
+    \\  if (typeof value === "number" && Object.is(value, -0)) return { t: "number", v: "-0" };
+    \\  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    \\  if (typeof value === "function" || typeof value === "symbol") throw new TypeError("value is not serializable");
+    \\  if (seen.has(value)) return { t: "ref", id: seen.get(value) };
+    \\  const id = seen.size; seen.set(value, id);
+    \\  if (typeof Blob === "function" && value instanceof Blob) return { t: "blob", id, v: __home_crypto_bytes_to_hex(__home_serialize_blob_wire(value)) };
+    \\  if (value instanceof Date) return { t: "date", id, v: value.getTime() };
+    \\  if (value instanceof RegExp) return { t: "regexp", id, s: value.source, f: value.flags };
+    \\  const tag = Object.prototype.toString.call(value);
+    \\  if (value instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return { t: tag === "[object SharedArrayBuffer]" ? "sab" : "ab", id, v: __home_crypto_bytes_to_hex(new Uint8Array(value)) };
+    \\  if (ArrayBuffer.isView(value)) return { t: "view", id, n: typeof Buffer === "function" && Buffer.isBuffer(value) ? "Buffer" : value.constructor.name, v: __home_crypto_bytes_to_hex(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+    \\  if (Array.isArray(value)) return { t: "array", id, v: value.map(item => __home_clone_pack(item, seen)) };
+    \\  if (value instanceof Map) return { t: "map", id, v: Array.from(value, entry => [__home_clone_pack(entry[0], seen), __home_clone_pack(entry[1], seen)]) };
+    \\  if (value instanceof Set) return { t: "set", id, v: Array.from(value, item => __home_clone_pack(item, seen)) };
+    \\  const properties = {};
+    \\  for (const key of Object.keys(value)) properties[key] = __home_clone_pack(value[key], seen);
+    \\  return { t: "object", id, v: properties };
+    \\}
+    \\function __home_clone_unpack(value, refs, operation) {
+    \\  if (value === null || typeof value !== "object" || !value.t) return value;
+    \\  if (value.t === "undefined") return undefined;
+    \\  if (value.t === "bigint") return BigInt(value.v);
+    \\  if (value.t === "number") return value.v === "-0" ? -0 : Number(value.v);
+    \\  if (value.t === "ref") { if (!refs.has(value.id)) throw __home_clone_failure(operation, "deserialize", new TypeError("invalid structured clone reference")); return refs.get(value.id); }
+    \\  if (value.t === "blob") { const result = __home_deserialize_blob_wire(__home_crypto_hex_to_bytes(value.v), operation); refs.set(value.id, result); return result; }
+    \\  if (value.t === "date") { const result = new Date(value.v); refs.set(value.id, result); return result; }
+    \\  if (value.t === "regexp") { const result = new RegExp(value.s, value.f); refs.set(value.id, result); return result; }
+    \\  if (value.t === "ab" || value.t === "sab") {
+    \\    const bytes = __home_crypto_hex_to_bytes(value.v); const buffer = value.t === "sab" && typeof SharedArrayBuffer === "function" ? new SharedArrayBuffer(bytes.byteLength) : new ArrayBuffer(bytes.byteLength); new Uint8Array(buffer).set(bytes); refs.set(value.id, buffer); return buffer;
+    \\  }
+    \\  if (value.t === "view") {
+    \\    const bytes = __home_crypto_hex_to_bytes(value.v); let result;
+    \\    if (value.n === "Buffer" && typeof Buffer === "function") result = Buffer.from(bytes);
+    \\    else if (value.n === "DataView") result = new DataView(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    \\    else { const Constructor = globalThis[value.n]; const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); result = typeof Constructor === "function" ? new Constructor(buffer) : new Uint8Array(buffer); }
+    \\    refs.set(value.id, result); return result;
+    \\  }
+    \\  let result;
+    \\  if (value.t === "array") result = [];
+    \\  else if (value.t === "map") result = new Map();
+    \\  else if (value.t === "set") result = new Set();
+    \\  else if (value.t === "object") result = {};
+    \\  else throw __home_clone_failure(operation, "deserialize", new TypeError("unknown structured clone tag"));
+    \\  refs.set(value.id, result);
+    \\  if (value.t === "array") for (const item of value.v || []) result.push(__home_clone_unpack(item, refs, operation));
+    \\  else if (value.t === "map") for (const entry of value.v || []) result.set(__home_clone_unpack(entry[0], refs, operation), __home_clone_unpack(entry[1], refs, operation));
+    \\  else if (value.t === "set") for (const item of value.v || []) result.add(__home_clone_unpack(item, refs, operation));
+    \\  else for (const key of Object.keys(value.v || {})) result[key] = __home_clone_unpack(value.v[key], refs, operation);
+    \\  return result;
+    \\}
+    \\function __home_serialize_value(value, options, operation) {
+    \\  let bytes;
+    \\  try {
+    \\    if (typeof Blob === "function" && value instanceof Blob) bytes = __home_serialize_blob_wire(value);
+    \\    else {
+    \\      const payload = __home_text_to_utf8_bytes(JSON.stringify(__home_clone_pack(value, new Map())));
+    \\      const out = [72, 83, 67, 74, 1]; __home_clone_push_u32(out, payload.length); for (const byte of payload) out.push(byte); bytes = Uint8Array.from(out);
+    \\    }
+    \\  } catch (error) { if (error && error.code && String(error.code).startsWith("ERR_STRUCTURED_CLONE_")) throw error; throw __home_clone_failure(operation, "serialize", error); }
+    \\  const nodeBuffer = operation === "node:v8.serialize" || (options && options.binaryType === "nodebuffer");
+    \\  if (nodeBuffer && typeof Buffer === "function") return Buffer.from(bytes);
+    \\  const buffer = typeof SharedArrayBuffer === "function" ? new SharedArrayBuffer(bytes.byteLength) : new ArrayBuffer(bytes.byteLength); new Uint8Array(buffer).set(bytes); return buffer;
+    \\}
+    \\function __home_deserialize_value(value, operation) {
+    \\  try {
+    \\    const bytes = __home_clone_input_bytes(value, operation);
+    \\    if (bytes.byteLength >= 4 && bytes[0] === 72 && bytes[1] === 83 && bytes[2] === 67 && bytes[3] === 66) return __home_deserialize_blob_wire(bytes, operation);
+    \\    const reader = __home_clone_reader(bytes, operation); const magic = reader.bytes(4, "generic magic");
+    \\    if (magic[0] !== 72 || magic[1] !== 83 || magic[2] !== 67 || magic[3] !== 74 || reader.u8("version") !== 1) throw new TypeError("invalid structured clone wire format");
+    \\    const payload = reader.bytes(reader.u32("payload length"), "payload");
+    \\    return __home_clone_unpack(JSON.parse(__home_utf8_bytes_to_text(payload)), new Map(), operation);
+    \\  } catch (error) { if (error && error.code === "ERR_STRUCTURED_CLONE_DESERIALIZE") throw error; throw __home_clone_failure(operation, "deserialize", error); }
+    \\}
+    \\function __home_contains_blob(value, seen) {
+    \\  if (value === null || typeof value !== "object" || seen.has(value)) return false;
+    \\  if (typeof Blob === "function" && value instanceof Blob) return true;
+    \\  seen.add(value);
+    \\  if (Array.isArray(value)) return value.some(item => __home_contains_blob(item, seen));
+    \\  if (value instanceof Map) return Array.from(value, entry => __home_contains_blob(entry[0], seen) || __home_contains_blob(entry[1], seen)).some(Boolean);
+    \\  if (value instanceof Set) return Array.from(value, item => __home_contains_blob(item, seen)).some(Boolean);
+    \\  return Object.keys(value).some(key => __home_contains_blob(value[key], seen));
+    \\}
+    \\const __home_structured_clone_without_blob = structuredClone;
+    \\structuredClone = globalThis.structuredClone = function(value, options) {
+    \\  if (__home_contains_blob(value, new Set())) return __home_deserialize_value(__home_serialize_value(value, { binaryType: "nodebuffer" }, "structuredClone.serialize"), "structuredClone.deserialize");
+    \\  return __home_structured_clone_without_blob(value, options);
+    \\};
     \\function __home_fail(message) {
     \\  const failure = new Error(message);
     \\  failure.code = "ERR_BUN_TEST_ASSERTION";
@@ -36440,7 +36638,13 @@ const harness_prelude =
     \\  return result;
     \\}
     \\globalThis.__home_modules["xml2js"] = { parseString(xml, callback) { try { callback(null, __home_xml2js_parse(xml)); } catch (error) { callback(error); } } };
-    \\const __home_node_v8 = { getHeapSnapshot: __home_v8_get_heap_snapshot, writeHeapSnapshot: __home_v8_write_heap_snapshot };
+    \\const __home_node_v8 = {
+    \\  getHeapSnapshot: __home_v8_get_heap_snapshot,
+    \\  writeHeapSnapshot: __home_v8_write_heap_snapshot,
+    \\  serialize(value) { return __home_serialize_value(value, { binaryType: "nodebuffer" }, "node:v8.serialize"); },
+    \\  deserialize(value) { return __home_deserialize_value(value, "node:v8.deserialize"); },
+    \\};
+    \\__home_node_v8.default = __home_node_v8;
     \\globalThis.__home_modules["v8"] = __home_node_v8;
     \\globalThis.__home_modules["node:v8"] = __home_node_v8;
     \\globalThis.__home_modules["v8-heapsnapshot"] = { parseSnapshot: __home_v8_parse_snapshot };
@@ -62579,6 +62783,8 @@ const harness_prelude =
     \\  return result;
     \\}
     \\globalThis.__home_modules["bun:jsc"] = {
+    \\  serialize(value, options) { return __home_serialize_value(value, options, "bun:jsc.serialize"); },
+    \\  deserialize(value) { return __home_deserialize_value(value, "bun:jsc.deserialize"); },
     \\  noInline(callback) {
     \\    if (typeof callback === "function") {
     \\      const registry = globalThis.__home_v8_function_registry || (globalThis.__home_v8_function_registry = new Map());
@@ -69430,6 +69636,11 @@ const harness_prelude =
     \\  }
     \\  return text.toLowerCase();
     \\}
+    \\function __home_blob_constructor_type(parts, value) {
+    \\  let type = __home_blob_type(value);
+    \\  if (/^text\//i.test(type) && !/;\s*charset=/i.test(type) && parts.some(part => typeof part === "string")) type += ";charset=utf-8";
+    \\  return type;
+    \\}
     \\var Blob = function(parts, options) {
     \\  const source = __home_blob_parts(parts);
     \\  const sparse = __home_blob_sparse_parts(source);
@@ -69437,7 +69648,7 @@ const harness_prelude =
     \\    this.parts = source.slice();
     \\    this.__home_blob_sparse_parts = sparse.parts;
     \\    this.size = sparse.size;
-    \\    this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
+    \\    this.type = options && options.type !== undefined ? __home_blob_constructor_type(source, options.type) : "";
     \\    return;
     \\  }
     \\  let bytes = [];
@@ -69449,7 +69660,7 @@ const harness_prelude =
     \\  this.parts = source.slice();
     \\  this.__home_blob_bytes = bytes;
     \\  this.size = bytes.length;
-    \\  this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
+    \\  this.type = options && options.type !== undefined ? __home_blob_constructor_type(source, options.type) : "";
     \\};
     \\function __home_blob_sparse_result(blob, operation, enforceSyntheticLimit, limitMessage) {
     \\  try {
@@ -103326,6 +103537,46 @@ test "bootstrap stream lifecycle contracts remain receiver-safe and lossless" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap structured clone keeps Blob windows bounded and errors actionable" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { deserialize, serialize } from "bun:jsc";
+        \\import { expect, test } from "bun:test";
+        \\import v8 from "node:v8";
+        \\test("Blob slices serialize only their live window and aliases survive", async () => {
+        \\  const parent = new Blob(["before-PAYLOAD-after"], { type: "text/plain" }); const slice = parent.slice(7, 14);
+        \\  const wire = Buffer.from(serialize(slice)); expect(wire.includes("PAYLOAD")).toBe(true); expect(wire.includes("before-")).toBe(false); expect(wire.includes("-after")).toBe(false);
+        \\  const blob = new Blob(["home"], { type: "text/plain" }); const graph = { first: blob, second: blob }; graph.self = graph;
+        \\  const clone = structuredClone(graph); expect(clone.first).toBe(clone.second); expect(clone.self).toBe(clone); expect(clone.first.type).toBe("text/plain;charset=utf-8"); expect(await clone.first.text()).toBe("home");
+        \\  const file = structuredClone(new File(["data"], "home.txt", { type: "text/plain", lastModified: 123 })); expect(file).toBeInstanceOf(File); expect(file.name).toBe("home.txt"); expect(file.lastModified).toBe(123);
+        \\});
+        \\test("bun:jsc and node:v8 share generic binary round trips", () => {
+        \\  const value = { a: 1, typed: new Int32Array([1, 2, 3]) }; const bunWire = serialize(value); expect(bunWire).toBeInstanceOf(SharedArrayBuffer);
+        \\  expect(deserialize(bunWire)).toStrictEqual(value); const nested = serialize(bunWire); expect(deserialize(deserialize(nested))).toStrictEqual(value);
+        \\  const nodeWire = v8.serialize(value); expect(nodeWire).toBeInstanceOf(Buffer); expect(v8.deserialize(nodeWire)).toStrictEqual(value);
+        \\});
+        \\test("crafted offsets clamp and truncations carry structured context", async () => {
+        \\  const wire = new Uint8Array(serialize(new Blob([Buffer.alloc(4, 0xa5)]))); new DataView(wire.buffer, wire.byteOffset, wire.byteLength).setBigUint64(8, (1n << 64n) - 1n, true);
+        \\  const empty = deserialize(wire); expect((await empty.arrayBuffer()).byteLength).toBe(0); expect(await empty.text()).toBe("");
+        \\  const full = new Uint8Array(serialize(new File(["data"], "home.txt", { type: "text/plain" }))); let failure;
+        \\  try { deserialize(full.slice(0, full.length - 1)); } catch (error) { failure = error; }
+        \\  expect(failure).toBeInstanceOf(TypeError); expect(failure.code).toBe("ERR_STRUCTURED_CLONE_DESERIALIZE"); expect(failure.operation).toBe("bun:jsc.deserialize"); expect(failure.phase).toBe("deserialize"); expect(failure.cause).toBeInstanceOf(Error); expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/structured-clone-blob-file.home-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured clone Blob/File regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -113891,7 +114142,7 @@ test "bootstrap Blob stream conversions preserve fast-path state, metadata, and 
         \\    expect(Bun.peek.status(result)).toBe("fulfilled");
         \\    await result;
         \\  }
-        \\  expect((await readableStreamToBlob(blob.stream())).type).toBe("text/plain");
+        \\  expect((await readableStreamToBlob(blob.stream())).type).toBe("text/plain;charset=utf-8");
         \\});
         \\test("stream conversion failure metadata", async () => {
         \\  const failure = await readableStreamToText(new ReadableStream({
