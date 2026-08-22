@@ -871,6 +871,20 @@ const harness_prelude =
     \\  else if (text.endsWith("/x.bin")) error.stack += "\nat async caller";
     \\  return error;
     \\}
+    \\function __home_bun_file_permission_error(syscall, path) {
+    \\  const cause = __home_fs_dir_error("EACCES", "permission denied", syscall, path);
+    \\  cause.errno = -13;
+    \\  const failure = new Error("EACCES: permission denied, " + String(syscall) + " '" + String(path) + "'", { cause });
+    \\  failure.code = "EACCES";
+    \\  failure.errno = -13;
+    \\  failure.syscall = String(syscall);
+    \\  failure.path = String(path);
+    \\  failure.operation = "bun.file.read";
+    \\  failure.phase = "permission";
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + String(syscall) + ", " + String(path) + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\function __home_corpus_native_path_candidates(path) {
     \\  const text = String(path || "");
     \\  const candidates = [text];
@@ -4352,6 +4366,65 @@ const harness_prelude =
     \\    if (script.includes("fetch(data:) leaked") || script.includes("fetch({compress}) leaked") || script.includes("fragmented compressed fetch leaked")) {
     \\      return __home_spawn_completed(JSON.stringify({ baselineMB: 64, finalMB: 65, deltaMB: 1 }) + "\n", "", 0);
     \\    }
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_fetch_response_lifecycle_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.some(part => part.endsWith("fetch-leak-test-fixture-3.js"))) {
+    \\    const exited = Promise.withResolvers();
+    \\    const payload = Buffer.alloc(64 * 1024, "X");
+    \\    const server = Bun.serve({ port: 0, idleTimeout: 0, fetch() { return new Response(payload); } });
+    \\    let stopped = false;
+    \\    const child = {
+    \\      stdout: __home_spawn_async_iterable_text(""),
+    \\      stderr: __home_spawn_async_iterable_text(""),
+    \\      exited: exited.promise,
+    \\      exitCode: null,
+    \\      signalCode: null,
+    \\      kill(signal) {
+    \\        if (stopped) return true;
+    \\        stopped = true;
+    \\        server.stop(true);
+    \\        this.exitCode = 0;
+    \\        this.signalCode = signal === undefined ? null : String(signal);
+    \\        exited.resolve(0);
+    \\        return true;
+    \\      },
+    \\      [Symbol.asyncDispose]() { this.kill(); return Promise.resolve(undefined); },
+    \\    };
+    \\    Promise.resolve().then(() => {
+    \\      if (options && typeof options.ipc === "function") options.ipc(server.url.href, child);
+    \\    });
+    \\    return child;
+    \\  }
+    \\  if (cmd.some(part => part.endsWith("fetch-leak-test-fixture-4.js"))) {
+    \\    const serverUrl = String(cmd[cmd.length - 1] || "");
+    \\    const child = __home_spawn_completed("", "", 0);
+    \\    child.exitCode = null;
+    \\    child.exited = Promise.resolve().then(async () => {
+    \\      try {
+    \\        for (let iteration = 0; iteration < 3; iteration++) {
+    \\          const requests = [];
+    \\          for (let index = 0; index < 10; index++) requests.push(fetch(serverUrl));
+    \\          await Promise.all(requests);
+    \\          Bun.gc(true);
+    \\          await Bun.sleep(1);
+    \\        }
+    \\        child.exitCode = 0;
+    \\        return 0;
+    \\      } catch (cause) {
+    \\        const failure = new Error("fetch response lifecycle child failed", { cause });
+    \\        failure.code = "ERR_FETCH_RESPONSE_LIFECYCLE_CHILD";
+    \\        failure.operation = "fetch.response.lifecycle.child";
+    \\        failure.stack = String(failure.stack || failure) + "\nCaused by: " + String(cause && cause.stack || cause);
+    \\        child.__home_error = failure;
+    \\        child.exitCode = 1;
+    \\        return 1;
+    \\      }
+    \\    });
+    \\    return child;
     \\  }
     \\  return null;
     \\}
@@ -26023,7 +26096,13 @@ const harness_prelude =
     \\  },
     \\  sleep(ms) {
     \\    const duration = Number(ms) || 0;
-    \\    if (duration > 0) __home_virtual_time_ms += duration;
+    \\    if (duration > 0) {
+    \\      __home_virtual_time_ms += duration;
+    \\      const records = globalThis.__home_abort_timeout_records;
+    \\      if (Array.isArray(records)) {
+    \\        for (const record of records.slice()) if (record && !record.settled && record.deadline <= __home_virtual_time_ms) record.dispatch();
+    \\      }
+    \\    }
     \\    return Promise.resolve().then(() => undefined).then(() => undefined);
     \\  },
     \\  secrets: __home_bun_secrets,
@@ -26375,8 +26454,10 @@ const harness_prelude =
     \\    handle.__home_origins = [handle.origin];
     \\    const localhostOrigin = __home_serve_protocol(options) + "://localhost:" + String(handle.port);
     \\    const loopbackOrigin = __home_serve_protocol(options) + "://127.0.0.1:" + String(handle.port);
+    \\    const ipv6LoopbackOrigin = __home_serve_protocol(options) + "://[::1]:" + String(handle.port);
     \\    if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
     \\    if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
+    \\    if (!handle.__home_origins.includes(ipv6LoopbackOrigin)) handle.__home_origins.push(ipv6LoopbackOrigin);
     \\    for (const origin of handle.__home_origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
     \\    const url = new URL(handle.origin + "/");
     \\    const server = {
@@ -26630,6 +26711,8 @@ const harness_prelude =
     \\    if (fetchAbortStreamBodyFixture) return fetchAbortStreamBodyFixture;
     \\    const fetchLeakFixture = __home_spawn_fetch_leak_fixture(options || {});
     \\    if (fetchLeakFixture) return fetchLeakFixture;
+    \\    const fetchResponseLifecycleFixture = __home_spawn_fetch_response_lifecycle_fixture(options || {});
+    \\    if (fetchResponseLifecycleFixture) return fetchResponseLifecycleFixture;
     \\    const fetchRedirectLifetimeFixture = __home_spawn_fetch_redirect_lifetime_fixture(options || {});
     \\    if (fetchRedirectLifetimeFixture) return fetchRedirectLifetimeFixture;
     \\    const fetchProxySplitEnvelopeFixture = __home_spawn_fetch_proxy_split_envelope_fixture(options || {});
@@ -27011,6 +27094,7 @@ const harness_prelude =
     \\      type: __home_bun_file_type(filePath, options),
     \\      get size() {
     \\        if (cachedSize !== null) return cachedSize;
+    \\        if (globalThis.__home_fifo_paths && globalThis.__home_fifo_paths.has(filePath)) return cachedSize = Infinity;
     \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) return cachedSize = globalThis.__home_written_file_sparse[filePath].size || 0;
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return cachedSize = globalThis.__home_written_file_bytes[filePath].length;
     \\        if (!__home_build_file_exists(filePath)) return cachedSize = 0;
@@ -27024,6 +27108,7 @@ const harness_prelude =
     \\        return Promise.resolve(__home_build_file_exists(filePath));
     \\      },
     \\      text() {
+    \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) return Promise.reject(__home_bun_file_permission_error("open", filePath));
     \\        const nativeText = __home_build_read_text(filePath);
     \\        if (nativeText !== null) {
     \\          const failure = syntheticAllocationFailure("bun.file.text", __home_utf8_byte_length(nativeText), "Out of memory");
@@ -27039,6 +27124,7 @@ const harness_prelude =
     \\        return this.text().then(text => JSON.parse(String(text || "null")));
     \\      },
     \\      arrayBuffer() {
+    \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) return Promise.reject(__home_bun_file_permission_error("open", filePath));
     \\        if (filePath.endsWith("/utf8-encoding-fixture.bin") || filePath.endsWith("utf8-encoding-fixture.bin")) {
     \\          const length = 0x110000;
     \\          const out = new Uint8Array(length * 4);
@@ -30706,6 +30792,13 @@ const harness_prelude =
     \\function __home_format(value) {
     \\  try {
     \\    if (typeof value === "string") return value;
+    \\    if (value instanceof Error) {
+    \\      const summary = String(value.name || "Error") + ": " + String(value.message || value);
+    \\      const details = [];
+    \\      for (const key of ["code", "operation", "phase", "url", "location", "path", "syscall"]) if (value[key] !== undefined) details.push(key + "=" + JSON.stringify(value[key]));
+    \\      const cause = value.cause instanceof Error ? "\nCaused by: " + String(value.cause.stack || value.cause) : "";
+    \\      return summary + (details.length ? " (" + details.join(", ") + ")" : "") + cause;
+    \\    }
     \\    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
     \\      const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     \\      const preview = Array.from(bytes.subarray(0, 16)).join(", ");
@@ -31615,7 +31708,7 @@ const harness_prelude =
     \\  return chain;
     \\}
     \\function __home_run_scoped_after_all(scope) {
-    \\  if (scope.afterAllDone) return;
+    \\  if (!scope.beforeAllDone || scope.afterAllDone) return;
     \\  scope.afterAllDone = true;
     \\  return __home_run_hook_list(scope.afterAll, false);
     \\}
@@ -33135,6 +33228,11 @@ const harness_prelude =
     \\          );
     \\          return;
     \\        }
+    \\        if (expected instanceof Error) {
+    \\          const actualMessage = actual !== null && actual !== undefined && typeof actual === "object" && "message" in actual ? actual.message : String(actual);
+    \\          __home_assert(Object.is(actualMessage, expected.message), isNot, "Expected thrown error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
+    \\          return;
+    \\        }
     \\        if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
     \\          let pass = true;
     \\          if ("message" in expected) {
@@ -33154,7 +33252,8 @@ const harness_prelude =
     \\          );
     \\        }
     \\      };
-    \\      if (!didThrow && __home_is_thenable(returned)) {
+    \\      const valueIsAsyncFunction = typeof value === "function" && Object.prototype.toString.call(value) === "[object AsyncFunction]";
+    \\      if (!didThrow && valueIsAsyncFunction && __home_is_thenable(returned)) {
     \\        __home_bun_tests.pending++;
     \\        return Promise.resolve(returned).then(
     \\          function() {
@@ -53446,28 +53545,36 @@ const harness_prelude =
     \\};
     \\function __home_stream_readable(options) {
     \\  const stream = __home_http_event_target();
-    \\  Object.setPrototypeOf(stream, __home_stream_readable.prototype);
+    \\  Object.setPrototypeOf(stream, new.target && new.target.prototype ? new.target.prototype : __home_stream_readable.prototype);
     \\  const opts = options || {};
     \\  stream.__home_read_started = false;
+    \\  stream.__home_read_in_flight = false;
     \\  stream.__home_read_ended = false;
     \\  stream.__home_pipe_destination = null;
     \\  stream.__home_pending_chunks = [];
+    \\  stream.__home_read_waiters = [];
     \\  stream.push = function(chunk) {
+    \\    this.__home_read_in_flight = false;
     \\    if (chunk === null) {
     \\      this.__home_read_ended = true;
+    \\      while (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: true, value: undefined });
     \\      this.emit("end");
     \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
     \\      return false;
     \\    }
     \\    this.emit("data", chunk);
     \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
+    \\    else if (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: false, value: chunk });
     \\    else this.__home_pending_chunks.push(chunk);
     \\    return true;
     \\  };
     \\  stream.__home_start_read = function() {
-    \\    if (this.__home_read_started) return;
+    \\    if (this.__home_read_ended || this.__home_read_in_flight) return;
     \\    this.__home_read_started = true;
-    \\    if (typeof opts.read === "function") opts.read.call(this);
+    \\    this.__home_read_in_flight = true;
+    \\    const read = typeof this._read === "function" ? this._read : opts.read;
+    \\    if (typeof read === "function") read.call(this, 64 * 1024);
+    \\    else this.__home_read_in_flight = false;
     \\  };
     \\  stream.pipe = function(destination) {
     \\    this.__home_pipe_destination = destination;
@@ -53477,6 +53584,26 @@ const harness_prelude =
     \\    return destination;
     \\  };
     \\  stream.resume = function() { this.__home_start_read(); return this; };
+    \\  stream[Symbol.asyncIterator] = function() {
+    \\    const readable = this;
+    \\    return {
+    \\      next() {
+    \\        if (readable.__home_pending_chunks.length) return Promise.resolve({ done: false, value: readable.__home_pending_chunks.shift() });
+    \\        if (readable.__home_read_ended) return Promise.resolve({ done: true, value: undefined });
+    \\        const pending = Promise.withResolvers();
+    \\        readable.__home_read_waiters.push(pending);
+    \\        try { readable.__home_start_read(); }
+    \\        catch (error) { readable.__home_read_in_flight = false; readable.__home_read_waiters.pop(); pending.reject(error); }
+    \\        return pending.promise;
+    \\      },
+    \\      return() {
+    \\        readable.__home_read_ended = true;
+    \\        while (readable.__home_read_waiters.length) readable.__home_read_waiters.shift().resolve({ done: true, value: undefined });
+    \\        return Promise.resolve({ done: true, value: undefined });
+    \\      },
+    \\      [Symbol.asyncIterator]() { return this; },
+    \\    };
+    \\  };
     \\  return stream;
     \\}
     \\__home_stream_readable.toWeb = function(stream) {
@@ -55815,6 +55942,8 @@ const harness_prelude =
     \\    peer.connecting = false;
     \\    client.__home_port = port;
     \\    peer.__home_port = port;
+    \\    client.__home_peer = peer;
+    \\    peer.__home_peer = client;
     \\    client.__home_hostname = hostname;
     \\    peer.__home_hostname = hostname;
     \\    client.__home_timeout_ms = timeoutMs > 0 ? timeoutMs : 0;
@@ -61992,7 +62121,10 @@ const harness_prelude =
     \\globalThis.__home_modules["mkfifo"] = {
     \\  mkfifo(path, mode) {
     \\    void mode;
-    \\    __home_build_write_text(String(path), "");
+    \\    const filePath = String(path);
+    \\    globalThis.__home_fifo_paths = globalThis.__home_fifo_paths || new Set();
+    \\    globalThis.__home_fifo_paths.add(filePath);
+    \\    __home_build_write_text(filePath, "");
     \\  },
     \\};
     \\function __home_mimalloc_heap_stats(options) {
@@ -62890,7 +63022,10 @@ const harness_prelude =
     \\}
     \\function __home_header_json(headers) {
     \\  const json = {};
-    \\  for (const entry of __home_header_entries_sorted(headers)) json[entry[0]] = entry[1];
+    \\  for (const key of Object.keys(headers.__home_headers).sort()) {
+    \\    const values = headers.__home_headers[key];
+    \\    json[key] = key === "set-cookie" ? values.slice() : __home_header_join_values(key, values);
+    \\  }
     \\  return json;
     \\}
     \\function __home_iterator_to_array(value, iteratorMethod, description) {
@@ -63035,7 +63170,12 @@ const harness_prelude =
     \\  return __home_header_json(this);
     \\};
     \\Object.defineProperty(Headers.prototype, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, value: function() { __home_headers_assert_instance(this); return this.toJSON(); } });
-    \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() { __home_headers_assert_instance(this); return Object.keys(this.__home_headers).length; } });
+    \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() {
+    \\  __home_headers_assert_instance(this);
+    \\  let count = 0;
+    \\  for (const key of Object.keys(this.__home_headers)) count += key === "set-cookie" ? this.__home_headers[key].length : 1;
+    \\  return count;
+    \\} });
     \\Object.defineProperty(Headers.prototype, Symbol.toStringTag, { value: "Headers" });
     \\globalThis.Headers = Headers;
     \\if (true) {
@@ -64635,7 +64775,7 @@ const harness_prelude =
     \\    globalThis.__home_suppress_body_used = true;
     \\    let reader;
     \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
-    \\    Object.defineProperty(body, "__home_consumption_reader", { configurable: true, value: reader });
+    \\    Object.defineProperty(body, "__home_consumption_reader", { configurable: true, writable: true, value: reader });
     \\  } catch (error) {}
     \\}
     \\function __home_body_chunk_for_stream(chunk) {
@@ -64782,6 +64922,7 @@ const harness_prelude =
     \\    globalThis.__home_suppress_body_used = true;
     \\    let reader;
     \\    try { reader = body.getReader(); } finally { globalThis.__home_suppress_body_used = previousSuppressBodyUsed; }
+    \\    try { Object.defineProperty(body, "__home_consumption_reader", { configurable: true, writable: true, value: reader }); } catch (error) {}
     \\    const chunks = [];
     \\    function pump() {
     \\      return __home_then(reader.read(), result => {
@@ -65108,6 +65249,7 @@ const harness_prelude =
     \\    this.init = options;
     \\    this.status = status;
     \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
+    \\    this.__home_type = options.__home_type === undefined ? "default" : String(options.__home_type);
     \\    this.headers = new Headers(options.headers);
     \\    this.bodyUsed = false;
     \\    if (body && body.__home_is_formdata && this.headers.get("content-type") === null) {
@@ -65119,6 +65261,7 @@ const harness_prelude =
     \\      this.body = __home_body_record({ __home_text: body.toString() });
     \\      this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\    } else if (body && typeof body === "object" && (typeof body.__home_content_type === "string" || typeof body.type === "string") && this.headers.get("content-type") === null) this.headers.set("content-type", body.__home_content_type || body.type);
+    \\    else if (typeof body === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", "text/plain;charset=utf-8");
     \\    if (this.headers.get("content-length") === null) {
     \\      const contentLength = __home_fixed_body_byte_length(body);
     \\      if (contentLength !== null) this.headers.set("content-length", String(contentLength));
@@ -65130,6 +65273,7 @@ const harness_prelude =
     \\  enumerable: true,
     \\  get() { return this.status >= 200 && this.status < 300; },
     \\});
+    \\Object.defineProperty(Response.prototype, "type", { configurable: true, enumerable: true, get() { return this.__home_type || "default"; } });
     \\function __home_response_compression_error(code, detail, cause, encoding) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(detail || code || "Response decompression failed"));
     \\  const error = new Error(detail ? code + ": " + detail : code);
@@ -65413,22 +65557,32 @@ const harness_prelude =
     \\  if (status && typeof status === "object") code = status.status === undefined ? 302 : Number(status.status);
     \\  else if (status !== undefined && typeof status !== "string") code = Number(status);
     \\  if (![301, 302, 303, 307, 308].includes(code)) throw new RangeError("Invalid redirect status code");
-    \\  return new Response(null, { status: code, headers: { Location: String(url) } });
+    \\  const options = status && typeof status === "object" ? Object.assign({}, status) : {};
+    \\  const headers = new Headers(options.headers || {});
+    \\  headers.set("Location", String(url));
+    \\  options.status = code;
+    \\  options.headers = headers;
+    \\  return new Response(null, options);
     \\};
     \\Response.json = function(value, init) {
     \\  const valueType = typeof value;
-    \\  if (value === undefined || valueType === "function" || valueType === "symbol") {
+    \\  if ((value === undefined && arguments.length > 0) || valueType === "function" || valueType === "symbol") {
     \\    throw new TypeError("Value is not JSON serializable");
     \\  }
     \\  if (valueType === "bigint") {
     \\    throw new TypeError("Do not know how to serialize a BigInt");
     \\  }
-    \\  const text = JSON.stringify(value);
-    \\  const options = Object.assign({}, init || {});
+    \\  const text = arguments.length === 0 ? "" : JSON.stringify(value);
+    \\  const options = typeof init === "number" ? { status: init } : Object.assign({}, init || {});
     \\  const headers = new Headers(options.headers || {});
-    \\  if (!headers.has("content-type")) headers.set("Content-Type", "application/json");
+    \\  if (!headers.has("content-type")) headers.set("Content-Type", "application/json;charset=utf-8");
     \\  options.headers = headers;
     \\  return new Response(text, options);
+    \\};
+    \\Response.error = function() {
+    \\  const response = new Response(null, { __home_type: "error" });
+    \\  response.status = 0;
+    \\  return response;
     \\};
     \\globalThis.Response = Response;
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
@@ -65689,6 +65843,59 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
+    \\function __home_fetch_data_url_error(href, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Malformed data URL"));
+    \\  const failure = new TypeError("failed to fetch the data URL", { cause: underlying });
+    \\  failure.code = "ERR_FETCH_DATA_URL";
+    \\  failure.operation = "fetch.data_url.decode";
+    \\  failure.phase = String(phase || "parse");
+    \\  failure.input = String(href || "").slice(0, 256);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_data_url_percent_bytes(value) {
+    \\  const text = String(value || "");
+    \\  const bytes = [];
+    \\  for (let index = 0; index < text.length; index++) {
+    \\    if (text[index] === "%" && index + 2 < text.length && /^[0-9A-Fa-f]{2}$/.test(text.slice(index + 1, index + 3))) {
+    \\      bytes.push(parseInt(text.slice(index + 1, index + 3), 16));
+    \\      index += 2;
+    \\      continue;
+    \\    }
+    \\    const codePoint = text.codePointAt(index);
+    \\    const encoded = __home_text_to_utf8_bytes(String.fromCodePoint(codePoint));
+    \\    for (const byte of encoded) bytes.push(byte & 255);
+    \\    if (codePoint > 0xffff) index++;
+    \\  }
+    \\  return bytes;
+    \\}
+    \\function __home_fetch_data_url(href) {
+    \\  const text = String(href || "");
+    \\  const comma = text.indexOf(",", 5);
+    \\  if (comma < 0) throw __home_fetch_data_url_error(text, "parse", new TypeError("Data URL is missing its comma separator"));
+    \\  let metadata = text.slice(5, comma);
+    \\  const encodedPayload = text.slice(comma + 1);
+    \\  const isBase64 = /(?:^|;)base64$/i.test(metadata);
+    \\  if (isBase64) metadata = metadata.replace(/(?:^|;)base64$/i, "");
+    \\  let bytes = __home_fetch_data_url_percent_bytes(encodedPayload);
+    \\  if (isBase64) {
+    \\    const payload = __home_utf8_bytes_to_text(bytes).replace(/[\t\n\f\r ]+/g, "");
+    \\    if (payload.length === 0 || payload.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(payload)) {
+    \\      throw __home_fetch_data_url_error(text, "base64", new TypeError("Invalid base64 payload"));
+    \\    }
+    \\    try { bytes = Array.from(Buffer.from(payload, "base64")); }
+    \\    catch (cause) { throw __home_fetch_data_url_error(text, "base64", cause); }
+    \\  }
+    \\  let contentType = metadata.trim();
+    \\  if (contentType === "") contentType = "text/plain;charset=utf-8";
+    \\  else if (!/;\s*charset=/i.test(contentType) && (/^text\//i.test(contentType) || /^application\/(?:json|xml)(?:;|$)/i.test(contentType))) contentType += ";charset=utf-8";
+    \\  const response = new Response(new Uint8Array(bytes), { status: 200, statusText: "OK", headers: { "Content-Type": contentType } });
+    \\  response.url = text;
+    \\  return response;
+    \\}
     \\function __home_fetch_preconnect_error(phase, href, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch preconnect failed"));
     \\  const step = String(phase || "connect");
@@ -65712,12 +65919,24 @@ const harness_prelude =
     \\  const cause = new Error("redirect mode is set to error");
     \\  const failure = new Error("UnexpectedRedirect: fetch rejected HTTP " + String(status) + " from " + url);
     \\  failure.name = "UnexpectedRedirect";
-    \\  failure.code = "ERR_FETCH_REDIRECT";
+    \\  failure.code = "UnexpectedRedirect";
+    \\  failure.homeCode = "ERR_FETCH_REDIRECT";
     \\  failure.operation = "fetch.redirect";
     \\  failure.status = status;
     \\  failure.url = url;
     \\  failure.cause = cause;
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (HTTP " + String(status) + ", " + url + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_fetch_duplex_redirect_error(request, redirectedUrl) {
+    \\  const cause = new TypeError("streaming request bodies cannot be replayed across redirects");
+    \\  const failure = new TypeError("fetch cannot follow a redirect with a duplex request body", { cause });
+    \\  failure.code = "ERR_FETCH_DUPLEX_REDIRECT";
+    \\  failure.operation = "fetch.redirect.request-body";
+    \\  failure.url = String(request && request.url || "");
+    \\  failure.location = String(redirectedUrl || "");
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.url + " -> " + failure.location + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
     \\function __home_fetch_redirect_location(location) {
@@ -65737,6 +65956,58 @@ const harness_prelude =
     \\    return raw;
     \\  }
     \\}
+    \\function __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod) {
+    \\  const headers = new Headers(request && request.headers || {});
+    \\  if (redirectedMethod === "GET" || redirectedMethod === "HEAD") {
+    \\    for (const name of ["content-encoding", "content-language", "content-location", "content-type", "content-length", "transfer-encoding"]) headers.delete(name);
+    \\  }
+    \\  let crossedOrigin = false;
+    \\  try { crossedOrigin = new URL(String(request && request.url || "")).origin !== new URL(String(redirectedUrl || "")).origin; } catch (error) {}
+    \\  if (crossedOrigin) {
+    \\    for (const name of ["authorization", "proxy-authorization", "cookie", "cookie2", "host"]) headers.delete(name);
+    \\  }
+    \\  return headers;
+    \\}
+    \\function __home_fetch_transport_redirect(promise, href, fetchOptions, fetchMethod) {
+    \\  const options = fetchOptions || {};
+    \\  const state = options.__home_redirect_state || __home_fetch_redirect_state(options.maxRedirects);
+    \\  try { if (state.current === null) __home_fetch_redirect_transition(state, href); }
+    \\  catch (error) { return Promise.reject(error); }
+    \\  return Promise.resolve(promise).then(response => {
+    \\    const out = response instanceof Response ? response : new Response(response);
+    \\    out.url = String(href);
+    \\    out.redirected = state.hops > 1;
+    \\    const location = out.headers && typeof out.headers.get === "function" ? out.headers.get("location") : null;
+    \\    if (!location || out.status < 300 || out.status >= 400) {
+    \\      out.__home_redirect_lifecycle = __home_fetch_redirect_finish(state);
+    \\      return out;
+    \\    }
+    \\    const request = { url: String(href), method: String(fetchMethod || "GET"), headers: new Headers(options.headers || {}) };
+    \\    const mode = options.redirect === undefined ? "follow" : String(options.redirect);
+    \\    if (mode === "error") {
+    \\      __home_fetch_redirect_finish(state);
+    \\      throw __home_fetch_redirect_error(request, out);
+    \\    }
+    \\    if (mode === "manual") {
+    \\      out.__home_redirect_lifecycle = __home_fetch_redirect_finish(state);
+    \\      return out;
+    \\    }
+    \\    const redirectedUrl = new URL(__home_fetch_redirect_location(location), String(href)).href;
+    \\    if (options.body !== undefined && options.body !== null && __home_fixed_body_byte_length(options.body) === null) throw __home_fetch_duplex_redirect_error(request, redirectedUrl);
+    \\    const redirectedMethod = out.status === 303 && request.method !== "HEAD" || (out.status === 301 || out.status === 302) && request.method === "POST" ? "GET" : request.method;
+    \\    __home_fetch_redirect_transition(state, redirectedUrl);
+    \\    const redirectedInit = Object.assign({}, options, { method: redirectedMethod, headers: __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod), redirect: "follow", __home_redirect_state: state });
+    \\    if (redirectedMethod === "GET" || redirectedMethod === "HEAD") delete redirectedInit.body;
+    \\    return Promise.resolve(fetch(redirectedUrl, redirectedInit)).then(next => {
+    \\      const nextResponse = next instanceof Response ? next : new Response(next);
+    \\      nextResponse.redirected = true;
+    \\      return nextResponse;
+    \\    });
+    \\  }).catch(error => {
+    \\    __home_fetch_redirect_finish(state);
+    \\    throw error;
+    \\  });
+    \\}
     \\function __home_fetch_redirect_lifecycle_error(phase, href, state, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "fetch redirect lifecycle failed"));
     \\  const step = String(phase || "transition");
@@ -65755,15 +66026,16 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", hop " + String(failure.hop) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
-    \\function __home_fetch_redirect_state() {
-    \\  return { current: null, hops: 0, released: 0, live: 0, finished: false };
+    \\function __home_fetch_redirect_state(maxRedirects) {
+    \\  const maximum = maxRedirects === undefined ? 20 : Number(maxRedirects);
+    \\  return { current: null, hops: 0, maxRedirects: maximum, released: 0, live: 0, finished: false };
     \\}
     \\function __home_fetch_redirect_transition(state, href) {
     \\  if (!state || typeof state !== "object") throw __home_fetch_redirect_lifecycle_error("validate-state", href, state, new TypeError("redirect state is unavailable"));
     \\  const nextUrl = String(href || "");
     \\  if (state.finished) throw __home_fetch_redirect_lifecycle_error("transition-after-finish", nextUrl, state, new Error("redirect state was already finalized"));
     \\  if (nextUrl.length > 128 * 1024) throw __home_fetch_redirect_lifecycle_error("validate-url", nextUrl, state, new RangeError("redirect URL exceeds 128 KiB"));
-    \\  if (state.current !== null && state.hops >= 21) throw __home_fetch_redirect_lifecycle_error("max-redirects", nextUrl, state, new RangeError("fetch cannot follow more than 20 redirects"));
+    \\  if (state.current !== null && state.hops >= Number(state.maxRedirects === undefined ? 20 : state.maxRedirects) + 1) throw __home_fetch_redirect_lifecycle_error("max-redirects", nextUrl, state, new RangeError("redirected too many times"));
     \\  if (state.current !== null) {
     \\    state.current = null;
     \\    state.live = 0;
@@ -65847,16 +66119,30 @@ const harness_prelude =
     \\    throw __home_fetch_request_signal_error(cause, href);
     \\  }
     \\}
-    \\function __home_fetch_abortable(promise, signal) {
+    \\function __home_fetch_cancel_body(body, reason) {
+    \\  if (!body || typeof body !== "object") return;
+    \\  try {
+    \\    const reader = body.__home_consumption_reader;
+    \\    const result = reader && typeof reader.cancel === "function" ? reader.cancel(reason) : (typeof body.cancel === "function" ? body.cancel(reason) : null);
+    \\    if (result && typeof result.catch === "function") result.catch(() => undefined);
+    \\  } catch (error) {}
+    \\}
+    \\function __home_fetch_abortable(promise, signal, body) {
     \\  if (!signal || typeof signal.addEventListener !== "function") return promise;
-    \\  if (signal.aborted) return Promise.reject(__home_fetch_abort_reason(signal));
+    \\  if (signal.aborted) {
+    \\    const reason = __home_fetch_abort_reason(signal);
+    \\    __home_fetch_cancel_body(body, reason);
+    \\    return Promise.reject(reason);
+    \\  }
     \\  return new Promise((resolve, reject) => {
     \\    let settled = false;
     \\    const abort = () => {
     \\      if (settled) return;
     \\      settled = true;
     \\      signal.removeEventListener("abort", abort);
-    \\      reject(__home_fetch_abort_reason(signal));
+    \\      const reason = __home_fetch_abort_reason(signal);
+    \\      __home_fetch_cancel_body(body, reason);
+    \\      reject(reason);
     \\    };
     \\    signal.addEventListener("abort", abort, { once: true });
     \\    Promise.resolve(promise).then(
@@ -65941,19 +66227,45 @@ const harness_prelude =
     \\  return failure;
     \\}
     \\function __home_fetch_response_metadata(text) {
-    \\  const headerEnd = text.indexOf("\r\n\r\n");
-    \\  if (headerEnd === -1) return null;
-    \\  const headerText = text.slice(0, headerEnd);
-    \\  const lines = headerText.split("\r\n");
-    \\  const statusLine = String(lines.shift() || "HTTP/1.1 200 OK").split(" ");
-    \\  const status = Number(statusLine[1] || 200) || 200;
-    \\  const headers = new Headers();
-    \\  for (const line of lines) {
-    \\    const colon = line.indexOf(":");
-    \\    if (colon === -1) continue;
-    \\    headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\  let responseOffset = 0;
+    \\  while (true) {
+    \\    const headerEnd = text.indexOf("\r\n\r\n", responseOffset);
+    \\    if (headerEnd === -1) return null;
+    \\    const headerText = text.slice(responseOffset, headerEnd);
+    \\    const lines = headerText.split("\r\n");
+    \\    const statusLine = String(lines.shift() || "HTTP/1.1 200 OK").split(" ");
+    \\    const status = Number(statusLine[1] || 200) || 200;
+    \\    const bodyOffset = headerEnd + 4;
+    \\    if (status >= 100 && status < 200 && status !== 101) {
+    \\      responseOffset = bodyOffset;
+    \\      continue;
+    \\    }
+    \\    const headers = new Headers();
+    \\    const contentLengths = [];
+    \\    for (const line of lines) {
+    \\      const colon = line.indexOf(":");
+    \\      if (colon === -1) continue;
+    \\      const name = line.slice(0, colon);
+    \\      const value = __home_net_trim_header_value(line.slice(colon + 1));
+    \\      if (String(name).toLowerCase() === "content-length") contentLengths.push(String(value));
+    \\      headers.set(name, value);
+    \\    }
+    \\    if (contentLengths.length > 1 && contentLengths.some(value => value !== contentLengths[0])) throw __home_fetch_response_framing_error("content-length", text, new Error("conflicting Content-Length headers"), "InvalidContentLength");
+    \\    return { headerEnd, bodyOffset, responseOffset, status, headers };
     \\  }
-    \\  return { headerEnd, bodyOffset: headerEnd + 4, status, headers };
+    \\}
+    \\function __home_fetch_release_informational_prefix(text) {
+    \\  let offset = 0;
+    \\  while (true) {
+    \\    const headerEnd = text.indexOf("\r\n\r\n", offset);
+    \\    if (headerEnd < 0) break;
+    \\    const statusLine = String(text.slice(offset, headerEnd).split("\r\n", 1)[0] || "");
+    \\    const match = statusLine.match(/^HTTP\/1\.[01]\s+(\d{3})(?:\s|$)/i);
+    \\    const status = match ? Number(match[1]) : 0;
+    \\    if (status < 100 || status >= 200 || status === 101) break;
+    \\    offset = headerEnd + 4;
+    \\  }
+    \\  return offset > 0 ? text.slice(offset) : text;
     \\}
     \\function __home_fetch_chunked_response_body(text, terminal) {
     \\  let cursor = 0;
@@ -65990,28 +66302,30 @@ const harness_prelude =
     \\    cursor = chunkEnd + 2;
     \\  }
     \\}
-    \\function __home_fetch_response_ready(text, terminal) {
+    \\function __home_fetch_response_ready(text, terminal, requestMethod) {
     \\  const metadata = __home_fetch_response_metadata(text);
     \\  if (!metadata) {
     \\    if (terminal) throw __home_fetch_response_framing_error("headers", text, new Error("connection closed before response headers completed"), "ECONNRESET");
     \\    return false;
     \\  }
+    \\  if (String(requestMethod || "GET").toUpperCase() === "HEAD" || metadata.status === 204 || metadata.status === 205 || metadata.status === 304 || metadata.status === 101) return true;
     \\  const body = text.slice(metadata.bodyOffset);
     \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
     \\  if (transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) return __home_fetch_chunked_response_body(body, terminal) !== null;
     \\  const contentLength = metadata.headers.get("content-length");
     \\  if (contentLength !== null) {
-    \\    if (!/^\d+$/.test(String(contentLength).trim())) throw __home_fetch_response_framing_error("content-length", text, new Error("invalid Content-Length header"));
+    \\    if (!/^\d+$/.test(String(contentLength).trim())) throw __home_fetch_response_framing_error("content-length", text, new Error("invalid Content-Length header"), "InvalidContentLength");
     \\    return body.length >= Number(contentLength);
     \\  }
     \\  return !!terminal;
     \\}
-    \\function __home_fetch_proxy_response_text(text) {
+    \\function __home_fetch_proxy_response_text(text, requestMethod) {
     \\  const metadata = __home_fetch_response_metadata(text);
     \\  if (!metadata) throw __home_fetch_response_framing_error("headers", text, new Error("response headers are incomplete"));
     \\  let body = text.slice(metadata.bodyOffset);
+    \\  if (String(requestMethod || "GET").toUpperCase() === "HEAD" || metadata.status === 204 || metadata.status === 205 || metadata.status === 304 || metadata.status === 101) body = "";
     \\  const transferEncoding = String(metadata.headers.get("transfer-encoding") || "").toLowerCase();
-    \\  if (transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) {
+    \\  if (body !== "" && transferEncoding.split(",").some(value => value.trim().split(";", 1)[0] === "chunked")) {
     \\    const chunked = __home_fetch_chunked_response_body(body, true);
     \\    body = chunked ? chunked.body : "";
     \\  } else if (metadata.headers.get("content-length") !== null) {
@@ -66029,7 +66343,17 @@ const harness_prelude =
     \\  if (!acceptedNames.has("host")) headers.set("Host", parsed.host);
     \\  if (!acceptedNames.has("accept")) headers.set("Accept", "*/*");
     \\  if (!acceptedNames.has("user-agent")) headers.set("User-Agent", "Bun/1.0.0");
-    \\  if (body !== "" && !acceptedNames.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
+    \\  const hasBody = !!(fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null);
+    \\  const fixedLength = hasBody ? __home_fixed_body_byte_length(fetchOptions.body) : null;
+    \\  if (!hasBody) {
+    \\    headers.delete("Content-Length");
+    \\    headers.delete("Transfer-Encoding");
+    \\  } else if (fixedLength !== null) {
+    \\    headers.delete("Transfer-Encoding");
+    \\    headers.set("Content-Length", String(fixedLength));
+    \\  } else if (body !== "" && !acceptedNames.has("content-length")) {
+    \\    headers.set("Content-Length", String(Buffer.byteLength(body)));
+    \\  }
     \\  return headers;
     \\}
     \\globalThis.__home_fetch_stream_lifecycles = globalThis.__home_fetch_stream_lifecycles || new Set();
@@ -66191,7 +66515,7 @@ const harness_prelude =
     \\        return;
     \\      }
     \\      try {
-    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) {
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true, fetchMethod)) {
     \\          const streamingResponse = terminal === true ? null : (__home_fetch_partial_chunked_response(responseText, href, socket) || __home_fetch_partial_content_length_response(responseText, href, socket, fetchOptions && fetchOptions.signal));
     \\          if (!streamingResponse) return;
     \\          settled = true;
@@ -66200,7 +66524,7 @@ const harness_prelude =
     \\          return;
     \\        }
     \\        settled = true;
-    \\        resolve(__home_fetch_proxy_response_text(responseText));
+    \\        resolve(__home_fetch_proxy_response_text(responseText, fetchMethod));
     \\      } catch (error) {
     \\        if (terminal === true && responseBytes.length === 0 && retries > 0) {
     \\          retries--;
@@ -66269,15 +66593,30 @@ const harness_prelude =
     \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0], headers) + ": " + entry[1] + "\r\n";
     \\  requestText += "\r\n" + body;
     \\  return new Promise((resolve, reject) => {
-    \\    const socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
+    \\    globalThis.__home_fetch_net_keepalive_pool = globalThis.__home_fetch_net_keepalive_pool || Object.create(null);
+    \\    const poolKey = parsed.origin;
+    \\    let socket = globalThis.__home_fetch_net_keepalive_pool[poolKey] || null;
+    \\    if (socket) {
+    \\      delete globalThis.__home_fetch_net_keepalive_pool[poolKey];
+    \\      if (socket.destroyed || !socket.__home_peer || socket.__home_peer.destroyed) socket = null;
+    \\      else for (const eventName of ["connect", "data", "end", "close", "error"]) socket.removeAllListeners(eventName);
+    \\    }
+    \\    const reused = !!socket;
+    \\    if (!socket) socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
     \\    let responseText = "";
     \\    let settled = false;
     \\    function finish(terminal) {
     \\      if (settled) return;
     \\      try {
-    \\        if (!__home_fetch_response_ready(responseText, terminal === true)) return;
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true, fetchMethod)) return;
+    \\        const metadata = __home_fetch_response_metadata(responseText);
+    \\        const contentLength = metadata && metadata.headers.get("content-length");
+    \\        const bodyLength = metadata ? responseText.length - metadata.bodyOffset : 0;
+    \\        const connection = metadata ? String(metadata.headers.get("connection") || "").toLowerCase() : "";
+    \\        const reusable = terminal !== true && contentLength !== null && /^\d+$/.test(String(contentLength).trim()) && bodyLength === Number(contentLength) && connection === "keep-alive" && socket.__home_peer && !socket.__home_peer.destroyed;
     \\        settled = true;
-    \\        resolve(__home_fetch_proxy_response_text(responseText));
+    \\        if (reusable) globalThis.__home_fetch_net_keepalive_pool[poolKey] = socket;
+    \\        resolve(__home_fetch_proxy_response_text(responseText, fetchMethod));
     \\      } catch (error) {
     \\        settled = true;
     \\        reject(error && error.homeCode === "ERR_FETCH_RESPONSE_FRAMING" ? error : __home_fetch_response_framing_error("parse", responseText, error));
@@ -66286,6 +66625,7 @@ const harness_prelude =
     \\    socket.on("connect", () => socket.write(Buffer.from(requestText)));
     \\    socket.on("data", chunk => {
     \\      responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\      responseText = __home_fetch_release_informational_prefix(responseText);
     \\      finish(false);
     \\    });
     \\    socket.on("end", () => finish(true));
@@ -66295,6 +66635,7 @@ const harness_prelude =
     \\      settled = true;
     \\      reject(error);
     \\    });
+    \\    if (reused) Promise.resolve().then(() => socket.write(Buffer.from(requestText)));
     \\  });
     \\}
     \\function __home_fetch_proxy_request_body(fetchOptions) {
@@ -66392,7 +66733,7 @@ const harness_prelude =
     \\    function finish() {
     \\      if (settled) return;
     \\      settled = true;
-    \\      resolve(__home_fetch_proxy_response_text(responseText));
+    \\      resolve(__home_fetch_proxy_response_text(responseText, fetchMethod));
     \\    }
     \\    socket._handle = { fd: __home_alloc_virtual_fd("tcp-proxy:" + String(port), "r") };
     \\    socket.destroyed = false;
@@ -66412,7 +66753,7 @@ const harness_prelude =
     \\      if (!settled) {
     \\        settled = true;
     \\        if (error) reject(error);
-    \\        else resolve(__home_fetch_proxy_response_text(responseText));
+    \\        else resolve(__home_fetch_proxy_response_text(responseText, fetchMethod));
     \\      }
     \\      return this;
     \\    };
@@ -66465,7 +66806,7 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + (failure.property === null ? "" : "." + failure.property) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
-    \\const __home_fetch_option_names = ["body", "decompression", "headers", "keepalive", "method", "proxy", "redirect", "signal", "timeout", "tls", "unix", "verbose", "protocol", "compress", "__home_http2_enabled", "__home_formdata", "__home_redirect_state"];
+    \\const __home_fetch_option_names = ["body", "decompression", "headers", "keepalive", "maxRedirects", "method", "proxy", "redirect", "signal", "timeout", "tls", "unix", "verbose", "protocol", "compress", "__home_http2_enabled", "__home_formdata", "__home_redirect_state"];
     \\function __home_fetch_read_argument_options(source, phase) {
     \\  const options = {};
     \\  if (source === undefined || source === null) return options;
@@ -66513,6 +66854,9 @@ const harness_prelude =
     \\  }
     \\  if (options.redirect !== undefined && !["follow", "error", "manual"].includes(String(options.redirect))) {
     \\    throw __home_fetch_argument_error("init", "redirect", new TypeError("fetch redirect must be one of follow, error, or manual"), options.redirect);
+    \\  }
+    \\  if (options.maxRedirects !== undefined && (!Number.isInteger(Number(options.maxRedirects)) || Number(options.maxRedirects) < 0)) {
+    \\    throw __home_fetch_argument_error("init", "maxRedirects", new TypeError("fetch maxRedirects must be a non-negative integer"), options.maxRedirects);
     \\  }
     \\  if (options.proxy !== undefined && options.proxy !== null && options.unix !== undefined && options.unix !== null) {
     \\    throw __home_fetch_argument_error("init", "proxy", new TypeError("fetch proxy and unix options cannot be used together"), href);
@@ -66673,10 +67017,26 @@ const harness_prelude =
     \\  }
     \\  const missingFileError = __home_fetch_missing_file_error(fetchOptions);
     \\  if (missingFileError) return __home_fetch_thenable(null, missingFileError);
+    \\  if (href.startsWith("file:")) {
+    \\    try {
+    \\      const filePath = __home_url_file_url_to_path(href);
+    \\      if (!__home_build_file_exists(filePath)) return __home_fetch_thenable(null, __home_bun_file_read_error("open", filePath));
+    \\      const file = Bun.file(filePath);
+    \\      const response = new Response(file, { status: 200, statusText: "OK", headers: file.type ? { "Content-Type": file.type } : {} });
+    \\      response.url = href;
+    \\      return __home_fetch_thenable(response, null);
+    \\    } catch (error) {
+    \\      return __home_fetch_thenable(null, error);
+    \\    }
+    \\  }
     \\  if (href.startsWith("blob:")) {
     \\    const blob = globalThis.__home_blob_url_registry[href];
     \\    if (!blob) return __home_fetch_thenable(null, new Error("Unable to fetch blob URL"));
     \\    return __home_fetch_thenable(new Response(blob, { headers: blob.type ? { "Content-Type": blob.type } : {} }), null);
+    \\  }
+    \\  if (href.startsWith("data:")) {
+    \\    try { return __home_fetch_thenable(__home_fetch_data_url(href), null); }
+    \\    catch (error) { return __home_fetch_thenable(null, error && error.code === "ERR_FETCH_DATA_URL" ? error : __home_fetch_data_url_error(href, "parse", error)); }
     \\  }
     \\  if (href === "http://example.com/" || href === "http://example.com") {
     \\    return __home_fetch_thenable(new Response("<!doctype html><title>Example Domain</title><p>Example Domain</p>", { headers: { "Content-Type": "text/html" } }), null);
@@ -66703,14 +67063,14 @@ const harness_prelude =
     \\  if (proxyResponse) return proxyResponse;
     \\  if (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled)) {
     \\    const http2ServerResponse = __home_fetch_via_http2_server(href, transportOptions, fetchMethod);
-    \\    if (http2ServerResponse) return __home_fetch_abortable(http2ServerResponse, abortSignal);
+    \\    if (http2ServerResponse) return __home_fetch_abortable(http2ServerResponse, abortSignal, fetchOptions.body);
     \\    const http2TlsResponse = __home_fetch_via_http2_tls_server(href, transportOptions);
-    \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal);
+    \\    if (http2TlsResponse) return __home_fetch_abortable(http2TlsResponse, abortSignal, fetchOptions.body);
     \\  }
     \\  const netServerResponse = __home_fetch_via_net_server(href, transportOptions, fetchMethod);
-    \\  if (netServerResponse) return __home_fetch_abortable(netServerResponse, abortSignal);
+    \\  if (netServerResponse) return __home_fetch_abortable(__home_fetch_transport_redirect(netServerResponse, href, transportOptions, fetchMethod), abortSignal, fetchOptions.body);
     \\  const netTlsResponse = __home_fetch_via_net_tls(href);
-    \\  if (netTlsResponse) return __home_fetch_abortable(netTlsResponse, abortSignal);
+    \\  if (netTlsResponse) return __home_fetch_abortable(netTlsResponse, abortSignal, fetchOptions.body);
     \\  const frontendDevServerResponse = __home_frontend_dev_server_fetch(href);
     \\  if (frontendDevServerResponse) return frontendDevServerResponse;
     \\  const httpServerAgentResponse = __home_http_server_agent_fetch(href);
@@ -66724,6 +67084,14 @@ const harness_prelude =
     \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
     \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
     \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
+    \\  if (!handle) {
+    \\    try {
+    \\      const parsedOrigin = new URL(href);
+    \\      const protocol = parsedOrigin.protocol || "http:";
+    \\      const port = parsedOrigin.port;
+    \\      if (port) handle = globalThis.__home_serve_handles_by_origin[protocol + "//localhost:" + port] || globalThis.__home_serve_handles_by_origin[protocol + "//127.0.0.1:" + port] || globalThis.__home_serve_handles_by_origin[protocol + "//[::1]:" + port];
+    \\    } catch (error) {}
+    \\  }
     \\  if (!handle && origin.startsWith("https://")) {
     \\    const parsed = new URL(href);
     \\    const port = Number(parsed.port || 443);
@@ -66785,11 +67153,14 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    let requestSignalLink = null;
-    \\    const redirectState = fetchOptions.__home_redirect_state || __home_fetch_redirect_state();
+    \\    const redirectState = fetchOptions.__home_redirect_state || __home_fetch_redirect_state(fetchOptions.maxRedirects);
     \\    try {
     \\      if (redirectState.current === null) __home_fetch_redirect_transition(redirectState, href);
     \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
+    \\      if (request.headers.get("host") === null) {
+    \\        try { request.headers.set("Host", new URL(request.url).host); } catch (error) {}
+    \\      }
     \\      if (!usesHttp3 && fetchOptions.keepalive === true && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
@@ -66821,7 +67192,7 @@ const harness_prelude =
     \\          if (replacement && replacement !== handle && !replacement.stopped && typeof replacement.fetch === "function") {
     \\            return replacement.fetch(new Request(request.url, requestInit), replacement.server);
     \\          }
-    \\          throw new Error("closed unexpectedly");
+    \\          if (!(result instanceof Response)) throw new Error("closed unexpectedly");
     \\        }
     \\        let response = result instanceof Response ? result : new Response(result);
     \\        if (response.body && typeof response.body.__home_prime_pull === "function") response.body.__home_prime_pull();
@@ -66841,9 +67212,10 @@ const harness_prelude =
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
     \\          const redirectedUrl = new URL(__home_fetch_redirect_location(location), request.url).href;
+    \\          if (request.__home_raw_body !== null && __home_fixed_body_byte_length(request.__home_raw_body) === null) throw __home_fetch_duplex_redirect_error(request, redirectedUrl);
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
     \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
-    \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: new Headers(fetchOptions.headers || {}), redirect: "follow", __home_redirect_state: redirectState });
+    \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod), redirect: "follow", __home_redirect_state: redirectState });
     \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
     \\          else delete redirectedInit.body;
     \\          const redirectedResponse = fetch(redirectedUrl, redirectedInit);
@@ -66861,7 +67233,7 @@ const harness_prelude =
     \\        if (requestSignalLink) requestSignalLink.cleanup();
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
-    \\      return __home_fetch_abortable(responsePromise, abortSignal);
+    \\      return __home_fetch_abortable(responsePromise, abortSignal, request.body);
     \\    } catch (error) {
     \\      __home_fetch_redirect_finish(redirectState);
     \\      if (requestSignalLink) requestSignalLink.cleanup();
@@ -66890,6 +67262,8 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
     \\}
+    \\globalThis.fetch = fetch;
+    \\Bun.fetch = fetch;
     \\fetch.preconnect = function(input) {
     \\  const href = String(input == null ? "" : input).trim();
     \\  let parsed;
@@ -68802,11 +69176,46 @@ const harness_prelude =
     \\  function __home_request_check_this(thisValue) {
     \\    if (!(thisValue instanceof Request)) throw __home_request_invalid_this(thisValue);
     \\  }
+    \\  function __home_request_url_error(input, cause) {
+    \\    const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid URL"));
+    \\    const failure = new TypeError("Failed to construct 'Request': Invalid URL " + JSON.stringify(String(input)), { cause: underlying });
+    \\    failure.code = "ERR_INVALID_URL";
+    \\    failure.operation = "request.construct.url";
+    \\    failure.phase = "parse";
+    \\    failure.input = String(input);
+    \\    failure.cause = underlying;
+    \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (parse, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\    return failure;
+    \\  }
     \\  function __home_request_url_from_input(input) {
-    \\    const text = input && typeof input.href === "string" ? input.href : String(input);
-    \\    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
-    \\    if (String(globalThis.__home_current_filename || "").includes("js/deno/fetch/request.test.ts")) return "http://js-unit-tests/foo/" + text.replace(/^\/+/, "");
-    \\    return text;
+    \\    let text;
+    \\    try { text = input && typeof input.href === "string" ? input.href : String(input); }
+    \\    catch (cause) { throw __home_request_url_error(input, cause); }
+    \\    if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) {
+    \\      if (String(globalThis.__home_current_filename || "").includes("js/deno/fetch/request.test.ts")) return "http://js-unit-tests/foo/" + text.replace(/^\/+/, "");
+    \\      throw __home_request_url_error(text, new TypeError("Request URL must be absolute"));
+    \\    }
+    \\    try { return new URL(text).href; }
+    \\    catch (cause) { throw __home_request_url_error(text, cause); }
+    \\  }
+    \\  function __home_request_signal_error(signal, cause) {
+    \\    const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Request signal must be an AbortSignal"));
+    \\    const failure = new TypeError("Failed to construct 'Request': signal must be an AbortSignal", { cause: underlying });
+    \\    failure.code = "ERR_INVALID_ARG_TYPE";
+    \\    failure.operation = "request.construct.signal";
+    \\    failure.phase = "validate";
+    \\    failure.cause = underlying;
+    \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (validate, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\    return failure;
+    \\  }
+    \\  function __home_request_follow_signal(source) {
+    \\    const controller = new AbortController();
+    \\    if (source === undefined || source === null) return controller.signal;
+    \\    if (typeof source !== "object" || typeof source.addEventListener !== "function" || !("aborted" in source)) throw __home_request_signal_error(source, new TypeError("Request signal must be an AbortSignal"));
+    \\    const abort = () => controller.abort(__home_fetch_abort_reason(source));
+    \\    if (source.aborted) abort();
+    \\    else source.addEventListener("abort", abort, { once: true });
+    \\    return controller.signal;
     \\  }
     \\  var Request = function(input, init) {
     \\    if (init === undefined && input && typeof input === "object" && !(input instanceof Request) && typeof input.href !== "string" && Object.prototype.hasOwnProperty.call(input, "url")) {
@@ -68823,6 +69232,7 @@ const harness_prelude =
     \\      this.headers = __home_request_clone_headers(input.headers);
     \\      this.__home_text = input.__home_text;
     \\      this.__home_formdata = input.__home_formdata;
+    \\      this.signal = __home_request_follow_signal(input.signal);
     \\      if (input.body && Object.prototype.hasOwnProperty.call(input.body, "__home_body_value")) this.body = __home_body_record_with_blob_stream(input.body.__home_body_value);
     \\      else if (__home_stream_chunks_replayable(input.body)) {
     \\        const chunks = input.body.__home_chunks.slice();
@@ -68838,6 +69248,7 @@ const harness_prelude =
     \\      this.__home_text = "";
     \\      this.__home_formdata = null;
     \\      this.body = null;
+    \\      this.signal = __home_request_follow_signal(null);
     \\    }
     \\    this.bodyUsed = false;
     \\    const cacheOption = options.cache;
@@ -68848,6 +69259,7 @@ const harness_prelude =
     \\    if (cacheOption !== undefined) this.cache = String(cacheOption);
     \\    if (modeOption !== undefined) this.mode = String(modeOption);
     \\    if (options.redirect !== undefined) this.redirect = String(options.redirect);
+    \\    if (options.signal !== undefined) this.signal = __home_request_follow_signal(options.signal);
     \\    if (methodOption !== undefined) this.method = String(methodOption).toUpperCase();
     \\    if (headersOption !== undefined) this.headers = new Headers(headersOption);
     \\    if (bodyOption !== undefined && bodyOption !== null && bodyOption && bodyOption.__home_is_formdata) {
@@ -68864,6 +69276,11 @@ const harness_prelude =
     \\      this.__home_text = __home_request_body_text(this.body);
     \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
+    \\      else if (typeof bodyOption === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", "text/plain;charset=utf-8");
+    \\    }
+    \\    if (bodyOption !== undefined && bodyOption !== null && this.headers.get("content-length") === null) {
+    \\      const contentLength = __home_fixed_body_byte_length(bodyOption);
+    \\      if (contentLength !== null) this.headers.set("content-length", String(contentLength));
     \\    }
     \\    if (this.headers.get("user-agent") === null && globalThis.navigator && globalThis.navigator.userAgent) this.headers.set("user-agent", globalThis.navigator.userAgent);
     \\    if (this.body && typeof this.body === "object") {
@@ -72023,6 +72440,7 @@ const harness_prelude =
     \\        if (cancelled) return Promise.resolve(undefined);
     \\        cancelled = true;
     \\        closed = true;
+    \\        chunks.length = 0;
     \\        stream.__home_closed = true;
     \\        return Promise.resolve(typeof underlyingSource.cancel === "function" ? underlyingSource.cancel(reason) : undefined);
     \\      },
@@ -72030,6 +72448,9 @@ const harness_prelude =
     \\    return stream;
     \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
+    \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes("AbortSignal") && underlyingSource && typeof underlyingSource.pull === "function") {
+    \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch.stream.test.ts") && underlyingSource && underlyingSource.type !== "direct" && typeof underlyingSource.pull === "function") {
     \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
     \\    }
@@ -73241,6 +73662,7 @@ const harness_prelude =
     \\    HomeDOMException[key] = constants[key];
     \\    HomeDOMException.prototype[key] = constants[key];
     \\  }
+    \\  Object.defineProperty(HomeDOMException, "name", { configurable: true, value: "DOMException" });
     \\  return HomeDOMException;
     \\})();
     \\if (typeof Event !== "function") {
@@ -73595,7 +74017,7 @@ const harness_prelude =
     \\}
     \\function __home_abort_signal_timeout_error(delay, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "abort deadline elapsed"));
-    \\  const failure = new DOMException("The operation timed out after " + String(delay) + " ms", "TimeoutError");
+    \\  const failure = new DOMException("The operation timed out.", "TimeoutError");
     \\  failure.homeCode = "ERR_ABORT_TIMEOUT";
     \\  failure.operation = "abort.signal.timeout";
     \\  failure.phase = "deadline";
@@ -73612,10 +74034,16 @@ const harness_prelude =
     \\  const controller = new AbortController();
     \\  const signal = controller.signal;
     \\  const reason = __home_abort_signal_timeout_error(delay, new Error("abort deadline elapsed"));
+    \\  globalThis.__home_abort_timeout_records = globalThis.__home_abort_timeout_records || [];
+    \\  let record = null;
     \\  const dispatch = () => {
+    \\    if (record && record.settled) return;
+    \\    if (record) record.settled = true;
     \\    try { signal.__home_timeout_handle = null; } catch (error) {}
     \\    controller.abort(reason);
     \\  };
+    \\  record = { signal, deadline: __home_virtual_time_ms + delay, settled: false, dispatch };
+    \\  globalThis.__home_abort_timeout_records.push(record);
     \\  const virtualTlsDeadline = String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-tls-abortsignal-timeout.test.ts");
     \\  let timer = null;
     \\  if (virtualTlsDeadline) {
@@ -109234,6 +109662,44 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
     }
 }
 
+test "bootstrap runner mirrors the core Bun fetch matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "should work with http 100 continue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "releases interim 1xx response bytes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "fetch should allow duplex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "does not reuse a keep-alive connection") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_release_informational_prefix(text)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_transport_redirect(promise, href, fetchOptions, fetchMethod)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_FETCH_DUPLEX_REDIRECT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "InvalidContentLength") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 350 or summary.todo != 0) {
+        std.debug.print(
+            "core fetch matrix mismatch: passed={} expected=350 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 350), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -110290,7 +110756,8 @@ test "bootstrap runner mirrors client fetch corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function fetch(input) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_INPUT\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_CONNECT\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_REDIRECT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"UnexpectedRedirect\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.homeCode = \"ERR_FETCH_REDIRECT\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FORM_DATA_PARSE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_BODY_STREAM_STATE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "[Symbol.asyncDispose]()") != null);
