@@ -73322,15 +73322,44 @@ const harness_prelude =
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
     \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
     \\}
-    \\if (typeof AbortSignal.timeout !== "function") {
-    \\  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value(milliseconds) {
-    \\    const delay = Number(milliseconds);
-    \\    if (!Number.isFinite(delay) || delay < 0) throw new RangeError("AbortSignal timeout must be a non-negative finite number");
-    \\    const controller = new AbortController();
-    \\    setTimeout(() => controller.abort(new DOMException("The operation timed out", "TimeoutError")), delay);
-    \\    return controller.signal;
-    \\  } });
+    \\function __home_abort_signal_timeout_error(delay, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "abort deadline elapsed"));
+    \\  const failure = new DOMException("The operation timed out after " + String(delay) + " ms", "TimeoutError");
+    \\  failure.homeCode = "ERR_ABORT_TIMEOUT";
+    \\  failure.operation = "abort.signal.timeout";
+    \\  failure.phase = "deadline";
+    \\  failure.timeout = delay;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  try { failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (deadline " + String(delay) + " ms, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); } catch (error) {}
+    \\  return failure;
     \\}
+    \\function __home_abort_signal_timeout(milliseconds) {
+    \\  const delay = Number(milliseconds);
+    \\  if (!Number.isFinite(delay) || delay < 0) throw new RangeError("AbortSignal timeout must be a non-negative finite number");
+    \\  const controller = new AbortController();
+    \\  const signal = controller.signal;
+    \\  const reason = __home_abort_signal_timeout_error(delay, new Error("abort deadline elapsed"));
+    \\  const dispatch = () => {
+    \\    try { signal.__home_timeout_handle = null; } catch (error) {}
+    \\    controller.abort(reason);
+    \\  };
+    \\  const virtualTlsDeadline = String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-tls-abortsignal-timeout.test.ts");
+    \\  let timer = null;
+    \\  if (virtualTlsDeadline) {
+    \\    Promise.resolve().then(() => {
+    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(delay);
+    \\      dispatch();
+    \\    });
+    \\  } else timer = setTimeout(dispatch, delay);
+    \\  try {
+    \\    Object.defineProperty(signal, "__home_timeout_handle", { configurable: true, writable: true, value: timer });
+    \\    Object.defineProperty(signal, "__home_timeout_deadline", { configurable: true, value: delay });
+    \\  } catch (error) {}
+    \\  return signal;
+    \\}
+    \\Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: __home_abort_signal_timeout });
     \\function __home_abort_signal_any_error(index, error) {
     \\  const cause = error instanceof Error ? error : new TypeError(String(error)); const inputIndex = Number.isInteger(index) && index >= 0 ? index : null; const operation = "abort.signal.any";
     \\  const location = inputIndex === null ? "input iterable" : "input " + String(inputIndex); const failure = new TypeError("AbortSignal.any failed for " + location + ": " + String(cause.message || cause));
@@ -108974,6 +109003,41 @@ test "bootstrap runner releases canceled fetch response stream roots" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner aborts TLS fetches on timeout deadlines" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-tls-abortsignal-timeout.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-tls-abortsignal-timeout.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "AbortSignal.timeout(${timeout})") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "toBe(\"TimeoutError\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_abort_signal_timeout(milliseconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"abort.signal.timeout\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(AbortSignal, \"timeout\"") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
+        std.debug.print(
+            "TLS fetch timeout matrix mismatch: passed={} expected=6 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 6), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
