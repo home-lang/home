@@ -31101,7 +31101,15 @@ const harness_prelude =
     \\  const tag = Object.prototype.toString.call(value);
     \\  if (value instanceof ArrayBuffer || tag === "[object ArrayBuffer]" || tag === "[object SharedArrayBuffer]") return { t: tag === "[object SharedArrayBuffer]" ? "sab" : "ab", id, v: __home_crypto_bytes_to_hex(new Uint8Array(value)) };
     \\  if (ArrayBuffer.isView(value)) return { t: "view", id, n: typeof Buffer === "function" && Buffer.isBuffer(value) ? "Buffer" : value.constructor.name, v: __home_crypto_bytes_to_hex(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-    \\  if (Array.isArray(value)) return { t: "array", id, v: value.map(item => __home_clone_pack(item, seen)) };
+    \\  if (Array.isArray(value)) {
+    \\    const entries = []; const properties = {};
+    \\    for (const key of Object.keys(value)) {
+    \\      const index = Number(key);
+    \\      if (Number.isInteger(index) && index >= 0 && index < value.length && String(index) === key) entries.push([index, __home_clone_pack(value[key], seen)]);
+    \\      else properties[key] = __home_clone_pack(value[key], seen);
+    \\    }
+    \\    return { t: "array", id, l: value.length, v: entries, p: properties };
+    \\  }
     \\  if (value instanceof Map) return { t: "map", id, v: Array.from(value, entry => [__home_clone_pack(entry[0], seen), __home_clone_pack(entry[1], seen)]) };
     \\  if (value instanceof Set) return { t: "set", id, v: Array.from(value, item => __home_clone_pack(item, seen)) };
     \\  const properties = {};
@@ -31128,13 +31136,16 @@ const harness_prelude =
     \\    refs.set(value.id, result); return result;
     \\  }
     \\  let result;
-    \\  if (value.t === "array") result = [];
+    \\  if (value.t === "array") result = new Array(Number.isInteger(value.l) && value.l >= 0 ? value.l : 0);
     \\  else if (value.t === "map") result = new Map();
     \\  else if (value.t === "set") result = new Set();
     \\  else if (value.t === "object") result = {};
     \\  else throw __home_clone_failure(operation, "deserialize", new TypeError("unknown structured clone tag"));
     \\  refs.set(value.id, result);
-    \\  if (value.t === "array") for (const item of value.v || []) result.push(__home_clone_unpack(item, refs, operation));
+    \\  if (value.t === "array") {
+    \\    for (const entry of value.v || []) result[entry[0]] = __home_clone_unpack(entry[1], refs, operation);
+    \\    for (const key of Object.keys(value.p || {})) result[key] = __home_clone_unpack(value.p[key], refs, operation);
+    \\  }
     \\  else if (value.t === "map") for (const entry of value.v || []) result.set(__home_clone_unpack(entry[0], refs, operation), __home_clone_unpack(entry[1], refs, operation));
     \\  else if (value.t === "set") for (const item of value.v || []) result.add(__home_clone_unpack(item, refs, operation));
     \\  else for (const key of Object.keys(value.v || {})) result[key] = __home_clone_unpack(value.v[key], refs, operation);
@@ -31167,10 +31178,18 @@ const harness_prelude =
     \\  if (value === null || typeof value !== "object" || seen.has(value)) return false;
     \\  if (typeof Blob === "function" && value instanceof Blob) return true;
     \\  seen.add(value);
-    \\  if (Array.isArray(value)) return value.some(item => __home_contains_blob(item, seen));
-    \\  if (value instanceof Map) return Array.from(value, entry => __home_contains_blob(entry[0], seen) || __home_contains_blob(entry[1], seen)).some(Boolean);
-    \\  if (value instanceof Set) return Array.from(value, item => __home_contains_blob(item, seen)).some(Boolean);
-    \\  return Object.keys(value).some(key => __home_contains_blob(value[key], seen));
+    \\  if (value instanceof Map) {
+    \\    let found = false;
+    \\    Map.prototype.forEach.call(value, (entry, key) => { if (!found && (__home_contains_blob(key, seen) || __home_contains_blob(entry, seen))) found = true; });
+    \\    return found;
+    \\  }
+    \\  if (value instanceof Set) {
+    \\    let found = false;
+    \\    Set.prototype.forEach.call(value, entry => { if (!found && __home_contains_blob(entry, seen)) found = true; });
+    \\    return found;
+    \\  }
+    \\  for (const key of Object.keys(value)) if (__home_contains_blob(value[key], seen)) return true;
+    \\  return false;
     \\}
     \\const __home_structured_clone_without_blob = structuredClone;
     \\structuredClone = globalThis.structuredClone = function(value, options) {
@@ -103563,6 +103582,12 @@ test "bootstrap structured clone keeps Blob windows bounded and errors actionabl
         \\  try { deserialize(full.slice(0, full.length - 1)); } catch (error) { failure = error; }
         \\  expect(failure).toBeInstanceOf(TypeError); expect(failure.code).toBe("ERR_STRUCTURED_CLONE_DESERIALIZE"); expect(failure.operation).toBe("bun:jsc.deserialize"); expect(failure.phase).toBe("deserialize"); expect(failure.cause).toBeInstanceOf(Error); expect(failure.stack).toContain("Caused by:");
         \\});
+        \\test("prototype-tampered arrays clone through native and Blob-aware paths", async () => {
+        \\  const proto = Object.create(Array.prototype); proto[1] = "prototype-only"; const sparse = new Array(3); sparse[0] = "a"; sparse[2] = "c"; Object.setPrototypeOf(sparse, proto);
+        \\  const sparseClone = structuredClone(sparse); expect(Array.from(sparseClone)).toEqual(["a", undefined, "c"]); expect(1 in sparseClone).toBe(false); expect(Object.getPrototypeOf(sparseClone)).toBe(Array.prototype);
+        \\  const input = [new Blob(["home"], { type: "text/plain" }), , 3]; input.label = "kept"; input.self = input; Object.setPrototypeOf(input, { customMethod() { return 42; } });
+        \\  const clone = structuredClone(input); expect(clone).toBeInstanceOf(Array); expect(clone.customMethod).toBeUndefined(); expect(clone.label).toBe("kept"); expect(clone.self).toBe(clone); expect(1 in clone).toBe(false); expect(await clone[0].text()).toBe("home");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/structured-clone-blob-file.home-regression.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103574,7 +103599,7 @@ test "bootstrap structured clone keeps Blob windows bounded and errors actionabl
         std.debug.print("structured clone Blob/File regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
