@@ -73897,6 +73897,22 @@ const harness_prelude =
     \\  const view = chunk instanceof ArrayBuffer ? new Uint8Array(chunk) : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     \\  return new Uint8Array(view);
     \\}
+    \\function __home_compression_stream_error(format, phase, cause) {
+    \\  if (cause && cause.operation === "decompressionStream.decode" && cause.format === format) return cause;
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "The compressed data was invalid"));
+    \\  const code = underlying.code || (format === "brotli" ? "ERR__ERROR_FORMAT_PADDING_2" : "ERR_COMPRESSION_STREAM");
+    \\  try { Object.defineProperty(underlying, "code", { configurable: true, enumerable: true, value: code, writable: true }); } catch (_error) {}
+    \\  const failure = new TypeError(String(underlying.message || "The compressed data was invalid"), { cause: underlying });
+    \\  Object.defineProperty(failure, "code", { configurable: true, enumerable: true, value: code, writable: true });
+    \\  failure.operation = "decompressionStream.decode";
+    \\  failure.phase = String(phase || "decode");
+    \\  failure.format = String(format);
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.format + ", " + failure.phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
     \\function __home_decompress_bytes(format, bytes) {
     \\  try {
     \\    if (format === "gzip") {
@@ -73906,10 +73922,12 @@ const harness_prelude =
     \\    }
     \\    if (format === "deflate" && bytes.length >= 6 && bytes[0] === 0x78 && bytes[1] === 0x9c && bytes[bytes.length - 4] === 0xde) return bytes.slice(2, -4);
     \\    if (format === "deflate-raw" && bytes.length >= 2 && bytes[0] === 0x03 && bytes[bytes.length - 1] === 0x00) return bytes.slice(1, -1);
-    \\    if (format === "brotli" && bytes.length >= 4 && bytes[0] === 0xce && bytes[1] === 0xb2 && bytes[bytes.length - 2] === 0xbe && bytes[bytes.length - 1] === 0xef) return bytes.slice(2, -2);
+    \\    if (format === "brotli") return new Uint8Array(__home_brotli_decompress_sync(bytes));
     \\    if (format === "zstd") return new Uint8Array(__home_zstd_decompress_sync(bytes));
-    \\  } catch (error) {}
-    \\  throw new TypeError("The compressed data was invalid");
+    \\  } catch (cause) {
+    \\    throw __home_compression_stream_error(format, "decode", cause);
+    \\  }
+    \\  throw __home_compression_stream_error(format, "decode", new TypeError("The compressed data was invalid"));
     \\}
     \\function __home_make_compression_stream(format, decompress) {
     \\  const normalized = String(format).toLowerCase();
@@ -102715,6 +102733,46 @@ test "bootstrap runner uses native Brotli for node zlib contracts" {
     if (file_run.result.status() != .passed) std.debug.print("native Brotli boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap CompressionStream uses native Brotli and composed decode errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\async function collect(stream) {
+        \\  const chunks = []; const reader = stream.getReader();
+        \\  while (true) { const result = await reader.read(); if (result.done) break; chunks.push(result.value); }
+        \\  return Buffer.concat(chunks);
+        \\}
+        \\test("native Brotli streams round trip multiple chunks", async () => {
+        \\  const compressor = new CompressionStream("brotli"); const writer = compressor.writable.getWriter();
+        \\  await writer.write(new TextEncoder().encode("hello ")); await writer.write(new TextEncoder().encode("world")); await writer.close();
+        \\  const compressed = await collect(compressor.readable); expect(compressed.length).toBeGreaterThan(0);
+        \\  const decompressor = new DecompressionStream("brotli"); const decodeWriter = decompressor.writable.getWriter();
+        \\  await decodeWriter.write(compressed.subarray(0, 2)); await decodeWriter.write(compressed.subarray(2)); await decodeWriter.close();
+        \\  expect(new TextDecoder().decode(await collect(decompressor.readable))).toBe("hello world");
+        \\});
+        \\test("invalid Brotli preserves operation, phase, format, cause, and stack", async () => {
+        \\  const stream = new DecompressionStream("brotli"); const writer = stream.writable.getWriter(); const reader = stream.readable.getReader();
+        \\  writer.write(new Uint8Array([255, 255, 255, 255, 255, 255])).catch(() => {}); writer.close().catch(() => {});
+        \\  let caught; try { await reader.read(); } catch (error) { caught = error; }
+        \\  expect(caught).toBeInstanceOf(TypeError); expect(caught.code).toBe("ERR__ERROR_FORMAT_PADDING_2");
+        \\  expect(caught.operation).toBe("decompressionStream.decode"); expect(caught.phase).toBe("decode"); expect(caught.format).toBe("brotli");
+        \\  expect(caught.cause).toBeInstanceOf(Error); expect(caught.cause.code).toBe(caught.code); expect(caught.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/compression-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("CompressionStream regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner preserves node zlib convenience and crc contracts" {
