@@ -26338,7 +26338,7 @@ const harness_prelude =
     \\    return __home_readable_stream_to_array_buffer(stream);
     \\  },
     \\  readableStreamToText(stream) {
-    \\    return __home_body_bytes(stream).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\    return __home_readable_stream_convert(stream, "Bun.readableStreamToText", "decode", bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  },
     \\  readableStreamToJSON(stream) {
     \\    return Bun.readableStreamToText(stream).then(text => __home_parse_json_body_text(text));
@@ -26347,9 +26347,10 @@ const harness_prelude =
     \\    return Bun.readableStreamToText(stream).then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
     \\  },
     \\  readableStreamToBlob(stream) {
-    \\    return __home_body_bytes(stream).then(bytes => {
-    \\      const blob = new Blob([new Uint8Array(bytes)]);
-    \\      blob.__home_content_type = "";
+    \\    return __home_readable_stream_convert(stream, "Bun.readableStreamToBlob", "materialize", bytes => {
+    \\      const contentType = stream && typeof stream.__home_content_type === "string" ? stream.__home_content_type : "";
+    \\      const blob = new Blob([new Uint8Array(bytes)], { type: contentType });
+    \\      blob.__home_content_type = contentType;
     \\      return blob;
     \\    });
     \\  },
@@ -69169,7 +69170,7 @@ const harness_prelude =
     \\Blob.prototype.stream = function() {
     \\  if (this.__home_file_slice_ref) {
     \\    const reference = this.__home_file_slice_ref;
-    \\    return new ReadableStream({
+    \\    const stream = new ReadableStream({
     \\      start(controller) {
     \\        try {
     \\          controller.enqueue(__home_file_slice_bytes(reference, "bun.file.slice.stream", true));
@@ -69177,15 +69178,19 @@ const harness_prelude =
     \\        } catch (error) { controller.error(error); }
     \\      },
     \\    });
+    \\    Object.defineProperty(stream, "__home_content_type", { configurable: true, value: this.type || "" });
+    \\    return stream;
     \\  }
     \\  if (Array.isArray(this.__home_blob_sparse_parts) && (this.size || 0) > 64 * 1024 * 1024) __home_unsupported("Sparse Blob stream materialization is too large");
     \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : (this.__home_blob_typed_bytes ? new Uint8Array(this.__home_blob_typed_bytes) : new Uint8Array(this.__home_blob_bytes || []));
-    \\  return new ReadableStream({
+    \\  const stream = new ReadableStream({
     \\    start(controller) {
     \\      controller.enqueue(bytes);
     \\      controller.close();
     \\    },
     \\  });
+    \\  Object.defineProperty(stream, "__home_content_type", { configurable: true, value: this.type || "" });
+    \\  return stream;
     \\};
     \\Object.defineProperty(Blob.prototype, "name", {
     \\  configurable: true,
@@ -74060,15 +74065,52 @@ const harness_prelude =
     \\  return asUint8Array ? output : output.buffer;
     \\}
     \\function __home_readable_stream_to_array_buffer(stream) {
-    \\  if (!stream) throw new TypeError("Expected ReadableStream");
-    \\  if (__home_stream_chunks_replayable(stream)) {
-    \\    return Promise.resolve(new Uint8Array(__home_body_bytes_sync(stream)).buffer);
+    \\  return __home_readable_stream_convert(stream, "Bun.readableStreamToArrayBuffer", "materialize", bytes => new Uint8Array(bytes).buffer);
+    \\}
+    \\function __home_readable_stream_conversion_error(operation, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "ReadableStream conversion failed"));
+    \\  const failure = new TypeError("Unable to convert ReadableStream: " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.code = "ERR_READABLE_STREAM_CONVERSION";
+    \\  failure.operation = String(operation);
+    \\  failure.phase = String(phase);
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_readable_stream_fast_bytes(stream) {
+    \\  const capture = __home_readable_stream_capture(stream);
+    \\  if (capture && !capture.startPending && capture.closed) {
+    \\    __home_lock_captured_body(stream);
+    \\    return __home_body_bytes_sync({ __home_chunks: capture.chunks || [] });
     \\  }
-    \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes).buffer);
+    \\  if (__home_stream_chunks_replayable(stream)) {
+    \\    __home_lock_captured_body(stream);
+    \\    return __home_body_bytes_sync(stream);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_readable_stream_convert(stream, operation, phase, convert) {
+    \\  if (!stream || typeof stream.getReader !== "function") {
+    \\    return Promise.reject(__home_readable_stream_conversion_error(operation, "validate", new TypeError("Expected ReadableStream")));
+    \\  }
+    \\  if (stream.__home_errored) {
+    \\    return Promise.reject(__home_readable_stream_conversion_error(operation, "read", stream.__home_errored));
+    \\  }
+    \\  let fastBytes;
+    \\  try {
+    \\    fastBytes = __home_readable_stream_fast_bytes(stream);
+    \\    if (fastBytes !== null) return Promise.resolve(convert(fastBytes));
+    \\  } catch (cause) {
+    \\    return Promise.reject(__home_readable_stream_conversion_error(operation, phase, cause));
+    \\  }
+    \\  return __home_then(__home_body_bytes(stream), bytes => {
+    \\    try { return convert(bytes); }
+    \\    catch (cause) { throw __home_readable_stream_conversion_error(operation, phase, cause); }
+    \\  }, cause => { throw __home_readable_stream_conversion_error(operation, "read", cause); });
     \\}
     \\Bun.readableStreamToBytes = function(stream) {
-    \\  if (!stream) throw new TypeError("Expected ReadableStream");
-    \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes));
+    \\  return __home_readable_stream_convert(stream, "Bun.readableStreamToBytes", "materialize", bytes => new Uint8Array(bytes));
     \\};
     \\function __home_readable_stream_method_this(value) {
     \\  if (!value || value === globalThis || typeof value.getReader !== "function") {
@@ -74082,7 +74124,7 @@ const harness_prelude =
     \\  Object.defineProperty(ReadableStream.prototype, "__home_body_methods", { value: true });
     \\  ReadableStream.prototype.text = function() {
     \\    const stream = __home_readable_stream_method_this(this);
-    \\    return __home_body_text(stream).then(text => __home_strip_utf8_bom_text(text));
+    \\    return __home_readable_stream_convert(stream, "readableStream.text", "decode", bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  };
     \\  ReadableStream.prototype.json = function() {
     \\    const stream = __home_readable_stream_method_this(this);
@@ -74094,13 +74136,15 @@ const harness_prelude =
     \\  };
     \\  ReadableStream.prototype.bytes = function() {
     \\    const stream = __home_readable_stream_method_this(this);
-    \\    return __home_body_bytes(stream).then(bytes => new Uint8Array(bytes));
+    \\    return __home_readable_stream_convert(stream, "readableStream.bytes", "materialize", bytes => new Uint8Array(bytes));
     \\  };
     \\  ReadableStream.prototype.blob = function() {
     \\    const stream = __home_readable_stream_method_this(this);
-    \\    return __home_body_bytes(stream).then(bytes => {
-    \\      const blob = typeof __home_spawn_pipe_blob === "function" ? __home_spawn_pipe_blob(bytes) : new Blob([new Uint8Array(bytes)]);
-    \\      blob.__home_content_type = "";
+    \\    return __home_readable_stream_convert(stream, "readableStream.blob", "materialize", bytes => {
+    \\      const contentType = typeof stream.__home_content_type === "string" ? stream.__home_content_type : "";
+    \\      const blob = typeof __home_spawn_pipe_blob === "function" ? __home_spawn_pipe_blob(bytes) : new Blob([new Uint8Array(bytes)], { type: contentType });
+    \\      blob.type = contentType;
+    \\      blob.__home_content_type = contentType;
     \\      return blob;
     \\    });
     \\  };
@@ -112813,6 +112857,50 @@ test "bootstrap Bun.readableStreamToArrayBuffer drains queued chunks" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Blob stream conversions preserve fast-path state, metadata, and failures" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import {
+        \\  readableStreamToArrayBuffer,
+        \\  readableStreamToBlob,
+        \\  readableStreamToBytes,
+        \\  readableStreamToText,
+        \\} from "bun";
+        \\import { expect, test } from "bun:test";
+        \\test("Blob stream fast path", async () => {
+        \\  const blob = new Blob(["Hello, world!"], { type: "text/plain" });
+        \\  for (const convert of [readableStreamToArrayBuffer, readableStreamToBytes, readableStreamToText, readableStreamToBlob]) {
+        \\    const result = convert(blob.stream());
+        \\    expect(Bun.peek.status(result)).toBe("fulfilled");
+        \\    await result;
+        \\  }
+        \\  expect((await readableStreamToBlob(blob.stream())).type).toBe("text/plain");
+        \\});
+        \\test("stream conversion failure metadata", async () => {
+        \\  const failure = await readableStreamToText(new ReadableStream({
+        \\    start(controller) { controller.error(new Error("broken source")); },
+        \\  })).catch(error => error);
+        \\  expect(failure.code).toBe("ERR_READABLE_STREAM_CONVERSION");
+        \\  expect(failure.operation).toBe("Bun.readableStreamToText");
+        \\  expect(failure.phase).toBe("read");
+        \\  expect(failure.cause.message).toBe("broken source");
+        \\  expect(failure.stack).toContain("Caused by: Error: broken source");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/stream-fast-path.home-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap Bun unsafe array buffer helpers cover copied fixture shape" {
