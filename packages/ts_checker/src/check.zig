@@ -75339,6 +75339,11 @@ pub const Checker = struct {
                         if (self.virtualSectionTypeDeclNamed(raw, sp.imported)) |local_decl| {
                             return try self.typeOfExportedTypeDecl(local_decl, sp.imported);
                         }
+                        if (self.localImportModuleInfo(sp.imported, raw)) |import_info| {
+                            if (import_info.exported_root) |exported_root| {
+                                return try self.virtualRelativeModuleExportType(raw, import_info.specifier, &.{}, exported_root);
+                            }
+                        }
                     }
                 } else if (ex.named_len > 0) {
                     for (hir_mod.exportNamed(self.hir, raw)) |spec_node| {
@@ -168347,6 +168352,9 @@ pub const Checker = struct {
         if (self.actualTupleLength(t) != null) {
             return try self.allocSimpleTypeName(t);
         }
+        if (self.class_name_by_instance.get(t)) |class_name| {
+            return self.string_interner.get(class_name);
+        }
         if (self.alias_display_names.get(t)) |display| {
             if (self.namedTypeForId(t)) |name| {
                 if (std.mem.indexOfScalar(u8, display, '<') == null and
@@ -227926,6 +227934,7 @@ test "checker: type-only imports follow renamed re-export chains" {
         \\// @filename: /a.ts
         \\class A { a!: string }
         \\export type { A as B };
+        \\export type Z = A;
         \\// @filename: /b.ts
         \\export type { B as C } from './a';
         \\// @filename: /c.ts
@@ -227941,6 +227950,36 @@ test "checker: type-only imports follow renamed re-export chains" {
         "Property 'a' is missing in type '{}' but required in type 'A'.",
     ));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: type-only imports follow local value re-export aliases" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\class A { a!: string }
+        \\export type { A as B };
+        \\// @filename: /b.ts
+        \\export { B as C } from './a';
+        \\// @filename: /c.ts
+        \\import type { C } from './b';
+        \\export { C as D };
+        \\// @filename: /d.ts
+        \\import { D } from './c';
+        \\new D();
+        \\const d: D = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_only_import_used_as_value,
+        "'D' cannot be used as a value because it was imported using 'import type'.",
+    ));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'a' is missing in type '{}' but required in type 'A'.",
+    ));
 }
 
 test "checker: namespace import typeof includes named exported values" {
