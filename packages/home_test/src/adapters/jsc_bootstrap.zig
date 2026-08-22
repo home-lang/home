@@ -4275,7 +4275,7 @@ pub export fn napi_create_function(
     data: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const callback = cb orelse return setNapiLastError(env, .invalid_arg);
     const name = if (utf8name) |ptr|
@@ -4303,7 +4303,7 @@ pub export fn napi_get_cb_info(
     this_arg: ?*napi_value,
     data: ?*?*anyopaque,
 ) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const frame = info orelse return setNapiLastError(env, .invalid_arg);
     if (argc) |argc_ptr| {
         const wanted = @min(argc_ptr.*, frame.arg_count);
@@ -4318,7 +4318,7 @@ pub export fn napi_get_cb_info(
 }
 
 pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8name: ?[*:0]const u8, value: napi_value) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const name = utf8name orelse return setNapiLastError(env, .invalid_arg);
     const object_value = object orelse return setNapiLastError(env, .invalid_arg);
     const property_value = value orelse return setNapiLastError(env, .invalid_arg);
@@ -4334,7 +4334,7 @@ pub export fn napi_create_external(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object = extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure);
     setBoolProperty(env.ctx, object, "__home_napi_external", true);
@@ -4353,7 +4353,7 @@ pub export fn napi_create_external(
 }
 
 pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object_value = value orelse return setNapiLastError(env, .invalid_arg);
     const object = extern_fns.JSValueToObject(env.ctx, object_value, env.exception) orelse return setNapiLastError(env, .invalid_arg);
@@ -4363,14 +4363,14 @@ pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result:
 }
 
 fn napi_create_int32(env_: napi_env, value: i32, result: ?*napi_value) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     out.* = extern_fns.JSValueMakeNumber(env.ctx, @floatFromInt(value));
     return setNapiLastError(env, .ok);
 }
 
 fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result: ?*napi_value) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const ptr = str orelse return setNapiLastError(env, .invalid_arg);
     const text = if (length == NAPI_AUTO_LENGTH) std.mem.span(@as([*:0]const u8, @ptrCast(ptr))) else ptr[0..length];
@@ -4379,7 +4379,7 @@ fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, res
 }
 
 pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*bool) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const js_value = value orelse return setNapiLastError(env, .invalid_arg);
     out.* = extern_fns.JSValueToBoolean(env.ctx, js_value);
@@ -4387,13 +4387,13 @@ pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*b
 }
 
 pub export fn napi_throw_error(env_: napi_env, _: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     setException(env.ctx, env.exception, if (message) |ptr| std.mem.span(ptr) else "napi error");
     return setNapiLastError(env, .pending_exception);
 }
 
 pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) napi_status {
-    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     out.* = @ptrCast(extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure));
     return setNapiLastError(env, .ok);
@@ -4401,7 +4401,7 @@ pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) napi_stat
 
 fn setNapiLastError(env: *NativeNapiEnv, status: NapiStatus) napi_status {
     env.last_error = status;
-    return @intFromEnum(status);
+    return @backingInt(status);
 }
 
 fn cleanupNativeBridge() void {

@@ -29,7 +29,7 @@ pub const VM = opaque {
 
     extern fn JSC__VM__create(heap_type: u8) *VM;
     pub fn create(heap_type: HeapType) *VM {
-        return JSC__VM__create(@intFromEnum(heap_type));
+        return JSC__VM__create(@backingInt(heap_type));
     }
 
     extern fn JSC__VM__deinit(vm: *VM, global_object: *JSGlobalObject) void;
@@ -231,8 +231,8 @@ test "VM is an opaque pointer-only type" {
 }
 
 test "VM.HeapType tags match the C ABI" {
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(VM.HeapType.SmallHeap));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(VM.HeapType.LargeHeap));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(VM.HeapType.SmallHeap));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(VM.HeapType.LargeHeap));
 }
 
 test "VM.Lock has the expected fields" {

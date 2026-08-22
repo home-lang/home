@@ -477,15 +477,14 @@ pub const PublishCommand = struct {
         version: string,
         registry: *const Npm.Registry.Scope,
     ) bool {
-        var url_buf = std.array_list.Managed(u8).init(allocator);
-        defer url_buf.deinit();
         const registry_url = strings.withoutTrailingSlash(registry.url.href);
         const encoded_name = bun.fmt.dependencyUrl(package_name);
 
         // Try to get package metadata to check if version exists
-        url_buf.writer().print("{s}/{f}", .{ registry_url, encoded_name }) catch return false;
+        const package_url_text = std.fmt.allocPrint(allocator, "{s}/{f}", .{ registry_url, encoded_name }) catch return false;
+        defer allocator.free(package_url_text);
 
-        const package_url = URL.parse(url_buf.items);
+        const package_url = URL.parse(package_url_text);
 
         var response_buf = MutableString.init(allocator, 1024) catch return false;
         defer response_buf.deinit();
@@ -493,29 +492,19 @@ pub const PublishCommand = struct {
         var headers = http.HeaderBuilder{};
         headers.count("accept", "application/json");
 
-        var auth_buf = std.array_list.Managed(u8).init(allocator);
-        defer auth_buf.deinit();
-
-        if (registry.token.len > 0) {
-            auth_buf.writer().print("Bearer {s}", .{registry.token}) catch return false;
-            headers.count("authorization", auth_buf.items);
-        } else if (registry.auth.len > 0) {
-            auth_buf.writer().print("Basic {s}", .{registry.auth}) catch return false;
-            headers.count("authorization", auth_buf.items);
-        }
+        const auth_header: ?[]u8 = if (registry.token.len > 0)
+            std.fmt.allocPrint(allocator, "Bearer {s}", .{registry.token}) catch return false
+        else if (registry.auth.len > 0)
+            std.fmt.allocPrint(allocator, "Basic {s}", .{registry.auth}) catch return false
+        else
+            null;
+        defer if (auth_header) |value| allocator.free(value);
+        if (auth_header) |value| headers.count("authorization", value);
 
         headers.allocate(allocator) catch return false;
         headers.append("accept", "application/json");
 
-        if (registry.token.len > 0) {
-            auth_buf.clearRetainingCapacity();
-            auth_buf.writer().print("Bearer {s}", .{registry.token}) catch return false;
-            headers.append("authorization", auth_buf.items);
-        } else if (registry.auth.len > 0) {
-            auth_buf.clearRetainingCapacity();
-            auth_buf.writer().print("Basic {s}", .{registry.auth}) catch return false;
-            headers.append("authorization", auth_buf.items);
-        }
+        if (auth_header) |value| headers.append("authorization", value);
 
         var req = http.AsyncHTTP.initSync(
             allocator,
@@ -591,9 +580,9 @@ pub const PublishCommand = struct {
 
         const publish_req_body = try constructPublishRequestBody(directory_publish, ctx);
 
-        var print_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer print_buf.deinit(ctx.allocator);
-        var print_writer = print_buf.writer(ctx.allocator);
+        var print_buf: std.Io.Writer.Allocating = .init(ctx.allocator);
+        defer print_buf.deinit();
+        const print_writer = &print_buf.writer;
 
         const publish_headers = try constructPublishHeaders(
             ctx.allocator,
@@ -611,7 +600,7 @@ pub const PublishCommand = struct {
             strings.withoutTrailingSlash(registry.url.href),
             bun.fmt.dependencyUrl(ctx.package_name),
         });
-        const publish_url = URL.parse(try ctx.allocator.dupe(u8, print_buf.items));
+        const publish_url = URL.parse(try ctx.allocator.dupe(u8, print_buf.written()));
         print_buf.clearRetainingCapacity();
 
         var req = http.AsyncHTTP.initSync(
@@ -774,7 +763,7 @@ pub const PublishCommand = struct {
         ctx: *const Context(directory_publish),
         registry: *const Npm.Registry.Scope,
         response_buf: *MutableString,
-        print_buf: *std.ArrayListUnmanaged(u8),
+        print_buf: *std.Io.Writer.Allocating,
     ) GetOTPError![]const u8 {
         const res_source = logger.Source.initPathString("???", response_buf.list.items);
 
@@ -1175,7 +1164,8 @@ pub const PublishCommand = struct {
                         const key = key: {
                             if (bin_prop.key) |key| {
                                 if (key.isString() and key.data.e_string.len() != 0) {
-                                    break :key try bun.dupeZ(allocator, 
+                                    break :key try bun.dupeZ(
+                                        allocator,
                                         u8,
                                         strings.withoutPrefixComptime(
                                             path.normalizeBuf(
@@ -1199,7 +1189,8 @@ pub const PublishCommand = struct {
                         const value = value: {
                             if (bin_prop.value) |value| {
                                 if (value.isString() and value.data.e_string.len() != 0) {
-                                    break :value try bun.dupeZ(allocator, 
+                                    break :value try bun.dupeZ(
+                                        allocator,
                                         u8,
                                         strings.withoutPrefixComptimeZ(
                                             // replace separators
@@ -1252,7 +1243,8 @@ pub const PublishCommand = struct {
                     return;
                 };
                 var bin_props = std.array_list.Managed(G.Property).init(allocator);
-                const normalized_bin_dir = try bun.dupeZ(allocator, 
+                const normalized_bin_dir = try bun.dupeZ(
+                    allocator,
                     u8,
                     strings.withoutTrailingSlash(
                         strings.withoutPrefixComptime(
@@ -1349,7 +1341,7 @@ pub const PublishCommand = struct {
         uses_workspaces: bool,
         auth_type: ?PackageManager.Options.AuthType,
     ) OOM!http.HeaderBuilder {
-        var print_writer = print_buf.writer(allocator);
+        const print_writer = &print_buf.writer;
         var headers: http.HeaderBuilder = .{};
         const npm_auth_type = if (maybe_otp == null)
             if (auth_type) |auth| @tagName(auth) else "web"
@@ -1363,11 +1355,11 @@ pub const PublishCommand = struct {
 
             if (registry.token.len > 0) {
                 try print_writer.print("Bearer {s}", .{registry.token});
-                headers.count("authorization", print_buf.items);
+                headers.count("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             } else if (registry.auth.len > 0) {
                 try print_writer.print("Basic {s}", .{registry.auth});
-                headers.count("authorization", print_buf.items);
+                headers.count("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
 
@@ -1384,7 +1376,7 @@ pub const PublishCommand = struct {
 
             try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
             // headers.count("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
-            headers.count("user-agent", print_buf.items);
+            headers.count("user-agent", print_buf.written());
             print_buf.clearRetainingCapacity();
 
             headers.count("Connection", "keep-alive");
@@ -1392,7 +1384,7 @@ pub const PublishCommand = struct {
 
             if (maybe_json_len) |json_len| {
                 try print_writer.print("{d}", .{json_len});
-                headers.count("Content-Length", print_buf.items);
+                headers.count("Content-Length", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
         }
@@ -1405,11 +1397,11 @@ pub const PublishCommand = struct {
 
             if (registry.token.len > 0) {
                 try print_writer.print("Bearer {s}", .{registry.token});
-                headers.append("authorization", print_buf.items);
+                headers.append("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             } else if (registry.auth.len > 0) {
                 try print_writer.print("Basic {s}", .{registry.auth});
-                headers.append("authorization", print_buf.items);
+                headers.append("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
 
@@ -1426,7 +1418,7 @@ pub const PublishCommand = struct {
 
             try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
             // headers.append("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
-            headers.append("user-agent", print_buf.items);
+            headers.append("user-agent", print_buf.written());
             print_buf.clearRetainingCapacity();
 
             headers.append("Connection", "keep-alive");
@@ -1434,7 +1426,7 @@ pub const PublishCommand = struct {
 
             if (maybe_json_len) |json_len| {
                 try print_writer.print("{d}", .{json_len});
-                headers.append("Content-Length", print_buf.items);
+                headers.append("Content-Length", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
         }
@@ -1454,14 +1446,15 @@ pub const PublishCommand = struct {
         const encoded_tarball_len = std.base64.standard.Encoder.calcSize(ctx.tarball_bytes.len);
         const version_without_build_tag = Dependency.withoutBuildTag(ctx.package_version);
 
-        var buf = try std.ArrayListUnmanaged(u8).initCapacity(
+        var buf = try std.Io.Writer.Allocating.initCapacity(
             ctx.allocator,
             ctx.package_name.len * 5 +
                 version_without_build_tag.len * 4 +
                 ctx.abs_tarball_path.len +
                 encoded_tarball_len,
         );
-        var writer = buf.writer(ctx.allocator);
+        errdefer buf.deinit();
+        const writer = &buf.writer;
 
         try writer.print("{{\"_id\":\"{s}\",\"name\":\"{s}\"", .{
             ctx.package_name,
@@ -1494,17 +1487,18 @@ pub const PublishCommand = struct {
                 "application/octet-stream",
             });
 
-            try buf.ensureUnusedCapacity(ctx.allocator, encoded_tarball_len);
-            buf.items.len += encoded_tarball_len;
-            const count = bun.simdutf.base64.encode(ctx.tarball_bytes, buf.items[buf.items.len - encoded_tarball_len ..], false);
+            const encoded_tarball = try ctx.allocator.alloc(u8, encoded_tarball_len);
+            defer ctx.allocator.free(encoded_tarball);
+            const count = bun.simdutf.base64.encode(ctx.tarball_bytes, encoded_tarball, false);
             bun.assertWithLocation(count == encoded_tarball_len, @src());
+            try writer.writeAll(encoded_tarball);
 
             try writer.print("\",\"length\":{d}}}}}}}", .{
                 ctx.tarball_bytes.len,
             });
         }
 
-        return buf.items;
+        return try buf.toOwnedSlice();
     }
 };
 

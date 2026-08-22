@@ -7,6 +7,15 @@
 
 const std = @import("std");
 
+pub fn indexOfAnyT(comptime T: type, haystack: []const T, needles: []const T) ?usize {
+    for (haystack, 0..) |value, offset| {
+        for (needles) |needle| {
+            if (value == needle) return offset;
+        }
+    }
+    return null;
+}
+
 pub const repeatingAlloc = @import("string/immutable.zig").repeatingAlloc;
 pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
 pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
