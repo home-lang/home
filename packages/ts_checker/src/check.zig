@@ -27493,7 +27493,7 @@ pub const Checker = struct {
         // chains and prevents runaway loops on cyclic types.
         var i: usize = 0;
         while (i < 64) : (i += 1) {
-            const next = self.unwrapPromise(cur);
+            const next = self.promisePayloadType(cur) orelse self.unwrapPromise(cur);
             if (next == cur) return cur;
             cur = next;
         }
@@ -110580,7 +110580,8 @@ pub const Checker = struct {
                 self.hir.setType(fn_node, inferred_sig);
                 out.* = inferred_sig;
             }
-            const ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+            const contextual_ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+            const ret_t = if (f.flags.is_async) self.evalAwaited(contextual_ret_t) else contextual_ret_t;
             if (check_return_assignability and
                 ret_t != types.Primitive.void_t and
                 ret_t != types.Primitive.any and
@@ -219118,6 +219119,22 @@ test "checker: async expression-bodied arrows infer structural Promise returns" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: async map callbacks await substituted Promise payloads" {
+    const s = try newSetup(
+        \\interface Item { scoped: boolean; }
+        \\interface Metadata { updated: boolean; }
+        \\declare const items: Item[];
+        \\declare function metadata(item: Item): Promise<Metadata | undefined>;
+        \\const result: [Item, Metadata | undefined][] = await Promise.all(
+        \\  items.map(async item => [item, await metadata(item)])
+        \\);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: namespace function bodies are checked after signature registration" {
