@@ -80391,6 +80391,31 @@ pub const Checker = struct {
         return buf.items;
     }
 
+    fn recursiveGeneratorFunctionDiagnosticName(
+        self: *Checker,
+        reference: NodeId,
+        yield_node: NodeId,
+    ) CheckError!?[]const u8 {
+        if (self.hir.kindOf(reference) != .identifier) return null;
+        const function_node = self.enclosingFunctionLike(yield_node) orelse return null;
+        const function = hir_mod.fnDeclOf(self.hir, function_node);
+        if (!function.flags.is_generator or function.flags.is_async or
+            function.name == hir_mod.none_node_id or
+            self.hir.kindOf(function.name) != .identifier or
+            hir_mod.fnParams(self.hir, function_node).len != 0)
+        {
+            return null;
+        }
+        if (hir_mod.identifierOf(self.hir, reference).name !=
+            hir_mod.identifierOf(self.hir, function.name).name)
+        {
+            return null;
+        }
+        const generator_t = try self.inferredGeneratorTypeForFunction(function_node, function, false);
+        const generator_name = (try self.allocSimpleTypeName(generator_t)) orelse return null;
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "() => {s}", .{generator_name});
+    }
+
     /// Emit TS2488 "Type 'X' must have a '[Symbol.iterator]()' method
     /// that returns an iterator." ÃÂ¢ÃÂÃÂ prefers the tsc-style prose with
     /// the source type name (e.g. `'{ 0: string; 1: true; }'`,
@@ -106724,6 +106749,13 @@ pub const Checker = struct {
                     if (!operand_is_iterable) {
                         if (inside_async_generator) {
                             try self.reportAsyncIteratorRequired(y.expr, protocol_t, y.expr);
+                        } else if (try self.recursiveGeneratorFunctionDiagnosticName(y.expr, node)) |source_name| {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Type '{s}' must have a '[Symbol.iterator]()' method that returns an iterator.",
+                                .{source_name},
+                            );
+                            try self.reportIteratorRequiredDiagnostic(y.expr, protocol_t, msg);
                         } else {
                             try self.reportIteratorRequired(y.expr, protocol_t);
                         }
@@ -149336,9 +149368,12 @@ pub const Checker = struct {
             if (contextual_ok) {
                 self.diagnostics.shrinkRetainingCapacity(arg_diag_start);
             }
+            const preserve_optional_spread_display = self.hir.kindOf(args[i]) == .spread and
+                !self.isTupleShapedTarget(arg_types[i]);
             if (ok) {
                 const display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
-                    self.typeIncludesUndefined(param_t))
+                    self.typeIncludesUndefined(param_t) and
+                    !preserve_optional_spread_display)
                 blk: {
                     const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                     break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
@@ -149500,6 +149535,7 @@ pub const Checker = struct {
                 if (!emitted) {
                     const raw_display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
                         self.typeIncludesUndefined(param_t) and
+                        !preserve_optional_spread_display and
                         !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos)))
                     blk: {
                         const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
@@ -207075,11 +207111,11 @@ test "checker: delegated yield requires an iterable operand" {
     const s = try newSetup("function* foo() { yield* foo; }");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.yield_star_not_iterable) found = true;
-    }
-    try T.expect(found);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.yield_star_not_iterable,
+        "Type '() => Generator<any, void, unknown>' must have a '[Symbol.iterator]()' method that returns an iterator.",
+    ));
 }
 
 test "checker: delegated yield accepts object literal Symbol iterator" {
@@ -216324,6 +216360,28 @@ test "checker: non-tuple spread into fixed parameter reports TS2556" {
         if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: spread mismatch distinguishes array and tuple optional displays" {
+    const s = try newSetup(
+        \\declare function all(a?: number, b?: number): void;
+        \\declare const mixed: (number | string)[];
+        \\declare const tuple: [number, string];
+        \\all(...mixed);
+        \\all(...tuple);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string | number' is not assignable to parameter of type 'number | undefined'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string' is not assignable to parameter of type 'number'.",
+    ));
 }
 
 test "checker: parity residual cluster spreads JSDoc cast arrays into rest parameters" {
