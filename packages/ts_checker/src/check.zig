@@ -57879,7 +57879,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(raw) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, raw);
             if (ex.is_default and std.mem.eql(u8, self.string_interner.get(name), "default")) {
-                if (ex.decl != hir_mod.none_node_id and self.declCreatesRuntimeValue(ex.decl, 0)) return .value;
+                if (try self.exportDeclCreatesRuntimeValue(raw)) return .value;
                 return .type_only_decl;
             }
             if (ex.is_namespace and
@@ -237247,6 +237247,23 @@ test "checker: no TS1362 when the module exports the name normally (value)" {
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"b\"", .exported_name = "Foo", .exported_type = true, .type_only_export = false };
     try runCrossModuleCheck(s, &stub);
     try T.expect(!checkerHasAnyCode(s, TsCodes.type_only_export_used_as_value));
+}
+
+test "checker: default expression exports retain runtime value status" {
+    const b = try newBoundSetup(
+        \\// @filename: /source.ts
+        \\export default "hello";
+        \\// @filename: /consumer.ts
+        \\import { default as direct } from "./source";
+        \\import fallback, { default as paired } from "./source";
+        \\direct;
+        \\fallback;
+        \\paired;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_only_export_used_as_value));
 }
 
 test "checker: no TS1379 when the cross-module export is a normal (value) export" {
