@@ -73363,6 +73363,9 @@ const harness_prelude =
     \\        pull(controller) {
     \\          return typeof underlyingSource.pull === "function" ? underlyingSource.pull(capturedController || controller) : undefined;
     \\        },
+    \\        cancel(reason) {
+    \\          return typeof underlyingSource.cancel === "function" ? underlyingSource.cancel(reason) : undefined;
+    \\        },
     \\      });
     \\    }
     \\    const stream = new __home_NativeReadableStream(source, strategy);
@@ -73515,27 +73518,73 @@ const harness_prelude =
     \\      function releaseReader() {
     \\        try { if (typeof reader.releaseLock === "function") reader.releaseLock(); } catch (error) {}
     \\      }
+    \\      const signal = opts.signal;
+    \\      if (signal !== undefined && (!signal || typeof signal !== "object" || typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function" || typeof signal.aborted !== "boolean")) {
+    \\        const error = new TypeError('The "options.signal" property must be an instance of AbortSignal');
+    \\        error.code = "ERR_INVALID_ARG_TYPE";
+    \\        error.operation = "readableStream.pipeTo";
+    \\        error.phase = "validate-signal";
+    \\        releaseReader();
+    \\        return Promise.reject(error);
+    \\      }
     \\      function pump() {
+    \\        if (terminating) return Promise.resolve(undefined);
     \\        return Promise.resolve(reader.read()).then(result => {
+    \\          if (terminating) return undefined;
     \\          if (result.done) return opts.preventClose || typeof sink.close !== "function" ? undefined : sink.close();
     \\          return Promise.resolve(typeof sink.write === "function" ? sink.write(result.value) : undefined).then(pump);
     \\        });
     \\      }
-    \\      return pump().then(
-    \\        value => { releaseReader(); return value; },
-    \\        error => {
-    \\          const cleanup = [];
-    \\          if (!opts.preventCancel && typeof reader.cancel === "function") {
-    \\            const controller = ReadableStream.__home_controllers && ReadableStream.__home_controllers.get(source);
-    \\            if (controller) controller.__home_detached_stream = true;
-    \\            try { cleanup.push(Promise.resolve(reader.cancel(error)).catch(() => undefined)); } catch (cancelError) {}
-    \\          }
-    \\          if (!opts.preventAbort && typeof sink.abort === "function") {
-    \\            try { cleanup.push(Promise.resolve(sink.abort(error)).catch(() => undefined)); } catch (abortError) {}
-    \\          }
-    \\          return Promise.all(cleanup).then(() => { releaseReader(); throw error; });
-    \\        },
-    \\      );
+    \\      let terminating = false;
+    \\      let settled = false;
+    \\      let abortHandler = null;
+    \\      let signalAttached = false;
+    \\      function detachSignal() {
+    \\        if (signal && abortHandler && signalAttached) {
+    \\          try { signal.removeEventListener("abort", abortHandler); } catch (error) {}
+    \\        }
+    \\        signalAttached = false;
+    \\        abortHandler = null;
+    \\      }
+    \\      function cleanUp(error) {
+    \\        const cleanup = [];
+    \\        if (!opts.preventCancel && typeof reader.cancel === "function") {
+    \\          const controller = ReadableStream.__home_controllers && ReadableStream.__home_controllers.get(source);
+    \\          if (controller) controller.__home_detached_stream = true;
+    \\          try { cleanup.push(Promise.resolve(reader.cancel(error)).catch(() => undefined)); } catch (cancelError) {}
+    \\        }
+    \\        if (!opts.preventAbort && typeof sink.abort === "function") {
+    \\          try { cleanup.push(Promise.resolve(sink.abort(error)).catch(() => undefined)); } catch (abortError) {}
+    \\        }
+    \\        return Promise.all(cleanup);
+    \\      }
+    \\      return new Promise((resolve, reject) => {
+    \\        function settle(ok, value) {
+    \\          if (settled) return;
+    \\          settled = true;
+    \\          terminating = true;
+    \\          detachSignal();
+    \\          releaseReader();
+    \\          if (ok) resolve(value); else reject(value);
+    \\        }
+    \\        function fail(error) {
+    \\          if (settled || terminating) return;
+    \\          terminating = true;
+    \\          Promise.resolve(cleanUp(error)).then(() => settle(false, error), () => settle(false, error));
+    \\        }
+    \\        if (signal) {
+    \\          abortHandler = function() {
+    \\            const reason = signal.reason === undefined ? new DOMException("The operation was aborted.", "AbortError") : signal.reason;
+    \\            fail(reason);
+    \\          };
+    \\          if (signal.aborted) { abortHandler(); return; }
+    \\          try {
+    \\            signal.addEventListener("abort", abortHandler, { once: true });
+    \\            signalAttached = true;
+    \\          } catch (error) { fail(error); return; }
+    \\        }
+    \\        pump().then(value => { if (!terminating) settle(true, value); }, fail);
+    \\      });
     \\    }
     \\    if (typeof __home_readable_stream_pipe_to === "function") return __home_readable_stream_pipe_to.call(this, destination, options);
     \\    return Promise.reject(new TypeError("ReadableStream.pipeTo is unavailable"));
@@ -102770,6 +102819,49 @@ test "bootstrap CompressionStream uses native Brotli and composed decode errors"
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) {
         std.debug.print("CompressionStream regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap pipeTo AbortSignal preserves reasons and releases lifecycle state" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("abort tears down the pipe and detaches its listener", async () => {
+        \\  const controller = new AbortController();
+        \\  const signal = controller.signal;
+        \\  const addEventListener = signal.addEventListener.bind(signal);
+        \\  const removeEventListener = signal.removeEventListener.bind(signal);
+        \\  let additions = 0; let removals = 0; let cancelReason; let abortReason;
+        \\  Object.defineProperty(signal, "addEventListener", { value(type, listener, options) { additions++; return addEventListener(type, listener, options); } });
+        \\  Object.defineProperty(signal, "removeEventListener", { value(type, listener, options) { removals++; return removeEventListener(type, listener, options); } });
+        \\  const readable = new ReadableStream({ pull() { return new Promise(() => {}); }, cancel(reason) { cancelReason = reason; } });
+        \\  const writable = new WritableStream({ abort(reason) { abortReason = reason; } });
+        \\  const reason = new Error("stop this pipe");
+        \\  const pipe = readable.pipeTo(writable, { signal });
+        \\  controller.abort(reason);
+        \\  let rejected; try { await pipe; } catch (error) { rejected = error; }
+        \\  expect(rejected).toBe(reason); expect(cancelReason).toBe(reason); expect(abortReason).toBe(reason);
+        \\  expect(additions).toBe(1); expect(removals).toBe(1); expect(readable.locked).toBe(false);
+        \\});
+        \\test("invalid signals reject with actionable context and release the reader", async () => {
+        \\  const readable = new ReadableStream({ start(controller) { controller.close(); } });
+        \\  let rejected; try { await readable.pipeTo(new WritableStream({}), { signal: {} }); } catch (error) { rejected = error; }
+        \\  expect(rejected).toBeInstanceOf(TypeError); expect(rejected.code).toBe("ERR_INVALID_ARG_TYPE");
+        \\  expect(rejected.operation).toBe("readableStream.pipeTo"); expect(rejected.phase).toBe("validate-signal");
+        \\  expect(readable.locked).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/pipeTo-signal-lifecycle-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("pipeTo AbortSignal lifecycle regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
