@@ -13568,6 +13568,19 @@ pub const Checker = struct {
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
+    fn umdGlobalTypeForName(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const section = self.findUmdNamespaceExportSection(name, anchor) orelse {
+            if (self.programHasUmdGlobalName(name)) return types.Primitive.any;
+            return null;
+        };
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const target = self.umdExportAssignmentTargetDeclInSection(hir_mod.blockStmts(self.hir, root), section) orelse
+            return types.Primitive.any;
+        const target_name = self.declarationName(target) orelse return types.Primitive.any;
+        return (try self.typeOfExportedTypeDecl(target, target_name)) orelse types.Primitive.any;
+    }
+
     fn umdGlobalNamespaceExportType(
         self: *Checker,
         type_node: NodeId,
@@ -35148,6 +35161,7 @@ pub const Checker = struct {
                 if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return;
                 if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |_| return;
                 if (try self.importedTypeRefForLocal(r.name, type_node)) |_| return;
+                if (try self.umdGlobalTypeForName(r.name, type_node)) |_| return;
                 if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |_| return;
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |_| return;
                 const raw = self.string_interner.get(r.name);
@@ -72368,6 +72382,7 @@ pub const Checker = struct {
                 // Must precede `resolveForwardClassInstanceType`.
                 if (self.localScopedTypeForNameAt(id.name, type_node)) |t| return t;
                 if (try self.importedTypeRefForLocal(id.name, type_node)) |t| return t;
+                if (try self.umdGlobalTypeForName(id.name, type_node)) |t| return t;
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (std.mem.eql(u8, name_str, "Object")) {
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
@@ -72690,6 +72705,7 @@ pub const Checker = struct {
                     if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |t| return t;
                     if (try self.resolveUnqualifiedNamespaceTypeRef(type_node, r.name)) |t| return t;
                     if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
+                    if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (std.mem.eql(u8, name_str, "Object")) {
@@ -134040,6 +134056,7 @@ pub const Checker = struct {
                         t != types.Primitive.unknown) break :blk false;
                 }
                 if (self.localImportBindingExistsAt(id.name, type_node)) break :blk false;
+                if (self.hasUmdNamespaceExport(id.name)) break :blk false;
                 if (self.visibleTypeDeclarationExistsAt(type_node, id.name)) break :blk false;
                 break :blk true;
             },
@@ -134051,6 +134068,7 @@ pub const Checker = struct {
                 if (r.qualifier_len != 0 or r.args_len != 0) break :blk false;
                 if (self.nameHasEnclosingTypeParameter(r.name, type_node)) break :blk false;
                 if (self.localImportBindingExistsAt(r.name, type_node)) break :blk false;
+                if (self.hasUmdNamespaceExport(r.name)) break :blk false;
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) break :blk false;
                 const raw = self.string_interner.get(r.name);
                 if (std.mem.eql(u8, raw, "super")) break :blk true;
@@ -208782,6 +208800,28 @@ test "checker: TS2686 reports UMD global value use from an external module" {
         "'Foo' refers to a UMD global, but the current file is a module. Consider adding an import instead.",
         msg,
     );
+}
+
+test "checker: UMD globals retain type meaning inside external modules" {
+    const b = try newBoundSetup(
+        \\// @filename: foo.d.ts
+        \\declare class Thing { foo(): number; }
+        \\declare namespace Thing { interface SubThing {} }
+        \\export = Thing;
+        \\export as namespace Foo;
+        \\// @filename: a.ts
+        \\import * as ff from './foo';
+        \\declare let y: Foo;
+        \\y.foo();
+        \\declare let z: Foo.SubThing;
+        \\let x: any = Foo;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expect(!checkerHasAnyCode(b.base, TsCodes.cannot_find_name));
+    try T.expect(!checkerHasAnyCode(b.base, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasAnyCode(b.base, TsCodes.umd_global_in_module));
 }
 
 test "checker: TS2686 does not report UMD global value use from a script" {
