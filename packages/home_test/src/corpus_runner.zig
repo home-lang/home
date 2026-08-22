@@ -23806,7 +23806,8 @@ const harness_prelude =
     \\  const headers = new Headers(options && options.headers || {});
     \\  headers.set("Upgrade", "websocket");
     \\  headers.set("Connection", "Upgrade");
-    \\  if (!headers.has("Sec-WebSocket-Accept")) headers.set("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    \\  const websocketKey = request && request.headers && request.headers.get("sec-websocket-key");
+    \\  if (!headers.has("Sec-WebSocket-Accept")) headers.set("Sec-WebSocket-Accept", __home_websocket_accept_for_key(websocketKey));
     \\  const cookieHeaders = __home_serve_cookie_headers(request && request.cookies);
     \\  for (const cookieHeader of cookieHeaders) headers.append("Set-Cookie", cookieHeader);
     \\  return {
@@ -23817,6 +23818,96 @@ const harness_prelude =
     \\    headers,
     \\    text() { return Promise.resolve(""); },
     \\  };
+    \\}
+    \\function __home_fetch_websocket_upgrade_error(phase, request, cause) {
+    \\  const step = String(phase || "handshake");
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "WebSocket upgrade failed"));
+    \\  const failure = new Error("Fetch WebSocket upgrade failed during " + step + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.name = "FetchWebSocketUpgradeError";
+    \\  failure.code = "ERR_FETCH_WEBSOCKET_UPGRADE";
+    \\  failure.operation = "fetch.websocket.upgrade";
+    \\  failure.phase = step;
+    \\  failure.url = request && request.url ? String(request.url) : "";
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_fetch_is_websocket_upgrade(headers) {
+    \\  if (!headers || typeof headers.get !== "function") return false;
+    \\  const upgrade = String(headers.get("upgrade") || "").toLowerCase();
+    \\  const connection = String(headers.get("connection") || "").toLowerCase().split(",").map(value => value.trim());
+    \\  return upgrade === "websocket" && connection.includes("upgrade") && String(headers.get("sec-websocket-key") || "") !== "";
+    \\}
+    \\async function __home_fetch_websocket_upgrade_response(handle, request, upgradeResponse) {
+    \\  if (!handle || !handle.websocket) throw __home_fetch_websocket_upgrade_error("server-config", request, new Error("Bun.serve requires websocket handlers before upgrading"));
+    \\  if (!__home_fetch_is_websocket_upgrade(request && request.headers)) throw __home_fetch_websocket_upgrade_error("handshake", request, new Error("Invalid WebSocket upgrade headers"));
+    \\  const outgoing = [];
+    \\  const websocket = handle.websocket;
+    \\  const client = {
+    \\    readyState: 1,
+    \\    dispatchEvent(event) {
+    \\      if (this.readyState !== 1 || !event || event.type !== "message") return true;
+    \\      outgoing.push(__home_websocket_encode_frame(typeof event.data === "string" ? 0x1 : 0x2, event.data, false));
+    \\      return true;
+    \\    },
+    \\    close(code, reason) {
+    \\      if (this.readyState === 3) return;
+    \\      this.readyState = 3;
+    \\      outgoing.push(__home_websocket_encode_close_frame(code === undefined ? 1000 : code, reason === undefined ? "" : reason, false));
+    \\    },
+    \\  };
+    \\  const serverSide = __home_websocket_server_peer(client, upgradeResponse && upgradeResponse.__home_websocket_data, handle);
+    \\  try {
+    \\    if (typeof websocket.open === "function") await websocket.open(serverSide);
+    \\  } catch (cause) {
+    \\    throw __home_fetch_websocket_upgrade_error("server-open", request, cause);
+    \\  }
+    \\  let bytes;
+    \\  try {
+    \\    bytes = await __home_body_bytes(request && request.body);
+    \\  } catch (cause) {
+    \\    throw __home_fetch_websocket_upgrade_error("request-stream", request, cause);
+    \\  }
+    \\  let decoded;
+    \\  try {
+    \\    decoded = __home_websocket_decode_frames(Buffer.from(bytes || []), true);
+    \\    if (decoded.remaining.length !== 0) throw new Error("WebSocket request ended with an incomplete frame");
+    \\  } catch (cause) {
+    \\    throw __home_fetch_websocket_upgrade_error("decode-frame", request, cause);
+    \\  }
+    \\  for (const frame of decoded.frames) {
+    \\    try {
+    \\      if (frame.opcode === 0x1 && typeof websocket.message === "function") await websocket.message(serverSide, frame.payload.toString("utf8"));
+    \\      else if (frame.opcode === 0x2 && typeof websocket.message === "function") await websocket.message(serverSide, frame.payload);
+    \\      else if (frame.opcode === 0x8) {
+    \\        const code = frame.payload.length >= 2 ? frame.payload.readUInt16BE(0) : 1000;
+    \\        const reason = frame.payload.length > 2 ? frame.payload.slice(2).toString("utf8") : "";
+    \\        if (typeof websocket.close === "function") await websocket.close(serverSide, code, reason);
+    \\        client.close(code, reason);
+    \\        break;
+    \\      } else if (frame.opcode === 0x9 && typeof websocket.ping === "function") await websocket.ping(serverSide, frame.payload);
+    \\      else if (frame.opcode === 0xa && typeof websocket.pong === "function") await websocket.pong(serverSide, frame.payload);
+    \\    } catch (cause) {
+    \\      throw __home_fetch_websocket_upgrade_error("server-frame", request, cause);
+    \\    }
+    \\  }
+    \\  await Promise.resolve();
+    \\  const response = {
+    \\    __home_upgrade_response: true,
+    \\    status: 101,
+    \\    statusText: "Switching Protocols",
+    \\    headers: new Headers(upgradeResponse && upgradeResponse.headers),
+    \\    body: __home_deferred_chunks_reader(Promise.resolve(outgoing.slice())),
+    \\    bodyUsed: false,
+    \\    ok: false,
+    \\    redirected: false,
+    \\    url: request && request.url ? String(request.url) : "",
+    \\    text() { return __home_consume_body_text(this, "fetch.websocket.response.text"); },
+    \\    bytes() { return __home_consume_body(this, "fetch.websocket.response.bytes").then(value => new Uint8Array(value)); },
+    \\    arrayBuffer() { return this.bytes().then(value => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); },
+    \\  };
+    \\  __home_add_body_owner(response.body, response);
+    \\  return response;
     \\}
     \\function __home_serve_protocol(options) {
     \\  const tls = options && options.tls;
@@ -26532,7 +26623,8 @@ const harness_prelude =
     \\      },
     \\      upgrade(request, options) {
     \\        if (!handle.websocket) return false;
-    \\        if (request && typeof request === "object") request.__home_upgrade_response = __home_serve_upgrade_response(request, options || {});
+    \\        if (!request || typeof request !== "object" || !__home_fetch_is_websocket_upgrade(request.headers)) return false;
+    \\        request.__home_upgrade_response = __home_serve_upgrade_response(request, options || {});
     \\        return true;
     \\      },
     \\      publish(topic, value) {
@@ -67338,7 +67430,7 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_rewind_performance_clock === "function") globalThis.__home_rewind_performance_clock(10);
     \\    return __home_fetch_thenable(null, __home_fetch_abort_reason(abortSignal));
     \\  }
-    \\  if (fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null && (fetchMethod === "GET" || fetchMethod === "HEAD" || fetchMethod === "OPTIONS")) {
+    \\  if (fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null && (fetchMethod === "GET" || fetchMethod === "HEAD" || fetchMethod === "OPTIONS") && !__home_fetch_is_websocket_upgrade(fetchOptions.headers)) {
     \\    return __home_fetch_thenable(null, new TypeError("fetch() request with GET/HEAD/OPTIONS method cannot have body."));
     \\  }
     \\  const missingFileError = __home_fetch_missing_file_error(fetchOptions);
@@ -67522,6 +67614,11 @@ const harness_prelude =
     \\            return replacement.fetch(new Request(request.url, requestInit), replacement.server);
     \\          }
     \\          if (!(result instanceof Response)) throw new Error("closed unexpectedly");
+    \\        }
+    \\        if (request.__home_upgrade_response) {
+    \\          const upgraded = await __home_fetch_websocket_upgrade_response(handle, request, request.__home_upgrade_response);
+    \\          upgraded.__home_redirect_lifecycle = __home_fetch_redirect_finish(redirectState);
+    \\          return upgraded;
     \\        }
     \\        let response = result instanceof Response ? result : new Response(result);
     \\        if (abortSignal) {
@@ -67995,6 +68092,92 @@ const harness_prelude =
     \\  if (value && typeof value.length === "number") return Number(value.length) || 0;
     \\  return Buffer.byteLength(String(value));
     \\}
+    \\function __home_websocket_accept_for_key(key) {
+    \\  const text = String(key || "");
+    \\  if (!text) throw __home_fetch_websocket_upgrade_error("handshake-key", null, new Error("Missing Sec-WebSocket-Key header"));
+    \\  return __home_crypto_create_hash("sha1").update(text + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    \\}
+    \\function __home_websocket_encode_frame(opcode, value, masked) {
+    \\  const payload = Buffer.from(value === undefined || value === null ? "" : value);
+    \\  const lengthBytes = payload.length < 126 ? 0 : payload.length <= 0xffff ? 2 : 8;
+    \\  const maskBytes = masked ? 4 : 0;
+    \\  const frame = Buffer.alloc(2 + lengthBytes + maskBytes + payload.length);
+    \\  frame[0] = 0x80 | (Number(opcode) & 0x0f);
+    \\  let offset = 2;
+    \\  if (payload.length < 126) frame[1] = (masked ? 0x80 : 0) | payload.length;
+    \\  else if (payload.length <= 0xffff) { frame[1] = (masked ? 0x80 : 0) | 126; frame.writeUInt16BE(payload.length, 2); offset += 2; }
+    \\  else { frame[1] = (masked ? 0x80 : 0) | 127; frame.writeBigUInt64BE(BigInt(payload.length), 2); offset += 8; }
+    \\  if (masked) {
+    \\    const mask = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+    \\    mask.copy(frame, offset);
+    \\    offset += 4;
+    \\    for (let i = 0; i < payload.length; i++) frame[offset + i] = payload[i] ^ mask[i & 3];
+    \\  } else payload.copy(frame, offset);
+    \\  return frame;
+    \\}
+    \\function __home_websocket_encode_close_frame(code, reason, masked) {
+    \\  const reasonBytes = Buffer.from(String(reason || ""), "utf8");
+    \\  const payload = Buffer.alloc(2 + reasonBytes.length);
+    \\  payload.writeUInt16BE(Number(code) || 1000, 0);
+    \\  reasonBytes.copy(payload, 2);
+    \\  return __home_websocket_encode_frame(0x8, payload, !!masked);
+    \\}
+    \\function __home_websocket_decode_frames(buffer, requireMasked) {
+    \\  const bytes = Buffer.from(buffer || []);
+    \\  const frames = [];
+    \\  let offset = 0;
+    \\  while (offset + 2 <= bytes.length) {
+    \\    const start = offset;
+    \\    const first = bytes[offset++];
+    \\    const second = bytes[offset++];
+    \\    const fin = !!(first & 0x80);
+    \\    const opcode = first & 0x0f;
+    \\    const masked = !!(second & 0x80);
+    \\    let length = second & 0x7f;
+    \\    if (!fin) throw new Error("Fragmented WebSocket frames are not supported");
+    \\    if (requireMasked && !masked) throw new Error("Client WebSocket frames must be masked");
+    \\    if (length === 126) {
+    \\      if (offset + 2 > bytes.length) { offset = start; break; }
+    \\      length = bytes.readUInt16BE(offset); offset += 2;
+    \\    } else if (length === 127) {
+    \\      if (offset + 8 > bytes.length) { offset = start; break; }
+    \\      const large = bytes.readBigUInt64BE(offset); offset += 8;
+    \\      if (large > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("WebSocket frame is too large");
+    \\      length = Number(large);
+    \\    }
+    \\    let mask = null;
+    \\    if (masked) {
+    \\      if (offset + 4 > bytes.length) { offset = start; break; }
+    \\      mask = bytes.slice(offset, offset + 4); offset += 4;
+    \\    }
+    \\    if (offset + length > bytes.length) { offset = start; break; }
+    \\    let payload = bytes.slice(offset, offset + length); offset += length;
+    \\    if (mask) {
+    \\      const unmasked = Buffer.alloc(length);
+    \\      for (let i = 0; i < length; i++) unmasked[i] = payload[i] ^ mask[i & 3];
+    \\      payload = unmasked;
+    \\    }
+    \\    frames.push({ fin, opcode, masked, payload });
+    \\  }
+    \\  return { frames, remaining: bytes.slice(offset) };
+    \\}
+    \\function __home_websocket_helper_decode_frames(buffer) {
+    \\  const decoded = __home_websocket_decode_frames(buffer, false);
+    \\  const messages = [];
+    \\  for (const frame of decoded.frames) {
+    \\    if (frame.opcode === 0x1) messages.push(frame.payload.toString("utf8"));
+    \\    else if (frame.opcode === 0x8) messages.push({ type: "close" });
+    \\    else if (frame.opcode === 0x9) messages.push({ type: "ping", data: frame.payload });
+    \\    else if (frame.opcode === 0xa) messages.push({ type: "pong", data: frame.payload });
+    \\  }
+    \\  return { messages, remaining: decoded.remaining };
+    \\}
+    \\globalThis.__home_modules["./websocket.helpers"] = {
+    \\  decodeFrames: __home_websocket_helper_decode_frames,
+    \\  encodeCloseFrame(code, reason) { return __home_websocket_encode_close_frame(code === undefined ? 1000 : code, reason === undefined ? "" : reason, true); },
+    \\  encodeTextFrame(value) { return __home_websocket_encode_frame(0x1, String(value), true); },
+    \\  upgradeHeaders() { return { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" }; },
+    \\};
     \\function __home_websocket_publish(handle, topic, value) {
     \\  const topics = handle && handle.__home_websocket_topics;
     \\  const subscribers = topics && topics[String(topic)];
@@ -68252,6 +68435,9 @@ const harness_prelude =
     \\      websocketOptions.finishRequest(finishRequest);
     \\    }
     \\    headers.set("upgrade", "websocket");
+    \\    headers.set("connection", "Upgrade");
+    \\    if (!headers.has("sec-websocket-key")) headers.set("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+    \\    if (!headers.has("sec-websocket-version")) headers.set("sec-websocket-version", "13");
     \\    if (!headers.has("authorization")) {
     \\      const authorization = __home_websocket_url_authorization(parsed);
     \\      if (authorization !== null) headers.set("authorization", authorization);
@@ -79825,6 +80011,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { request } = globalThis.__home_import(\"undici\");",
         },
         .{
+            .needle = "import { decodeFrames, encodeCloseFrame, encodeTextFrame, upgradeHeaders } from \"./websocket.helpers\";",
+            .replacement = "const { decodeFrames, encodeCloseFrame, encodeTextFrame, upgradeHeaders } = globalThis.__home_import(\"./websocket.helpers\");",
+        },
+        .{
             .needle = "import { createServer } from \"../../../http-test-server\";",
             .replacement = "const { createServer } = globalThis.__home_import(\"../../../http-test-server\");",
         },
@@ -84441,6 +84631,26 @@ test "harness prelude routes Unix HTTP transports through validated socket state
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const proxyResponse = unixPath === null ? __home_fetch_via_http_proxy") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_bun_create_unix_socket_file(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_written_file_times[unix]") != null);
+}
+
+test "fetch upgrade corpus keeps framed 101 streaming and structured failures" {
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import { decodeFrames, encodeCloseFrame, encodeTextFrame, upgradeHeaders } from "./websocket.helpers";
+        \\test("upgrade", () => expect(typeof decodeFrames).toBe("function"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/fetch/fetch.upgrade.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_import(\"./websocket.helpers\")") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "async function __home_fetch_websocket_upgrade_response(handle, request, upgradeResponse)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_WEBSOCKET_UPGRADE\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.websocket.upgrade\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "decoded = __home_websocket_decode_frames(Buffer.from(bytes || []), true);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "status: 101,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "body: __home_deferred_chunks_reader(Promise.resolve(outgoing.slice()))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_crypto_create_hash(\"sha1\")") != null);
 }
 
 test "harness prelude surfaces ERR_INVALID_THIS from Request body methods" {
