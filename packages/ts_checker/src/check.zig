@@ -20074,6 +20074,12 @@ pub const Checker = struct {
         return self.findSiblingFunctionDecl(member.object);
     }
 
+    fn expandoReceiverDeclaredInOtherVirtualSection(self: *Checker, target: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        const declaration = self.expandoReceiverDeclaration(target) orelse return false;
+        return self.virtualSectionStartForNode(declaration) != self.virtualSectionStartForNode(target);
+    }
+
     fn expressionReferencesWholeIdentifier(
         self: *Checker,
         expression: NodeId,
@@ -101606,7 +101612,9 @@ pub const Checker = struct {
                     (try self.expandoFunctionMemberKey(a.target)) != null)
                 {
                     const explicit_receiver = self.expandoReceiverHasExplicitType(node, a.target);
-                    if (!explicit_receiver or (try self.explicitExpandoReceiverMemberType(a.target)) != null) {
+                    if (!self.expandoReceiverDeclaredInOtherVirtualSection(a.target) and
+                        (!explicit_receiver or (try self.explicitExpandoReceiverMemberType(a.target)) != null))
+                    {
                         self.removePriorDiagnosticForNode(a.target, TsCodes.property_does_not_exist);
                         self.removePriorDiagnosticsInNodeSpan(a.target, TsCodes.property_does_not_exist);
                     }
@@ -223044,6 +223052,31 @@ test "checker: checkjs expando property assignment target does not report TS2339
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checkjs cross-file callable expando assignment reports TS2339" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: module.js
+        \\var Outer = function(element, config) {};
+        \\// @Filename: usage.js
+        \\/** @constructor */
+        \\Outer.Pos = function (line, ch) {};
+        \\/** @type {number} */
+        \\Outer.Pos.prototype.line;
+        \\var pos = new Outer.Pos(1, 'x');
+        \\pos.line;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'Pos' does not exist on type '(element: any, config: any) => void'.",
+    ));
 }
 
 test "checker: checked JS whole-object expando inference reports TS7022" {
