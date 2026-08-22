@@ -2888,6 +2888,12 @@ const DependentBinding = struct {
     pattern: NodeId,
     source_type: TypeId,
     selector: DependentBindingSelector,
+    projection_constraint: TypeId = types.Primitive.none,
+};
+
+const DependentBindingKey = struct {
+    name: hir_mod.StringId,
+    owner: NodeId,
 };
 
 const SymbolicTupleSegment = struct {
@@ -4212,7 +4218,7 @@ pub const Checker = struct {
     disc_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, DiscAlias),
     /// Const/parameter destructuring bindings that retain correlation with a
     /// shared discriminated union source.
-    dependent_bindings: std.AutoHashMapUnmanaged(hir_mod.StringId, DependentBinding),
+    dependent_bindings: std.AutoHashMapUnmanaged(DependentBindingKey, DependentBinding),
     /// Switches proven exhaustive from the narrowed literal type of their
     /// discriminant. Used by enclosing fallthrough/exit analysis.
     exhaustive_switches: std.AutoHashMapUnmanaged(NodeId, void),
@@ -16188,7 +16194,7 @@ pub const Checker = struct {
                         if (self.disc_aliases.get(id.name)) |alias| {
                             try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, target, true);
                         }
-                        try self.applyDependentBindingNarrow(id.name, target, true);
+                        try self.applyDependentBindingNarrow(sw.discriminant, id.name, target, true);
                         try self.recordNarrow(id.name, narrowed);
                     }
                 }
@@ -16226,7 +16232,7 @@ pub const Checker = struct {
                         if (self.disc_aliases.get(id.name)) |alias| {
                             try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, lit_t, false);
                         }
-                        try self.applyDependentBindingNarrow(id.name, lit_t, false);
+                        try self.applyDependentBindingNarrow(sw.discriminant, id.name, lit_t, false);
                     }
                 }
             }
@@ -21053,8 +21059,15 @@ pub const Checker = struct {
                 const else_assigned = assigned or try self.guardProvesDefiniteAssignment(conditional.cond, false, name);
                 break :blk try self.loopBreaksPreserveDefiniteAssignment(conditional.else_branch, name, else_assigned);
             },
-            .for_stmt, .for_in_stmt, .for_of_stmt, .while_stmt, .do_while_stmt,
-            .switch_stmt, .fn_decl, .fn_expr, .arrow_fn,
+            .for_stmt,
+            .for_in_stmt,
+            .for_of_stmt,
+            .while_stmt,
+            .do_while_stmt,
+            .switch_stmt,
+            .fn_decl,
+            .fn_expr,
+            .arrow_fn,
             => true,
             else => true,
         };
@@ -29839,17 +29852,12 @@ pub const Checker = struct {
         if (self.interner.pool.flagsOf(rest_t).is_type_parameter) {
             const constraint = self.typeParameterConstraint(rest_t) orelse return null;
             if (!self.restParamTypeIsValidArrayLike(constraint)) return null;
-            const constraint_element = self.interner.objectNumberIndex(constraint);
-            if (constraint_element != types.Primitive.none and
-                constraint_element != types.Primitive.any and
-                constraint_element != types.Primitive.unknown)
-            {
-                return constraint_element;
-            }
-            const index_t = self.interner.internNumberLiteral(@floatFromInt(index)) catch return null;
-            return self.interner.internIndexedAccess(rest_t, index_t) catch return null;
+            return self.contextualRestTupleElementType(constraint, index);
         }
         if (!self.interner.pool.flagsOf(rest_t).is_union) {
+            if (self.fixedTupleLength(rest_t)) |length| {
+                if (index >= length) return types.Primitive.undefined_t;
+            }
             const element_t = self.tupleElementType(rest_t, index);
             if (element_t != types.Primitive.none) return element_t;
             const array_element_t = self.interner.objectNumberIndex(rest_t);
@@ -29858,16 +29866,22 @@ pub const Checker = struct {
         var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
         defer candidates.deinit(self.gpa);
         for (self.interner.unionMembers(rest_t)) |member| {
-            const element_t = self.tupleElementType(member, index);
-            if (element_t == types.Primitive.none) return null;
+            const candidate_t = if (self.fixedTupleLength(member)) |length|
+                if (index >= length)
+                    types.Primitive.undefined_t
+                else
+                    self.tupleElementType(member, index)
+            else
+                self.tupleElementType(member, index);
+            if (candidate_t == types.Primitive.none) return null;
             var seen = false;
             for (candidates.items) |candidate| {
-                if (candidate == element_t) {
+                if (candidate == candidate_t) {
                     seen = true;
                     break;
                 }
             }
-            if (!seen) candidates.append(self.gpa, element_t) catch return null;
+            if (!seen) candidates.append(self.gpa, candidate_t) catch return null;
         }
         if (candidates.items.len == 0) return null;
         if (candidates.items.len == 1) return candidates.items[0];
@@ -34240,7 +34254,8 @@ pub const Checker = struct {
             const contextual_tuple_param_t: ?TypeId = if (!has_anno and
                 !has_jsdoc_param_type and
                 !is_this_param and
-                !invalid_jsdoc_template_type) blk: {
+                !invalid_jsdoc_template_type)
+            blk: {
                 if (try self.contextualParameterTypeFromFunctionAnnotation(node, p)) |syntax_t| {
                     break :blk syntax_t;
                 }
@@ -34324,8 +34339,7 @@ pub const Checker = struct {
                     types.Primitive.any
                 else
                     lowered_annotation_t;
-            }
-            else if (jsdoc_param_t) |jt|
+            } else if (jsdoc_param_t) |jt|
                 jt
             else if (jsdoc_context_param_t) |jt|
                 jt
@@ -34348,19 +34362,18 @@ pub const Checker = struct {
             else if (pp.name != hir_mod.none_node_id and
                 self.hir.kindOf(pp.name) == .object_pattern and
                 !is_this_param)
-                // `function f({ x: [a, b] }) {}` ÃÂ¢ÃÂÃÂ tsc infers the
-                // parameter type from the BINDING PATTERN's shape
-                // (`{ x: [any, any] }`). A parent default can seed
-                // element types, but the pattern itself still controls
-                // which members exist. Mirrors
-                // `destructuringWithLiteralInitializers` and keeps
-                // destructured object parameters from collapsing to
-                // `any` when no annotation/default is present.
-                blk_object_pattern: {
-                    inferred_object_binding_pattern = true;
-                    break :blk_object_pattern try self.objectBindingPatternParameterTypeWithDefault(pp.name, pp.default_value);
-                }
-            else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
+            // `function f({ x: [a, b] }) {}` ÃÂ¢ÃÂÃÂ tsc infers the
+            // parameter type from the BINDING PATTERN's shape
+            // (`{ x: [any, any] }`). A parent default can seed
+            // element types, but the pattern itself still controls
+            // which members exist. Mirrors
+            // `destructuringWithLiteralInitializers` and keeps
+            // destructured object parameters from collapsing to
+            // `any` when no annotation/default is present.
+            blk_object_pattern: {
+                inferred_object_binding_pattern = true;
+                break :blk_object_pattern try self.objectBindingPatternParameterTypeWithDefault(pp.name, pp.default_value);
+            } else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 if (js_default_is_loose_nullish) break :blk_default types.Primitive.any;
                 var default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
                     nullish_array_t
@@ -44255,9 +44268,7 @@ pub const Checker = struct {
                         const raw = std.mem.trim(u8, self.nodeSourceTextOrEmpty(op.key), " \t\r\n");
                         if (raw.len == 0) continue;
                         break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw});
-                    }
-                    else
-                        self.classMemberDisplayTextForKey(op.key) orelse continue;
+                    } else self.classMemberDisplayTextForKey(op.key) orelse continue;
                     const type_display = self.classMemberDuplicateFieldTypeDisplay(op);
                     const op_is_method = op.is_method or
                         (op.value != hir_mod.none_node_id and
@@ -45400,17 +45411,17 @@ pub const Checker = struct {
             else
                 false;
             if (parent_declares_private) {
-                    if (forward_receiver_decl != hir_mod.none_node_id) {
-                        const display = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "typeof {s}",
-                            .{self.string_interner.get(receiver_class)},
-                        );
-                        try self.reportPropertyDoesNotExistOnTypeText(node, prop_name, display);
-                    } else {
-                        try self.reportPropertyDoesNotExistOnType(node, prop_name, obj_t);
-                    }
-                    return true;
+                if (forward_receiver_decl != hir_mod.none_node_id) {
+                    const display = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "typeof {s}",
+                        .{self.string_interner.get(receiver_class)},
+                    );
+                    try self.reportPropertyDoesNotExistOnTypeText(node, prop_name, display);
+                } else {
+                    try self.reportPropertyDoesNotExistOnType(node, prop_name, obj_t);
+                }
+                return true;
             }
             current = parent;
         }
@@ -45670,7 +45681,7 @@ pub const Checker = struct {
                         break :blk .{
                             .name = name,
                             .is_static = op.is_static,
-                            .visibility = @enumFromInt(@intFromEnum(op.visibility)),
+                            .visibility = @fromBackingInt(@intCast(@backingInt(op.visibility))),
                         };
                     },
                     else => continue,
@@ -46752,8 +46763,8 @@ pub const Checker = struct {
         if (self.closestBaseClassMemberName(proto, typo)) |suggestion| return suggestion;
 
         const legacy_members = [_][]const u8{
-            "anchor", "big", "blink", "bold", "fixed", "fontcolor", "fontsize",
-            "italics", "link", "small", "strike", "sub", "sup",
+            "anchor",  "big",  "blink", "bold",   "fixed", "fontcolor", "fontsize",
+            "italics", "link", "small", "strike", "sub",   "sup",
         };
         const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
         var best_name: []const u8 = "";
@@ -60245,7 +60256,8 @@ pub const Checker = struct {
         const name_start = cursor;
         cursor += 1;
         while (cursor < src.len and
-            (std.ascii.isAlphanumeric(src[cursor]) or src[cursor] == '_' or src[cursor] == '$')) : (cursor += 1) {}
+            (std.ascii.isAlphanumeric(src[cursor]) or src[cursor] == '_' or src[cursor] == '$')) : (cursor += 1)
+        {}
         const name = self.string_interner.intern(src[name_start..cursor]) catch return error.OutOfMemory;
         const function = self.checkJsFunctionVariableInVirtualSection(anchor, name) orelse return null;
         var signature = self.hir.typeOf(function);
@@ -64218,8 +64230,7 @@ pub const Checker = struct {
                     if (self.hir.kindOf(decl) == .type_alias_decl) {
                         const aliased = hir_mod.typeAliasOf(self.hir, decl).aliased;
                         switch (self.hir.kindOf(aliased)) {
-                            .array_type, .tuple_type, .typeof_type =>
-                                return try self.allocTypeAnnotationDiagnosticName(aliased, false),
+                            .array_type, .tuple_type, .typeof_type => return try self.allocTypeAnnotationDiagnosticName(aliased, false),
                             else => {},
                         }
                     }
@@ -64827,7 +64838,8 @@ pub const Checker = struct {
         while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
         var declaration_start = line_start;
         while (declaration_start < bracket and
-            (src[declaration_start] == ' ' or src[declaration_start] == '\t')) : (declaration_start += 1) {}
+            (src[declaration_start] == ' ' or src[declaration_start] == '\t')) : (declaration_start += 1)
+        {}
         if (declaration_start == bracket) return @intCast(declaration_start);
         const prefix = std.mem.trim(u8, src[declaration_start..bracket], " \t");
         if (!std.mem.eql(u8, prefix, "readonly") and self.nodeHasAncestorKind(node, .interface_decl)) {
@@ -71662,7 +71674,7 @@ pub const Checker = struct {
     }
 
     fn mappedString(self: *Checker, kind: types.StringMappingKind, raw: []const u8) CheckError![]u8 {
-        return unicode_case.map(self.gpa, @enumFromInt(@intFromEnum(kind)), raw) catch return error.OutOfMemory;
+        return unicode_case.map(self.gpa, @fromBackingInt(@intCast(@backingInt(kind))), raw) catch return error.OutOfMemory;
     }
 
     fn inverseStringMappingKind(kind: types.StringMappingKind) types.StringMappingKind {
@@ -80183,14 +80195,12 @@ pub const Checker = struct {
         const expands_rest_alias = self.tupleAnnotationHasArrayAliasRest(tuple_node);
         const source_name = if (values.len == 0)
             "[]"
-        else if (is_single_open_spread)
-            blk: {
-                const spread = hir_mod.spreadOf(self.hir, values[0]);
-                var spread_t = self.hir.typeOf(spread.expression);
-                if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread.expression);
-                break :blk (try self.allocSimpleTypeName(spread_t)) orelse "any[]";
-            }
-        else if (expands_rest_alias)
+        else if (is_single_open_spread) blk: {
+            const spread = hir_mod.spreadOf(self.hir, values[0]);
+            var spread_t = self.hir.typeOf(spread.expression);
+            if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread.expression);
+            break :blk (try self.allocSimpleTypeName(spread_t)) orelse "any[]";
+        } else if (expands_rest_alias)
             try self.arrayLiteralTupleAnnotationDisplayName(init_node, tuple_node)
         else
             try self.arrayLiteralTupleDisplayName(init_node, target_t);
@@ -82185,7 +82195,9 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(target).is_object_type) return types.Primitive.none;
         if (self.interner.objectMember(target, key)) |t| return t;
         const index = self.numericIndexFromStringId(key) orelse return types.Primitive.none;
-        if (self.actualTupleLength(target)) |length| {
+        const tuple_length = self.actualTupleLength(target) orelse
+            if (self.isTupleShapedTarget(target)) self.fixedTupleLength(target) else null;
+        if (tuple_length) |length| {
             if (index >= length) return types.Primitive.none;
         }
         if (self.tuple_trailing_rest_types.get(target)) |t| return t;
@@ -95792,8 +95804,7 @@ pub const Checker = struct {
 
     fn visibleAnnotatedSignatureIdentifierDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
         const source_display = (try self.visibleAnnotatedSignatureIdentifierTypeName(node)) orelse return null;
-        if (self.interner.isSignature(t) and std.mem.indexOf(u8, source_display, "...") != null)
-        {
+        if (self.interner.isSignature(t) and std.mem.indexOf(u8, source_display, "...") != null) {
             if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
                 const kind = self.hir.kindOf(type_node);
                 if (kind == .fn_type or kind == .constructor_type) {
@@ -102421,13 +102432,14 @@ pub const Checker = struct {
                 } else if ((self.strict_flags.no_implicit_any or
                     (self.sourceHasCheckJsDirective() and !self.sourceHasStrictFalseDirective())) and
                     (imported_call_only or if (self.sourceHasCheckJsDirective() and
-                    self.hir.kindOf(c.callee) == .identifier)
-                blk_bare: {
-                    const id = hir_mod.identifierOf(self.hir, c.callee);
-                    const fn_node = self.jsConstructorFunctionDeclForName(c.callee, id.name) orelse break :blk_bare false;
-                    if (self.checkJsClassWithNameInOtherVirtualSection(c.callee, id.name)) break :blk_bare true;
-                    break :blk_bare !self.fnLooksLikeCheckJsConstructor(fn_node);
-                } else false)) {
+                        self.hir.kindOf(c.callee) == .identifier)
+                    blk_bare: {
+                        const id = hir_mod.identifierOf(self.hir, c.callee);
+                        const fn_node = self.jsConstructorFunctionDeclForName(c.callee, id.name) orelse break :blk_bare false;
+                        if (self.checkJsClassWithNameInOtherVirtualSection(c.callee, id.name)) break :blk_bare true;
+                        break :blk_bare !self.fnLooksLikeCheckJsConstructor(fn_node);
+                    } else false))
+                {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                     suppressed_ts2350_via_ts7009 = true;
                 } else if ((self.strict_flags.no_implicit_any or
@@ -103390,7 +103402,9 @@ pub const Checker = struct {
                             try self.applyInferredConditionalConstraintsFromCallArgs(param_ts, arg_types.items, &call_subs);
                             try self.applyInferredConditionalConstraintsToSubs(effective_callee_t, &call_subs);
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
-                            effective_callee_t = try self.relowerSignatureObjectMembersWithInferences(effective_callee_t, &call_subs);
+                            if (self.hir.kindOf(c.callee) == .member_access) {
+                                effective_callee_t = try self.relowerSignatureParametersWithInferences(effective_callee_t, &call_subs);
+                            }
                         }
                     }
                     try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
@@ -103766,16 +103780,15 @@ pub const Checker = struct {
                 const access_obj_t = self.typeParameterBaseConstraint(obj_t) orelse obj_t;
                 const missing_access_obj_t = if (obj_t < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(obj_t).is_type_parameter and
-                    self.hir.kindOf(m.object) != .call_expr) blk_missing: {
+                    self.hir.kindOf(m.object) != .call_expr)
+                blk_missing: {
                     if (access_obj_t < self.interner.pool.typeCount() and
                         self.interner.pool.flagsOf(access_obj_t).is_union)
                     {
                         break :blk_missing access_obj_t;
                     }
                     break :blk_missing obj_t;
-                }
-                else
-                    access_obj_t;
+                } else access_obj_t;
                 if (try self.checkJsPrototypeConstructorThisMemberType(node, m.name)) |member_t| {
                     break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                 }
@@ -104580,8 +104593,7 @@ pub const Checker = struct {
                         }
                     }
                     break :blk_non_nullish self.nonNullishAccessType(resolved_raw_obj_t) catch resolved_raw_obj_t;
-                } else
-                    resolved_raw_obj_t;
+                } else resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
                 if (self.sourceHasCheckJsDirective() and
@@ -109512,7 +109524,6 @@ pub const Checker = struct {
         return try self.jsxAttributeAssignable(attr_t, index_t);
     }
 
-
     fn jsxRequiredPropsCovered(self: *Checker, target: TypeId, attrs_t: TypeId) CheckError!bool {
         if (target >= self.interner.pool.typeCount()) return true;
         const flags = self.interner.pool.flagsOf(target);
@@ -110232,6 +110243,7 @@ pub const Checker = struct {
     ) CheckError!void {
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
+        self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.argument_type_mismatch);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
         self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
@@ -113417,9 +113429,18 @@ pub const Checker = struct {
                 for (hir_mod.fnParams(self.hir, cur)) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
-                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
-                    if (hir_mod.identifierOf(self.hir, pp.name).name != id.name) continue;
-                    return self.lowerActiveValueTypeAnnotation(id.name, pp.type_annotation) catch types.Primitive.any;
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    const name_kind = self.hir.kindOf(pp.name);
+                    if (name_kind == .identifier) {
+                        if (hir_mod.identifierOf(self.hir, pp.name).name != id.name) continue;
+                        return self.lowerActiveValueTypeAnnotation(id.name, pp.type_annotation) catch types.Primitive.any;
+                    }
+                    if ((name_kind == .object_pattern or name_kind == .array_pattern) and
+                        self.bindingPatternDeclaresName(pp.name, id.name))
+                    {
+                        const declared_t = (self.lowerActiveValueTypeAnnotation(id.name, pp.type_annotation) catch types.Primitive.any) orelse return null;
+                        return self.typeOfPatternBinding(pp.name, declared_t, id.name);
+                    }
                 }
             }
             const stmts: ?[]const NodeId = switch (k) {
@@ -113906,8 +113927,15 @@ pub const Checker = struct {
                 for (hir_mod.fnParams(self.hir, cur)) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
-                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
-                    if (hir_mod.identifierOf(self.hir, pp.name).name != id.name) continue;
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    const name_kind = self.hir.kindOf(pp.name);
+                    const declares_name = if (name_kind == .identifier)
+                        hir_mod.identifierOf(self.hir, pp.name).name == id.name
+                    else if (name_kind == .object_pattern or name_kind == .array_pattern)
+                        self.bindingPatternDeclaresName(pp.name, id.name)
+                    else
+                        false;
+                    if (!declares_name) continue;
                     if (pp.type_annotation == hir_mod.none_node_id) return null;
                     return pp.type_annotation;
                 }
@@ -114744,7 +114772,8 @@ pub const Checker = struct {
 
             const raw_display_param_t = if (fixed_pos >= min_required and
                 self.typeIncludesUndefined(param_t) and
-                !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos))) blk: {
+                !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos)))
+            blk: {
                 const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
                 break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
                     param_t
@@ -119095,7 +119124,7 @@ pub const Checker = struct {
                 try self.logicalAndFalsyType(current);
             if (narrowed != current) {
                 try self.recordNarrow(id.name, narrowed);
-                try self.applyDependentBindingNarrow(id.name, narrowed, true);
+                try self.applyDependentBindingNarrow(cond, id.name, narrowed, true);
             }
             return;
         }
@@ -119326,13 +119355,14 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, b.rhs).name
             else
                 null;
+            const alias_reference: NodeId = if (self.hir.kindOf(b.lhs) == .identifier) b.lhs else b.rhs;
             const lit_operand: NodeId = if (self.hir.kindOf(b.lhs) == .identifier) b.rhs else b.lhs;
             if (alias_id) |aid| {
                 if (try self.expressionNarrowLiteralType(lit_operand)) |lit_t| {
                     if (self.disc_aliases.get(aid)) |alias| {
                         try self.applyDiscriminatedNarrowByObjectAndProp(alias.object, alias.prop, lit_t, positive);
                     }
-                    try self.applyDependentBindingNarrow(aid, lit_t, positive);
+                    try self.applyDependentBindingNarrow(alias_reference, aid, lit_t, positive);
                 }
                 // Fall through so the alias variable itself still narrows.
             }
@@ -119408,6 +119438,11 @@ pub const Checker = struct {
             self.nodeIsNullLiteralish(b.rhs))
         {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
+            const dependent_target = if (b.op == .eq or b.op == .neq)
+                try self.nullUndefinedUnionType()
+            else
+                types.Primitive.null_t;
+            try self.applyDependentBindingNarrow(b.lhs, id.name, dependent_target, positive);
             if (positive) {
                 const narrowed = if (b.op == .eq)
                     try self.nullUndefinedUnionType()
@@ -119436,6 +119471,11 @@ pub const Checker = struct {
             self.nodeIsNullLiteralish(b.lhs))
         {
             const id = hir_mod.identifierOf(self.hir, b.rhs);
+            const dependent_target = if (b.op == .eq or b.op == .neq)
+                try self.nullUndefinedUnionType()
+            else
+                types.Primitive.null_t;
+            try self.applyDependentBindingNarrow(b.rhs, id.name, dependent_target, positive);
             if (positive) {
                 const narrowed = if (b.op == .eq)
                     try self.nullUndefinedUnionType()
@@ -119462,6 +119502,11 @@ pub const Checker = struct {
             self.nodeIsUndefinedLiteralish(b.rhs))
         {
             const lhs = hir_mod.identifierOf(self.hir, b.lhs);
+            const dependent_target = if (b.op == .eq or b.op == .neq)
+                try self.nullUndefinedUnionType()
+            else
+                types.Primitive.undefined_t;
+            try self.applyDependentBindingNarrow(b.lhs, lhs.name, dependent_target, positive);
             if (positive) {
                 const narrowed = if (b.op == .eq)
                     try self.nullUndefinedUnionType()
@@ -119486,6 +119531,11 @@ pub const Checker = struct {
             self.nodeIsUndefinedLiteralish(b.lhs))
         {
             const rhs = hir_mod.identifierOf(self.hir, b.rhs);
+            const dependent_target = if (b.op == .eq or b.op == .neq)
+                try self.nullUndefinedUnionType()
+            else
+                types.Primitive.undefined_t;
+            try self.applyDependentBindingNarrow(b.rhs, rhs.name, dependent_target, positive);
             if (positive) {
                 const narrowed = if (b.op == .eq)
                     try self.nullUndefinedUnionType()
@@ -120042,6 +120092,10 @@ pub const Checker = struct {
         return self.string_interner.intern(text) catch return error.OutOfMemory;
     }
 
+    fn dependentBindingOwner(self: *Checker, node: NodeId) NodeId {
+        return self.enclosingFunctionLike(node) orelse self.rootBlockFor(node);
+    }
+
     fn dependentBindingProjectedType(
         self: *Checker,
         source_t: TypeId,
@@ -120052,8 +120106,12 @@ pub const Checker = struct {
             .property => |name| self.objectPropertyTypeByName(source_t, name) orelse types.Primitive.any,
             .tuple_index => |index| blk: {
                 if (try self.unionTupleElementAccessAt(source_t, index)) |access| break :blk access.value_type;
+                if (self.fixedTupleLength(source_t)) |length| {
+                    if (index >= length) break :blk types.Primitive.undefined_t;
+                }
                 const elem_t = self.tupleElementType(source_t, index);
-                break :blk if (elem_t != types.Primitive.none) elem_t else types.Primitive.any;
+                if (elem_t != types.Primitive.none) break :blk elem_t;
+                break :blk types.Primitive.any;
             },
         };
     }
@@ -120063,7 +120121,60 @@ pub const Checker = struct {
         pattern: NodeId,
         source_t: TypeId,
     ) CheckError!void {
+        const parent = self.hir.parentOf(pattern);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .parameter) {
+            if (self.enclosingFunctionLike(pattern)) |fn_node| {
+                var names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+                defer names.deinit(self.gpa);
+                try self.collectBindingNames(pattern, &names);
+                if (self.functionAssignsAnyDependentName(fn_node, &names)) return;
+            }
+        }
         return self.recordDependentBindingsFromRoot(pattern, source_t, null);
+    }
+
+    fn assignmentTargetTouchesDependentNames(
+        self: *Checker,
+        target: NodeId,
+        names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) bool {
+        if (target == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(target)) {
+            .identifier => names.contains(hir_mod.identifierOf(self.hir, target).name),
+            .object_pattern, .array_pattern => blk: {
+                var it = names.keyIterator();
+                while (it.next()) |name| {
+                    if (self.bindingPatternDeclaresName(target, name.*)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn functionAssignsAnyDependentName(
+        self: *Checker,
+        fn_node: NodeId,
+        names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) bool {
+        if (names.count() == 0) return false;
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id) return false;
+        const body_span = self.hir.spanOf(function.body);
+        var candidate: NodeId = 0;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            const span = self.hir.spanOf(candidate);
+            if (span.start < body_span.start or span.end > body_span.end) continue;
+            if (self.enclosingFunctionLike(candidate) != fn_node) continue;
+            const target = switch (self.hir.kindOf(candidate)) {
+                .assignment => hir_mod.assignmentOf(self.hir, candidate).target,
+                .update_op => self.hir.update_payloads.items[self.hir.payloads.items[candidate]].operand,
+                .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, candidate).target,
+                else => continue,
+            };
+            if (self.assignmentTargetTouchesDependentNames(target, names)) return true;
+        }
+        return false;
     }
 
     fn recordDependentBindingsFromRoot(
@@ -120072,8 +120183,9 @@ pub const Checker = struct {
         source_t: TypeId,
         initializer_root: ?hir_mod.StringId,
     ) CheckError!void {
-        if (pattern == hir_mod.none_node_id or source_t >= self.interner.pool.typeCount()) return;
-        if (!self.interner.pool.flagsOf(source_t).is_union) return;
+        const correlated_source_t = self.typeParameterConstraint(source_t) orelse source_t;
+        if (pattern == hir_mod.none_node_id or correlated_source_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(correlated_source_t).is_union) return;
         const pattern_kind = self.hir.kindOf(pattern);
         if (pattern_kind != .object_pattern and pattern_kind != .array_pattern) return;
 
@@ -120091,29 +120203,34 @@ pub const Checker = struct {
                 .{ .tuple_index = tuple_index }
             else
                 .{ .property = (try self.objectBindingElementKeyName(elem, target)) orelse continue };
-            try self.dependent_bindings.put(self.gpa, name, .{
+            try self.dependent_bindings.put(self.gpa, .{
+                .name = name,
+                .owner = self.dependentBindingOwner(target),
+            }, .{
                 .pattern = pattern,
-                .source_type = source_t,
+                .source_type = correlated_source_t,
                 .selector = selector,
+                .projection_constraint = types.Primitive.none,
             });
         }
 
         const flow_name = try self.dependentPatternFlowName(pattern);
-        try self.recordNarrow(flow_name, source_t);
+        try self.recordNarrow(flow_name, correlated_source_t);
         var it = self.dependent_bindings.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.pattern != pattern) continue;
-            var projected = try self.dependentBindingProjectedType(source_t, entry.value_ptr.selector);
+            var projected = try self.dependentBindingProjectedType(correlated_source_t, entry.value_ptr.selector);
             if (initializer_root) |root_name| switch (entry.value_ptr.selector) {
                 .property => |property_name| {
                     if (self.lookupMemberNarrow(.{ .obj_name = root_name, .prop_name = property_name })) |flow_t| {
                         projected = try self.narrowTypeByPredicate(projected, flow_t);
+                        entry.value_ptr.projection_constraint = projected;
                     }
                 },
                 .tuple_index => {},
             };
             if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
-            try self.recordNarrow(entry.key_ptr.*, projected);
+            try self.recordNarrow(entry.key_ptr.name, projected);
         }
     }
 
@@ -120146,16 +120263,22 @@ pub const Checker = struct {
     fn dependentProjectionOverlaps(self: *Checker, projected: TypeId, predicate: TypeId) CheckError!bool {
         if (predicate == types.Primitive.null_t) return self.typeIncludesNull(projected);
         if (predicate == types.Primitive.undefined_t) return self.typeIncludesUndefined(projected);
+        if (projected == types.Primitive.null_t) return self.typeIncludesNull(predicate);
+        if (projected == types.Primitive.undefined_t) return self.typeIncludesUndefined(predicate);
         return self.typesHaveComparableOverlap(projected, predicate);
     }
 
     fn applyDependentBindingNarrow(
         self: *Checker,
+        reference: NodeId,
         name: hir_mod.StringId,
         predicate_t: TypeId,
         positive: bool,
     ) CheckError!void {
-        const binding = self.dependent_bindings.get(name) orelse return;
+        const binding = self.dependent_bindings.get(.{
+            .name = name,
+            .owner = self.dependentBindingOwner(reference),
+        }) orelse return;
         const flow_name = try self.dependentPatternFlowName(binding.pattern);
         const source_t = self.lookupNarrow(flow_name) orelse binding.source_type;
         const narrowed_source = try self.narrowDependentSource(source_t, binding.selector, predicate_t, positive);
@@ -120164,10 +120287,13 @@ pub const Checker = struct {
         var it = self.dependent_bindings.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.pattern != binding.pattern) continue;
-            const projected = try self.dependentBindingProjectedType(narrowed_source, entry.value_ptr.selector);
+            var projected = try self.dependentBindingProjectedType(narrowed_source, entry.value_ptr.selector);
+            if (entry.value_ptr.projection_constraint != types.Primitive.none) {
+                projected = try self.narrowTypeByPredicate(projected, entry.value_ptr.projection_constraint);
+            }
             if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
-            const current = self.lookupNarrow(entry.key_ptr.*) orelse projected;
-            try self.recordNarrow(entry.key_ptr.*, try self.narrowTypeByPredicate(projected, current));
+            const current = self.lookupNarrow(entry.key_ptr.name) orelse projected;
+            try self.recordNarrow(entry.key_ptr.name, try self.narrowTypeByPredicate(projected, current));
         }
     }
 
@@ -120180,20 +120306,15 @@ pub const Checker = struct {
         const signature_params = self.interner.signatureParams(signature);
         if (signature_params.len == 0) return;
         var source_t = signature_params[signature_params.len - 1];
-        var fixed_count = signature_params.len - 1;
-        if (self.restTypeAnnotationForSignature(signature)) |type_node| {
-            source_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
-                if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
-                    self.lowererLowerWithTypeParams(tuple_node) catch source_t
-                else
-                    source_t;
-            fixed_count = 0;
-            if (self.signature_param_nodes.get(signature)) |param_nodes| {
-                for (param_nodes) |param_node| {
-                    if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
-                    if (hir_mod.parameterOf(self.hir, param_node).flags.is_rest) break;
-                    fixed_count += 1;
-                }
+        source_t = self.typeParameterConstraint(source_t) orelse source_t;
+        const fixed_count = signature_params.len - 1;
+        if (!self.isTupleLikeUnionType(source_t)) {
+            if (self.restTypeAnnotationForSignature(signature)) |type_node| {
+                source_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
+                    if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
+                        self.lowererLowerWithTypeParams(tuple_node) catch source_t
+                    else
+                        source_t;
             }
         }
         if (source_t >= self.interner.pool.typeCount() or
@@ -120201,6 +120322,19 @@ pub const Checker = struct {
         {
             return;
         }
+
+        var dependent_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer dependent_names.deinit(self.gpa);
+        var dependent_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            defer dependent_index += 1;
+            if (dependent_index < fixed_count) continue;
+            const parameter = hir_mod.parameterOf(self.hir, param_node);
+            if (parameter.name == hir_mod.none_node_id) continue;
+            try self.collectBindingNames(parameter.name, &dependent_names);
+        }
+        if (self.functionAssignsAnyDependentName(fn_node, &dependent_names)) return;
 
         var value_index: usize = 0;
         for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
@@ -120216,10 +120350,14 @@ pub const Checker = struct {
             }
             const tuple_index: u32 = @intCast(value_index - fixed_count);
             const name = hir_mod.identifierOf(self.hir, parameter.name).name;
-            try self.dependent_bindings.put(self.gpa, name, .{
+            try self.dependent_bindings.put(self.gpa, .{
+                .name = name,
+                .owner = self.dependentBindingOwner(param_node),
+            }, .{
                 .pattern = fn_node,
                 .source_type = source_t,
                 .selector = .{ .tuple_index = tuple_index },
+                .projection_constraint = types.Primitive.none,
             });
         }
 
@@ -120728,10 +120866,15 @@ pub const Checker = struct {
                     var member_t: TypeId = types.Primitive.any;
                     if (ep.flags.is_computed_binding_key and ep.default_value != hir_mod.none_node_id) {
                         member_t = (self.objectPropertyTypeForComputedKeyNode(container_t, ep.default_value) catch null) orelse types.Primitive.any;
-                    } else if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
-                        member_t = info.type;
-                        if (info.is_optional) {
-                            member_t = self.unionWithUndefined(member_t) catch member_t;
+                    } else if (container_t < self.interner.pool.typeCount()) {
+                        const container_flags = self.interner.pool.flagsOf(container_t);
+                        if (container_flags.is_union or container_flags.is_intersection or container_flags.is_type_parameter) {
+                            member_t = self.objectPropertyTypeByName(container_t, eid.name) orelse member_t;
+                        } else if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
+                            member_t = info.type;
+                            if (info.is_optional) {
+                                member_t = self.unionWithUndefined(member_t) catch member_t;
+                            }
                         }
                     }
                     if (ep.default_value != hir_mod.none_node_id) {
@@ -123980,123 +124123,120 @@ pub const Checker = struct {
             std.mem.eql(u8, s, "Image")) return true;
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",                "undefined",                    "NaN",
-            "Infinity",               "globalThis",                   "this",
-            "new.target",             "window",                       "self",
-            "top",                    "document",                     "name",
-            "Element",                "Node",                         "HTMLElement",
-            "HTMLBodyElement",        "HTMLDivElement",               "HTMLAnchorElement",
-            "HTMLImageElement",       "HTMLInputElement",             "HTMLSpanElement",
-            "HTMLButtonElement",      "HTMLFormElement",              "HTMLCanvasElement",
-            "HTMLSelectElement",      "HTMLTextAreaElement",          "HTMLLabelElement",
-            "HTMLLinkElement",        "HTMLScriptElement",            "HTMLStyleElement",
-            "HTMLHeadElement",        "HTMLMetaElement",              "HTMLTitleElement",
-            "HTMLOptionElement",      "HTMLOptGroupElement",          "HTMLUListElement",
-            "HTMLOListElement",       "HTMLLIElement",                "HTMLTableElement",
-            "HTMLTableRowElement",    "HTMLTableCellElement",         "HTMLTableSectionElement",
-            "HTMLIFrameElement",      "HTMLVideoElement",             "HTMLAudioElement",
-            "HTMLMediaElement",       "HTMLSourceElement",            "HTMLTrackElement",
-            "HTMLPictureElement",     "HTMLParagraphElement",         "HTMLHRElement",
-            "HTMLHeadingElement",     "HTMLBRElement",                "HTMLDataListElement",
-            "HTMLOutputElement",      "HTMLDialogElement",            "HTMLDetailsElement",
-            "HTMLEmbedElement",       "HTMLFieldSetElement",          "HTMLLegendElement",
-            "HTMLObjectElement",      "HTMLParamElement",             "HTMLProgressElement",
-            "HTMLQuoteElement",       "HTMLTemplateElement",          "HTMLTimeElement",
-            "Event",                  "EventTarget",                  "MouseEvent",
-            "KeyboardEvent",          "FocusEvent",                   "Document",
-            "Window",                 "Location",                     "Navigator",
-            "History",                "Storage",                      "URL",
-            "URLSearchParams",        "Blob",                         "File",
-            "FileReader",             "FormData",                     "Headers",
-            "HTMLElementTagNameMap",
-            "Request",                "Response",
+            "console",                    "undefined",              "NaN",
+            "Infinity",                   "globalThis",             "this",
+            "new.target",                 "window",                 "self",
+            "top",                        "document",               "name",
+            "Element",                    "Node",                   "HTMLElement",
+            "HTMLBodyElement",            "HTMLDivElement",         "HTMLAnchorElement",
+            "HTMLImageElement",           "HTMLInputElement",       "HTMLSpanElement",
+            "HTMLButtonElement",          "HTMLFormElement",        "HTMLCanvasElement",
+            "HTMLSelectElement",          "HTMLTextAreaElement",    "HTMLLabelElement",
+            "HTMLLinkElement",            "HTMLScriptElement",      "HTMLStyleElement",
+            "HTMLHeadElement",            "HTMLMetaElement",        "HTMLTitleElement",
+            "HTMLOptionElement",          "HTMLOptGroupElement",    "HTMLUListElement",
+            "HTMLOListElement",           "HTMLLIElement",          "HTMLTableElement",
+            "HTMLTableRowElement",        "HTMLTableCellElement",   "HTMLTableSectionElement",
+            "HTMLIFrameElement",          "HTMLVideoElement",       "HTMLAudioElement",
+            "HTMLMediaElement",           "HTMLSourceElement",      "HTMLTrackElement",
+            "HTMLPictureElement",         "HTMLParagraphElement",   "HTMLHRElement",
+            "HTMLHeadingElement",         "HTMLBRElement",          "HTMLDataListElement",
+            "HTMLOutputElement",          "HTMLDialogElement",      "HTMLDetailsElement",
+            "HTMLEmbedElement",           "HTMLFieldSetElement",    "HTMLLegendElement",
+            "HTMLObjectElement",          "HTMLParamElement",       "HTMLProgressElement",
+            "HTMLQuoteElement",           "HTMLTemplateElement",    "HTMLTimeElement",
+            "Event",                      "EventTarget",            "MouseEvent",
+            "KeyboardEvent",              "FocusEvent",             "Document",
+            "Window",                     "Location",               "Navigator",
+            "History",                    "Storage",                "URL",
+            "URLSearchParams",            "Blob",                   "File",
+            "FileReader",                 "FormData",               "Headers",
+            "HTMLElementTagNameMap",      "Request",                "Response",
             // Constructors / namespaces.
-                                "Math",
-            "JSON",                   "Object",                       "Array",
-            "String",                 "Number",                       "Boolean",
-            "Symbol",                 "BigInt",                       "Error",
-            "TypeError",              "RangeError",                   "SyntaxError",
-            "Promise",                "Map",                          "Set",
-            "WeakMap",                "WeakSet",                      "Date",
-            "RegExp",                 "Function",                     "Proxy",
-            "Reflect",                "TemplateStringsArray",         "ArrayBuffer",
-            "Uint8Array",             "Uint8ClampedArray",            "Int8Array",
-            "Uint16Array",            "Int16Array",                   "Uint32Array",
-            "Int32Array",             "Float16Array",                 "Float32Array",
-            "Float64Array",           "BigUint64Array",               "BigInt64Array",
-            "SharedArrayBuffer",      "Atomics",                      "Intl",
-            "Temporal",               "indexedDB",                    "IDBKeyRange",
-            "IDBFactory",             "IDBDatabase",                  "IDBObjectStore",
-            "IDBIndex",               "IDBCursor",                    "IDBCursorWithValue",
-            "IDBTransaction",         "IDBRequest",                   "IDBOpenDBRequest",
-            "AudioContext",           "OfflineAudioContext",          "MediaStream",
-            "MediaStreamTrack",       "MediaRecorder",                "RTCPeerConnection",
-            "RTCDataChannel",         "RTCSessionDescription",        "RTCIceCandidate",
-            "caches",                 "Cache",                        "CacheStorage",
-            "Notification",           "PaymentRequest",               "PaymentResponse",
-            "ServiceWorker",          "ServiceWorkerRegistration",    "ServiceWorkerContainer",
-            "PushManager",            "PushSubscription",             "WebGLRenderingContext",
-            "WebGL2RenderingContext", "WebGLBuffer",                  "WebGLTexture",
-            "WebGLShader",            "WebGLProgram",                 "WebGLFramebuffer",
-            "WebGLRenderbuffer",      "WebGLUniformLocation",         "WebGLVertexArrayObject",
-            "WebGLQuery",             "WebGLSampler",                 "WebGLSync",
-            "WebGLTransformFeedback", "WebGLActiveInfo",              "WebGLShaderPrecisionFormat",
-            "HTMLElement",            "HTMLDivElement",               "HTMLSpanElement",
-            "HTMLParagraphElement",   "HTMLHeadingElement",           "HTMLInputElement",
-            "HTMLButtonElement",      "HTMLSelectElement",            "HTMLOptionElement",
-            "HTMLTextAreaElement",    "HTMLFormElement",              "HTMLImageElement",
-            "HTMLAnchorElement",      "HTMLCanvasElement",            "HTMLVideoElement",
-            "HTMLAudioElement",       "HTMLIFrameElement",            "HTMLLinkElement",
-            "HTMLMetaElement",        "HTMLScriptElement",            "HTMLStyleElement",
-            "HTMLTableElement",       "HTMLTableRowElement",          "HTMLTableCellElement",
-            "HTMLLabelElement",       "HTMLDialogElement",            "HTMLDetailsElement",
-            "HTMLTemplateElement",    "HTMLPictureElement",           "HTMLSourceElement",
-            "HTMLProgressElement",    "HTMLMeterElement",             "HTMLFieldSetElement",
-            "HTMLLegendElement",      "HTMLOutputElement",            "HTMLDataListElement",
-            "HTMLBodyElement",        "HTMLHeadElement",              "HTMLHtmlElement",
-            "HTMLTitleElement",       "HTMLBaseElement",              "GPU",
-            "GPUAdapter",             "GPUDevice",                    "GPUBuffer",
-            "GPUTexture",             "GPUTextureView",               "GPUSampler",
-            "GPUBindGroup",           "GPUBindGroupLayout",           "GPUPipelineLayout",
-            "GPURenderPipeline",      "GPUComputePipeline",           "GPUShaderModule",
-            "GPUCommandEncoder",      "GPUCommandBuffer",             "GPURenderPassEncoder",
-            "GPUComputePassEncoder",  "GPUQueue",                     "GPUCanvasContext",
-            "GPUQuerySet",            "GPURenderBundle",              "GPURenderBundleEncoder",
-            "Event",                  "UIEvent",                      "MouseEvent",
-            "KeyboardEvent",          "FocusEvent",                   "InputEvent",
-            "CompositionEvent",       "TouchEvent",                   "PointerEvent",
-            "WheelEvent",             "DragEvent",                    "ClipboardEvent",
-            "AnimationEvent",         "TransitionEvent",              "ProgressEvent",
-            "SubmitEvent",            "FormDataEvent",                "MessageEvent",
-            "CloseEvent",             "HashChangeEvent",              "PopStateEvent",
-            "StorageEvent",           "ErrorEvent",                   "BeforeUnloadEvent",
-            "PageTransitionEvent",    "SecurityPolicyViolationEvent", "CustomEvent",
-            "CSSStyleSheet",          "CSSStyleDeclaration",          "CSSRule",
-            "CSSStyleRule",           "CSSGroupingRule",              "CSSMediaRule",
-            "CSSSupportsRule",        "CSSConditionRule",             "CSSContainerRule",
-            "CSSLayerBlockRule",      "CSSLayerStatementRule",        "CSSImportRule",
-            "CSSPageRule",            "CSSKeyframesRule",             "CSSKeyframeRule",
-            "CSSFontFaceRule",        "CSSNamespaceRule",
+            "Math",                       "JSON",                   "Object",
+            "Array",                      "String",                 "Number",
+            "Boolean",                    "Symbol",                 "BigInt",
+            "Error",                      "TypeError",              "RangeError",
+            "SyntaxError",                "Promise",                "Map",
+            "Set",                        "WeakMap",                "WeakSet",
+            "Date",                       "RegExp",                 "Function",
+            "Proxy",                      "Reflect",                "TemplateStringsArray",
+            "ArrayBuffer",                "Uint8Array",             "Uint8ClampedArray",
+            "Int8Array",                  "Uint16Array",            "Int16Array",
+            "Uint32Array",                "Int32Array",             "Float16Array",
+            "Float32Array",               "Float64Array",           "BigUint64Array",
+            "BigInt64Array",              "SharedArrayBuffer",      "Atomics",
+            "Intl",                       "Temporal",               "indexedDB",
+            "IDBKeyRange",                "IDBFactory",             "IDBDatabase",
+            "IDBObjectStore",             "IDBIndex",               "IDBCursor",
+            "IDBCursorWithValue",         "IDBTransaction",         "IDBRequest",
+            "IDBOpenDBRequest",           "AudioContext",           "OfflineAudioContext",
+            "MediaStream",                "MediaStreamTrack",       "MediaRecorder",
+            "RTCPeerConnection",          "RTCDataChannel",         "RTCSessionDescription",
+            "RTCIceCandidate",            "caches",                 "Cache",
+            "CacheStorage",               "Notification",           "PaymentRequest",
+            "PaymentResponse",            "ServiceWorker",          "ServiceWorkerRegistration",
+            "ServiceWorkerContainer",     "PushManager",            "PushSubscription",
+            "WebGLRenderingContext",      "WebGL2RenderingContext", "WebGLBuffer",
+            "WebGLTexture",               "WebGLShader",            "WebGLProgram",
+            "WebGLFramebuffer",           "WebGLRenderbuffer",      "WebGLUniformLocation",
+            "WebGLVertexArrayObject",     "WebGLQuery",             "WebGLSampler",
+            "WebGLSync",                  "WebGLTransformFeedback", "WebGLActiveInfo",
+            "WebGLShaderPrecisionFormat", "HTMLElement",            "HTMLDivElement",
+            "HTMLSpanElement",            "HTMLParagraphElement",   "HTMLHeadingElement",
+            "HTMLInputElement",           "HTMLButtonElement",      "HTMLSelectElement",
+            "HTMLOptionElement",          "HTMLTextAreaElement",    "HTMLFormElement",
+            "HTMLImageElement",           "HTMLAnchorElement",      "HTMLCanvasElement",
+            "HTMLVideoElement",           "HTMLAudioElement",       "HTMLIFrameElement",
+            "HTMLLinkElement",            "HTMLMetaElement",        "HTMLScriptElement",
+            "HTMLStyleElement",           "HTMLTableElement",       "HTMLTableRowElement",
+            "HTMLTableCellElement",       "HTMLLabelElement",       "HTMLDialogElement",
+            "HTMLDetailsElement",         "HTMLTemplateElement",    "HTMLPictureElement",
+            "HTMLSourceElement",          "HTMLProgressElement",    "HTMLMeterElement",
+            "HTMLFieldSetElement",        "HTMLLegendElement",      "HTMLOutputElement",
+            "HTMLDataListElement",        "HTMLBodyElement",        "HTMLHeadElement",
+            "HTMLHtmlElement",            "HTMLTitleElement",       "HTMLBaseElement",
+            "GPU",                        "GPUAdapter",             "GPUDevice",
+            "GPUBuffer",                  "GPUTexture",             "GPUTextureView",
+            "GPUSampler",                 "GPUBindGroup",           "GPUBindGroupLayout",
+            "GPUPipelineLayout",          "GPURenderPipeline",      "GPUComputePipeline",
+            "GPUShaderModule",            "GPUCommandEncoder",      "GPUCommandBuffer",
+            "GPURenderPassEncoder",       "GPUComputePassEncoder",  "GPUQueue",
+            "GPUCanvasContext",           "GPUQuerySet",            "GPURenderBundle",
+            "GPURenderBundleEncoder",     "Event",                  "UIEvent",
+            "MouseEvent",                 "KeyboardEvent",          "FocusEvent",
+            "InputEvent",                 "CompositionEvent",       "TouchEvent",
+            "PointerEvent",               "WheelEvent",             "DragEvent",
+            "ClipboardEvent",             "AnimationEvent",         "TransitionEvent",
+            "ProgressEvent",              "SubmitEvent",            "FormDataEvent",
+            "MessageEvent",               "CloseEvent",             "HashChangeEvent",
+            "PopStateEvent",              "StorageEvent",           "ErrorEvent",
+            "BeforeUnloadEvent",          "PageTransitionEvent",    "SecurityPolicyViolationEvent",
+            "CustomEvent",                "CSSStyleSheet",          "CSSStyleDeclaration",
+            "CSSRule",                    "CSSStyleRule",           "CSSGroupingRule",
+            "CSSMediaRule",               "CSSSupportsRule",        "CSSConditionRule",
+            "CSSContainerRule",           "CSSLayerBlockRule",      "CSSLayerStatementRule",
+            "CSSImportRule",              "CSSPageRule",            "CSSKeyframesRule",
+            "CSSKeyframeRule",            "CSSFontFaceRule",        "CSSNamespaceRule",
             // Global functions.
-                        "eval",
-            "parseInt",               "parseFloat",                   "isNaN",
-            "isFinite",               "encodeURI",                    "decodeURI",
-            "encodeURIComponent",     "decodeURIComponent",
+            "eval",                       "parseInt",               "parseFloat",
+            "isNaN",                      "isFinite",               "encodeURI",
+            "decodeURI",                  "encodeURIComponent",     "decodeURIComponent",
             // Timers / scheduling.
-                      "setTimeout",
-            "clearTimeout",           "setInterval",                  "clearInterval",
-            "setImmediate",           "clearImmediate",               "queueMicrotask",
+            "setTimeout",                 "clearTimeout",           "setInterval",
+            "clearInterval",              "setImmediate",           "clearImmediate",
+            "queueMicrotask",
             // Node.js / CommonJS.
-            "process",                "Buffer",                       "require",
-            "module",                 "exports",                      "__dirname",
-            "__filename",
+                        "process",                "Buffer",
+            "require",                    "module",                 "exports",
+            "__dirname",                  "__filename",
             // Dynamic `import("ÃÂ¢ÃÂÃÂ¦")` parses the keyword as an
             // identifier callee ÃÂ¢ÃÂÃÂ exempt it from TS2304.
                         "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-                                  "super",
+            "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -130115,20 +130255,20 @@ pub const Checker = struct {
         // `parserS7.3_A1.1_T2` where `$ERROR` should suggest
         // `Error`.
         const builtin_suggestions = [_][]const u8{
-            "console",     "undefined",     "NaN",          "Infinity",
-            "globalThis",  "window",        "document",     "Element",
-            "Math",        "JSON",          "Object",       "Array",
-            "String",      "Number",        "Boolean",      "Symbol",
-            "BigInt",      "Error",         "TypeError",    "RangeError",
-            "SyntaxError", "Promise",       "Map",          "Set",
-            "WeakMap",     "WeakSet",       "Date",         "RegExp",
-            "Function",    "Proxy",         "Reflect",      "ArrayBuffer",
-            "Uint8Array",  "Int8Array",     "Uint16Array",  "Int16Array",
-            "Uint32Array", "Int32Array",    "Float32Array", "Float64Array",
-            "parseInt",    "parseFloat",    "isNaN",        "isFinite",
-            "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
-            "setInterval", "clearInterval", "CSSStyleDeclaration",
-            "Parameters", "ClassDecorator", "Cache", "Lock", "ParentNode",
+            "console",        "undefined",     "NaN",                 "Infinity",
+            "globalThis",     "window",        "document",            "Element",
+            "Math",           "JSON",          "Object",              "Array",
+            "String",         "Number",        "Boolean",             "Symbol",
+            "BigInt",         "Error",         "TypeError",           "RangeError",
+            "SyntaxError",    "Promise",       "Map",                 "Set",
+            "WeakMap",        "WeakSet",       "Date",                "RegExp",
+            "Function",       "Proxy",         "Reflect",             "ArrayBuffer",
+            "Uint8Array",     "Int8Array",     "Uint16Array",         "Int16Array",
+            "Uint32Array",    "Int32Array",    "Float32Array",        "Float64Array",
+            "parseInt",       "parseFloat",    "isNaN",               "isFinite",
+            "encodeURI",      "decodeURI",     "setTimeout",          "clearTimeout",
+            "setInterval",    "clearInterval", "CSSStyleDeclaration", "Parameters",
+            "ClassDecorator", "Cache",         "Lock",                "ParentNode",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, false, in_type_position, &best);
@@ -130190,13 +130330,12 @@ pub const Checker = struct {
             namespace_budget_exempt_suggestion or
             (!skip_suggestions and
                 (script_expando_suggestion != null or
-                (best.dist <= threshold and best.name.len > 0) or
-                regexp_suffix_suggestion or
-                declaration_suffix_suggestion));
+                    (best.dist <= threshold and best.name.len > 0) or
+                    regexp_suffix_suggestion or
+                    declaration_suffix_suggestion));
         const suggestion_name: []const u8 = script_expando_suggestion orelse
             hoisted_var_suggestion orelse
-            if (namespace_budget_exempt_suggestion) namespace_best.name else
-            if (regexp_suffix_suggestion) "RegExp" else best.name;
+            if (namespace_budget_exempt_suggestion) namespace_best.name else if (regexp_suffix_suggestion) "RegExp" else best.name;
 
         // In an unchecked `.js` file (JS-like, no checkJs) the suggestion
         // variant softens to TS2570 "Could not find name" and is emitted
@@ -143280,7 +143419,8 @@ pub const Checker = struct {
         const name_start = cursor;
         cursor += 1;
         while (cursor < src.len and
-            (std.ascii.isAlphanumeric(src[cursor]) or src[cursor] == '_' or src[cursor] == '$')) : (cursor += 1) {}
+            (std.ascii.isAlphanumeric(src[cursor]) or src[cursor] == '_' or src[cursor] == '$')) : (cursor += 1)
+        {}
         const export_name = src[name_start..cursor];
 
         const arena = self.diag_arena.allocator();
@@ -145314,8 +145454,7 @@ pub const Checker = struct {
                     try subs.put(self.gpa, param_t, merged);
                     return;
                 }
-                if (self.typeIsNullishOnly(existing) or self.typeIsNullishOnly(literal_arg))
-                {
+                if (self.typeIsNullishOnly(existing) or self.typeIsNullishOnly(literal_arg)) {
                     const candidate = self.widenForInference(literal_arg);
                     const merged = self.interner.internUnion(&.{ existing, candidate }) catch return error.OutOfMemory;
                     try subs.put(self.gpa, param_t, merged);
@@ -145926,18 +146065,55 @@ pub const Checker = struct {
         return try self.lowererLowerWithTypeParams(type_node);
     }
 
-    fn relowerSignatureObjectMembersWithInferences(
+    fn relowerSignatureParametersWithInferences(
         self: *Checker,
         sig: TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!TypeId {
         if (!self.interner.isSignature(sig) or subs.count() == 0) return sig;
-        const old_params = self.interner.signatureParams(sig);
+        const old_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(sig));
+        defer self.gpa.free(old_params);
+        const param_nodes = self.signature_param_nodes.get(sig);
+        var substitution_param_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer substitution_param_nodes.deinit(self.gpa);
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var subs_it = subs.iterator();
+        while (subs_it.next()) |entry| {
+            const param_t = entry.key_ptr.*;
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(param_t);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) continue;
+            const payload_idx = self.interner.pool.payloadOf(param_t);
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
+            const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
+            try self.recordNarrow(payload.name, entry.value_ptr.*);
+            const decl_node = self.type_parameter_decl_nodes.get(param_t) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param_t)) orelse
+                hir_mod.none_node_id;
+            if (decl_node != hir_mod.none_node_id) {
+                try substitution_param_nodes.append(self.gpa, decl_node);
+            }
+        }
+
         var params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer params.deinit(self.gpa);
         var changed = false;
-        for (old_params) |param| {
-            const refreshed = try self.relowerObjectTypeMembersWithInferences(param, subs);
+        for (old_params, 0..) |param, param_index| {
+            var refreshed = param;
+            if (param_nodes) |nodes| {
+                if (param_index < nodes.len and self.hir.kindOf(nodes[param_index]) == .parameter) {
+                    const annotation = hir_mod.parameterOf(self.hir, nodes[param_index]).type_annotation;
+                    if (annotation != hir_mod.none_node_id and
+                        self.firstSignatureType(param) != null and
+                        self.typeNodeReferencesTypeParams(annotation, substitution_param_nodes.items))
+                    {
+                        refreshed = self.lowererLowerWithTypeParams(annotation) catch refreshed;
+                    }
+                }
+            }
+            refreshed = try self.relowerObjectTypeMembersWithInferences(refreshed, subs);
             if (refreshed != param) changed = true;
             try params.append(self.gpa, refreshed);
         }
@@ -148828,8 +149004,7 @@ pub const Checker = struct {
                                 try self.objectBindingPatternParameterTypeWithDefault(pattern, parameter.default_value)
                         else
                             try self.objectBindingPatternParameterType(pattern);
-                        if (try self.tryReportObjectLiteralBindingPatternPropertyMismatch(args[i], pattern_target))
-                        {
+                        if (try self.tryReportObjectLiteralBindingPatternPropertyMismatch(args[i], pattern_target)) {
                             stop_after_arg_mismatch = true;
                             continue;
                         }
@@ -148872,8 +149047,23 @@ pub const Checker = struct {
                 self.hir.kindOf(inferred_call.callee) == .identifier and
                 self.generic_fns.contains(hir_mod.identifierOf(self.hir, inferred_call.callee).name) and
                 self.isContextualFunctionExpressionLike(args[i]);
+            const inferred_generic_member_callback = hir_mod.callTypeArgs(self.hir, call_node).len == 0 and
+                self.hir.kindOf(inferred_call.callee) == .member_access and
+                self.isContextualFunctionExpressionLike(args[i]) and blk: {
+                const original_callee_t = self.hir.typeOf(inferred_call.callee);
+                const original_sig = self.firstSignatureType(original_callee_t) orelse break :blk false;
+                break :blk self.generic_signature_params.get(original_sig) != null;
+            };
             if (inferred_generic_callback and self.containsFreeTypeParameter(param_t)) {
                 param_t = try self.inferredGenericCallbackTarget(call_node, param_t);
+            }
+            if (inferred_generic_member_callback and
+                self.functionExpressionHasContextSensitiveParameters(args[i]))
+            {
+                if (self.firstSignatureType(param_t)) |contextual_sig| {
+                    self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
+                    try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                }
             }
             const inferred_instantiation_boundary = inferred_generic_callback and
                 self.callbackHasQualifiedTypeofInstantiationReturn(args[i]);
@@ -149133,12 +149323,13 @@ pub const Checker = struct {
                     if (self.actualTupleLength(missing_relation_target) == null and
                         !self.argumentMissingPropertyUsesArgumentHeader(diagnostic_arg_t) and
                         try self.tryReportSinglePropertyMissingWithDisplayTarget(
-                        args[i],
-                        args[i],
-                        diagnostic_arg_t,
-                        missing_relation_target,
-                        display_param_t,
-                    )) {
+                            args[i],
+                            args[i],
+                            diagnostic_arg_t,
+                            missing_relation_target,
+                            display_param_t,
+                        ))
+                    {
                         stop_after_arg_mismatch = true;
                         continue;
                     }
@@ -157022,6 +157213,30 @@ pub const Checker = struct {
         }
         if (self.sameTypeParameterName(arg_t, param_t)) return true;
         if (try self.sameEnclosingTypeParameterDisplay(arg_node, arg_t, param_t)) return true;
+        if (self.isContextualFunctionExpressionLike(arg_node)) {
+            if (self.firstSignatureType(param_t)) |contextual_sig| {
+                const contextual_return = self.interner.signatureReturn(contextual_sig) orelse types.Primitive.any;
+                if (self.firstSignatureType(arg_t)) |source_sig| {
+                    const source_name = try self.allocCallableSignatureName(source_sig);
+                    const target_name = try self.allocCallableSignatureName(contextual_sig);
+                    if ((contextual_return == types.Primitive.void_t or
+                        contextual_return == types.Primitive.any or
+                        contextual_return == types.Primitive.unknown) and
+                        source_name != null and target_name != null and
+                        std.mem.eql(u8, source_name.?, target_name.?))
+                    {
+                        return true;
+                    }
+                }
+                if ((contextual_return == types.Primitive.void_t or
+                    contextual_return == types.Primitive.any or
+                    contextual_return == types.Primitive.unknown) and
+                    self.unannotatedContextualCallbackFitsConcreteRestTarget(arg_node, contextual_sig))
+                {
+                    return true;
+                }
+            }
+        }
         if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
         if (self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, param_t)) return false;
         if (self.callableArgumentCannotSatisfyCustomRestTuple(arg_t, param_t)) return false;
@@ -157040,6 +157255,17 @@ pub const Checker = struct {
         if (try self.iterableArgumentRelation(arg_t, param_t)) |ok| return ok;
         if (try self.contextualGeneratorFunctionRelationToParam(arg_node, arg_t, param_t)) |generator_ok| return generator_ok;
         if (self.isContextualFunctionExpressionLike(arg_node) and self.firstSignatureType(param_t) != null) {
+            if (self.firstSignatureType(param_t)) |contextual_sig| {
+                const contextual_return = self.interner.signatureReturn(contextual_sig) orelse types.Primitive.any;
+                if ((contextual_return == types.Primitive.void_t or
+                    contextual_return == types.Primitive.any or
+                    contextual_return == types.Primitive.unknown) and
+                    self.unannotatedContextualCallbackFitsConcreteRestTarget(arg_node, contextual_sig))
+                {
+                    try self.checkFunctionWithContextualSignature(arg_node, contextual_sig);
+                    return true;
+                }
+            }
             const relation_arg_t = try self.genericInferenceFunctionArgumentType(arg_node, arg_t);
             const fn_assignable = try self.functionExpressionAssignableToSignatureTarget(arg_node, relation_arg_t, param_t);
             if (fn_assignable) {
@@ -158284,29 +158510,30 @@ pub const Checker = struct {
         fn_node: NodeId,
         target_t: TypeId,
     ) bool {
-        if (!self.rest_signatures.contains(target_t) or self.containsFreeTypeParameter(target_t)) return false;
+        const rest_type_node = self.restTypeAnnotationForSignature(target_t);
+        if (!self.rest_signatures.contains(target_t) and rest_type_node == null) return false;
         const target_params = self.interner.signatureParams(target_t);
         if (target_params.len == 0) return false;
+        const raw_rest_t = target_params[target_params.len - 1];
+        if (self.containsFreeTypeParameter(target_t)) {
+            const constraint = self.typeParameterConstraint(raw_rest_t) orelse return false;
+            if (!self.isTupleLikeUnionType(constraint)) return false;
+        }
         for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
             if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
             if (hir_mod.parameterOf(self.hir, param_node).type_annotation != hir_mod.none_node_id) return false;
         }
         const required = self.functionExpressionRequiredValueParamCount(fn_node);
-        var fixed_count = target_params.len - 1;
+        const fixed_count = target_params.len - 1;
         var rest_tuple_t = target_params[target_params.len - 1];
-        if (self.restTypeAnnotationForSignature(target_t)) |type_node| {
-            rest_tuple_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
-                if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
-                    self.lowererLowerWithTypeParams(tuple_node) catch rest_tuple_t
-                else
-                    rest_tuple_t;
-            fixed_count = 0;
-            if (self.signature_param_nodes.get(target_t)) |param_nodes| {
-                for (param_nodes) |param_node| {
-                    if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
-                    if (hir_mod.parameterOf(self.hir, param_node).flags.is_rest) break;
-                    fixed_count += 1;
-                }
+        rest_tuple_t = self.typeParameterConstraint(rest_tuple_t) orelse rest_tuple_t;
+        if (!self.isTupleLikeUnionType(rest_tuple_t)) {
+            if (rest_type_node) |type_node| {
+                rest_tuple_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
+                    if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
+                        self.lowererLowerWithTypeParams(tuple_node) catch rest_tuple_t
+                    else
+                        rest_tuple_t;
             }
         }
         if (self.restTupleMaxCount(rest_tuple_t)) |rest_max| {
@@ -161806,6 +162033,14 @@ pub const Checker = struct {
             var inferred_source = contextual_source_t;
             try self.checkFunctionWithContextualSignatureMode(fn_node, target_t, false, &inferred_source);
             if (try self.contextualFunctionSignatureAssignable(inferred_source, target_t)) return .assignable;
+            const target_return = self.interner.signatureReturn(target_t) orelse types.Primitive.any;
+            if ((target_return == types.Primitive.void_t or
+                target_return == types.Primitive.any or
+                target_return == types.Primitive.unknown) and
+                self.unannotatedContextualCallbackFitsConcreteRestTarget(fn_node, target_t))
+            {
+                return .assignable;
+            }
         }
         if (try self.functionExpressionContextualPredicate(fn_node)) |target_pred| {
             const source_pred = try self.predicateForFnNode(fn_node);
@@ -167237,13 +167472,12 @@ pub const Checker = struct {
             name
         else if (value_node != hir_mod.none_node_id and
             self.hir.kindOf(value_node) == .object_literal and
-            self.hir.kindOf(self.hir.parentOf(value_node)) == .array_literal) blk: {
+            self.hir.kindOf(self.hir.parentOf(value_node)) == .array_literal)
+        blk: {
             const refined_source = try self.literalRefinedObjectTypeForTarget(value_node, source);
             break :blk (try self.missingPropertyTypeName(refined_source)) orelse
                 (try self.missingPropertyTypeName(source)) orelse "{}";
-        }
-        else
-            (try self.missingPropertyTypeName(source)) orelse "{}";
+        } else (try self.missingPropertyTypeName(source)) orelse "{}";
         // Tuple types render their numeric element index as `'2'`
         // (no inner quotes) ÃÂ¢ÃÂÃÂ see `arityAndOrderCompatibility01.ts`.
         // For other object types the missing string-named property is
@@ -167337,13 +167571,13 @@ pub const Checker = struct {
             // the ES2015 Array<T> surface, whose 29 required properties
             // determine TS2740's omitted-member count.
             const array_members = [_][]const u8{
-                "length",       "pop",          "push",       "concat",
-                "join",         "reverse",      "shift",      "slice",
-                "sort",         "splice",       "unshift",    "indexOf",
-                "lastIndexOf",  "every",        "some",       "forEach",
-                "map",          "filter",       "reduce",     "reduceRight",
-                "find",         "findIndex",    "entries",    "keys",
-                "values",       "Symbol.iterator", "toString", "toLocaleString",
+                "length",      "pop",             "push",     "concat",
+                "join",        "reverse",         "shift",    "slice",
+                "sort",        "splice",          "unshift",  "indexOf",
+                "lastIndexOf", "every",           "some",     "forEach",
+                "map",         "filter",          "reduce",   "reduceRight",
+                "find",        "findIndex",       "entries",  "keys",
+                "values",      "Symbol.iterator", "toString", "toLocaleString",
                 "fill",
             };
             for (array_members) |name| {
@@ -170036,8 +170270,7 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
             .identifier, .member_access, .element_access, .call_expr, .new_expr => true,
-            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr =>
-            self.expressionCouldBeObjectReference(hir_mod.asExpressionOf(self.hir, node).expr),
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => self.expressionCouldBeObjectReference(hir_mod.asExpressionOf(self.hir, node).expr),
             else => self.expressionIsFreshObjectReference(node),
         };
     }
@@ -177063,7 +177296,7 @@ const VarianceVisit = struct {
 };
 
 fn mergeVariance(a: types.Variance, b: types.Variance) types.Variance {
-    return @enumFromInt(@intFromEnum(a) | @intFromEnum(b));
+    return @fromBackingInt(@intCast(@backingInt(a) | @backingInt(b)));
 }
 
 /// Recognise expressions that produce control-flow narrowing when used as
@@ -248354,6 +248587,10 @@ test "checker: optional-chain branch facts narrow receivers without committing s
 test "checker: contextual rest tuple parameters retain dependent correlation" {
     const s = try newSetup(
         \\type Args = ["num", number] | ["str", string];
+        \\function destructured(...[kind, value]: Args) {
+        \\  if (kind === "num") value.toFixed();
+        \\  if (kind === "str") value.toUpperCase();
+        \\}
         \\declare function accept(callback: (...args: Args) => void): void;
         \\accept((kind, value) => {
         \\  if (kind === "num") value.toFixed();
@@ -248363,11 +248600,116 @@ test "checker: contextual rest tuple parameters retain dependent correlation" {
         \\  if (kind === "num") value.toFixed();
         \\  if (kind === "str") value.toUpperCase();
         \\};
+        \\type OptionalArgs = ["num", number] | ["none"];
+        \\const optional: (...args: OptionalArgs) => void = (kind, value?) => {
+        \\  if (kind === "num") value.toFixed();
+        \\  else value;
+        \\};
+        \\type MethodArgs =
+        \\  | ["str", (value: string) => void]
+        \\  | ["num", (value: number) => void];
+        \\type WithMethod = { method(...args: MethodArgs): void };
+        \\const withMethod: WithMethod = {
+        \\  method(kind, callback) {
+        \\    if (kind === "num") callback(123);
+        \\    else callback("abc");
+        \\  },
+        \\};
+        \\type Generic = <T extends ["num", number] | ["str", string]>(...args: T) => void;
+        \\const generic: Generic = (kind, value) => {
+        \\  if (kind === "num") value.toFixed();
+        \\  if (kind === "str") value.toUpperCase();
+        \\};
+        \\type Action =
+        \\  | { kind: "num"; payload: number | undefined }
+        \\  | { kind: "str"; payload: string | undefined };
+        \\function inherited(action: Action) {
+        \\  if (action.payload) {
+        \\    const { kind, payload } = action;
+        \\    if (kind === "num") payload.toFixed();
+        \\    if (kind === "str") payload.toUpperCase();
+        \\  }
+        \\}
+        \\type CleanAction =
+        \\  | { kind: "num"; payload: number }
+        \\  | { kind: "str"; payload: string };
+        \\function genericObject<T extends CleanAction>(action: T) {
+        \\  const { kind, payload } = action;
+        \\  if (kind === "num") payload.toFixed();
+        \\  if (kind === "str") payload.toUpperCase();
+        \\}
+        \\declare function readFile(
+        \\  path: string,
+        \\  callback: (...args: [null, unknown[]] | [Error, undefined]) => void,
+        \\): void;
+        \\readFile("path", (error, data) => {
+        \\  if (error === null) data.length;
+        \\  else error.message;
+        \\});
+        \\interface Events {
+        \\  warn: [string];
+        \\  disconnect: [{ code: number }, number];
+        \\}
+        \\declare class Emitter {
+        \\  on<K extends keyof Events>(event: K, listener: (...args: Events[K]) => void): void;
+        \\}
+        \\declare const emitter: Emitter;
+        \\emitter.on("disconnect", (event, index) => event.code + index);
+        \\emitter.on("disconnect", event => event.code);
+        \\function direct({ kind, payload }: CleanAction) {
+        \\  if (kind === "num") payload.toFixed();
+        \\  if (kind === "str") payload.toUpperCase();
+        \\}
+        \\function prior(x: { guard: true; value: number } | { guard: false; value: string }) {
+        \\  const { guard, value } = x;
+        \\  if (guard) value;
+        \\}
+        \\function uneven([x, y]: [1, 2] | [3, 4] | [5]) {
+        \\  if (y === 2) { const one: 1 = x; }
+        \\  if (y === 4) { const three: 3 = x; }
+        \\  if (y === undefined) { const five: 5 = x; }
+        \\  if (x === 5) { const absent: undefined = y; }
+        \\}
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: unequal tuple arity keeps a real remaining variant" {
+    const s = try newSetup(
+        \\function tooNarrow([x, y]: [1, 1] | [1, 2] | [1]) {
+        \\  if (y === undefined) {
+        \\    const invalid: never = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: assignment disables dependent parameter correlation" {
+    const s = try newSetup(
+        \\function reassignedPattern([x, y]: [1, 2] | [3, 4]) {
+        \\  if (Math.random()) x = 1;
+        \\  if (y === 2) {
+        \\    const invalid: 1 = x;
+        \\  }
+        \\}
+        \\const reassignedRest: (...args: [1, 2] | [3, 4]) => void = (x, y) => {
+        \\  if (Math.random()) y = 2;
+        \\  if (y === 2) {
+        \\    const invalid: 1 = x;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: overloaded assertion narrows a dependent member path" {
