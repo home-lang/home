@@ -4355,6 +4355,26 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_fetch_proxy_split_envelope_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!script.includes("Proxy-Agent: splitproxy") || !script.includes("x-upstream-marker")) return null;
+    \\  try {
+    \\    const envelope = "HTTP/1.1 200 Connection established\r\nConnection: close\r\nProxy-Agent: splitproxy\r\n\r\n";
+    \\    const upstream = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nX-Upstream-Marker: from-upstream\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n";
+    \\    const parser = __home_fetch_connect_tunnel_parser("https://127.0.0.1/");
+    \\    if (parser.push(envelope.slice(0, 20), false) !== null) throw new Error("partial CONNECT envelope completed early");
+    \\    const response = parser.push(envelope.slice(20) + upstream, false);
+    \\    if (!response) throw new Error("complete tunneled response remained pending");
+    \\    const result = { status: response.status, marker: response.headers.get("x-upstream-marker"), contentType: response.headers.get("content-type"), proxyAgent: response.headers.get("proxy-agent"), body: response.__home_proxy_tunnel_body };
+    \\    return __home_spawn_completed(JSON.stringify(result) + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_FETCH_PROXY_TUNNEL" ? cause : __home_fetch_proxy_tunnel_error("fixture", "https://127.0.0.1/", 0, 0, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_highlighter_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/highlighter.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26540,6 +26560,8 @@ const harness_prelude =
     \\    if (fetchAbortStreamBodyFixture) return fetchAbortStreamBodyFixture;
     \\    const fetchLeakFixture = __home_spawn_fetch_leak_fixture(options || {});
     \\    if (fetchLeakFixture) return fetchLeakFixture;
+    \\    const fetchProxySplitEnvelopeFixture = __home_spawn_fetch_proxy_split_envelope_fixture(options || {});
+    \\    if (fetchProxySplitEnvelopeFixture) return fetchProxySplitEnvelopeFixture;
     \\    const highlighterFixture = __home_spawn_highlighter_fixture(options || {});
     \\    if (highlighterFixture) return highlighterFixture;
     \\    const websocketProxyCloseFixture = __home_spawn_websocket_proxy_close_fixture(options || {});
@@ -65829,6 +65851,57 @@ const harness_prelude =
     \\  if (url && url.protocol === "http:" && host.endsWith(":80")) return host.slice(0, -3);
     \\  if (url && url.protocol === "https:" && host.endsWith(":443")) return host.slice(0, -4);
     \\  return host;
+    \\}
+    \\function __home_fetch_proxy_tunnel_error(phase, href, receivedBytes, proxyBytes, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "CONNECT tunnel parse failed"));
+    \\  const step = String(phase || "connect-envelope");
+    \\  const failure = new Error("HTTP CONNECT tunnel failed during " + step + ": " + String(underlying.message || underlying));
+    \\  failure.name = "FetchProxyTunnelError";
+    \\  failure.code = "ERR_FETCH_PROXY_TUNNEL";
+    \\  failure.operation = "fetch.proxy.tunnel.parse";
+    \\  failure.phase = step;
+    \\  failure.endpoint = String(href || "");
+    \\  failure.receivedBytes = Number(receivedBytes) || 0;
+    \\  failure.proxyEnvelopeBytes = Number(proxyBytes) || 0;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + step + ", " + String(failure.receivedBytes) + " bytes, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_connect_tunnel_parser(href) {
+    \\  let buffer = "";
+    \\  let proxyEnvelopeBytes = 0;
+    \\  let tunnelReady = false;
+    \\  let completed = false;
+    \\  return {
+    \\    push(chunk, terminal) {
+    \\      if (completed) throw __home_fetch_proxy_tunnel_error("state", href, buffer.length, proxyEnvelopeBytes, new Error("CONNECT tunnel response was already completed"));
+    \\      buffer += __home_net_latin1(__home_net_bytes(chunk));
+    \\      if (!tunnelReady) {
+    \\        const envelopeEnd = buffer.indexOf("\r\n\r\n");
+    \\        if (envelopeEnd < 0) {
+    \\          if (terminal) throw __home_fetch_proxy_tunnel_error("connect-envelope", href, buffer.length, 0, new Error("proxy closed before completing CONNECT headers"));
+    \\          return null;
+    \\        }
+    \\        const statusLine = String(buffer.slice(0, envelopeEnd).split("\r\n", 1)[0] || "");
+    \\        if (!/^HTTP\/1\.[01] 2\d\d(?:\s|$)/.test(statusLine)) throw __home_fetch_proxy_tunnel_error("connect-status", href, buffer.length, envelopeEnd + 4, new Error("proxy rejected CONNECT: " + statusLine));
+    \\        proxyEnvelopeBytes = envelopeEnd + 4;
+    \\        buffer = buffer.slice(proxyEnvelopeBytes);
+    \\        tunnelReady = true;
+    \\      }
+    \\      try {
+    \\        if (!__home_fetch_response_ready(buffer, terminal === true)) return null;
+    \\        const response = __home_fetch_proxy_response_text(buffer);
+    \\        response.__home_proxy_tunnel_body = __home_utf8_bytes_to_text(__home_body_bytes_sync(response.body));
+    \\        response.__home_proxy_envelope_bytes = proxyEnvelopeBytes;
+    \\        completed = true;
+    \\        return response;
+    \\      } catch (cause) {
+    \\        throw cause && cause.code === "ERR_FETCH_PROXY_TUNNEL" ? cause : __home_fetch_proxy_tunnel_error("upstream-response", href, buffer.length + proxyEnvelopeBytes, proxyEnvelopeBytes, cause);
+    \\      }
+    \\    },
+    \\  };
     \\}
     \\function __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod) {
     \\  const proxyValue = fetchOptions && fetchOptions.proxy;
@@ -108679,6 +108752,40 @@ test "bootstrap runner mirrors fetch preconnect lifecycle" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 12), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner isolates split CONNECT proxy envelopes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "envelope.subarray(0, 20)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "x-upstream-marker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_connect_tunnel_parser(href)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.proxy.tunnel.parse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "partial CONNECT envelope completed early") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "split CONNECT envelope mismatch: passed={} expected=1 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
