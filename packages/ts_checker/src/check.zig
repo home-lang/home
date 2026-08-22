@@ -149442,7 +149442,7 @@ pub const Checker = struct {
                     if (self.hir.kindOf(call_node) == .new_expr) stop_after_new_arg_mismatch = true;
                     continue;
                 }
-                if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
+                if (try self.tryReportArrayLiteralTupleElementMismatchForCall(args[i], param_t)) {
                     try self.checkExcessProperties(args[i], param_t);
                     if (self.hir.kindOf(call_node) == .new_expr) stop_after_new_arg_mismatch = true;
                     continue;
@@ -149473,7 +149473,7 @@ pub const Checker = struct {
                     if (try self.tryReportArrayLiteralParamTupleAnnotationWidthMismatch(args[i], sig, fixed_pos, param_t)) {
                         emitted = true;
                     } else if (self.tupleTypeFromMaybeOptional(param_t) != null) {
-                        if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
+                        if (try self.tryReportArrayLiteralTupleElementMismatchForCall(args[i], param_t)) {
                             emitted = true;
                         } else if (try self.tryReportArrayLiteralTupleArgumentWidthMismatch(args[i], param_t)) {
                             emitted = true;
@@ -149506,7 +149506,7 @@ pub const Checker = struct {
                     } else if (try self.tryReportNestedObjectLiteralPropertyMismatch(args[i], param_t)) {
                         emitted = true;
                         stop_after_arg_mismatch = true;
-                    } else if (try self.tryReportObjectLiteralPropertyMismatch(args[i], param_t)) {
+                    } else if (try self.tryReportObjectLiteralPropertyMismatchForCall(args[i], param_t)) {
                         emitted = true;
                         stop_after_arg_mismatch = true;
                     }
@@ -149527,12 +149527,12 @@ pub const Checker = struct {
                                 emitted = true;
                             } else if (try self.tryReportNestedObjectLiteralPropertyMismatch(inner, param_t)) {
                                 emitted = true;
-                            } else if (try self.tryReportObjectLiteralPropertyMismatch(inner, param_t)) {
+                            } else if (try self.tryReportObjectLiteralPropertyMismatchForCall(inner, param_t)) {
                                 emitted = true;
                             }
                         }
                         if (!emitted and self.hir.kindOf(inner) == .array_literal) {
-                            if (try self.tryReportArrayLiteralTupleElementMismatch(inner, param_t)) {
+                            if (try self.tryReportArrayLiteralTupleElementMismatchForCall(inner, param_t)) {
                                 emitted = true;
                             } else if (try self.tryReportArrayLiteralArrayElementMismatch(inner, param_t)) {
                                 emitted = true;
@@ -150804,7 +150804,7 @@ pub const Checker = struct {
                     continue;
                 }
                 if (self.hir.kindOf(args[i]) == .object_literal and
-                    try self.tryReportObjectLiteralPropertyMismatch(args[i], constraint))
+                    try self.tryReportObjectLiteralPropertyMismatchForCall(args[i], constraint))
                 {
                     continue;
                 }
@@ -163419,6 +163419,23 @@ pub const Checker = struct {
         init_node: NodeId,
         target_t: TypeId,
     ) !bool {
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false);
+    }
+
+    fn tryReportObjectLiteralPropertyMismatchForCall(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, true);
+    }
+
+    fn tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+        include_optional_undefined: bool,
+    ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
         const resolved_target = self.objectTypeFromMaybeOptional(target_t) orelse return false;
         if (self.typeHasAliasDisplayPrefix(target_t, "RecursivePartial<") or
@@ -163490,10 +163507,14 @@ pub const Checker = struct {
             // TS2322 per offending member, so we no longer `break`
             // after the first mismatch.
             if (!try self.tryReportSinglePropertyMissing(anchor, op.value, value_t, tm.type)) {
+                const diagnostic_target_t = if (include_optional_undefined and tm.is_optional)
+                    contextual_target_t
+                else
+                    tm.type;
                 try self.reportTypeNotAssignable(
                     anchor,
                     value_t,
-                    tm.type,
+                    diagnostic_target_t,
                     "Type is not assignable to property type.",
                 );
                 try self.attachExpectedTypeFromPropertyRelated(resolved_target, tm);
@@ -163919,6 +163940,23 @@ pub const Checker = struct {
         init_node: NodeId,
         target_t: TypeId,
     ) !bool {
+        return self.tryReportArrayLiteralTupleElementMismatchWithOverlong(init_node, target_t, false);
+    }
+
+    fn tryReportArrayLiteralTupleElementMismatchForCall(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        return self.tryReportArrayLiteralTupleElementMismatchWithOverlong(init_node, target_t, true);
+    }
+
+    fn tryReportArrayLiteralTupleElementMismatchWithOverlong(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+        allow_overlong: bool,
+    ) !bool {
         if (self.hir.kindOf(init_node) != .array_literal) return false;
         const resolved_target = self.tupleTypeFromMaybeOptional(target_t) orelse return false;
         if (!self.isFixedNoRestTuple(resolved_target)) return false;
@@ -163926,7 +163964,7 @@ pub const Checker = struct {
         const source_count = (try self.fixedArrayLiteralTupleLength(init_node)) orelse return false;
         const target_min = self.tupleRestMinRequiredCount(resolved_target);
         const target_max = self.restTupleMaxCount(resolved_target) orelse return false;
-        if (source_count < target_min or source_count > target_max) return false;
+        if (source_count < target_min or (!allow_overlong and source_count > target_max)) return false;
         var emitted = false;
         var i: usize = 0;
         while (i < elems.len) : (i += 1) {
@@ -216428,6 +216466,27 @@ test "checker: spread mismatch distinguishes array and tuple optional displays" 
         s,
         TsCodes.argument_type_mismatch,
         "Argument of type 'string' is not assignable to parameter of type 'number'.",
+    ));
+}
+
+test "checker: parity tuple display batch prefers nested elements and optional call members" {
+    const b = try newBoundSetup(
+        \\function nested([a, b, [[c]]]) {}
+        \\nested([1, 2, "x", false]);
+        \\function options(value: { method?: "x" | "y" }) {}
+        \\options({ method: "z" });
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type 'string' is not assignable to type '[[any]]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type '\"z\"' is not assignable to type '\"x\" | \"y\" | undefined'.",
     ));
 }
 
