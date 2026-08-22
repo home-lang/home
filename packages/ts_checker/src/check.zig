@@ -28346,11 +28346,15 @@ pub const Checker = struct {
     fn registerModuleNamespaceDisplayName(self: *Checker, t: TypeId, resolved: []const u8) CheckError!void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
         if (self.alias_display_names.contains(t)) return;
-        const display = if (std.mem.startsWith(u8, resolved, "/") or !self.virtualSourceHasRootedFilenameForResolved(resolved))
+        const display = try self.allocModuleNamespaceDisplayName(resolved);
+        try self.alias_display_names.put(self.gpa, t, display);
+    }
+
+    fn allocModuleNamespaceDisplayName(self: *Checker, resolved: []const u8) CheckError![]const u8 {
+        return if (std.mem.startsWith(u8, resolved, "/") or !self.virtualSourceHasRootedFilenameForResolved(resolved))
             try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"{s}\")", .{resolved})
         else
             try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"/{s}\")", .{resolved});
-        try self.alias_display_names.put(self.gpa, t, display);
     }
 
     fn virtualSourceHasRootedFilenameForResolved(self: *Checker, resolved: []const u8) bool {
@@ -140422,6 +140426,7 @@ pub const Checker = struct {
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
             resolved_path = try self.resolveVirtualModuleSpecifierPath(object, spec);
             if (resolved_path) |resolved| {
+                if (try self.virtualExportAssignmentNamespaceDisplay(object, resolved, spec)) |display| return display;
                 const root = self.rootBlockFor(object);
                 if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
                     for (hir_mod.blockStmts(self.hir, root)) |stmt| {
@@ -140436,6 +140441,39 @@ pub const Checker = struct {
         while (std.mem.startsWith(u8, display, "/")) display = display[1..];
         while (std.mem.startsWith(u8, display, "./")) display = display[2..];
         return try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"{s}\")", .{display});
+    }
+
+    fn virtualExportAssignmentNamespaceDisplay(
+        self: *Checker,
+        anchor: NodeId,
+        resolved: []const u8,
+        spec: []const u8,
+    ) CheckError!?[]const u8 {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const statements = hir_mod.blockStmts(self.hir, root);
+        for (statements) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec) or !self.isExportAssignmentDecl(raw)) continue;
+            const export_decl = hir_mod.exportOf(self.hir, raw);
+            if (export_decl.decl == hir_mod.none_node_id or self.hir.kindOf(export_decl.decl) != .identifier) continue;
+            const target_name = hir_mod.identifierOf(self.hir, export_decl.decl).name;
+            const section = self.virtualSectionStartForNode(raw);
+            for (statements) |candidate| {
+                if (self.virtualSectionStartForNode(candidate) != section or self.hir.kindOf(candidate) != .import_decl) continue;
+                const import_decl = hir_mod.importOf(self.hir, candidate);
+                if (import_decl.namespace_binding == hir_mod.none_node_id or
+                    self.hir.kindOf(import_decl.namespace_binding) != .identifier or
+                    hir_mod.identifierOf(self.hir, import_decl.namespace_binding).name != target_name)
+                {
+                    continue;
+                }
+                const origin_spec = self.string_interner.get(import_decl.module);
+                const origin = (try self.resolveVirtualModuleSpecifierPath(candidate, origin_spec)) orelse return null;
+                defer self.gpa.free(origin);
+                return try self.allocModuleNamespaceDisplayName(origin);
+            }
+        }
+        return null;
     }
 
     fn memberAccessClassFieldStaticness(self: *Checker, node: NodeId) ?bool {
@@ -227877,6 +227915,28 @@ test "checker: namespace value access excludes type-only named exports" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: export assignment preserves namespace import origin in diagnostics" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\class A {}
+        \\export type { A }
+        \\// @filename: /b.ts
+        \\import * as a from './a';
+        \\export = a;
+        \\// @filename: /c.ts
+        \\import a = require('./b');
+        \\new a.A();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'A' does not exist on type 'typeof import(\"/a\")'.",
+    ));
 }
 
 test "checker: top-level await respects low target directives" {
