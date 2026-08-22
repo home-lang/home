@@ -36494,15 +36494,17 @@ const harness_prelude =
     \\    if (["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(lower)) continue;
     \\    headers[lower] = value;
     \\  }
-    \\  let body = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? fetchOptions.body : null;
-    \\  if (body !== null && fetchOptions && fetchOptions.compress === "gzip") {
-    \\    body = __home_gzip_sync(body);
-    \\    headers["content-encoding"] = "gzip";
-    \\    headers["content-length"] = String(body.length);
-    \\  }
+    \\  const body = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? fetchOptions.body : null;
     \\  return new Promise((resolve, reject) => {
     \\    let settled = false;
     \\    const chunks = [];
+    \\    const rejectTransport = (phase, cause) => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      session.active = Math.max(0, Number(session.active || 0) - 1);
+    \\      const config = fetchOptions && fetchOptions.__home_compression;
+    \\      reject(config ? __home_fetch_compression_transport_error("http2", phase, config, cause) : cause);
+    \\    };
     \\    const finish = (status, responseHeaders) => {
     \\      if (settled) return;
     \\      settled = true;
@@ -36511,11 +36513,9 @@ const harness_prelude =
     \\    };
     \\    const fail = code => {
     \\      if (settled) return;
-    \\      settled = true;
-    \\      session.active = Math.max(0, Number(session.active || 0) - 1);
     \\      const error = new Error(String(code || "HTTP2StreamReset"));
     \\      error.code = String(code || "HTTP2StreamReset");
-    \\      reject(error);
+    \\      rejectTransport("stream", error);
     \\    };
     \\    if (typeof server.__home_handler === "function") {
     \\      const req = Object.assign(__home_http_event_target(), { method: fetchMethod, url: headers[":path"], headers, httpVersion: "2.0", __home_encoding: null });
@@ -36526,14 +36526,14 @@ const harness_prelude =
     \\      res.writeHead = function(status, statusMessage, values) { this.statusCode = Number(status) || 200; if (typeof statusMessage === "object") values = statusMessage; __home_http_apply_headers(this, values); return this; };
     \\      res.write = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); return true; };
     \\      res.end = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); this.emit("finish"); finish(this.statusCode, this.__home_headers); return this; };
-    \\      try { server.__home_handler(req, res); } catch (error) { reject(error); return; }
+    \\      try { server.__home_handler(req, res); } catch (error) { rejectTransport("server-handler", error); return; }
     \\      Promise.resolve().then(async () => {
     \\        if (body && typeof body.getReader === "function") {
     \\          const reader = body.getReader();
     \\          while (true) { const part = await reader.read(); if (part.done) break; req.emit("data", req.__home_encoding ? Buffer.from(part.value).toString(req.__home_encoding) : part.value); }
     \\        } else if (body !== null) { const chunk = typeof body === "string" || body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(String(body)); req.emit("data", req.__home_encoding ? chunk.toString(req.__home_encoding) : chunk); }
     \\        req.emit("end");
-    \\      }).catch(reject);
+    \\      }).catch(error => rejectTransport("body-delivery", error));
     \\      return;
     \\    }
     \\    const stream = Object.assign(__home_http_event_target(), { id: streamId, session, rstCode: 0, __home_headers: { ":status": 200 } });
@@ -36563,7 +36563,7 @@ const harness_prelude =
     \\        while (true) { const part = await reader.read(); if (part.done) break; stream.emit("data", part.value); }
     \\      } else if (body !== null) stream.emit("data", typeof body === "string" || body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(String(body)));
     \\      stream.emit("end");
-    \\    }).catch(reject);
+    \\    }).catch(error => rejectTransport("body-delivery", error));
     \\  });
     \\}
     \\function __home_http2_error(code) {
@@ -65901,6 +65901,24 @@ const harness_prelude =
     \\  const causeSummary = String(underlying.name || "TypeError") + ": " + String(underlying.message || underlying);
     \\  const causeStack = String(underlying.stack || "");
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.property + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_compression_transport_error(protocol, phase, config, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "Compressed request transport failed"));
+    \\  const encoding = config && config.encoding !== undefined ? String(config.encoding) : "unknown";
+    \\  const transport = String(protocol || "unknown");
+    \\  const step = String(phase || "body-delivery");
+    \\  const failure = new Error("Unable to deliver " + encoding + "-compressed request over " + transport + " during " + step + ": " + String(underlying.message || underlying));
+    \\  failure.name = "FetchCompressionTransportError";
+    \\  failure.code = "ERR_FETCH_COMPRESSION_TRANSPORT";
+    \\  failure.operation = "fetch.request.compress.transport";
+    \\  failure.protocol = transport;
+    \\  failure.phase = step;
+    \\  failure.encoding = encoding;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + transport + ", " + encoding + ", " + step + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
     \\function __home_fetch_compression_config(value) {
@@ -108342,6 +108360,7 @@ test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime m
             .markers = &.{
                 "concurrent requests multiplex on one h2 session",
                 "POST with ReadableStream body larger than initial send window",
+                "compress: gzip request body over h2",
                 "REFUSED_STREAM is transparently retried on the same connection",
                 "SETTINGS_HEADER_TABLE_SIZE=0: encoder emits a Dynamic Table Size Update",
                 "await fetch() over HTTP/2 resolves on headers",
@@ -108373,6 +108392,13 @@ test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime m
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_http2_server(href, fetchOptions, fetchMethod)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_http2_tls_server(href, fetchOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_http2_client_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_compress_request(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "body !== null && fetchOptions && fetchOptions.compress === \"gzip\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_FETCH_COMPRESSION_TRANSPORT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.request.compress.transport\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.protocol = transport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.phase = step") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.cause = underlying") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP2HeaderListTooLarge") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "NGHTTP2_REFUSED_STREAM: 7") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetch-http2-leak-fixture.ts") != null);
