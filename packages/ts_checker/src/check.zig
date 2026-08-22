@@ -8376,6 +8376,12 @@ pub const Checker = struct {
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
+                const static_cond = if (i.else_branch != hir_mod.none_node_id)
+                    self.staticBoolCondition(i.cond)
+                else
+                    StaticBool.unknown;
+                var reachable_flow: FlowNarrowSnapshot = .{};
+                defer reachable_flow.deinit(self.gpa);
                 const cond_t = try self.checkExpression(i.cond);
                 try self.reportVoidTruthiness(i.cond, cond_t);
                 try self.reportKnownTruthyCallableCondition(i.cond, cond_t, i.then_branch);
@@ -8386,13 +8392,23 @@ pub const Checker = struct {
                 try self.pushNarrowScope();
                 try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
+                if (static_cond == .true and !self.statementDefinitelyExits(i.then_branch)) {
+                    reachable_flow = try self.snapshotCurrentNarrowScope();
+                }
                 self.popNarrowScope();
                 if (i.else_branch != hir_mod.none_node_id) {
                     try self.pushNarrowScope();
                     try self.applyTypeGuard(i.cond, false);
                     try self.checkStatement(i.else_branch);
+                    if (static_cond == .false and !self.statementDefinitelyExits(i.else_branch)) {
+                        reachable_flow = try self.snapshotCurrentNarrowScope();
+                    }
                     self.popNarrowScope();
-                    try self.applyExhaustiveBranchAssignmentFlow(i.then_branch, i.else_branch);
+                    if (static_cond == .unknown) {
+                        try self.applyExhaustiveBranchAssignmentFlow(i.then_branch, i.else_branch);
+                    } else {
+                        try self.applyFlowNarrowSnapshot(&reachable_flow);
+                    }
                 } else if (self.statementDefinitelyExits(i.then_branch)) {
                     try self.applyTypeGuard(i.cond, false);
                 } else {
@@ -8718,8 +8734,10 @@ pub const Checker = struct {
             .block_stmt => {
                 try self.checkAsyncWithStatementDiagnostics(node);
                 const stmts = hir_mod.blockStmts(self.hir, node);
+                var outer_flow: FlowNarrowSnapshot = .{};
+                defer outer_flow.deinit(self.gpa);
                 try self.pushNarrowScope();
-                defer self.popNarrowScope();
+                errdefer self.popNarrowScope();
                 try self.checkDeclarationSpaceDiagnostics(stmts);
                 for (stmts) |s| {
                     try self.checkStatement(s);
@@ -8733,6 +8751,9 @@ pub const Checker = struct {
                     // makes `x` non-nullish for subsequent statements.
                     try self.applyLogicalAssignmentFlow(s);
                 }
+                outer_flow = try self.snapshotCurrentBlockOuterFlow(node);
+                self.popNarrowScope();
+                try self.applyFlowNarrowSnapshot(&outer_flow);
             },
             .try_stmt => {
                 const ts = hir_mod.tryOf(self.hir, node);
@@ -21126,6 +21147,15 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return .unknown;
         switch (self.hir.kindOf(node)) {
             .literal_bool => return if (hir_mod.literalBoolOf(self.hir, node)) .true else .false,
+            .unary_op => {
+                const unary = hir_mod.unaryOf(self.hir, node);
+                if (unary.op != .not) return .unknown;
+                return switch (self.staticBoolCondition(unary.operand)) {
+                    .true => .false,
+                    .false => .true,
+                    .unknown => .unknown,
+                };
+            },
             .logical_op => {
                 const l = hir_mod.logicalOf(self.hir, node);
                 const lhs = self.staticBoolCondition(l.lhs);
@@ -118217,6 +118247,73 @@ pub const Checker = struct {
         }
     };
 
+    fn snapshotCurrentNarrowScope(self: *Checker) CheckError!FlowNarrowSnapshot {
+        var snapshot: FlowNarrowSnapshot = .{};
+        errdefer snapshot.deinit(self.gpa);
+        if (self.narrow_scopes.items.len == 0) return snapshot;
+
+        var name_it = self.narrow_scopes.items[self.narrow_scopes.items.len - 1].iterator();
+        while (name_it.next()) |entry| {
+            try snapshot.names.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var member_it = self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1].iterator();
+        while (member_it.next()) |entry| {
+            try snapshot.members.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        return snapshot;
+    }
+
+    fn snapshotCurrentBlockOuterFlow(self: *Checker, block: NodeId) CheckError!FlowNarrowSnapshot {
+        var snapshot: FlowNarrowSnapshot = .{};
+        errdefer snapshot.deinit(self.gpa);
+        if (self.narrow_scopes.items.len == 0) return snapshot;
+
+        var name_it = self.narrow_scopes.items[self.narrow_scopes.items.len - 1].iterator();
+        while (name_it.next()) |entry| {
+            if (self.blockDirectlyDeclaresValueName(block, entry.key_ptr.*)) continue;
+            if ((try self.typeOfVisibleNameNoDiag(block, entry.key_ptr.*)) == null) continue;
+            try snapshot.names.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var member_it = self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1].iterator();
+        while (member_it.next()) |entry| {
+            if (self.blockDirectlyDeclaresValueName(block, entry.key_ptr.obj_name)) continue;
+            if ((try self.typeOfVisibleNameNoDiag(block, entry.key_ptr.obj_name)) == null) continue;
+            try snapshot.members.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        return snapshot;
+    }
+
+    fn blockDirectlyDeclaresValueName(self: *Checker, block: NodeId, name: hir_mod.StringId) bool {
+        for (hir_mod.blockStmts(self.hir, block)) |statement| {
+            const declaration = if (self.hir.kindOf(statement) == .export_decl)
+                hir_mod.exportOf(self.hir, statement).decl
+            else
+                statement;
+            if (declaration == hir_mod.none_node_id) continue;
+            const name_node: NodeId = switch (self.hir.kindOf(declaration)) {
+                .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, declaration).name,
+                .fn_decl => hir_mod.fnDeclOf(self.hir, declaration).name,
+                .class_decl => hir_mod.classOf(self.hir, declaration).name,
+                .enum_decl => hir_mod.enumOf(self.hir, declaration).name,
+                .namespace_decl, .module_decl => hir_mod.namespaceOf(self.hir, declaration).name,
+                else => continue,
+            };
+            if (self.bindingPatternDeclaresName(name_node, name)) return true;
+        }
+        return false;
+    }
+
+    fn applyFlowNarrowSnapshot(self: *Checker, snapshot: *FlowNarrowSnapshot) CheckError!void {
+        var name_it = snapshot.names.iterator();
+        while (name_it.next()) |entry| {
+            try self.recordNarrow(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var member_it = snapshot.members.iterator();
+        while (member_it.next()) |entry| {
+            try self.recordMemberNarrow(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
     fn snapshotGuardBranch(
         self: *Checker,
         first: NodeId,
@@ -118777,7 +118874,9 @@ pub const Checker = struct {
             break :blk u.op == .neg and self.hir.kindOf(u.operand) == .literal_bigint;
         };
         if (self.hir.kindOf(b.lhs) == .identifier and
-            ((try self.expressionNarrowLiteralType(b.rhs)) != null or
+            ((!self.nodeIsNullLiteralish(b.rhs) and
+                !self.nodeIsUndefinedLiteralish(b.rhs) and
+                (try self.expressionNarrowLiteralType(b.rhs)) != null) or
                 self.hir.kindOf(b.rhs) == .literal_bigint or
                 rhs_is_neg_bigint))
         {
@@ -180415,6 +180514,44 @@ test "checker: returning truthy guard narrows following statements" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: nullish and constant branch exits narrow following typeof object guards" {
+    const s = try newSetup(
+        \\function obj(x: object): void {}
+        \\function looseUndefined(x: unknown) {
+        \\  if (x == undefined) return;
+        \\  if (typeof x === "object") obj(x);
+        \\}
+        \\function constantBranch(x: unknown) {
+        \\  if (!!true) {
+        \\    if (!x) return;
+        \\  } else {
+        \\    if (x === null) return;
+        \\  }
+        \\  if (typeof x === "object") obj(x);
+        \\}
+        \\function reachableNull(x: unknown) {
+        \\  if (x === null) {
+        \\    x;
+        \\  } else if (typeof x === "object") {
+        \\    obj(x);
+        \\  }
+        \\  if (typeof x === "object") obj(x);
+        \\}
+        \\function shadowed(x: string | null) {
+        \\  {
+        \\    let x: number | null = 1;
+        \\    if (x === null) return;
+        \\  }
+        \\  const value: string | null = x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
 }
 
 test "checker: typeof object preserves null without prior null guard" {
