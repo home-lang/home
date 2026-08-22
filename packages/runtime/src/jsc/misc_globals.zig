@@ -77,6 +77,7 @@ fn timeOriginNative(
 }
 
 const install_glue =
+    "(function() {\n" ++ @embedFile("urlpattern_polyfill.js") ++ "\n})();\n" ++
     \\(function() {
     \\  var nowFn = globalThis.__home_perf_now;
     \\  var timeOrigin = globalThis.__home_perf_time_origin();
@@ -237,7 +238,7 @@ const install_glue =
     \\  delete globalThis.__home_perf_now;
     \\  delete globalThis.__home_perf_time_origin;
     \\})();
-;
+    ;
 
 /// Install `performance`, `global`/`self`, and `structuredClone`. No-op
 /// without JSC.
@@ -268,8 +269,7 @@ test "misc globals install exposes performance/global/self/structuredClone" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof performance === 'object' && typeof performance.now === 'function' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof performance === 'object' && typeof performance.now === 'function' && " ++
         "typeof performance.timeOrigin === 'number' && " ++
         "globalThis.global === globalThis && globalThis.self === globalThis && " ++
         "typeof structuredClone === 'function' && " ++
@@ -286,8 +286,7 @@ test "performance.now is monotonic non-decreasing and sub-ms resolution" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { var a = performance.now(); var b = performance.now(); " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { var a = performance.now(); var b = performance.now(); " ++
         "return typeof a === 'number' && b >= a && a >= 0; })()"));
 }
 
@@ -301,8 +300,7 @@ test "structuredClone deep-clones and preserves cycles" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var src = { n: 1, arr: [1, 2, { x: 3 }], d: new Date(1000), m: new Map([['k', 'v']]) };" ++
         "  src.self = src;" ++ // cycle
         "  var c = structuredClone(src);" ++
@@ -322,8 +320,7 @@ test "structuredClone throws DataCloneError for functions" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() { try { structuredClone(function(){}); return false; } " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() { try { structuredClone(function(){}); return false; } " ++
         "catch (e) { return e.name === 'DataCloneError'; } })()"));
 }
 
@@ -338,8 +335,7 @@ test "BroadcastChannel delivers a structured-cloned message to peers, not self" 
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     // postMessage is async (microtask); drain it with await before asserting.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof BroadcastChannel !== 'function') return false;" ++
         "  var a = new BroadcastChannel('room'); var b = new BroadcastChannel('room');" ++
         "  var got = null, gotSelf = false;" ++
@@ -356,8 +352,7 @@ test "BroadcastChannel delivers a structured-cloned message to peers, not self" 
         "})()"));
 
     // Drain the microtask queue and read the delivery result.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(async function() { await 0; await 0; await 0; return globalThis.__bc_result === true; })()"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(async function() { await 0; await 0; await 0; return globalThis.__bc_result === true; })()"));
 }
 
 test "URLPattern matches named groups, wildcards, and rejects non-matches" {
@@ -370,8 +365,7 @@ test "URLPattern matches named groups, wildcards, and rejects non-matches" {
     const ctx = engine.currentContext();
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof URLPattern !== 'function') return false;" ++
         "  var p = new URLPattern({ pathname: '/books/:id' });" ++
         "  var m = p.exec({ pathname: '/books/42' });" ++

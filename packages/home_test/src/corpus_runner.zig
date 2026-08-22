@@ -128,6 +128,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
 };
 
 const harness_prelude =
+    "(function() {\n" ++ @embedFile("urlpattern_polyfill.js") ++ "\n})();\n" ++
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     "globalThis.__home_build_debug = " ++ (if (builtin.mode == .Debug) "true;\n" else "false;\n") ++
@@ -111290,6 +111291,44 @@ test "bootstrap runner covers current web timer regressions" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap URLPattern preserves Bun canonicalization and matching contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("components, groups, options, and identity are stable", () => {
+        \\  const pattern = new URLPattern({ pathname: "/books/:id", hostname: "*.example.com" }, { ignoreCase: true });
+        \\  const match = pattern.exec("https://API.example.com/books/42"); expect(pattern.test("https://api.example.com/books/42")).toBe(true); expect(match.pathname.groups.id).toBe("42"); expect(match.hostname.groups[0]).toBe("api"); expect(pattern.hasRegExpGroups).toBe(false); expect(Object.prototype.toString.call(pattern)).toBe("[object URLPattern]");
+        \\});
+        \\test("opaque paths, IPv6, and host boundaries canonicalize like Bun", () => {
+        \\  expect(new URLPattern({ protocol: "javascript", pathname: "var x = 1;" }).test({ baseURL: "javascript:var x = 1;" })).toBe(true);
+        \\  const ipv6 = new URLPattern("http://[\\:\\:1]/"); expect(ipv6.test("http://[::1]/")).toBe(true); expect(ipv6.exec("http://[::1]/").hostname.input).toBe("[::1]");
+        \\  expect(new URLPattern({ hostname: "bad/hostname" }).hostname).toBe("bad"); expect(new URLPattern({ hostname: "bad#hostname" }).test({ hostname: "bad" })).toBe(true);
+        \\});
+        \\test("supplementary identifiers and Unicode sets lower without semantic loss", () => {
+        \\  const identifier = new URLPattern({ pathname: ":a󠄀b" }); expect(identifier.pathname).toBe(":a󠄀b");
+        \\  const subtraction = new URLPattern({ pathname: "/([[a-z]--a])" }); expect(subtraction.test({ pathname: "/a" })).toBe(false); expect(subtraction.exec({ pathname: "/z" }).pathname.groups[0]).toBe("z");
+        \\  const intersection = new URLPattern({ pathname: "/([\\d&&[0-1]])" }); expect(intersection.test({ pathname: "/0" })).toBe(true); expect(intersection.test({ pathname: "/3" })).toBe(false);
+        \\});
+        \\test("constructor failures retain useful TypeError context", () => {
+        \\  let failure; try { new URLPattern({ pathname: "/:id/:id" }); } catch (error) { failure = error; }
+        \\  expect(failure).toBeInstanceOf(TypeError); expect(failure.message).toContain("Failed to construct 'URLPattern'"); expect(failure.message).toContain("invalid pathname pattern");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/urlpattern/urlpattern.home-regression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("URLPattern regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
