@@ -3523,6 +3523,24 @@ const harness_prelude =
     \\  if (source.includes("console.log('OK')") || source.includes('console.log("OK")')) return __home_spawn_completed("OK\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_fetch_tls_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch.tls.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const env = options && options.env || {};
+    \\  if (cmd.some(part => part.endsWith("fetch-reject-authorized-env-fixture.js"))) {
+    \\    return __home_spawn_completed("", "", String(env.NODE_TLS_REJECT_UNAUTHORIZED || "") === "0" ? 0 : 1);
+    \\  }
+    \\  if (!cmd.some(part => part.endsWith("fetch.tls.extra-cert.fixture.js"))) return null;
+    \\  const extraCaPath = String(env.NODE_EXTRA_CA_CERTS || "").trim();
+    \\  const extraCaText = extraCaPath ? String(__home_build_read_text(extraCaPath) || "") : "";
+    \\  const validCertificate = __home_fetch_tls_certificate_text(__home_harness_tls.cert);
+    \\  const invalidCertificate = __home_fetch_tls_certificate_text(__home_harness_invalid_tls.cert);
+    \\  const normalizedExtraCa = __home_fetch_tls_certificate_text(extraCaText);
+    \\  const containsInvalidCertificate = !!invalidCertificate && normalizedExtraCa.includes(invalidCertificate);
+    \\  const trusted = !!normalizedExtraCa && normalizedExtraCa.includes(validCertificate) && !containsInvalidCertificate;
+    \\  const stderr = trusted ? "" : (containsInvalidCertificate ? "ignoring extra certs\n" : "") + "DEPTH_ZERO_SELF_SIGNED_CERT\n";
+    \\  return __home_spawn_completed("", stderr, trusted ? 0 : 1);
+    \\}
     \\function __home_spawn_deferred_completed(completion) {
     \\  const settled = Promise.resolve(completion);
     \\  function pipe(field) {
@@ -26659,6 +26677,8 @@ const harness_prelude =
     \\    if (tlsRenegotiationFixture) return tlsRenegotiationFixture;
     \\    const nodeExtraCaFixture = __home_spawn_node_extra_ca_fixture(options || {});
     \\    if (nodeExtraCaFixture) return nodeExtraCaFixture;
+    \\    const fetchTlsFixture = __home_spawn_fetch_tls_fixture(options || {});
+    \\    if (fetchTlsFixture) return fetchTlsFixture;
     \\    const issue00631Fixture = __home_spawn_issue_00631_fixture(options || {});
     \\    if (issue00631Fixture) return issue00631Fixture;
     \\    const issue02499Fixture = __home_spawn_issue_02499_fixture(options || {});
@@ -42259,8 +42279,18 @@ const harness_prelude =
     \\  } catch (error) {}
     \\  return Object.freeze({ key: "home-test-invalid-key", cert: "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n" });
     \\}
+    \\function __home_harness_expired_tls_credentials() {
+    \\  try {
+    \\    const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
+    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/bun-corpus/harness.ts"));
+    \\    const match = String(source || "").match(/export const expiredTls = Object\.freeze\(\{\s*cert:\s*("(?:\\.|[^"\\])*")\s*,\s*key:\s*("(?:\\.|[^"\\])*")/);
+    \\    if (match) return Object.freeze({ cert: JSON.parse(match[1]), key: JSON.parse(match[2]) });
+    \\  } catch (error) {}
+    \\  return Object.freeze({ key: "home-test-expired-key", cert: "-----BEGIN CERTIFICATE-----\nexpired\n-----END CERTIFICATE-----\n" });
+    \\}
     \\const __home_harness_tls = __home_harness_tls_credentials();
     \\const __home_harness_invalid_tls = __home_harness_invalid_tls_credentials();
+    \\const __home_harness_expired_tls = __home_harness_expired_tls_credentials();
     \\const __home_harness_example_html = "<!doctype html><html><head><title>Example Domain</title></head><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples.</p></body></html>";
     \\function __home_harness_example_site(protocol) {
     \\  const useHttps = protocol === undefined || protocol === "https";
@@ -42284,7 +42314,7 @@ const harness_prelude =
     \\    sourceLength <<= 1;
     \\  }
     \\}
-    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, invalidTls: __home_harness_invalid_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { canBuildNodeAddons() { return true; }, isASAN: false, isBroken: false, isCI: false, isDebug: false, exampleHtml: __home_harness_example_html, exampleSite: __home_harness_example_site, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isIPv6() { return true; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: __home_harness_tls, invalidTls: __home_harness_invalid_tls, expiredTls: __home_harness_expired_tls, bunEnv: Object.assign({}, process.env), joinP() { const parts = Array.from(arguments).map(String); const joined = __home_build_join.apply(undefined, parts); return parts.length === 1 && /\/$/.test(parts[0]) && joined !== "/" ? joined + "/" : joined; }, forceGuardMalloc(env) { if (env && typeof env === "object") env.Malloc = env.Malloc || "1"; return env; }, mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, nodeExeMatchingAbi() { return Promise.resolve(process.execPath); }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, libcPathForDlopen() { if (process.platform === "linux") return "libc.so.6"; if (process.platform === "darwin") return "libc.dylib"; throw new Error("Unsupported libc platform"); }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, runBunUpdate: __home_harness_run_bun_update, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, lazyPromiseLike: __home_lazy_promise_like, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, ospath(value) { const text = String(value).replace(/^\/test\//, ""); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, randomPort() { return 6499; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("bun.test.tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, writeShebangScript: __home_harness_write_shebang_script, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, textLockfile: __home_harness_text_lockfile, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["harness"].isDebug = globalThis.__home_build_debug;
     \\globalThis.__home_modules["harness"].fillRepeating = __home_harness_fill_repeating;
     \\globalThis.__home_modules["harness"].disableAggressiveGCScope = function() { return { [Symbol.dispose]() {} }; };
@@ -65214,23 +65244,27 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (locked, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
     \\  return failure;
     \\}
+    \\function __home_response_consume_abortable(owner, promise) {
+    \\  const signal = owner && owner.__home_fetch_abort_signal;
+    \\  return signal && typeof signal.addEventListener === "function" ? __home_fetch_abortable(promise, signal, owner.body) : promise;
+    \\}
     \\function __home_consume_body(owner, operation, enforceSyntheticLimit, limitMessage) {
     \\  if ((owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner) || owner.bodyUsed) return Promise.reject(__home_body_state_error(owner, operation));
-    \\  if (owner.body == null) return Promise.resolve([]);
+    \\  if (owner.body == null) return __home_response_consume_abortable(owner, Promise.resolve([]));
     \\  owner.bodyUsed = true;
     \\  try { Object.defineProperty(owner.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\  const sparseBlob = __home_sparse_body_blob(owner.body);
-    \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.bytes", enforceSyntheticLimit !== false, limitMessage || "Out of memory");
-    \\  return __home_body_bytes(owner.body);
+    \\  if (sparseBlob) return __home_response_consume_abortable(owner, __home_blob_sparse_result(sparseBlob, operation || "body.bytes", enforceSyntheticLimit !== false, limitMessage || "Out of memory"));
+    \\  return __home_response_consume_abortable(owner, __home_body_bytes(owner.body));
     \\}
     \\function __home_consume_body_text(owner, operation, limitMessage) {
     \\  if ((owner.body && owner.body.locked && !owner.body.__home_consumed_by_owner) || owner.bodyUsed) return Promise.reject(__home_body_state_error(owner, operation));
-    \\  if (owner.body == null) return Promise.resolve("");
+    \\  if (owner.body == null) return __home_response_consume_abortable(owner, Promise.resolve(""));
     \\  owner.bodyUsed = true;
     \\  try { Object.defineProperty(owner.body, "__home_consumed_by_owner", { configurable: true, value: true }); } catch (error) {}
     \\  const sparseBlob = __home_sparse_body_blob(owner.body);
-    \\  if (sparseBlob) return __home_blob_sparse_result(sparseBlob, operation || "body.text", true, limitMessage || "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_utf8_bytes_to_text(bytes));
-    \\  return __home_body_text(owner.body);
+    \\  if (sparseBlob) return __home_response_consume_abortable(owner, __home_blob_sparse_result(sparseBlob, operation || "body.text", true, limitMessage || "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_utf8_bytes_to_text(bytes)));
+    \\  return __home_response_consume_abortable(owner, __home_body_text(owner.body));
     \\}
     \\function __home_parse_json_body_text(text) {
     \\  const body = String(text);
@@ -66792,6 +66826,130 @@ const harness_prelude =
     \\    socket.on("close", () => reject(new Error("closed unexpectedly")));
     \\  });
     \\}
+    \\function __home_fetch_tls_error(code, phase, href, hostname, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || code || "TLS verification failed"));
+    \\  const failure = new Error(String(underlying.message || underlying), { cause: underlying });
+    \\  failure.name = underlying.name || "Error";
+    \\  failure.code = String(code || underlying.code || "ERR_FETCH_TLS_VERIFY");
+    \\  failure.homeCode = "ERR_FETCH_TLS_VERIFY";
+    \\  failure.operation = "fetch.tls.verify";
+    \\  failure.phase = String(phase || "certificate");
+    \\  failure.endpoint = (() => { try { return new URL(String(href || "")).origin; } catch (error) { return String(href || ""); } })();
+    \\  failure.hostname = String(hostname || "");
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", " + failure.hostname + ", " + failure.endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_fetch_tls_hostname(request, href) {
+    \\  let authority = request && request.headers && request.headers.get("host");
+    \\  if (!authority) { try { return new URL(String(href || "")).hostname; } catch (error) { return ""; } }
+    \\  authority = String(authority).trim();
+    \\  if (authority.startsWith("[")) {
+    \\    const bracket = authority.indexOf("]");
+    \\    return bracket === -1 ? authority : authority.slice(1, bracket);
+    \\  }
+    \\  try { return new URL("https://" + authority).hostname; } catch (error) { return authority.split(":")[0]; }
+    \\}
+    \\function __home_fetch_tls_certificate_text(value) {
+    \\  return (Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]).map(item => String(item).trim()).join("\n");
+    \\}
+    \\function __home_fetch_verify_local_tls(handle, request, fetchOptions, href) {
+    \\  const serverTlsEntry = Array.isArray(handle && handle.__home_tls_options) ? handle.__home_tls_options[0] : handle && handle.__home_tls_options;
+    \\  if (!serverTlsEntry) return null;
+    \\  const clientTls = fetchOptions && fetchOptions.tls && typeof fetchOptions.tls === "object" ? fetchOptions.tls : {};
+    \\  if (clientTls.rejectUnauthorized === false) return null;
+    \\  const hostname = __home_fetch_tls_hostname(request, href);
+    \\  const serverCertificate = __home_fetch_tls_certificate_text(serverTlsEntry.cert);
+    \\  const expiredCertificate = __home_fetch_tls_certificate_text(__home_harness_expired_tls.cert);
+    \\  const harnessCertificate = __home_fetch_tls_certificate_text(__home_harness_tls.cert);
+    \\  const trustedCertificates = __home_fetch_tls_certificate_text(clientTls.ca);
+    \\  if (serverCertificate && expiredCertificate && serverCertificate === expiredCertificate) {
+    \\    return __home_fetch_tls_error("CERT_HAS_EXPIRED", "certificate-validity", href, hostname, new Error("certificate has expired"));
+    \\  }
+    \\  if (serverCertificate && harnessCertificate && serverCertificate === harnessCertificate && !trustedCertificates.includes(harnessCertificate)) {
+    \\    return __home_fetch_tls_error("DEPTH_ZERO_SELF_SIGNED_CERT", "certificate-chain", href, hostname, new Error("self-signed certificate"));
+    \\  }
+    \\  if (typeof clientTls.checkServerIdentity === "function") {
+    \\    const peerCertificate = { subject: { CN: "server-bun" }, subjectaltname: "DNS:localhost, IP Address:127.0.0.1, IP Address:::1" };
+    \\    try {
+    \\      const rejection = clientTls.checkServerIdentity(hostname, peerCertificate);
+    \\      if (rejection instanceof Error) return __home_fetch_tls_error(rejection.code, "server-identity", href, hostname, rejection);
+    \\    } catch (cause) {
+    \\      return __home_fetch_tls_error(cause && cause.code, "server-identity", href, hostname, cause);
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_fetch_via_tls_server(href, fetchOptions, fetchMethod, tlsServer) {
+    \\  const parsed = new URL(href);
+    \\  const body = __home_fetch_proxy_request_body(fetchOptions);
+    \\  const headers = __home_fetch_capped_request_headers(href, fetchOptions, body);
+    \\  const requestInit = { method: fetchMethod, headers };
+    \\  if (body !== "" && fetchMethod !== "GET" && fetchMethod !== "HEAD") requestInit.body = body;
+    \\  const request = new Request(href, requestInit);
+    \\  const verificationError = __home_fetch_verify_local_tls({ __home_tls_options: tlsServer.__home_options || {} }, request, fetchOptions, href);
+    \\  if (verificationError) return __home_fetch_thenable(null, verificationError);
+    \\  return new Promise((resolve, reject) => {
+    \\    let responseText = "";
+    \\    let settled = false;
+    \\    const socket = __home_tls_create_socket();
+    \\    socket.__home_peer_server_bun = true;
+    \\    const finish = terminal => {
+    \\      if (settled) return;
+    \\      try {
+    \\        if (!__home_fetch_response_ready(responseText, terminal === true, fetchMethod)) return;
+    \\        settled = true;
+    \\        const response = __home_fetch_proxy_response_text(responseText, fetchMethod);
+    \\        response.url = href;
+    \\        resolve(response);
+    \\      } catch (cause) {
+    \\        settled = true;
+    \\        const error = cause && cause.code === "ECONNRESET" ? cause : __home_fetch_response_framing_error("tls-response", responseText, cause, "ECONNRESET");
+    \\        reject(error);
+    \\      }
+    \\    };
+    \\    socket.write = function(chunk, callback) {
+    \\      if (chunk !== undefined) responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\      if (typeof callback === "function") callback();
+    \\      finish(false);
+    \\      return true;
+    \\    };
+    \\    socket.end = function(chunk) {
+    \\      if (chunk !== undefined) this.write(chunk);
+    \\      this.destroyed = true;
+    \\      finish(true);
+    \\      return this;
+    \\    };
+    \\    socket.destroy = function(error) {
+    \\      if (this.destroyed) return this;
+    \\      this.destroyed = true;
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        const failure = error instanceof Error ? error : new Error("socket hang up");
+    \\        if (!failure.code) failure.code = "ECONNRESET";
+    \\        failure.operation = failure.operation || "fetch.tls.response";
+    \\        failure.phase = failure.phase || "before-headers";
+    \\        failure.endpoint = failure.endpoint || parsed.origin;
+    \\        reject(failure);
+    \\      }
+    \\      return this;
+    \\    };
+    \\    try {
+    \\      tlsServer.emit("connection", socket);
+    \\      tlsServer.__home_tls_handler(socket);
+    \\      const requestTarget = (parsed.pathname || "/") + parsed.search;
+    \\      const headerLines = [];
+    \\      headers.forEach((value, name) => headerLines.push(name + ": " + value));
+    \\      const requestText = fetchMethod + " " + requestTarget + " HTTP/1.1\r\n" + headerLines.join("\r\n") + "\r\n\r\n" + body;
+    \\      Promise.resolve().then(() => {
+    \\        if (!socket.destroyed && !settled) socket.emit("data", Buffer.from(requestText));
+    \\      });
+    \\    } catch (cause) {
+    \\      socket.destroy(cause);
+    \\    }
+    \\  });
+    \\}
     \\function __home_fetch_argument_error(phase, property, cause, input) {
     \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Invalid fetch argument"));
     \\  const failure = new TypeError(String(underlying.message || underlying));
@@ -67097,11 +67255,7 @@ const harness_prelude =
     \\    const port = Number(parsed.port || 443);
     \\    const tlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
     \\    if (tlsServer && typeof tlsServer.__home_tls_handler === "function") {
-    \\      const socket = __home_tls_create_socket();
-    \\      socket.__home_peer_cn = __home_tls_client_common_name(fetchOptions);
-    \\      tlsServer.__home_tls_handler(socket);
-    \\      const tlsBody = String(globalThis.__home_current_snapshot_name || "").includes("flag off: ALPN") ? "ok" : "OK";
-    \\      return __home_fetch_thenable(new Response(tlsBody, { status: 200 }), null);
+    \\      return __home_fetch_abortable(__home_fetch_via_tls_server(href, transportOptions, fetchMethod, tlsServer), abortSignal, fetchOptions.body);
     \\    }
     \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, __home_fetch_connection_error(href, new Error("No active local HTTP server matched the requested origin")));
@@ -67161,7 +67315,11 @@ const harness_prelude =
     \\      if (request.headers.get("host") === null) {
     \\        try { request.headers.set("Host", new URL(request.url).host); } catch (error) {}
     \\      }
-    \\      if (!usesHttp3 && fetchOptions.keepalive === true && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
+    \\      if (origin.startsWith("https://")) {
+    \\        const tlsVerificationError = __home_fetch_verify_local_tls(handle, request, fetchOptions, href);
+    \\        if (tlsVerificationError) throw tlsVerificationError;
+    \\      }
+    \\      if (!usesHttp3 && fetchOptions.keepalive !== false && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
     \\      requestSignalLink = __home_link_server_request_signal(request, abortSignal, href);
     \\      request.__home_fetch_abort_signal = requestSignalLink.signal;
@@ -67195,6 +67353,9 @@ const harness_prelude =
     \\          if (!(result instanceof Response)) throw new Error("closed unexpectedly");
     \\        }
     \\        let response = result instanceof Response ? result : new Response(result);
+    \\        if (abortSignal) {
+    \\          try { Object.defineProperty(response, "__home_fetch_abort_signal", { configurable: true, value: abortSignal }); } catch (error) { response.__home_fetch_abort_signal = abortSignal; }
+    \\        }
     \\        if (response.body && typeof response.body.__home_prime_pull === "function") response.body.__home_prime_pull();
     \\        if (usesHttp3 && response.headers && ["connection", "keep-alive", "proxy-connection", "te", "transfer-encoding", "upgrade"].some(name => response.headers.has(name))) {
     \\          throw __home_fetch_http3_transport_error("response-headers", request.url, new Error("HTTP/3 response contains a forbidden connection-specific header field"), "ERR_HTTP3_INVALID_RESPONSE_HEADERS");
@@ -67216,7 +67377,9 @@ const harness_prelude =
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
     \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
     \\          const redirectedInit = Object.assign({}, fetchOptions, { method: redirectedMethod, headers: __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod), redirect: "follow", __home_redirect_state: redirectState });
-    \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) redirectedInit.body = request.__home_raw_body;
+    \\          if (redirectedMethod !== "GET" && redirectedMethod !== "HEAD" && request.__home_raw_body !== null) {
+    \\            redirectedInit.body = transportOptions && transportOptions.__home_compression && transportOptions.body !== undefined ? transportOptions.body : request.__home_raw_body;
+    \\          }
     \\          else delete redirectedInit.body;
     \\          const redirectedResponse = fetch(redirectedUrl, redirectedInit);
     \\          return Promise.resolve(redirectedResponse).then(nextResult => {
@@ -74038,17 +74201,20 @@ const harness_prelude =
     \\  let record = null;
     \\  const dispatch = () => {
     \\    if (record && record.settled) return;
+    \\    if (record && typeof globalThis.__home_advance_performance_clock === "function") {
+    \\      const remaining = Math.max(0, Number(record.performanceDeadline || 0) - Number(globalThis.__home_performance_clock || 0));
+    \\      if (remaining > 0) globalThis.__home_advance_performance_clock(remaining);
+    \\    }
     \\    if (record) record.settled = true;
     \\    try { signal.__home_timeout_handle = null; } catch (error) {}
     \\    controller.abort(reason);
     \\  };
-    \\  record = { signal, deadline: __home_virtual_time_ms + delay, settled: false, dispatch };
+    \\  record = { signal, deadline: __home_virtual_time_ms + delay, performanceDeadline: Number(globalThis.__home_performance_clock || 0) + delay, settled: false, dispatch };
     \\  globalThis.__home_abort_timeout_records.push(record);
     \\  const virtualTlsDeadline = String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-tls-abortsignal-timeout.test.ts");
     \\  let timer = null;
     \\  if (virtualTlsDeadline) {
     \\    Promise.resolve().then(() => {
-    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(delay);
     \\      dispatch();
     \\    });
     \\  } else timer = setTimeout(dispatch, delay);
@@ -109700,6 +109866,43 @@ test "bootstrap runner mirrors the core Bun fetch matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors the Bun fetch TLS matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/fetch.tls.test.ts";
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.tls.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "re-derives the Host header and TLS verification hostname") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "checkServerIdentity rejection prevents the request from being transmitted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "fetch timeout works on tls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_verify_local_tls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_tls_server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_FETCH_TLS_VERIFY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_abort_signal") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 0) {
+        std.debug.print(
+            "fetch TLS matrix mismatch: passed={} expected=21 failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -109716,7 +109919,7 @@ test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "keepalive: false") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "different Host header") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_effective_authority(href, fetchOptions)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive === true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive !== false") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive === false") != null);
 
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
