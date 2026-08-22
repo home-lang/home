@@ -8520,6 +8520,9 @@ pub const Checker = struct {
                 try self.pushNarrowScope();
                 defer self.popNarrowScope();
                 try self.recordLoopTargetBindings(fr.target, loop_target_t);
+                if (self.expressionIsOptionalChain(fr.source)) {
+                    try self.narrowOptionalChainReceivers(fr.source);
+                }
                 try self.checkStatement(fr.body);
             },
             .for_of_stmt => {
@@ -16136,6 +16139,23 @@ pub const Checker = struct {
                 if (case_narrow_t != types.Primitive.none) {
                     try fallthrough_case_types.append(self.gpa, case_narrow_t);
                 }
+                if (case_literal_t) |lit_t| {
+                    if (self.expressionIsOptionalChain(sw.discriminant) and
+                        lit_t != types.Primitive.undefined_t)
+                    {
+                        try self.narrowOptionalChainReceivers(sw.discriminant);
+                    } else if (self.hir.kindOf(sw.discriminant) == .unary_op) {
+                        const unary = hir_mod.unaryOf(self.hir, sw.discriminant);
+                        if (unary.op == .typeof and self.expressionIsOptionalChain(unary.operand)) {
+                            const case_name = (try self.staticStringValue(case_p.value));
+                            if (case_name) |name| {
+                                if (!std.mem.eql(u8, self.string_interner.get(name), "undefined")) {
+                                    try self.narrowOptionalChainReceivers(unary.operand);
+                                }
+                            }
+                        }
+                    }
+                }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
                 const comparable_discriminant_t = loop_alias_declared_t orelse discriminant_lit_t;
                 const case_is_comparable = self.intersectionReducesToNeverForAssignability(comparable_discriminant_t) or
@@ -18165,6 +18185,11 @@ pub const Checker = struct {
             const param_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch continue;
             try self.recordDependentBindings(pp.name, param_t);
         }
+        if (self.contextualTargetTypeForFunction(node)) |target_t| {
+            if (self.firstSignatureType(target_t)) |target_sig| {
+                try self.recordContextualRestTupleDependentParameters(node, target_sig);
+            }
+        }
         const prev_generator_info = self.current_generator_info;
         defer self.current_generator_info = prev_generator_info;
         self.current_generator_info = null;
@@ -18237,7 +18262,10 @@ pub const Checker = struct {
             const is_predicate_return = f.return_type != hir_mod.none_node_id and
                 self.hir.kindOf(f.return_type) == .type_predicate_type;
             const declared = if (is_predicate_return)
-                types.Primitive.boolean_t
+                (if (hir_mod.typePredicateOf(self.hir, f.return_type).is_asserts)
+                    types.Primitive.void_t
+                else
+                    types.Primitive.boolean_t)
             else if (f.return_type != hir_mod.none_node_id and
                 !self.typeNodeContainsInvalidThisType(f.return_type))
                 self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none
@@ -18525,9 +18553,55 @@ pub const Checker = struct {
         const call = hir_mod.callOf(self.hir, node);
         const returns_never = self.hir.typeOf(node) == types.Primitive.never or
             self.thisMethodCallHasExplicitNeverReturn(call.callee);
-        if (!returns_never) return false;
+        const assertion_exits = blk: {
+            const callee_t = self.hir.typeOf(call.callee);
+            if (callee_t == types.Primitive.none) break :blk self.superAssertionCallDefinitelyExits(node, call);
+            const pred = (self.assertionPredicateForCallTarget(call.callee, callee_t, callee_t) catch null) orelse
+                break :blk self.superAssertionCallDefinitelyExits(node, call);
+            if (!pred.is_asserts or
+                (pred.target_type != types.Primitive.unknown and pred.target_type != types.Primitive.none))
+            {
+                break :blk false;
+            }
+            const args = hir_mod.callArgs(self.hir, node);
+            break :blk pred.param_index < args.len and self.expressionIsStaticallyFalse(args[pred.param_index]);
+        };
+        if (!returns_never and !assertion_exits) return false;
         if (!self.assertionCallTargetIsQualifiedName(call.callee)) return false;
         return self.assertionCallTargetUnannotatedName(call.callee) == null;
+    }
+
+    fn superAssertionCallDefinitelyExits(self: *Checker, call_node: NodeId, call: hir_mod.CallPayload) bool {
+        if (self.hir.kindOf(call.callee) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        if (!self.nodeIsSuperReference(member.object)) return false;
+        const args = hir_mod.callArgs(self.hir, call_node);
+        if (args.len == 0 or !self.expressionIsStaticallyFalse(args[0])) return false;
+        const class_node = self.enclosingSuperClass(member.object);
+        if (class_node == hir_mod.none_node_id) return false;
+        const class = hir_mod.classOf(self.hir, class_node);
+        if (class.extends == hir_mod.none_node_id) return false;
+        const base_name = self.classExtendsName(class.extends) orelse return false;
+        const base_decl = self.findClassDeclByName(call.callee, base_name);
+        if (base_decl == hir_mod.none_node_id) return false;
+        const method_node = self.classMethodDeclNode(base_decl, member.name) orelse return false;
+        const predicate = (self.predicateForFnNode(method_node) catch null) orelse return false;
+        return predicate.is_asserts and
+            (predicate.target_type == types.Primitive.unknown or predicate.target_type == types.Primitive.none);
+    }
+
+    fn expressionIsStaticallyFalse(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .literal_bool => !hir_mod.literalBoolOf(self.hir, node),
+            .logical_op => blk: {
+                const logical = hir_mod.logicalOf(self.hir, node);
+                break :blk logical.op == .@"and" and
+                    (self.expressionIsStaticallyFalse(logical.lhs) or self.expressionIsStaticallyFalse(logical.rhs));
+            },
+            .as_expr, .type_assertion, .non_null_expr => self.expressionIsStaticallyFalse(hir_mod.asExpressionOf(self.hir, node).expr),
+            else => false,
+        };
     }
 
     fn thisMethodCallHasExplicitNeverReturn(self: *Checker, callee: NodeId) bool {
@@ -20485,8 +20559,14 @@ pub const Checker = struct {
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(c.callee, pending);
+                var conditional_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                defer conditional_pending.deinit(self.gpa);
+                const arg_pending = if (c.optional or self.expressionIsOptionalChain(c.callee)) blk: {
+                    try self.clonePendingAssignments(pending, &conditional_pending);
+                    break :blk &conditional_pending;
+                } else pending;
                 for (hir_mod.callArgs(self.hir, node)) |arg| {
-                    try self.scanExprForUsedBeforeAssign(arg, pending);
+                    try self.scanExprForUsedBeforeAssign(arg, arg_pending);
                 }
                 if (self.hir.kindOf(c.callee) == .arrow_fn or
                     self.hir.kindOf(c.callee) == .fn_expr or
@@ -20510,7 +20590,14 @@ pub const Checker = struct {
             .element_access => {
                 const e = hir_mod.elementOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(e.object, pending);
-                try self.scanExprForUsedBeforeAssign(e.index, pending);
+                if (e.optional or self.expressionIsOptionalChain(e.object)) {
+                    var conditional_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                    defer conditional_pending.deinit(self.gpa);
+                    try self.clonePendingAssignments(pending, &conditional_pending);
+                    try self.scanExprForUsedBeforeAssign(e.index, &conditional_pending);
+                } else {
+                    try self.scanExprForUsedBeforeAssign(e.index, pending);
+                }
             },
             .as_expr, .satisfies_expr, .type_assertion => {
                 const a = hir_mod.asExpressionOf(self.hir, node);
@@ -26505,6 +26592,7 @@ pub const Checker = struct {
     ) CheckError!void {
         const pk = self.hir.kindOf(pattern_node);
         if (pk != .object_pattern and pk != .array_pattern) return;
+        try self.reportBindingPatternInitializerSelfReferences(pattern_node);
         const is_array = pk == .array_pattern;
         var idx: usize = 0;
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
@@ -26564,6 +26652,43 @@ pub const Checker = struct {
                 try self.reportImplicitAnyBindingPatternElements(ep.name, child_parent_values);
             }
             if (is_array) idx += 1;
+        }
+    }
+
+    fn reportBindingPatternInitializerSelfReferences(self: *Checker, pattern_node: NodeId) CheckError!void {
+        const elements = hir_mod.patternElements(self.hir, pattern_node);
+        for (elements) |candidate_node| {
+            if (self.hir.kindOf(candidate_node) != .parameter) continue;
+            const candidate = hir_mod.parameterOf(self.hir, candidate_node);
+            if (candidate.name == hir_mod.none_node_id or self.hir.kindOf(candidate.name) != .identifier) continue;
+            const identifier = hir_mod.identifierOf(self.hir, candidate.name);
+            var referenced = false;
+            for (elements) |element_node| {
+                if (self.hir.kindOf(element_node) != .parameter) continue;
+                const element = hir_mod.parameterOf(self.hir, element_node);
+                if (element.default_value == hir_mod.none_node_id) continue;
+                var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+                defer refs.deinit(self.gpa);
+                try self.collectIdentifierRefsWithNodes(element.default_value, &refs);
+                for (refs.items) |ref| {
+                    if (ref.name == identifier.name) {
+                        referenced = true;
+                        break;
+                    }
+                }
+                if (referenced) break;
+            }
+            if (!referenced or self.diagnosticExists(candidate.name, TsCodes.variable_self_reference_implicitly_any)) continue;
+            const name = self.string_interner.get(identifier.name);
+            try self.diagnostics.append(self.gpa, .{
+                .node = candidate.name,
+                .code = TsCodes.variable_self_reference_implicitly_any,
+                .message = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                    .{name},
+                ),
+            });
         }
     }
 
@@ -28983,7 +29108,49 @@ pub const Checker = struct {
     }
 
     fn restTupleAnnotationForSignature(self: *Checker, sig: TypeId) ?NodeId {
-        const param_nodes = self.signature_param_nodes.get(sig) orelse return null;
+        if (self.signature_param_nodes.get(sig)) |param_nodes| {
+            if (self.restTupleAnnotationFromParameterNodes(param_nodes)) |tuple_node| return tuple_node;
+        }
+        const decl = self.signatureDeclNode(sig);
+        if (decl == hir_mod.none_node_id) return null;
+        const param_nodes: []const NodeId = switch (self.hir.kindOf(decl)) {
+            .fn_type, .constructor_type => blk: {
+                const function_type = hir_mod.fnTypeOf(self.hir, decl);
+                break :blk self.hir.childSlice(function_type.params_start, function_type.params_len);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnParams(self.hir, decl),
+            else => return null,
+        };
+        return self.restTupleAnnotationFromParameterNodes(param_nodes);
+    }
+
+    fn restTypeAnnotationForSignature(self: *Checker, sig: TypeId) ?NodeId {
+        if (self.signature_param_nodes.get(sig)) |param_nodes| {
+            if (self.restTypeAnnotationFromParameterNodes(param_nodes)) |type_node| return type_node;
+        }
+        const decl = self.signatureDeclNode(sig);
+        if (decl == hir_mod.none_node_id) return null;
+        const param_nodes: []const NodeId = switch (self.hir.kindOf(decl)) {
+            .fn_type, .constructor_type => blk: {
+                const function_type = hir_mod.fnTypeOf(self.hir, decl);
+                break :blk self.hir.childSlice(function_type.params_start, function_type.params_len);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnParams(self.hir, decl),
+            else => return null,
+        };
+        return self.restTypeAnnotationFromParameterNodes(param_nodes);
+    }
+
+    fn restTypeAnnotationFromParameterNodes(self: *Checker, param_nodes: []const NodeId) ?NodeId {
+        if (param_nodes.len == 0) return null;
+        const param_node = param_nodes[param_nodes.len - 1];
+        if (self.hir.kindOf(param_node) != .parameter) return null;
+        const param = hir_mod.parameterOf(self.hir, param_node);
+        if (!param.flags.is_rest or param.type_annotation == hir_mod.none_node_id) return null;
+        return param.type_annotation;
+    }
+
+    fn restTupleAnnotationFromParameterNodes(self: *Checker, param_nodes: []const NodeId) ?NodeId {
         if (param_nodes.len == 0) return null;
         const param_node = param_nodes[param_nodes.len - 1];
         if (self.hir.kindOf(param_node) != .parameter) return null;
@@ -29770,10 +29937,21 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(fn_node);
         if (parent == hir_mod.none_node_id) return null;
         const parent_kind = self.hir.kindOf(parent);
-        if (parent_kind != .var_decl and parent_kind != .let_decl and parent_kind != .const_decl) return null;
-        const declaration = hir_mod.varDeclOf(self.hir, parent);
-        if (declaration.init != fn_node or declaration.type_annotation == hir_mod.none_node_id) return null;
-        const target_node = self.resolveContextualTypeAliasNode(parent, declaration.type_annotation) orelse return null;
+        const type_annotation = switch (parent_kind) {
+            .var_decl, .let_decl, .const_decl => blk: {
+                const declaration = hir_mod.varDeclOf(self.hir, parent);
+                if (declaration.init != fn_node) return null;
+                break :blk declaration.type_annotation;
+            },
+            .object_property => blk: {
+                const property = hir_mod.objectPropertyOf(self.hir, parent);
+                if (property.value != fn_node) return null;
+                break :blk property.type_annotation;
+            },
+            else => return null,
+        };
+        if (type_annotation == hir_mod.none_node_id) return null;
+        const target_node = self.resolveContextualTypeAliasNode(parent, type_annotation) orelse return null;
         if (self.hir.kindOf(target_node) != .fn_type) return null;
         const source_index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
         const source_is_rest = self.hir.kindOf(param_node) == .parameter and
@@ -34372,6 +34550,7 @@ pub const Checker = struct {
             const rest_has_contextual_signature = pp.flags.is_rest and
                 self.functionHasContextualCallableType(node);
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
+                contextual_tuple_param_t == null and
                 contextual_param_t == null and
                 array_callback_context_t == null and
                 !inferred_from_default and param_implicit_any_report and
@@ -40390,6 +40569,7 @@ pub const Checker = struct {
                                     if (self.firstSignatureType(declared_t)) |contextual_sig| {
                                         try self.checkFunctionWithContextualSignature(op.value, contextual_sig);
                                         field_initializer_t = try self.contextualFunctionSignatureWithInferredReturn(op.value, contextual_sig);
+                                        self.removeImplicitAnyDiagnosticsWithin(op.value);
                                     } else {
                                         field_initializer_t = try self.checkExpression(op.value);
                                     }
@@ -82038,7 +82218,8 @@ pub const Checker = struct {
             if (member >= self.interner.pool.typeCount()) return null;
             const member_flags = self.interner.pool.flagsOf(member);
             if (!member_flags.is_object_type) return null;
-            const is_tuple_like = self.actualTupleLength(member) != null or
+            const is_tuple_like = self.isTupleShapedTarget(member) or
+                self.actualTupleLength(member) != null or
                 self.objectTypeIsArrayLikeContainer(member);
             if (!is_tuple_like) return null;
             const member_t = self.tupleLikeLiteralIndexType(member, key);
@@ -83686,7 +83867,11 @@ pub const Checker = struct {
             v.name != hir_mod.none_node_id and
             v.init != hir_mod.none_node_id)
         {
-            try self.recordDependentBindings(v.name, final_type);
+            const initializer_root = if (self.hir.kindOf(v.init) == .identifier)
+                hir_mod.identifierOf(self.hir, v.init).name
+            else
+                null;
+            try self.recordDependentBindingsFromRoot(v.name, final_type, initializer_root);
         }
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
             if (self.hir.kindOf(v.init) == .array_literal and
@@ -83789,6 +83974,11 @@ pub const Checker = struct {
                         self.functionReturnMismatchAlreadyReported(v.init))
                     {
                         break :blk true;
+                    }
+                    if (init_fn.return_type == hir_mod.none_node_id) {
+                        if (self.firstSignatureType(declared_type)) |target_sig| {
+                            if (self.signature_predicates.get(target_sig) != null) break :blk true;
+                        }
                     }
                     if (try self.functionExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 }
@@ -87888,17 +88078,40 @@ pub const Checker = struct {
                 // structural TypeId. The function syntax is authoritative
                 // for an assignment source, so an unannotated/boolean
                 // function must not inherit a predicate from that TypeId.
-                return try self.predicateForFnNode(node);
+                if (try self.predicateForFnNode(node)) |predicate| return predicate;
+                // A contextually typed function expression inherits the
+                // target's predicate. `const assert: Assert = value => {}`
+                // is the canonical assertion-function form, and the
+                // contextual checker records that provenance on the source
+                // signature rather than synthesizing return-type syntax.
+                if (hir_mod.fnDeclOf(self.hir, node).return_type != hir_mod.none_node_id) return null;
+                return self.signature_predicates.get(t);
             }
             if (kind == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, node);
-                if (self.fn_predicates.get(id.name)) |pred| return pred;
+                const unannotated_name = self.visibleUnannotatedVariableIdentifierNode(node);
+                if (unannotated_name == null) {
+                    if (self.fn_predicates.get(id.name)) |pred| return pred;
+                }
                 if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
                     const type_kind = self.hir.kindOf(type_node);
                     if (type_kind == .fn_type or type_kind == .constructor_type) {
                         return try self.functionTypeAnnotationPredicate(type_node);
                     }
                 }
+                if (unannotated_name) |name_node| {
+                    const decl = self.hir.parentOf(name_node);
+                    if (decl != hir_mod.none_node_id) {
+                        const decl_kind = self.hir.kindOf(decl);
+                        if (decl_kind == .var_decl or decl_kind == .let_decl or decl_kind == .const_decl) {
+                            const initializer = hir_mod.varDeclOf(self.hir, decl).init;
+                            if (initializer != hir_mod.none_node_id) {
+                                if (try self.predicateForFnNode(initializer)) |predicate| return predicate;
+                            }
+                        }
+                    }
+                }
+                if (self.fn_predicates.get(id.name)) |pred| return pred;
             }
         }
         if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .member_access) {
@@ -87908,6 +88121,7 @@ pub const Checker = struct {
                 receiver_t = self.typeOfIdentifier(member.object);
             }
             if (receiver_t != types.Primitive.none) {
+                receiver_t = self.subtractNullUndefined(receiver_t) catch receiver_t;
                 if (self.lookupMemberPredicate(receiver_t, member.name)) |pred| return pred;
             }
         }
@@ -96332,6 +96546,12 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, text, "toString")) {
             return self.interner.internSignature(&.{}, types.Primitive.string_t, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, text, "toLocaleString")) {
+            const args_t = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
+            const signature = self.interner.internSignature(&.{args_t}, types.Primitive.string_t, false) catch return error.OutOfMemory;
+            try self.rest_signatures.put(self.gpa, signature, {});
+            return signature;
         }
         if (std.mem.eql(u8, text, "valueOf")) {
             return self.interner.internSignature(&.{}, types.Primitive.object_t, false) catch return error.OutOfMemory;
@@ -110024,7 +110244,12 @@ pub const Checker = struct {
             const pp = hir_mod.parameterOf(self.hir, params[i]);
             var effective_param_t = self.contextualParameterTypeForSignature(sig, i, pp.flags.is_rest) orelse types.Primitive.any;
             effective_param_ts[i] = effective_param_t;
-            if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+            if (pp.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(pp.name) == .object_pattern or self.hir.kindOf(pp.name) == .array_pattern) {
+                try self.recordDependentBindings(pp.name, effective_param_t);
+                continue;
+            }
+            if (self.hir.kindOf(pp.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, pp.name);
             if (pp.type_annotation != hir_mod.none_node_id) {
                 effective_param_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch effective_param_t;
@@ -110042,6 +110267,7 @@ pub const Checker = struct {
             self.hir.setType(params[i], effective_param_t);
             self.hir.setType(pp.name, effective_param_t);
         }
+        try self.recordContextualRestTupleDependentParameters(fn_node, sig);
         if (self.hir.kindOf(fn_node) != .arrow_fn) {
             if (self.signatureThisParam(sig)) |this_t_raw| {
                 const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
@@ -117584,10 +117810,27 @@ pub const Checker = struct {
         const k = self.hir.kindOf(stmt);
         if (k != .call_expr) return;
         const c = hir_mod.callOf(self.hir, stmt);
-        if (self.hir.kindOf(c.callee) != .identifier) return;
-        const callee_id = hir_mod.identifierOf(self.hir, c.callee);
-        const pred = self.fn_predicates.get(callee_id.name) orelse return;
+        var callee_t = self.hir.typeOf(c.callee);
+        if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
+        try self.checkAssertionCallTarget(stmt, c.callee, callee_t, callee_t);
+        const pred = (try self.assertionPredicateForCallTarget(c.callee, callee_t, callee_t)) orelse return;
         if (!pred.is_asserts) return;
+        if (!self.assertionCallTargetIsQualifiedName(c.callee) or
+            self.assertionCallTargetUnannotatedName(c.callee) != null)
+        {
+            return;
+        }
+        if (pred.param_index == std.math.maxInt(u16)) {
+            if (self.hir.kindOf(c.callee) != .member_access) return;
+            const receiver = hir_mod.memberOf(self.hir, c.callee).object;
+            if (pred.target_type == types.Primitive.unknown or pred.target_type == types.Primitive.none) {
+                try self.applyTypeGuard(receiver, true);
+            } else {
+                const target = try self.instantiatePredicateTarget(stmt, pred);
+                _ = try self.recordPredicateNarrowForExpression(receiver, target, true);
+            }
+            return;
+        }
         const args = hir_mod.callArgs(self.hir, stmt);
         if (pred.param_index >= args.len) return;
         const arg = args[pred.param_index];
@@ -117598,11 +117841,8 @@ pub const Checker = struct {
             try self.applyTypeGuard(arg, true);
             return;
         }
-        if (self.hir.kindOf(arg) != .identifier) return;
-        const arg_id = hir_mod.identifierOf(self.hir, arg);
-        const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
         const target = try self.instantiatePredicateTarget(stmt, pred);
-        try self.recordNarrow(arg_id.name, try self.narrowTypeByPredicate(current, target));
+        _ = try self.recordPredicateNarrowForExpression(arg, target, true);
     }
 
     fn checkAssertionCallTarget(
@@ -117612,7 +117852,7 @@ pub const Checker = struct {
         callee_t: TypeId,
         effective_callee_t: TypeId,
     ) CheckError!void {
-        const pred = self.assertionPredicateForCallTarget(callee, callee_t, effective_callee_t) orelse return;
+        const pred = (try self.assertionPredicateForCallTarget(callee, callee_t, effective_callee_t)) orelse return;
         if (!pred.is_asserts) return;
         if (!self.assertionCallTargetIsQualifiedName(callee)) {
             try self.reportOnce(
@@ -117640,7 +117880,12 @@ pub const Checker = struct {
         callee: NodeId,
         callee_t: TypeId,
         effective_callee_t: TypeId,
-    ) ?FnPredicate {
+    ) CheckError!?FnPredicate {
+        const effective_predicate = try self.assignmentExpressionPredicate(callee, effective_callee_t);
+        if (effective_predicate) |predicate| return predicate;
+        if (effective_callee_t != callee_t) {
+            if (try self.assignmentExpressionPredicate(callee, callee_t)) |predicate| return predicate;
+        }
         switch (self.hir.kindOf(callee)) {
             .identifier => {
                 const id = hir_mod.identifierOf(self.hir, callee);
@@ -117648,9 +117893,39 @@ pub const Checker = struct {
             },
             .member_access => {
                 const m = hir_mod.memberOf(self.hir, callee);
-                const receiver_t = self.hir.typeOf(m.object);
+                var receiver_t = if (self.nodeIsSuperReference(m.object)) blk: {
+                    const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                    if (self.lookupNarrow(super_id)) |visible_super_t| {
+                        break :blk self.superPropertyObjectType(visible_super_t);
+                    }
+                    const class_node = self.enclosingSuperClass(m.object);
+                    if (class_node == hir_mod.none_node_id) break :blk self.hir.typeOf(m.object);
+                    const class = hir_mod.classOf(self.hir, class_node);
+                    if (class.extends == hir_mod.none_node_id) break :blk self.hir.typeOf(m.object);
+                    if (self.enclosingStaticSuperClass(m.object) != hir_mod.none_node_id) {
+                        break :blk (try self.classExtendsStaticType(class.extends)) orelse self.hir.typeOf(m.object);
+                    }
+                    break :blk (try self.classExtendsInstanceType(class.extends)) orelse self.hir.typeOf(m.object);
+                } else self.hir.typeOf(m.object);
                 if (receiver_t != types.Primitive.none) {
+                    receiver_t = self.subtractNullUndefined(receiver_t) catch receiver_t;
                     if (self.lookupMemberPredicate(receiver_t, m.name)) |pred| return pred;
+                }
+                if (self.nodeIsSuperReference(m.object)) {
+                    const class_node = self.enclosingSuperClass(m.object);
+                    if (class_node != hir_mod.none_node_id) {
+                        const class = hir_mod.classOf(self.hir, class_node);
+                        if (class.extends != hir_mod.none_node_id) {
+                            if (self.classExtendsName(class.extends)) |base_name| {
+                                const base_decl = self.findClassDeclByName(callee, base_name);
+                                if (base_decl != hir_mod.none_node_id) {
+                                    if (self.classMethodDeclNode(base_decl, m.name)) |method_node| {
+                                        if (try self.predicateForFnNode(method_node)) |pred| return pred;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             else => {},
@@ -117675,11 +117950,51 @@ pub const Checker = struct {
             .identifier => self.visibleUnannotatedVariableIdentifierNode(callee),
             .this_expr => null,
             .member_access => blk: {
-                const object = hir_mod.memberOf(self.hir, callee).object;
-                break :blk self.assertionCallTargetUnannotatedName(object);
+                const member = hir_mod.memberOf(self.hir, callee);
+                if (self.assertionCallTargetUnannotatedName(member.object)) |name_node| break :blk name_node;
+                var receiver_t = self.hir.typeOf(member.object);
+                if (receiver_t == types.Primitive.none) break :blk null;
+                receiver_t = self.subtractNullUndefined(receiver_t) catch receiver_t;
+                break :blk self.unannotatedAssertionMemberName(receiver_t, member.name);
             },
             else => callee,
         };
+    }
+
+    fn unannotatedAssertionMemberName(
+        self: *Checker,
+        receiver_t: TypeId,
+        member_name: hir_mod.StringId,
+    ) ?NodeId {
+        if (receiver_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(receiver_t);
+        if (flags.is_type_parameter) {
+            if (self.typeParameterConstraint(receiver_t)) |constraint| {
+                if (constraint != receiver_t) return self.unannotatedAssertionMemberName(constraint, member_name);
+            }
+            return null;
+        }
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union)
+                self.interner.unionMembers(receiver_t)
+            else
+                self.interner.intersectionMembers(receiver_t);
+            for (members) |member_t| {
+                if (self.unannotatedAssertionMemberName(member_t, member_name)) |name_node| return name_node;
+            }
+            return null;
+        }
+        if (!flags.is_object_type) return null;
+        for (self.interner.objectMembers(receiver_t)) |member| {
+            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(member.decl_node) != .object_property) return null;
+            const property = hir_mod.objectPropertyOf(self.hir, member.decl_node);
+            if (property.type_annotation == hir_mod.none_node_id) {
+                return if (property.key != hir_mod.none_node_id) property.key else member.decl_node;
+            }
+            return null;
+        }
+        return null;
     }
 
     fn assertionCallTargetAnnotationRelatedInfo(self: *Checker, name_node: NodeId) CheckError![]const RelatedInfo {
@@ -117989,6 +118304,19 @@ pub const Checker = struct {
     }
 
     fn recordPredicateNarrowForExpression(self: *Checker, expr: NodeId, target: TypeId, when_true: bool) !bool {
+        if (self.nodeIsThisReference(expr)) {
+            const this_name = self.string_interner.intern("this") catch return error.OutOfMemory;
+            const current = self.lookupNarrow(this_name) orelse
+                self.currentThisType() orelse
+                self.hir.typeOf(expr);
+            if (current == types.Primitive.none) return false;
+            const narrowed = if (when_true)
+                try self.narrowTypeByPredicate(current, target)
+            else
+                (self.subtractTypeByPredicate(current, target) catch current);
+            try self.recordNarrow(this_name, narrowed);
+            return true;
+        }
         if (self.hir.kindOf(expr) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, expr);
             const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(expr);
@@ -118594,6 +118922,11 @@ pub const Checker = struct {
 
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         if (self.conditionHasInvalidJsDocPredicateCast(cond)) return;
+        // An optional chain contributes `undefined` only when one of its
+        // receivers short-circuits. Whenever the selected branch excludes
+        // that result, every optional receiver on the path was evaluated and
+        // is therefore non-nullish in the branch.
+        try self.applyOptionalChainEvaluationGuard(cond, when_true);
         // Aliased conditional narrowing: `if (cond)` where `cond`
         // was bound to a guard expression. Expand the alias and
         // recurse on the original expression so all the existing
@@ -118747,7 +119080,10 @@ pub const Checker = struct {
                     self.nonNullishAccessType(current) catch current
             else
                 try self.logicalAndFalsyType(current);
-            if (narrowed != current) try self.recordNarrow(id.name, narrowed);
+            if (narrowed != current) {
+                try self.recordNarrow(id.name, narrowed);
+                try self.applyDependentBindingNarrow(id.name, narrowed, true);
+            }
             return;
         }
         if (self.hir.kindOf(cond) == .member_access) {
@@ -119436,6 +119772,9 @@ pub const Checker = struct {
         positive: bool,
         optional_undefined_matches: bool,
     ) !void {
+        if (positive and optional_undefined_matches and self.expressionIsOptionalChain(lhs)) {
+            return;
+        }
         if (!positive and self.expressionIsOptionalChain(lhs)) {
             try self.applyNegativeOptionalDiscriminatedNarrow(lhs, lit_t, optional_undefined_matches);
             return;
@@ -119705,6 +120044,15 @@ pub const Checker = struct {
         pattern: NodeId,
         source_t: TypeId,
     ) CheckError!void {
+        return self.recordDependentBindingsFromRoot(pattern, source_t, null);
+    }
+
+    fn recordDependentBindingsFromRoot(
+        self: *Checker,
+        pattern: NodeId,
+        source_t: TypeId,
+        initializer_root: ?hir_mod.StringId,
+    ) CheckError!void {
         if (pattern == hir_mod.none_node_id or source_t >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(source_t).is_union) return;
         const pattern_kind = self.hir.kindOf(pattern);
@@ -119736,7 +120084,15 @@ pub const Checker = struct {
         var it = self.dependent_bindings.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.pattern != pattern) continue;
-            const projected = try self.dependentBindingProjectedType(source_t, entry.value_ptr.selector);
+            var projected = try self.dependentBindingProjectedType(source_t, entry.value_ptr.selector);
+            if (initializer_root) |root_name| switch (entry.value_ptr.selector) {
+                .property => |property_name| {
+                    if (self.lookupMemberNarrow(.{ .obj_name = root_name, .prop_name = property_name })) |flow_t| {
+                        projected = try self.narrowTypeByPredicate(projected, flow_t);
+                    }
+                },
+                .tuple_index => {},
+            };
             if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
             try self.recordNarrow(entry.key_ptr.*, projected);
         }
@@ -119753,19 +120109,25 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(source_t);
         if (!flags.is_union) {
             const projected = try self.dependentBindingProjectedType(source_t, selector);
-            const matches = try self.typesHaveComparableOverlap(projected, predicate_t);
+            const matches = try self.dependentProjectionOverlaps(projected, predicate_t);
             return if (matches == positive) source_t else types.Primitive.never;
         }
         var kept: std.ArrayListUnmanaged(TypeId) = .empty;
         defer kept.deinit(self.gpa);
         for (self.interner.unionMembers(source_t)) |member| {
             const projected = try self.dependentBindingProjectedType(member, selector);
-            const matches = try self.typesHaveComparableOverlap(projected, predicate_t);
+            const matches = try self.dependentProjectionOverlaps(projected, predicate_t);
             if (matches == positive) try kept.append(self.gpa, member);
         }
         if (kept.items.len == 0) return types.Primitive.never;
         if (kept.items.len == 1) return kept.items[0];
         return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
+    fn dependentProjectionOverlaps(self: *Checker, projected: TypeId, predicate: TypeId) CheckError!bool {
+        if (predicate == types.Primitive.null_t) return self.typeIncludesNull(projected);
+        if (predicate == types.Primitive.undefined_t) return self.typeIncludesUndefined(projected);
+        return self.typesHaveComparableOverlap(projected, predicate);
     }
 
     fn applyDependentBindingNarrow(
@@ -119785,8 +120147,65 @@ pub const Checker = struct {
             if (entry.value_ptr.pattern != binding.pattern) continue;
             const projected = try self.dependentBindingProjectedType(narrowed_source, entry.value_ptr.selector);
             if (projected == types.Primitive.none or projected == types.Primitive.any or projected == types.Primitive.unknown) continue;
-            try self.recordNarrow(entry.key_ptr.*, projected);
+            const current = self.lookupNarrow(entry.key_ptr.*) orelse projected;
+            try self.recordNarrow(entry.key_ptr.*, try self.narrowTypeByPredicate(projected, current));
         }
+    }
+
+    fn recordContextualRestTupleDependentParameters(
+        self: *Checker,
+        fn_node: NodeId,
+        signature: TypeId,
+    ) CheckError!void {
+        if (!self.rest_signatures.contains(signature)) return;
+        const signature_params = self.interner.signatureParams(signature);
+        if (signature_params.len == 0) return;
+        var source_t = signature_params[signature_params.len - 1];
+        var fixed_count = signature_params.len - 1;
+        if (self.restTypeAnnotationForSignature(signature)) |type_node| {
+            source_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
+                if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
+                    self.lowererLowerWithTypeParams(tuple_node) catch source_t
+                else
+                    source_t;
+            fixed_count = 0;
+            if (self.signature_param_nodes.get(signature)) |param_nodes| {
+                for (param_nodes) |param_node| {
+                    if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+                    if (hir_mod.parameterOf(self.hir, param_node).flags.is_rest) break;
+                    fixed_count += 1;
+                }
+            }
+        }
+        if (source_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(source_t).is_union)
+        {
+            return;
+        }
+
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, param_node);
+            if (self.isThisParameter(param_node)) continue;
+            defer value_index += 1;
+            if (value_index < fixed_count or parameter.flags.is_rest or
+                parameter.name == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.name) != .identifier)
+            {
+                continue;
+            }
+            const tuple_index: u32 = @intCast(value_index - fixed_count);
+            const name = hir_mod.identifierOf(self.hir, parameter.name).name;
+            try self.dependent_bindings.put(self.gpa, name, .{
+                .pattern = fn_node,
+                .source_type = source_t,
+                .selector = .{ .tuple_index = tuple_index },
+            });
+        }
+
+        const flow_name = try self.dependentPatternFlowName(fn_node);
+        try self.recordNarrow(flow_name, source_t);
     }
 
     /// True if `node` is a reference whose discriminant can be narrowed — a
@@ -137440,6 +137859,100 @@ pub const Checker = struct {
             },
             else => false,
         };
+    }
+
+    fn applyOptionalChainEvaluationGuard(self: *Checker, cond: NodeId, when_true: bool) CheckError!void {
+        if (cond == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(cond)) {
+            .member_access, .element_access, .call_expr => {
+                if (when_true and self.expressionIsOptionalChain(cond)) {
+                    try self.narrowOptionalChainReceivers(cond);
+                }
+            },
+            .binary_op => {
+                const binary = hir_mod.binopOf(self.hir, cond);
+                if (binary.op == .instanceof) {
+                    if (when_true and self.expressionIsOptionalChain(binary.lhs)) {
+                        try self.narrowOptionalChainReceivers(binary.lhs);
+                    }
+                    return;
+                }
+                const is_equality = binary.op == .eq_strict or binary.op == .neq_strict or
+                    binary.op == .eq or binary.op == .neq;
+                if (!is_equality) return;
+                const positive = (binary.op == .eq_strict or binary.op == .eq) == when_true;
+                if (try self.optionalChainComparisonRequiresEvaluation(binary.lhs, binary.rhs, binary.op, positive)) {
+                    try self.narrowOptionalChainReceivers(binary.lhs);
+                }
+                if (try self.optionalChainComparisonRequiresEvaluation(binary.rhs, binary.lhs, binary.op, positive)) {
+                    try self.narrowOptionalChainReceivers(binary.rhs);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn optionalChainComparisonRequiresEvaluation(
+        self: *Checker,
+        chain_node: NodeId,
+        other_node: NodeId,
+        op: hir_mod.BinOp,
+        equality_branch: bool,
+    ) CheckError!bool {
+        if (self.hir.kindOf(chain_node) == .unary_op) {
+            const unary = hir_mod.unaryOf(self.hir, chain_node);
+            if (unary.op != .typeof or !self.expressionIsOptionalChain(unary.operand)) return false;
+            const comparison = (try self.staticStringValue(other_node)) orelse return false;
+            const skipped_matches = std.mem.eql(u8, self.string_interner.get(comparison), "undefined");
+            return equality_branch != skipped_matches;
+        }
+        if (!self.expressionIsOptionalChain(chain_node)) return false;
+        var other_t = self.hir.typeOf(other_node);
+        if (other_t == types.Primitive.none) other_t = try self.checkExpression(other_node);
+        const loose = op == .eq or op == .neq;
+        const skipped_may_match = if (loose)
+            self.typeIncludesNull(other_t) or self.typeIncludesUndefined(other_t)
+        else
+            self.typeIncludesUndefined(other_t);
+        const non_nullish = self.subtractNullUndefined(other_t) catch other_t;
+        const skipped_must_match = if (loose)
+            non_nullish == types.Primitive.never
+        else
+            (self.subtractUndefined(other_t) catch other_t) == types.Primitive.never;
+        return if (equality_branch) !skipped_may_match else skipped_must_match;
+    }
+
+    fn narrowOptionalChainReceivers(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const member = hir_mod.memberOf(self.hir, node);
+                try self.narrowOptionalChainReceivers(member.object);
+                if (member.optional) try self.narrowOptionalReceiver(member.object);
+            },
+            .element_access => {
+                const element = hir_mod.elementOf(self.hir, node);
+                try self.narrowOptionalChainReceivers(element.object);
+                if (element.optional) try self.narrowOptionalReceiver(element.object);
+            },
+            .call_expr => {
+                const call = hir_mod.callOf(self.hir, node);
+                try self.narrowOptionalChainReceivers(call.callee);
+                if (call.optional) try self.narrowOptionalReceiver(call.callee);
+            },
+            else => {},
+        }
+    }
+
+    fn narrowOptionalReceiver(self: *Checker, receiver: NodeId) CheckError!void {
+        var current = if (self.hir.kindOf(receiver) == .identifier) blk: {
+            const id = hir_mod.identifierOf(self.hir, receiver);
+            break :blk self.lookupNarrow(id.name) orelse self.typeOfIdentifierDeclared(receiver);
+        } else self.hir.typeOf(receiver);
+        if (current == types.Primitive.none) current = try self.checkExpression(receiver);
+        const non_nullish = self.subtractNullUndefined(current) catch current;
+        if (non_nullish == current or non_nullish == types.Primitive.never) return;
+        _ = try self.recordPredicateNarrowForExpression(receiver, non_nullish, true);
     }
 
     fn classThisType(self: *Checker, instance_t: TypeId) CheckError!TypeId {
@@ -156330,6 +156843,11 @@ pub const Checker = struct {
             source_required += 1;
         }
         if (source_required <= target_fixed) return false;
+        if (self.tupleUnionTypeFromTypeNode(rest_type_node, 0)) |rest_tuple_t| {
+            if (self.restTupleMaxCount(rest_tuple_t)) |rest_max| {
+                if (source_required <= target_fixed + rest_max) return false;
+            }
+        }
 
         const arena = self.diag_arena.allocator();
         const generic_name = self.string_interner.get(rest_ref.name);
@@ -157755,8 +158273,24 @@ pub const Checker = struct {
             if (hir_mod.parameterOf(self.hir, param_node).type_annotation != hir_mod.none_node_id) return false;
         }
         const required = self.functionExpressionRequiredValueParamCount(fn_node);
-        const fixed_count = target_params.len - 1;
-        if (self.restTupleMaxCount(target_params[target_params.len - 1])) |rest_max| {
+        var fixed_count = target_params.len - 1;
+        var rest_tuple_t = target_params[target_params.len - 1];
+        if (self.restTypeAnnotationForSignature(target_t)) |type_node| {
+            rest_tuple_t = self.tupleUnionTypeFromTypeNode(type_node, 0) orelse
+                if (self.tupleAnnotationSourceNode(type_node)) |tuple_node|
+                    self.lowererLowerWithTypeParams(tuple_node) catch rest_tuple_t
+                else
+                    rest_tuple_t;
+            fixed_count = 0;
+            if (self.signature_param_nodes.get(target_t)) |param_nodes| {
+                for (param_nodes) |param_node| {
+                    if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+                    if (hir_mod.parameterOf(self.hir, param_node).flags.is_rest) break;
+                    fixed_count += 1;
+                }
+            }
+        }
+        if (self.restTupleMaxCount(rest_tuple_t)) |rest_max| {
             return required <= fixed_count + rest_max;
         }
         return true;
@@ -158823,8 +159357,8 @@ pub const Checker = struct {
             return false;
         }
         if (params.len != 1) return false;
-        if (!self.containsFreeTypeParameter(params[0])) return false;
-        return true;
+        if (self.containsFreeTypeParameter(params[0])) return true;
+        return self.unannotatedContextualCallbackFitsConcreteRestTarget(arg_node, param_t);
     }
 
     fn functionExpressionAssignableToCallableObject(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
@@ -247680,6 +248214,96 @@ test "checker: dependent destructuring defaults narrow sibling bindings" {
         .strict_function_types = true,
         .no_implicit_any = true,
     });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: assertion provenance flows through qualified calls and false conditions" {
+    const s = try newSetup(
+        \\// @allowUnreachableCode: false
+        \\const assert: (value: unknown) => asserts value = value => {};
+        \\namespace Debug { export declare function assert(value: unknown): asserts value; }
+        \\class Base {
+        \\  assert(value: unknown): asserts value {}
+        \\  assertDerived(): asserts this is Derived {}
+        \\  check(value: unknown) {
+        \\    this.assert(typeof value === "string");
+        \\    value.length;
+        \\    this.assertDerived();
+        \\    this.derived;
+        \\  }
+        \\}
+        \\class Derived extends Base { derived = 1; }
+        \\function f(value: unknown) {
+        \\  assert(typeof value === "string");
+        \\  value.length;
+        \\  Debug.assert(false);
+        \\  value;
+        \\}
+        \\function bad(value: unknown) {
+        \\  const local = (condition: unknown): asserts condition => {};
+        \\  local(value);
+        \\}
+        \\function shadow(value: unknown) {
+        \\  const assert = (condition: unknown): asserts condition => {};
+        \\  assert(value);
+        \\}
+        \\class AssertionField {
+        \\  assert: (value: unknown) => asserts value = value => {};
+        \\}
+        \\class OverrideBase {
+        \\  assert(condition: unknown): asserts condition {}
+        \\  baz(value: number) { this.assert(false); }
+        \\}
+        \\class OverrideDerived extends OverrideBase {
+        \\  baz(value: number) { super.assert(false); }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.unreachable_code_detected));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.assertion_call_target_needs_explicit_annotations));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: optional-chain branch facts narrow receivers without committing side effects" {
+    const s = try newSetup(
+        \\declare const maybe: { value: number; nested?: { ok: boolean } } | undefined;
+        \\function f(other: number) {
+        \\  if (maybe?.value === other) maybe.value;
+        \\  if (typeof maybe?.value === "number") maybe.value;
+        \\  if (maybe?.nested?.ok) maybe.nested.ok;
+        \\}
+        \\let assigned: number;
+        \\maybe?.[assigned = 1];
+        \\assigned.toFixed();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
+test "checker: contextual rest tuple parameters retain dependent correlation" {
+    const s = try newSetup(
+        \\type Args = ["num", number] | ["str", string];
+        \\declare function accept(callback: (...args: Args) => void): void;
+        \\accept((kind, value) => {
+        \\  if (kind === "num") value.toFixed();
+        \\  if (kind === "str") value.toUpperCase();
+        \\});
+        \\const callback: (...args: Args) => void = (kind, value) => {
+        \\  if (kind === "num") value.toFixed();
+        \\  if (kind === "str") value.toUpperCase();
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
