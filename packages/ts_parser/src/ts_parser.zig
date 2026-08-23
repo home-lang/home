@@ -28504,6 +28504,136 @@ test "parser: jsx self-closing element" {
     try T.expect(hir_mod.jsxElementOf(&s.hir, init_node).self_closing);
 }
 
+test "parser: TSX generic arrows require an unambiguous type parameter list" {
+    var s = try newTsxTestSetup(
+        \\let jsx1 = <T>() => {}</T>;
+        \\let fn1 = <T extends {}>() => {};
+        \\let fn2 = <T, U>() => {};
+        \\let jsx2 = <T extends={true}>() => {}</T>;
+        \\let jsx3 = <T extends>() => {}</T>;
+        \\let fn3 = <T = string,>() => {};
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 6), stmts.len);
+    const expected = [_]hir_mod.NodeKind{
+        .jsx_element,
+        .arrow_fn,
+        .arrow_fn,
+        .jsx_element,
+        .jsx_element,
+        .arrow_fn,
+    };
+    for (stmts, expected) |stmt, kind| {
+        try T.expectEqual(kind, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmt).init));
+    }
+}
+
+test "parser: TSX less-than comparison preserves a following JSX return" {
+    var s = try newTsxTestSetup(
+        "\xEF\xBB\xBF" ++
+            \\declare namespace JSX { interface Element { div: string; } }
+        ++ \\declare namespace React { class Component<P, S> { props: P; } }
+        ++ \\export class ShortDetails extends React.Component<{ id: number }, {}> {
+        ++ \\  public render(): JSX.Element {
+        ++ \\    if (this.props.id < 1) { return (<div></div>); }
+        ++ \\  }
+        ++ \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const class_node = hir_mod.exportOf(&s.hir, stmts[2]).decl;
+    const render = hir_mod.classMembers(&s.hir, class_node)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, render).body;
+    const if_node = hir_mod.blockStmts(&s.hir, body)[0];
+    const condition = hir_mod.ifOf(&s.hir, if_node).cond;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(condition));
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, condition).op);
+    const then_block = hir_mod.ifOf(&s.hir, if_node).then_branch;
+    const return_node = hir_mod.blockStmts(&s.hir, then_block)[0];
+    try T.expectEqual(hir_mod.NodeKind.jsx_element, s.hir.kindOf(hir_mod.returnOf(&s.hir, return_node).value));
+}
+
+test "parser: JSX attribute values reject an immediate spread expression" {
+    var s = try newTsxTestSetup("<X a={...a} />");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expression_expected = findDiag(s, 1109) orelse return error.MissingDiagnostic;
+    const identifier_expected = findDiag(s, 1003) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 6), expression_expected.pos);
+    try T.expectEqual(@as(u32, 10), identifier_expected.pos);
+}
+
+test "parser: JSX leaves type arguments to JavaScript recovery" {
+    var s = try newTsxTestSetup("let x = <MyComp<Prop> a={10} />;");
+    defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2657));
+    const identifier_expected = findDiag(s, 1003) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 15), identifier_expected.pos);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 17008));
+}
+
+test "parser: unclosed JSX stops at virtual files and anchors CRLF EOF by source line" {
+    const source =
+        "// @filename: first.tsx\r\n" ++
+        "const first = <div>;\r\n\r\n" ++
+        "// @filename: second.tsx\r\n" ++
+        "const second = <span />;";
+    var virtual = try newTsxTestSetup(source);
+    defer destroyTestSetup(virtual);
+    _ = try virtual.parser.parseSourceFile();
+    const boundary = findDiag(virtual, 1005) orelse return error.MissingDiagnostic;
+    const second_marker: u32 = @intCast(std.mem.indexOf(u8, source, "// @filename: second.tsx").?);
+    try T.expectEqual(second_marker - 2, boundary.pos);
+
+    var eof = try newTsxTestSetup("<div>\r\n\r\n");
+    defer destroyTestSetup(eof);
+    _ = try eof.parser.parseSourceFile();
+    const eof_close = findDiag(eof, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 3), eof_close.line);
+}
+
+test "parser: malformed JSX child leaves the parent close for recovery" {
+    var s = try newTsxTestSetup(
+        \\var donkey = <div>
+        \\    <
+        \\</div>;
+        \\function noName() {}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1003));
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
+}
+
+test "parser: malformed JSX assertion sequence retains its source root" {
+    var s = try newTsxTestSetup(
+        \\declare var createElement: any;
+        \\class foo {}
+        \\var x: any;
+        \\x = <any> { test: <any></any> };
+        \\x = <any><any></any>;
+        \\x = <foo>hello {<foo>{}} </foo>;
+        \\x = <foo test={<foo>{}}>hello</foo>;
+        \\x = <foo test={<foo>{}}>hello{<foo>{}}</foo>;
+        \\x = <foo>x</foo>, x = <foo/>;
+        \\<foo>{<foo><foo>{/foo/.test(x) ? <foo><foo></foo> : <foo><foo></foo>}</foo>}</foo>
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 4);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[3]));
+}
+
 test "parser: TS1382 fires for a stray `>` in JSX child text" {
     // Mirrors upstream `scanJsxText` (scanner.go ~L1268): a literal `>`
     // in JSX element content is invalid and must be escaped. tsc
