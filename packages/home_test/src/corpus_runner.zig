@@ -70154,7 +70154,10 @@ const harness_prelude =
     \\    if (typeof callback === "function") Promise.resolve().then(() => callback(ws));
     \\  }
     \\}
-    \\const __home_ws_module = { WebSocket: __home_ws_WebSocket, WebSocketServer: __home_ws_WebSocketServer, Server: __home_ws_WebSocketServer };
+    \\const __home_ws_module = __home_ws_WebSocket;
+    \\__home_ws_module.WebSocket = __home_ws_WebSocket;
+    \\__home_ws_module.WebSocketServer = __home_ws_WebSocketServer;
+    \\__home_ws_module.Server = __home_ws_WebSocketServer;
     \\__home_ws_module.default = __home_ws_WebSocket;
     \\globalThis.__home_modules["ws"] = __home_ws_module;
     \\function __home_allocation_limit() {
@@ -84591,6 +84594,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "ws",
         "https-proxy-agent",
         "utf-8-validate",
+        "./proxy-test-utils",
         "../../web/websocket/proxy-test-utils",
     };
     for (modules) |name| {
@@ -116271,6 +116275,29 @@ test "corpus module preparation lowers first-party ws proxy imports" {
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const WebSocket = globalThis.__home_import(\"ws\").default;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"../../web/websocket/proxy-test-utils\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"https-proxy-agent\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise.withResolvers<string[]") == null);
+}
+
+test "corpus module preparation lowers WebSocket proxy imports" {
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/bun-corpus/js/web/websocket/websocket-proxy.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/websocket-proxy.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    if (prepared.unsupported_reason) |reason| {
+        std.debug.print("WebSocket proxy prepared unsupported: {s}\n{s}\n", .{ reason, prepared.source });
+    }
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"harness\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./proxy-test-utils\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"https-proxy-agent\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise.withResolvers<string[]") == null);
 }
