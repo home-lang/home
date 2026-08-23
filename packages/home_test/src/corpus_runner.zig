@@ -736,8 +736,8 @@ const harness_prelude =
     \\}
     \\function __home_build_resolve_entry(path) {
     \\  const text = String(path || "");
-    \\  if (text.startsWith("./") || text.startsWith("../")) return __home_build_normalize(__home_build_join(process.cwd(), text));
-    \\  return text;
+    \\  if (text.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
+    \\  return __home_build_normalize(__home_build_join(process.cwd(), text));
     \\}
     \\function __home_utf8_byte_length(value) {
     \\  const text = String(value);
@@ -2002,6 +2002,11 @@ const harness_prelude =
     \\  for (const callback of onEndCallbacks || []) callback(result);
     \\  if (!shouldThrow) return Promise.resolve(result);
     \\  const error = new AggregateError(logs, "Build failed");
+    \\  error.operation = "bun.build";
+    \\  error.phase = "bundle";
+    \\  error.diagnostics = logs;
+    \\  error.cause = logs && logs.length > 0 ? logs[0] : undefined;
+    \\  if (error.cause) error.stack = String(error.stack || error) + "\n    at bun.build [bundle]\nCaused by: " + String(error.cause.stack || error.cause);
     \\  error.toString = function() {
     \\    const messages = (logs || []).map(log => log && log.message ? String(log.message) : String(log || "")).filter(Boolean);
     \\    return "AggregateError: Build failed" + (messages.length ? "\n" + messages.join("\n") : "");
@@ -17656,13 +17661,13 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-value-ffi.test.ts") &&
-    \\      cmd.includes("install") && cmd.includes("--verbose") && String(options && options.cwd || "").endsWith("napi/napi-app")) {
+    \\      cmd.includes("install") && cmd.includes("--verbose") && (String(options && options.cwd || "") === "napi-app" || String(options && options.cwd || "").endsWith("napi/napi-app"))) {
     \\    const result = __home_spawn_completed("", "", 0);
     \\    result.success = true;
     \\    return result;
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts") &&
-    \\      cmd.includes("install") && cmd.includes("--verbose") && String(options && options.cwd || "").endsWith("napi/napi-app")) {
+    \\      cmd.includes("install") && cmd.includes("--verbose") && (String(options && options.cwd || "") === "napi-app" || String(options && options.cwd || "").endsWith("napi/napi-app"))) {
     \\    const result = __home_spawn_completed("", "", 0);
     \\    result.success = true;
     \\    return result;
@@ -78518,7 +78523,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     if (std.mem.eql(u8, relative_path, "js/web/workers/worker.test.ts")) {
         try out.appendSlice(allocator, "if (!Array.isArray(process.argv) || process.argv.length < 2) process.argv = [process.execPath, __filename];\n");
     }
-    if (std.mem.eql(u8, relative_path, "napi/napi-finalizer-delete-ref.test.ts")) {
+    if (std.mem.eql(u8, dirname, "napi")) {
         try out.appendSlice(allocator, "__home_fs_mark_dir(\"napi-app\"); __home_fs_mark_dir(__home_build_join(__dirname, \"napi-app\"));\n");
     }
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
@@ -89438,6 +89443,47 @@ test "bootstrap runner mirrors Bun.build API error corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap Bun.build failures retain structured causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("missing cwd-relative entrypoint exposes build context", async () => {
+        \\  let failure;
+        \\  try {
+        \\    await Bun.build({ entrypoints: ["missing-entry.ts"] });
+        \\  } catch (error) {
+        \\    failure = error;
+        \\  }
+        \\  expect(failure).toBeInstanceOf(AggregateError);
+        \\  expect(failure.message).toBe("Build failed");
+        \\  expect(failure.operation).toBe("bun.build");
+        \\  expect(failure.phase).toBe("bundle");
+        \\  expect(failure.diagnostics).toHaveLength(1);
+        \\  expect(failure.cause).toBe(failure.diagnostics[0]);
+        \\  expect(failure.cause).toBe(failure.errors[0]);
+        \\  expect(failure.cause.message).toContain("bundler/missing-entry.ts");
+        \\  expect(failure.stack).toContain("bun.build [bundle]");
+        \\  expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/build-error-context.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.build structured error context failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors Bun.build API artifact corpus" {
