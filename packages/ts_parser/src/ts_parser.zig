@@ -1733,6 +1733,29 @@ pub const Parser = struct {
 
             const from = self.findJSDocImportKeyword(first, tag_end, "from");
             if (from) |from_start| {
+                // JSDoc imports use the same clause grammar as source imports.
+                // An identifier followed directly by `*` is parsed as a
+                // default binding with a missing `from`, not as a namespace
+                // import with an ignored prefix (`@import defer * as ns ...`).
+                if (isJSDocIdentifierChar(self.source[first])) {
+                    const name_end = jsDocIdentifierEnd(self.source, first, from_start);
+                    const after_name = self.firstJSDocContentByte(name_end, from_start);
+                    if (after_name < from_start and self.source[after_name] == '*') {
+                        try self.reportCodeAt(
+                            @intCast(after_name),
+                            self.lineAt(@intCast(after_name)),
+                            1005,
+                            "'from' expected.",
+                        );
+                        try self.reportCodeAt(
+                            @intCast(after_name),
+                            self.lineAt(@intCast(after_name)),
+                            1141,
+                            "String literal expected.",
+                        );
+                        continue;
+                    }
+                }
                 const from_end = from_start + "from".len;
                 const module_start = self.firstJSDocContentByte(from_end, tag_end);
                 if (module_start >= tag_end) {
@@ -33491,6 +33514,24 @@ test "parser: malformed JSDoc import tags mirror TypeScript recovery" {
         try T.expectEqual(@as(u32, 3), from.line);
         const from_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..from.pos], '\n').? + 1;
         try T.expectEqual(@as(u32, 2), from.pos - @as(u32, @intCast(from_line_start)) + 1);
+    }
+
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import defer * as ns from "./types"
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+        for (s.parser.diagnostics.items, 0..) |d, index| {
+            try T.expectEqual(@as(u32, if (index == 0) 1005 else 1141), d.code);
+            try T.expectEqual(@as(u32, 2), d.line);
+            const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+            try T.expectEqual(@as(u32, 18), d.pos - @as(u32, @intCast(line_start)) + 1);
+        }
     }
 }
 

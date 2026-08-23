@@ -6530,7 +6530,7 @@ pub const Checker = struct {
         const head_end = open orelse clause.len;
         const head = clause[0..head_end];
 
-        if (std.mem.indexOfScalar(u8, head, '*')) |star| {
+        if (jsDocImportNamespaceStar(head)) |star| {
             if (jsDocWordIndex(head[star + 1 ..], "as")) |as_rel| {
                 const after_as = head[star + 1 + as_rel + "as".len ..];
                 if (jsDocFirstIdentifierSlice(after_as)) |local| {
@@ -91884,7 +91884,7 @@ pub const Checker = struct {
             }
         }
         // Namespace: `* as NS` — the local name binds the whole module export.
-        if (std.mem.indexOfScalar(u8, body, '*')) |star| {
+        if (jsDocImportNamespaceStar(body)) |star| {
             if (jsDocWordIndex(body[star..], "as")) |as_rel| {
                 const after = std.mem.trim(u8, body[star + as_rel + "as".len ..], " \t");
                 const local_end = blk: {
@@ -93445,6 +93445,13 @@ pub const Checker = struct {
             const raw_end = jsDocTagBodyEnd(src, search);
             var norm_buf: [1024]u8 = undefined;
             const body = jsDocNormalizeBody(src[search..raw_end], &norm_buf) orelse continue;
+            if (jsDocMalformedImportNamespaceLocalMatches(body, root_text)) {
+                if (self.virtualSectionStartForPos(at) == self.virtualSectionStartForNode(anchor)) {
+                    try self.reportJsDocCannotFindNamespace(src, root_text, anchor);
+                    return types.Primitive.unknown;
+                }
+                continue;
+            }
             if (!jsDocImportNamespaceLocalMatches(body, root_text)) continue;
             if (jsDocImportHasAttributes(body)) return null;
             const spec = jsDocImportSpec(body) orelse continue;
@@ -93503,12 +93510,31 @@ pub const Checker = struct {
     }
 
     fn jsDocImportNamespaceLocalMatches(body: []const u8, local_name: []const u8) bool {
+        const star = jsDocImportNamespaceStar(body) orelse return false;
+        return jsDocImportNamespaceLocalMatchesAt(body, star, local_name);
+    }
+
+    fn jsDocMalformedImportNamespaceLocalMatches(body: []const u8, local_name: []const u8) bool {
         const star = std.mem.indexOfScalar(u8, body, '*') orelse return false;
+        if (std.mem.trim(u8, body[0..star], " \t\r\n").len == 0) return false;
+        return jsDocImportNamespaceLocalMatchesAt(body, star, local_name);
+    }
+
+    fn jsDocImportNamespaceLocalMatchesAt(body: []const u8, star: usize, local_name: []const u8) bool {
         const as_rel = jsDocWordIndex(body[star..], "as") orelse return false;
         const after = std.mem.trim(u8, body[star + as_rel + "as".len ..], " \t");
         var local_end: usize = 0;
         while (local_end < after.len and isJsDocIdentChar(after[local_end])) : (local_end += 1) {}
         return local_end > 0 and std.mem.eql(u8, after[0..local_end], local_name);
+    }
+
+    fn jsDocImportNamespaceStar(body: []const u8) ?usize {
+        const star = std.mem.indexOfScalar(u8, body, '*') orelse return null;
+        // Namespace imports begin with `*`. A preceding identifier is parsed
+        // as a default binding, and without a comma the following `*` is only
+        // a recovery token and must not introduce a namespace symbol.
+        if (std.mem.trim(u8, body[0..star], " \t\r\n").len != 0) return null;
+        return star;
     }
 
     /// Index of the `>` closing a leading `<…>` (balanced over nested angle
@@ -222192,6 +222218,21 @@ test "checker: checkjs JSDoc import tag rejects require alias syntax" {
     }
     try T.expect(saw_expected_from);
     try T.expect(saw_string_literal);
+}
+
+test "checker: malformed JSDoc default-plus-namespace clause does not bind namespace" {
+    const b = try newBoundSetup(
+        \\// @checkJs: true
+        \\// @filename: /types.ts
+        \\export type X = 1;
+        \\// @filename: /foo.js
+        \\/** @import defer * as ns from "./types" */
+        \\/** @type {ns.X} */
+        \\let a = 2;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_namespace));
 }
 
 test "checker: malformed JSDoc import attributes retain companion diagnostics" {
