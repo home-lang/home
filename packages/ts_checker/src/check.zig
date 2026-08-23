@@ -58065,7 +58065,9 @@ pub const Checker = struct {
                 switch (try self.virtualRelativeModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
                     .value => continue,
                     .ambient_const_enum => {
-                        try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                        if (!imp.is_type_only and !sp.is_type_only) {
+                            try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                        }
                         continue;
                     },
                     .type_only_decl, .type_only_alias => |status| {
@@ -58193,7 +58195,9 @@ pub const Checker = struct {
                 }
                 if (try self.ambientModuleExportsNameForSpec(node, spec, sp.imported)) continue;
                 if (try self.virtualBareModuleAmbientConstEnum(node, spec, sp.imported)) {
-                    try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                    if (!imp.is_type_only and !sp.is_type_only) {
+                        try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                    }
                     continue;
                 }
                 if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
@@ -58243,7 +58247,9 @@ pub const Checker = struct {
             switch (external_status) {
                 .value => continue,
                 .ambient_const_enum => {
-                    try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                    if (!imp.is_type_only and !sp.is_type_only) {
+                        try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                    }
                     continue;
                 },
                 .type_only_decl, .type_only_alias => |status| {
@@ -185229,6 +185235,23 @@ test "checker: ambient const enum type reference does not report TS2748" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.ambient_const_enum_isolated_access));
+}
+
+test "checker: type-only imports do not access ambient const enums" {
+    const b = try newBoundSetup(
+        \\// @verbatimModuleSyntax: true
+        \\// @filename: /node_modules/pkg/index.d.ts
+        \\export declare const enum E { A }
+        \\// @filename: /a.ts
+        \\import { E } from "pkg";
+        \\import type { E as TypeE } from "pkg";
+        \\console.log(E.A);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .verbatim_module_syntax = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.ambient_const_enum_isolated_access));
 }
 
 test "checker: else-if static numeric condition reports truthiness" {
