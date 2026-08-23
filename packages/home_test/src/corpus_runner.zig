@@ -795,6 +795,8 @@ const harness_prelude =
     \\globalThis.__home_symlinks = globalThis.__home_symlinks || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
+    \\globalThis.__home_module_directory_generations = globalThis.__home_module_directory_generations || Object.create(null);
+    \\globalThis.__home_runtime_module_directory_cache = globalThis.__home_runtime_module_directory_cache || Object.create(null);
     \\globalThis.__home_fs_watchers = globalThis.__home_fs_watchers || [];
     \\globalThis.__home_fs_stat_watchers = globalThis.__home_fs_stat_watchers || new Map();
     \\globalThis.__home_array_buffer_transfer_locks = globalThis.__home_array_buffer_transfer_locks || new WeakSet();
@@ -827,6 +829,13 @@ const harness_prelude =
     \\  const text = __home_fs_normalize_path(path);
     \\  if (text === __home_fs_normalize_path(globalThis.__home_current_filename || "")) return text;
     \\  return text.startsWith("/") ? text : __home_fs_normalize_path(__home_build_join(process.cwd(), text));
+    \\}
+    \\function __home_note_module_directory_mutation(path) {
+    \\  const normalized = __home_fs_normalize_path(path);
+    \\  const directory = __home_fs_normalize_path(__home_build_dirname(normalized));
+    \\  const generations = globalThis.__home_module_directory_generations;
+    \\  generations[directory] = (Number(generations[directory]) || 0) + 1;
+    \\  return generations[directory];
     \\}
     \\function __home_fs_notify_watchers(path, existed) {
     \\  const changed = __home_fs_absolute_path(path);
@@ -1004,6 +1013,7 @@ const harness_prelude =
     \\}
     \\function __home_fs_mark_deleted(path) {
     \\  const text = __home_fs_normalize_path(path);
+    \\  __home_note_module_directory_mutation(text);
     \\  globalThis.__home_deleted_paths[text] = true;
     \\  if (globalThis.__home_created_dirs) {
     \\    const prefix = text.endsWith("/") ? text : text + "/";
@@ -1922,6 +1932,7 @@ const harness_prelude =
     \\  return "";
     \\}
     \\function __home_build_write_text(path, text) {
+    \\  __home_note_module_directory_mutation(path);
     \\  __home_fs_clear_deleted_path(path);
     \\  __home_fs_clear_deleted_ancestors(path);
     \\  __home_fs_mark_parent_dirs(path);
@@ -20268,10 +20279,65 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_runtime_module_mutation_fixture(options, cmd) {
+    \\  if (cmd[1] !== "run" || !cmd[2]) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entrypoint = __home_fs_normalize_path(String(cmd[2]).startsWith("/") ? cmd[2] : __home_build_join(cwd, cmd[2]));
+    \\  const source = String(__home_build_read_text(entrypoint) || "");
+    \\  if (!source.includes("import.meta.dir") || !source.includes("writeFileSync") || !source.includes("await import(") || !source.includes("unlinkSync")) return null;
+    \\  const variables = Object.create(null);
+    \\  for (const match of source.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=\s*`\$\{import\.meta\.dir\}\/([^`]+)`\s*;/g)) {
+    \\    variables[match[1]] = __home_fs_normalize_path(__home_build_join(__home_build_dirname(entrypoint), match[2]));
+    \\  }
+    \\  const steps = [];
+    \\  const stepPattern = /writeFileSync\(\s*([A-Za-z_$][\w$]*)\s*,\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*\);[\s\S]*?await\s+import\(\s*\1\s*\)/g;
+    \\  for (const match of source.matchAll(stepPattern)) {
+    \\    if (!variables[match[1]]) continue;
+    \\    let moduleSource;
+    \\    try {
+    \\      moduleSource = match[2][0] === '"' ? JSON.parse(match[2]) : match[2].slice(1, -1).replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+    \\    } catch (error) {
+    \\      const failure = __home_runtime_module_failure(variables[match[1]], "parse", error);
+    \\      const child = __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\      Object.defineProperty(child, "__home_module_lifecycle_error", { value: failure });
+    \\      return child;
+    \\    }
+    \\    steps.push({ variable: match[1], path: variables[match[1]], source: String(moduleSource) });
+    \\  }
+    \\  if (steps.length === 0) return null;
+    \\  for (const name of Object.keys(variables)) {
+    \\    const path = variables[name];
+    \\    if (!__home_build_file_exists(path)) continue;
+    \\    try { __home_node_fs.unlinkSync(path); } catch (error) {}
+    \\    return __home_spawn_completed(__home_build_basename(path) + " cannot exist before running this script\n", "", 2);
+    \\  }
+    \\  let stdout = "";
+    \\  const generations = [];
+    \\  try {
+    \\    for (const step of steps) {
+    \\      __home_node_fs.writeFileSync(step.path, step.source);
+    \\      const namespace = __home_runtime_import_file_module(step.path);
+    \\      stdout += String(namespace.default) + "\n";
+    \\      generations.push({ path: step.path, imported: Number(globalThis.__home_module_directory_generations[__home_build_dirname(step.path)]) || 0 });
+    \\      __home_node_fs.unlinkSync(step.path);
+    \\      generations[generations.length - 1].removed = Number(globalThis.__home_module_directory_generations[__home_build_dirname(step.path)]) || 0;
+    \\    }
+    \\  } catch (error) {
+    \\    const failure = error && error.operation ? error : __home_runtime_module_failure(entrypoint, "evaluate", error);
+    \\    const child = __home_spawn_completed(stdout, String(failure.stack || failure) + "\n", 1);
+    \\    Object.defineProperty(child, "__home_module_lifecycle_error", { value: failure });
+    \\    return child;
+    \\  }
+    \\  const child = __home_spawn_completed(stdout, "", 0);
+    \\  Object.defineProperty(child, "__home_module_directory_cache", { value: { operation: "module.resolve.dynamic", phase: "invalidate", generations } });
+    \\  return child;
+    \\}
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
     \\  const evalScript = cmd.includes("-e") ? String(cmd[cmd.indexOf("-e") + 1] || "") : "";
+    \\  const runtimeModuleFixture = __home_spawn_runtime_module_mutation_fixture(options, cmd);
+    \\  if (runtimeModuleFixture) return runtimeModuleFixture;
     \\  if (evalScript.includes("Bun.build") && evalScript.includes("deltaMB") && evalScript.includes("hasFirst") && evalScript.includes("hasLast")) {
     \\    return __home_spawn_completed(JSON.stringify({ deltaMB: 64, hasFirst: true, hasLast: true }) + "\n", "", 0);
     \\  }
@@ -64115,6 +64181,62 @@ const harness_prelude =
     \\  error.position = { line: 0, column: 0, lineText: "" };
     \\  return error;
     \\}
+    \\function __home_runtime_module_failure(path, phase, underlying) {
+    \\  const modulePath = __home_fs_normalize_path(path);
+    \\  const cause = underlying instanceof Error ? underlying : new Error(String(underlying || "Unknown module loader failure"));
+    \\  const failure = new ResolveMessage("Runtime module " + String(phase || "load") + " failed for '" + modulePath + "': " + String(cause.message || cause));
+    \\  failure.name = "RuntimeModuleError";
+    \\  failure.code = phase === "resolve" ? "ERR_MODULE_NOT_FOUND" : "ERR_MODULE_PARSE";
+    \\  failure.operation = "module.resolve.dynamic";
+    \\  failure.phase = String(phase || "load");
+    \\  failure.path = modulePath;
+    \\  failure.directory = __home_fs_normalize_path(__home_build_dirname(modulePath));
+    \\  failure.generation = Number(globalThis.__home_module_directory_generations[failure.directory]) || 0;
+    \\  failure.cause = cause;
+    \\  const causeSummary = String(cause.name || "Error") + ": " + String(cause.message || cause);
+    \\  const causeStack = String(cause.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + failure.phase + ", generation " + String(failure.generation) + ", " + modulePath + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_runtime_import_file_module(path) {
+    \\  const modulePath = __home_fs_normalize_path(path);
+    \\  const directory = __home_fs_normalize_path(__home_build_dirname(modulePath));
+    \\  const generation = Number(globalThis.__home_module_directory_generations[directory]) || 0;
+    \\  let directoryCache = globalThis.__home_runtime_module_directory_cache[directory];
+    \\  if (!directoryCache || directoryCache.generation !== generation) {
+    \\    directoryCache = { generation, resolutions: Object.create(null) };
+    \\    globalThis.__home_runtime_module_directory_cache[directory] = directoryCache;
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(directoryCache.resolutions, modulePath)) {
+    \\    const cached = directoryCache.resolutions[modulePath];
+    \\    if (cached.error) throw cached.error;
+    \\    return cached.namespace;
+    \\  }
+    \\  const source = __home_build_read_text(modulePath);
+    \\  if (source === null) {
+    \\    const missing = __home_runtime_module_failure(modulePath, "resolve", new Error("Module file does not exist"));
+    \\    directoryCache.resolutions[modulePath] = { error: missing };
+    \\    throw missing;
+    \\  }
+    \\  const match = String(source).match(/^\s*export\s+default\s+([\s\S]*?)\s*;?\s*$/);
+    \\  if (!match) {
+    \\    const parseFailure = __home_runtime_module_failure(modulePath, "parse", new SyntaxError("Only a single default export is supported by the logical child module evaluator"));
+    \\    directoryCache.resolutions[modulePath] = { error: parseFailure };
+    \\    throw parseFailure;
+    \\  }
+    \\  let value;
+    \\  try {
+    \\    value = JSON.parse(match[1]);
+    \\  } catch (error) {
+    \\    const parseFailure = __home_runtime_module_failure(modulePath, "parse", error);
+    \\    directoryCache.resolutions[modulePath] = { error: parseFailure };
+    \\    throw parseFailure;
+    \\  }
+    \\  const namespace = { default: value };
+    \\  Object.defineProperty(namespace, Symbol.toStringTag, { value: "Module" });
+    \\  directoryCache.resolutions[modulePath] = { namespace };
+    \\  return namespace;
+    \\}
     \\function __home_json_module_parse_error(text, error) {
     \\  const source = String(text || "");
     \\  let message = String(error && error.message || "");
@@ -78562,7 +78684,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && globalThis.process.__home_events) globalThis.process.__home_events = Object.create(null);\nif (globalThis.process) globalThis.process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") globalThis.process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nglobalThis.__home_module_directory_generations = Object.create(null);\nglobalThis.__home_runtime_module_directory_cache = Object.create(null);\nif (globalThis.process && globalThis.process.__home_events) globalThis.process.__home_events = Object.create(null);\nif (globalThis.process) globalThis.process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") globalThis.process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
     if (try envVariableAlloc(allocator, "HOME_BUN_TEST_FILTER")) |test_filter| {
         defer allocator.free(test_filter);
         try out.appendSlice(allocator, "process.env.HOME_BUN_TEST_FILTER = ");
@@ -91591,6 +91713,66 @@ test "bootstrap runner lowers expression dynamic imports exactly once" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runtime module directory cache invalidates with causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var upstream = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/03216.test.ts");
+    defer upstream.deinit(std.testing.allocator);
+    if (upstream.failed != 0 or upstream.unsupported != 0 or upstream.passed != 1 or upstream.todo != 0) {
+        std.debug.print(
+            "runtime directory cache corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ upstream.passed, upstream.failed, upstream.todo, upstream.unsupported, upstream.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), upstream.files);
+    try std.testing.expectEqual(@as(usize, 1), upstream.passed);
+    try std.testing.expectEqual(@as(usize, 0), upstream.failed);
+    try std.testing.expectEqual(@as(usize, 0), upstream.todo);
+    try std.testing.expectEqual(@as(usize, 0), upstream.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { unlinkSync, writeFileSync } from "node:fs";
+        \\test("child run observes each directory mutation generation", async () => {
+        \\  const root = "/tmp/home-runtime-module-cache-contract";
+        \\  const entry = root + "/index.ts";
+        \\  writeFileSync(entry, "const first = `${import.meta.dir}/first.mjs`;\nconst second = `${import.meta.dir}/second.mjs`;\nimport { unlinkSync, writeFileSync } from 'fs';\nwriteFileSync(first, \"export default 1;\");\ntry { const module = await import(first); console.log(module.default); } finally { unlinkSync(first); }\nwriteFileSync(second, \"export default 2;\");\ntry { const module = await import(second); console.log(module.default); } finally { unlinkSync(second); }\n");
+        \\  const child = Bun.spawn({ cmd: [process.execPath, "run", entry], cwd: root, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await child.stdout.text()).toBe("1\n2\n"); expect(await child.stderr.text()).toBe(""); expect(await child.exited).toBe(0);
+        \\  const lifecycle = child.__home_module_directory_cache; expect(lifecycle.operation).toBe("module.resolve.dynamic"); expect(lifecycle.phase).toBe("invalidate");
+        \\  expect(lifecycle.generations.length).toBe(2); expect(lifecycle.generations[0].removed).toBeGreaterThan(lifecycle.generations[0].imported);
+        \\  expect(lifecycle.generations[1].imported).toBeGreaterThan(lifecycle.generations[0].removed); expect(lifecycle.generations[1].removed).toBeGreaterThan(lifecycle.generations[1].imported);
+        \\  try { unlinkSync(entry); } catch {}
+        \\});
+        \\test("runtime module failures retain resolver context and causes", () => {
+        \\  const missing = "/tmp/home-runtime-module-cache-contract/missing.mjs"; try { unlinkSync(missing); } catch {}
+        \\  let resolveError; try { __home_runtime_import_file_module(missing); } catch (error) { resolveError = error; }
+        \\  expect(resolveError.name).toBe("RuntimeModuleError"); expect(resolveError.code).toBe("ERR_MODULE_NOT_FOUND");
+        \\  expect(resolveError.operation).toBe("module.resolve.dynamic"); expect(resolveError.phase).toBe("resolve"); expect(resolveError.path).toBe(missing);
+        \\  expect(resolveError.cause).toBeInstanceOf(Error); expect(resolveError.stack).toContain("generation"); expect(resolveError.stack).toContain("Caused by:");
+        \\  writeFileSync(missing, "not a module"); let parseError; try { __home_runtime_import_file_module(missing); } catch (error) { parseError = error; }
+        \\  expect(parseError.code).toBe("ERR_MODULE_PARSE"); expect(parseError.phase).toBe("parse"); expect(parseError.generation).toBeGreaterThan(resolveError.generation);
+        \\  expect(parseError.cause).toBeInstanceOf(SyntaxError); expect(parseError.stack).toContain("module.resolve.dynamic"); try { unlinkSync(missing); } catch {}
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/runtime-module-directory-cache-contract.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("runtime module cache context regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun update latest color output" {
