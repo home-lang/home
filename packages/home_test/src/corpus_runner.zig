@@ -55206,6 +55206,8 @@ const harness_prelude =
     \\    if (options && typeof options === "object" && Number(options.finishFlush) === __home_zlib_constants.Z_SYNC_FLUSH && bytes[0] === 0x03) return bytes.slice(1);
     \\    throw new Error("unexpected end of file");
     \\  }
+    \\  const maximum = options && typeof options === "object" && Number(options.maxOutputLength) > 0 ? Number(options.maxOutputLength) : Infinity;
+    \\  if (end - 1 > maximum) throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(maximum) + " bytes");
     \\  return bytes.slice(1, end);
     \\}
     \\function __home_zlib_info_result(buffer, Engine, options) {
@@ -68966,10 +68968,11 @@ const harness_prelude =
     \\    const first = bytes[offset++];
     \\    const second = bytes[offset++];
     \\    const fin = !!(first & 0x80);
+    \\    const rsv1 = !!(first & 0x40);
     \\    const opcode = first & 0x0f;
     \\    const masked = !!(second & 0x80);
     \\    let length = second & 0x7f;
-    \\    if (!fin) throw new Error("Fragmented WebSocket frames are not supported");
+    \\    if (!fin && opcode >= 0x8) throw new Error("WebSocket control frames cannot be fragmented");
     \\    if (requireMasked && !masked) throw new Error("Client WebSocket frames must be masked");
     \\    if (length === 126) {
     \\      if (offset + 2 > bytes.length) { offset = start; break; }
@@ -68992,7 +68995,7 @@ const harness_prelude =
     \\      for (let i = 0; i < length; i++) unmasked[i] = payload[i] ^ mask[i & 3];
     \\      payload = unmasked;
     \\    }
-    \\    frames.push({ fin, opcode, masked, payload });
+    \\    frames.push({ fin, rsv1, opcode, masked, payload });
     \\  }
     \\  return { frames, remaining: bytes.slice(offset) };
     \\}
@@ -69029,6 +69032,35 @@ const harness_prelude =
     \\  }
     \\  socket.readyState = WebSocket.CLOSED;
     \\  Promise.resolve().then(() => socket.dispatchEvent(__home_websocket_close_event(code, reason, true)));
+    \\}
+    \\function __home_websocket_message_failure(socket, closeCode, reason, phase, cause, details) {
+    \\  if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) return;
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || reason));
+    \\  const failure = new Error(String(reason || "WebSocket message failed"), { cause: underlying });
+    \\  Object.defineProperty(failure, "name", { configurable: true, writable: true, value: closeCode === 1009 ? "WebSocketMessageTooBigError" : "WebSocketMessageError" });
+    \\  failure.code = closeCode === 1009 ? "ERR_WEBSOCKET_MESSAGE_TOO_BIG" : "ERR_WEBSOCKET_MESSAGE_DATA";
+    \\  failure.operation = "web.websocket.receive";
+    \\  failure.phase = String(phase || "decode");
+    \\  failure.closeCode = Number(closeCode);
+    \\  if (details && typeof details === "object") Object.assign(failure, details);
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  socket.readyState = WebSocket.CLOSING;
+    \\  socket.__home_pending_open = false;
+    \\  socket.__home_pending_server_open = null;
+    \\  socket.__home_frame_buffer = Buffer.alloc(0);
+    \\  socket.__home_fragmented_message = null;
+    \\  __home_websocket_unsubscribe_client(socket);
+    \\  const responseFrame = __home_websocket_encode_close_frame(closeCode, reason, true);
+    \\  for (const transport of [socket.__home_bun_socket, socket.__home_raw_socket]) {
+    \\    if (!transport || transport.__home_closed) continue;
+    \\    if (typeof transport.write === "function") transport.write(responseFrame);
+    \\    if (typeof transport.end === "function") transport.end();
+    \\  }
+    \\  socket.readyState = WebSocket.CLOSED;
+    \\  Promise.resolve().then(() => {
+    \\    try { socket.dispatchEvent(new ErrorEvent("error", { message: failure.message, error: failure })); } catch (_) {}
+    \\    socket.dispatchEvent(__home_websocket_close_event(closeCode, reason, true));
+    \\  });
     \\}
     \\function __home_websocket_helper_decode_frames(buffer) {
     \\  const decoded = __home_websocket_decode_frames(buffer, false);
@@ -69078,7 +69110,7 @@ const harness_prelude =
     \\      if (client && client.readyState !== WebSocket.CLOSED) client.close();
     \\    },
     \\    send(value) {
-    \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
+    \\      setTimeout(() => client.dispatchEvent(new MessageEvent("message", { data: value })), 0);
     \\      return __home_websocket_payload_size(value);
     \\    },
     \\    ping(value) {
@@ -69223,6 +69255,34 @@ const harness_prelude =
     \\  const match = new RegExp("(?:^|\\r\\n)" + escaped + ":\\s*([^\\r\\n]*)", "i").exec(String(headerText || ""));
     \\  return match ? match[1].trim() : null;
     \\}
+    \\function __home_websocket_dispatch_message_frame(socket, opcode, payload, compressed) {
+    \\  const maximumMessageBytes = 128 * 1024 * 1024;
+    \\  let decoded = Buffer.from(payload || []);
+    \\  if (compressed) {
+    \\    if (decoded.length > maximumMessageBytes) {
+    \\      __home_websocket_message_failure(socket, 1009, "Message too big", "decompress-limit", new RangeError("Compressed payload exceeds the 128 MiB message limit"), { compressedBytes: decoded.length, maxMessageBytes: maximumMessageBytes });
+    \\      return;
+    \\    }
+    \\    try { decoded = Buffer.from(__home_inflate_raw_sync(decoded, { finishFlush: __home_zlib_constants.Z_SYNC_FLUSH, maxOutputLength: maximumMessageBytes })); }
+    \\    catch (cause) {
+    \\      const tooBig = cause && cause.code === "ERR_BUFFER_TOO_LARGE";
+    \\      __home_websocket_message_failure(socket, tooBig ? 1009 : 1007, tooBig ? "Message too big" : "Invalid compressed message", tooBig ? "decompress-limit" : "decompress", cause, { compressedBytes: decoded.length, maxMessageBytes: maximumMessageBytes });
+    \\      return;
+    \\    }
+    \\    if (decoded.length > maximumMessageBytes) {
+    \\      __home_websocket_message_failure(socket, 1009, "Message too big", "decompress-limit", new RangeError("Inflated payload exceeds the 128 MiB message limit"), { compressedBytes: payload.length, decompressedBytes: decoded.length, maxMessageBytes: maximumMessageBytes });
+    \\      return;
+    \\    }
+    \\  }
+    \\  if (opcode === 0x1) {
+    \\    let text;
+    \\    try { text = new TextDecoder("utf-8", { fatal: true }).decode(decoded); }
+    \\    catch (cause) { __home_websocket_message_failure(socket, 1007, "Invalid UTF-8 message", "utf8", cause, { messageBytes: decoded.length }); return; }
+    \\    socket.dispatchEvent(new MessageEvent("message", { data: text }));
+    \\  } else if (opcode === 0x2) {
+    \\    socket.dispatchEvent(new MessageEvent("message", { data: __home_websocket_binary_payload(socket, decoded) }));
+    \\  }
+    \\}
     \\function __home_websocket_dispatch_decoded_frames(socket, bytes) {
     \\  const combined = Buffer.concat([socket.__home_frame_buffer || Buffer.alloc(0), Buffer.from(bytes || [])]);
     \\  let decoded;
@@ -69230,14 +69290,25 @@ const harness_prelude =
     \\  catch (cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("frame-decode", "Invalid WebSocket frame", {}, cause)); return; }
     \\  socket.__home_frame_buffer = decoded.remaining;
     \\  for (const frame of decoded.frames) {
-    \\    if (frame.opcode === 0x1) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload.toString("utf8") }));
-    \\    else if (frame.opcode === 0x2) {
-    \\      const data = __home_websocket_binary_payload(socket, frame.payload);
-    \\      socket.dispatchEvent(new MessageEvent("message", { data }));
+    \\    if (frame.opcode === 0x1 || frame.opcode === 0x2) {
+    \\      if (socket.__home_fragmented_message) { __home_websocket_message_failure(socket, 1002, "Unexpected data frame", "fragment", new Error("A fragmented WebSocket message is already in progress")); return; }
+    \\      if (frame.fin) __home_websocket_dispatch_message_frame(socket, frame.opcode, frame.payload, frame.rsv1);
+    \\      else socket.__home_fragmented_message = { opcode: frame.opcode, compressed: frame.rsv1, chunks: [Buffer.from(frame.payload)] };
+    \\    }
+    \\    else if (frame.opcode === 0x0) {
+    \\      const pending = socket.__home_fragmented_message;
+    \\      if (!pending || frame.rsv1) { __home_websocket_message_failure(socket, 1002, "Unexpected continuation frame", "fragment", new Error("Continuation frame has no matching initial frame")); return; }
+    \\      pending.chunks.push(Buffer.from(frame.payload));
+    \\      if (frame.fin) {
+    \\        socket.__home_fragmented_message = null;
+    \\        __home_websocket_dispatch_message_frame(socket, pending.opcode, Buffer.concat(pending.chunks), pending.compressed);
+    \\      }
     \\    }
     \\    else if (frame.opcode === 0x8) { __home_websocket_receive_close(socket, frame.payload); return; }
     \\    else if (frame.opcode === 0x9) __home_websocket_dispatch_control(socket, "ping", frame.payload);
     \\    else if (frame.opcode === 0xa) __home_websocket_dispatch_control(socket, "pong", frame.payload);
+    \\    else { __home_websocket_message_failure(socket, 1002, "Unsupported WebSocket opcode", "opcode", new Error("Unsupported opcode " + String(frame.opcode)), { opcode: frame.opcode }); return; }
+    \\    if (socket.readyState === WebSocket.CLOSED) return;
     \\  }
     \\}
     \\function __home_websocket_connect_bun_listener(socket, parsed, options) {
@@ -69280,6 +69351,8 @@ const harness_prelude =
     \\          __home_websocket_fail(socket, __home_websocket_handshake_error("accept", "Invalid Sec-WebSocket-Accept header", { expectedAccept, actualAccept }));
     \\          return;
     \\        }
+    \\        const negotiatedExtensions = __home_websocket_header_value(headerText, "Sec-WebSocket-Extensions");
+    \\        socket.extensions = negotiatedExtensions && /(?:^|[,;\s])permessage-deflate(?:$|[,;\s])/i.test(negotiatedExtensions) ? "permessage-deflate" : "";
     \\        opened = true;
     \\        __home_websocket_complete_open(socket);
     \\        const remaining = responseBytes.slice(headerEnd + 4);
@@ -69308,13 +69381,14 @@ const harness_prelude =
     \\    connectHost = proxy.hostname || "127.0.0.1";
     \\  }
     \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[connectPort] : null;
-    \\  if (!server || typeof server.__home_net_handler !== "function") {
+    \\  if (!server) {
     \\    if (!proxy && __home_websocket_connect_bun_listener(socket, parsed, options)) return true;
     \\    return false;
     \\  }
     \\  const tcp = __home_net_connect({ port: connectPort, host: connectHost });
     \\  socket.__home_raw_socket = tcp;
-    \\  let responseText = "";
+    \\  let responseBytes = Buffer.alloc(0);
+    \\  let opened = false;
     \\  let stage = proxy ? "connect" : "upgrade";
     \\  function sendUpgrade() {
     \\    tcp.write(Buffer.from(__home_websocket_raw_request(parsed, offerDeflate, socket.__home_request_headers)));
@@ -69328,11 +69402,17 @@ const harness_prelude =
     \\    else sendUpgrade();
     \\  });
     \\  tcp.on("data", chunk => {
-    \\    responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\    if (opened) { __home_websocket_dispatch_decoded_frames(socket, chunk); return; }
+    \\    responseBytes = Buffer.concat([responseBytes, Buffer.from(__home_net_bytes(chunk))]);
+    \\    const responseText = responseBytes.toString("latin1");
     \\    const headerEnd = responseText.indexOf("\r\n\r\n");
-    \\    if (headerEnd === -1) return;
+    \\    if (headerEnd === -1) {
+    \\      if (responseBytes.length > 16384) __home_websocket_fail(socket, __home_websocket_handshake_error("headers", "Invalid response: WebSocket handshake headers exceeded 16384 bytes", { receivedBytes: responseBytes.length, maxHeaderBytes: 16384 }));
+    \\      return;
+    \\    }
     \\    const headerText = responseText.slice(0, headerEnd);
-    \\    responseText = responseText.slice(headerEnd + 4);
+    \\    const remaining = responseBytes.slice(headerEnd + 4);
+    \\    responseBytes = Buffer.alloc(0);
     \\    if (stage === "connect") {
     \\      if (!/^HTTP\/1\.[01]\s+2\d\d/i.test(headerText)) {
     \\        __home_websocket_fail(socket, "WebSocket proxy CONNECT failed");
@@ -69351,9 +69431,22 @@ const harness_prelude =
     \\      __home_websocket_fail(socket, "Server accepted permessage-deflate when the client did not offer it");
     \\      return;
     \\    }
+    \\    const expectedAccept = __home_websocket_accept_for_key(socket.__home_request_headers["sec-websocket-key"]);
+    \\    const actualAccept = __home_websocket_header_value(headerText, "Sec-WebSocket-Accept");
+    \\    if (actualAccept !== expectedAccept) {
+    \\      __home_websocket_fail(socket, __home_websocket_handshake_error("accept", "Invalid Sec-WebSocket-Accept header", { expectedAccept, actualAccept }));
+    \\      return;
+    \\    }
+    \\    const negotiatedExtensions = __home_websocket_header_value(headerText, "Sec-WebSocket-Extensions");
+    \\    socket.extensions = negotiatedExtensions && /(?:^|[,;\s])permessage-deflate(?:$|[,;\s])/i.test(negotiatedExtensions) ? "permessage-deflate" : "";
+    \\    opened = true;
     \\    __home_websocket_complete_open(socket);
+    \\    if (remaining.length) Promise.resolve().then(() => __home_websocket_dispatch_decoded_frames(socket, remaining));
     \\  });
     \\  tcp.on("error", error => __home_websocket_fail(socket, error && error.message || error));
+    \\  tcp.on("close", () => {
+    \\    if (!socket.__home_connect_cancelled && socket.readyState !== WebSocket.CLOSED) __home_websocket_fail(socket, __home_websocket_handshake_error(opened ? "transport-close" : "handshake-close", opened ? "Connection ended" : "WebSocket connection closed unexpectedly"));
+    \\  });
     \\  return true;
     \\}
     \\function WebSocket(url, protocolsOrOptions) {
@@ -69384,6 +69477,7 @@ const harness_prelude =
     \\    if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
     \\  }
     \\  this.url = href;
+    \\  this.extensions = handle && handle.websocket && handle.websocket.perMessageDeflate && __home_websocket_permessage_deflate_enabled(websocketOptions) ? "permessage-deflate" : "";
     \\  this.readyState = 0;
     \\  this.__home_binary_type = "nodebuffer";
     \\  this.__home_handle = handle || null;
@@ -112099,6 +112193,72 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across c
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across bounded permessage deflate" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate-edge-cases.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
+        std.debug.print(
+            "permessage-deflate edge corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("oversized inflate errors retain their operation and cause", async () => {
+        \\  const socket = Object.create(WebSocket.prototype);
+        \\  socket.__home_listeners = Object.create(null);
+        \\  socket.__home_pending_open = false;
+        \\  socket.__home_pending_error = null;
+        \\  socket.__home_pending_close = false;
+        \\  socket.__home_pending_flush = false;
+        \\  socket.__home_pending_server_open = null;
+        \\  socket.readyState = WebSocket.OPEN;
+        \\  const failed = new Promise(resolve => socket.onerror = resolve);
+        \\  const closed = new Promise(resolve => socket.onclose = resolve);
+        \\  const cause = new RangeError("inflated payload exceeds configured limit");
+        \\  __home_websocket_message_failure(socket, 1009, "Message too big", "decompress-limit", cause, { compressedBytes: 1024, decompressedBytes: 2048, maxMessageBytes: 1536 });
+        \\  const errorEvent = await failed;
+        \\  const closeEvent = await closed;
+        \\  expect(errorEvent).toBeInstanceOf(ErrorEvent);
+        \\  expect(errorEvent.error.name).toBe("WebSocketMessageTooBigError");
+        \\  expect(errorEvent.error.code).toBe("ERR_WEBSOCKET_MESSAGE_TOO_BIG");
+        \\  expect(errorEvent.error.operation).toBe("web.websocket.receive");
+        \\  expect(errorEvent.error.phase).toBe("decompress-limit");
+        \\  expect(errorEvent.error.closeCode).toBe(1009);
+        \\  expect(errorEvent.error.cause).toBe(cause);
+        \\  expect(errorEvent.error.maxMessageBytes).toBe(1536);
+        \\  expect(errorEvent.error.stack).toContain("web.websocket.receive [decompress-limit]");
+        \\  expect(errorEvent.error.stack).toContain("permessage-deflate-error.home-regression.test.js");
+        \\  expect({ code: closeEvent.code, reason: closeEvent.reason }).toEqual({ code: 1009, reason: "Message too big" });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/permessage-deflate-error.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured permessage-deflate error regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
