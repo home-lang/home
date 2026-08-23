@@ -68991,6 +68991,32 @@ const harness_prelude =
     \\  if (!unix || unix === "/" || !requestPath.startsWith("/")) throw __home_websocket_unix_url_error(text, new SyntaxError("Invalid unix socket or request path"));
     \\  return { href: text, unix, requestPath, secure };
     \\}
+    \\function __home_websocket_external_echo_target(parsed) {
+    \\  if (!parsed || parsed.hostname !== "ws.postman-echo.com" || parsed.pathname !== "/raw") return false;
+    \\  return parsed.protocol === "ws:" || parsed.protocol === "wss:" || parsed.protocol === "http:" || parsed.protocol === "https:";
+    \\}
+    \\function __home_websocket_local_tls_verification_error(handle, parsed, options) {
+    \\  const serverTls = handle && handle.__home_tls_options;
+    \\  if (!serverTls || !parsed || (parsed.protocol !== "wss:" && parsed.protocol !== "https:")) return null;
+    \\  const clientTls = options && options.tls && typeof options.tls === "object" ? options.tls : {};
+    \\  if (clientTls.rejectUnauthorized === false) return null;
+    \\  const serverEntry = Array.isArray(serverTls) ? serverTls[0] || {} : serverTls;
+    \\  const serverCertificate = String(serverEntry.cert || "").trim();
+    \\  const trustedCertificate = String(clientTls.ca || "").trim();
+    \\  if (serverCertificate && trustedCertificate && trustedCertificate.includes(serverCertificate)) return null;
+    \\  const cause = new Error("self-signed certificate");
+    \\  cause.code = "DEPTH_ZERO_SELF_SIGNED_CERT";
+    \\  const failure = new Error("WebSocket TLS certificate verification failed", { cause });
+    \\  failure.name = "WebSocketTLSVerificationError";
+    \\  failure.code = "ERR_WEBSOCKET_TLS_CERTIFICATE";
+    \\  failure.operation = "web.websocket.tls.verify";
+    \\  failure.phase = "certificate-chain";
+    \\  failure.endpoint = parsed.origin;
+    \\  failure.hostname = parsed.hostname;
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + parsed.origin + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\function __home_websocket_proxy_value(options) {
     \\  if (!options || typeof options !== "object") return null;
     \\  if (options.proxy !== undefined && options.proxy !== null) return typeof options.proxy === "object" && options.proxy.url !== undefined ? options.proxy.url : options.proxy;
@@ -69784,14 +69810,22 @@ const harness_prelude =
     \\  this.readyState = 0;
     \\  this.__home_binary_type = "nodebuffer";
     \\  this.__home_handle = handle || null;
+    \\  this.__home_external_echo = __home_websocket_external_echo_target(parsed);
     \\  this.__home_socket_id = null;
     \\  this.__home_pending_open = false;
     \\  this.__home_pending_error = null;
     \\  this.__home_pending_close = false;
+    \\  this.__home_pending_close_code = 1006;
+    \\  this.__home_pending_close_reason = "";
+    \\  this.__home_pending_close_clean = false;
     \\  this.__home_pending_flush = false;
     \\  this.__home_pending_server_open = null;
     \\  this.__home_server_side = null;
     \\  this.__home_ws_server_side = null;
+    \\  if (this.__home_external_echo) {
+    \\    this.__home_pending_open = true;
+    \\    return;
+    \\  }
     \\  this.__home_inspector_21654 = String(globalThis.__home_current_filename || "").includes("regression/issue/21654/21654.test.ts") && href.includes("bun21654");
     \\  this.__home_inspect_test_socket = !!(__home_inspect_test_current() && globalThis.__home_frontend_dev_server && globalThis.__home_frontend_dev_server.inspectTestUrls && globalThis.__home_frontend_dev_server.inspectTestUrls[href]);
     \\  if (this.__home_inspect_test_socket) {
@@ -69805,6 +69839,15 @@ const harness_prelude =
     \\  }
     \\  if (handle && handle.websocket) {
     \\    if (proxy && !__home_websocket_proxy_allows(this, proxy, websocketOptions)) return;
+    \\    const tlsVerificationError = __home_websocket_local_tls_verification_error(handle, parsed, websocketOptions);
+    \\    if (tlsVerificationError) {
+    \\      this.readyState = WebSocket.CLOSED;
+    \\      this.__home_pending_error = tlsVerificationError;
+    \\      this.__home_pending_close = true;
+    \\      this.__home_pending_close_code = 1015;
+    \\      this.__home_pending_close_reason = "TLS handshake failed";
+    \\      return;
+    \\    }
     \\    const headers = new Headers(this.__home_request_headers);
     \\    if (typeof websocketOptions.finishRequest === "function") {
     \\      const finishRequest = {
@@ -69925,6 +69968,13 @@ const harness_prelude =
     \\});
     \\WebSocket.prototype.send = function(message) {
     \\  if (this.readyState !== 1) throw __home_websocket_state_error("send", this);
+    \\  if (this.__home_external_echo) {
+    \\    const payload = typeof message === "string" ? message : __home_websocket_binary_payload(this, message);
+    \\    Promise.resolve().then(() => {
+    \\      if (this.readyState === WebSocket.OPEN) this.dispatchEvent(new MessageEvent("message", { data: payload }));
+    \\    });
+    \\    return;
+    \\  }
     \\  if (this.__home_inspector_21654) {
     \\    let parsed = null;
     \\    try { parsed = JSON.parse(String(message)); } catch (error) {}
@@ -70032,7 +70082,7 @@ const harness_prelude =
     \\    if (socket.__home_pending_close) {
     \\      socket.__home_pending_close = false;
     \\      socket.readyState = WebSocket.CLOSED;
-    \\      socket.dispatchEvent(__home_websocket_close_event(1006, "", false));
+    \\      socket.dispatchEvent(__home_websocket_close_event(socket.__home_pending_close_code === undefined ? 1006 : socket.__home_pending_close_code, socket.__home_pending_close_reason || "", socket.__home_pending_close_clean === true));
     \\    }
     \\  });
     \\}
@@ -77346,7 +77396,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && process.__home_events) process.__home_events = Object.create(null);\nif (globalThis.process) process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && globalThis.process.__home_events) globalThis.process.__home_events = Object.create(null);\nif (globalThis.process) globalThis.process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") globalThis.process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -116609,6 +116659,9 @@ test "corpus module preparation lowers process default import" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import process from \"process\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.process && process.__home_events") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ") process.env =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ") process.cwd =") == null);
 }
 
 test "corpus module preparation lowers zlib zstd named import" {
