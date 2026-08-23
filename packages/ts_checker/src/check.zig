@@ -138905,6 +138905,40 @@ pub const Checker = struct {
         for (members.items) |member| {
             if (member.name == member_name) return member.type;
         }
+        const base_name = self.checkJsPrototypeObjectLiteralBaseName(node) orelse return null;
+        const base_constructor = self.checkJsFunctionDeclNamedInVirtualProgram(node, base_name) orelse
+            self.findFunctionDeclForNameNearNode(node, base_name) orelse
+            self.jsConstructorFunctionDeclForName(node, base_name) orelse return null;
+        members.clearRetainingCapacity();
+        try self.collectJsConstructorThisMembers(base_constructor, base_name, &members);
+        for (members.items) |member| {
+            if (member.name == member_name) return member.type;
+        }
+        return null;
+    }
+
+    fn checkJsPrototypeObjectLiteralBaseName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        var saw_function = false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind == .arrow_fn) return null;
+            if (kind == .fn_decl or kind == .fn_expr) {
+                if (saw_function) return null;
+                saw_function = true;
+                continue;
+            }
+            if (kind != .object_literal or !saw_function) continue;
+            for (hir_mod.objectLiteralProps(self.hir, cur)) |property_node| {
+                if (self.hir.kindOf(property_node) != .object_property) continue;
+                const property = hir_mod.objectPropertyOf(self.hir, property_node);
+                const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+                if (!std.mem.eql(u8, self.string_interner.get(name), "__proto__") or
+                    property.value == hir_mod.none_node_id or self.hir.kindOf(property.value) != .identifier) continue;
+                return hir_mod.identifierOf(self.hir, property.value).name;
+            }
+            return null;
+        }
         return null;
     }
 
@@ -139125,8 +139159,14 @@ pub const Checker = struct {
             if (!self.nodeIsThisReference(member.object) and
                 !std.mem.eql(u8, std.mem.trim(u8, self.nodeSourceTextOrEmpty(member.object), " \t\r\n"), "this")) continue;
             if (self.objectLiteralExplicitlyDeclaresMember(object_node, member.name)) continue;
-            if (self.checkJsPrototypeObjectLiteralUsesComputedTarget(candidate) and
-                (try self.checkJsPrototypeConstructorThisMemberType(candidate, member.name)) != null) continue;
+            if ((try self.checkJsPrototypeConstructorThisMemberType(candidate, member.name)) != null and
+                (self.checkJsPrototypeObjectLiteralUsesComputedTarget(candidate) or
+                    !self.prototypeReplacementConstructorHasTemplates(object_node)))
+            {
+                self.removePriorDiagnosticForNode(candidate, TsCodes.property_does_not_exist);
+                self.removePriorDiagnosticsInNodeSpan(candidate, TsCodes.property_does_not_exist);
+                continue;
+            }
             self.removeIndexedAccessCascadeForMissingPrototypeMember(candidate);
             if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) {
                 if (!try self.objectLiteralHasJsDocDiagnosticSignature(object_node)) continue;
@@ -139428,6 +139468,12 @@ pub const Checker = struct {
             if (!self.nodeIsThisReference(member.object)) continue;
             if (!self.thisReferenceBelongsToFunction(member.object, function_node)) continue;
             if ((try self.lookupObjectMember(receiver_t, member.name)) != null) continue;
+            const constructor_member = try self.checkJsPrototypeConstructorThisMemberType(candidate, member.name);
+            if (constructor_member != null) {
+                self.removePriorDiagnosticForNode(candidate, TsCodes.property_does_not_exist);
+                self.removePriorDiagnosticsInNodeSpan(candidate, TsCodes.property_does_not_exist);
+                continue;
+            }
             if (explicit_prototype_shape) self.removeIndexedAccessCascadeForMissingPrototypeMember(candidate);
             if (self.diagnosticExists(candidate, TsCodes.property_does_not_exist)) continue;
             if (explicit_prototype_shape) {
@@ -227340,6 +227386,30 @@ test "checker: checkjs whole-object prototype assignment merges members onto the
             try T.expect(std.mem.indexOf(u8, d.message, "'m4'") == null);
         }
     }
+}
+
+test "checker: prototype object methods inherit constructor and __proto__ fields" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\function Vec(len) {
+        \\  /** @type {number[]} */
+        \\  this.storage = new Array(len);
+        \\}
+        \\Vec.prototype = {
+        \\  dot() { return this.storage.length; }
+        \\};
+        \\function Point() { this.x = 0; }
+        \\Point.prototype = {
+        \\  __proto__: Vec,
+        \\  get first() { return this.storage[0]; },
+        \\  set first(value) { this.storage[0] = value; }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: TypeScript prototype object methods inherit constructor fields" {
