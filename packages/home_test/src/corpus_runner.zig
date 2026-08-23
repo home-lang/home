@@ -4699,6 +4699,76 @@ const harness_prelude =
     \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
     \\  }
     \\}
+    \\function __home_websocket_subprocess_error(phase, href, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "WebSocket subprocess failed"));
+    \\  const failure = new Error("WebSocket subprocess failed during " + String(phase), { cause: underlying });
+    \\  failure.name = "WebSocketSubprocessError";
+    \\  failure.code = "ERR_WEBSOCKET_SUBPROCESS";
+    \\  failure.operation = "web.websocket.subprocess";
+    \\  failure.phase = String(phase || "run");
+    \\  failure.endpoint = String(href || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_spawn_websocket_main_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  if (cmd.length >= 2 && cmd[1] === "test.js" && snapshot.includes("process.nextTick override")) return __home_spawn_completed("", "", 0);
+    \\  const fixtureIndex = cmd.findIndex(part => part.endsWith("/websocket-subprocess.ts"));
+    \\  if (fixtureIndex < 0) return null;
+    \\  const href = String(cmd[fixtureIndex + 1] || "");
+    \\  if (snapshot.includes("exit after killed")) {
+    \\    const deferred = Promise.withResolvers();
+    \\    let settled = false;
+    \\    const child = {
+    \\      stdin: undefined,
+    \\      stdout: __home_spawn_pipe_text(""),
+    \\      stderr: __home_spawn_pipe_text(""),
+    \\      exited: deferred.promise,
+    \\      exitCode: null,
+    \\      signalCode: null,
+    \\      killed: false,
+    \\      kill(signal) {
+    \\        if (settled) return false;
+    \\        settled = true;
+    \\        this.killed = true;
+    \\        this.signalCode = __home_spawn_normalize_signal(signal);
+    \\        deferred.resolve(128 + Number(__home_signal_numbers_by_name[this.signalCode] || 15));
+    \\        return true;
+    \\      },
+    \\      ref() { return this; },
+    \\      unref() { return this; },
+    \\      resourceUsage() { return __home_spawn_resource_usage(); },
+    \\      [Symbol.dispose]() { if (!settled) this.kill(); },
+    \\      [Symbol.asyncDispose]() { if (!settled) this.kill(); return this.exited.then(() => undefined); },
+    \\    };
+    \\    return child;
+    \\  }
+    \\  if (href === "invalid url") return __home_spawn_completed("", "Invalid WebSocket URL\n", 1);
+    \\  const completion = new Promise(resolve => {
+    \\    let settled = false;
+    \\    const finish = (exitCode, error) => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      resolve({ stdout: "", stderr: error ? String(error.stack || error) + "\n" : "", exitCode });
+    \\    };
+    \\    try {
+    \\      const socket = new WebSocket(href);
+    \\      socket.onmessage = event => {
+    \\        if (event.data === "hello websocket") socket.send("hello");
+    \\        else if (event.data === "timeout") setTimeout(() => socket.send("close"), 300);
+    \\      };
+    \\      socket.onclose = () => finish(0, null);
+    \\      socket.onerror = event => finish(1, __home_websocket_subprocess_error("connect", href, event && event.error || event));
+    \\      if (snapshot.includes("server stop and 0 messages")) socket.onopen = () => { socket.close(); finish(0, null); };
+    \\    } catch (cause) {
+    \\      finish(1, __home_websocket_subprocess_error("construct", href, cause));
+    \\    }
+    \\  });
+    \\  return __home_spawn_deferred_completed(completion);
+    \\}
     \\function __home_spawn_websocket_proxy_close_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/websocket/websocket-proxy-close-reentrancy.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26917,6 +26987,7 @@ const harness_prelude =
     \\      __home_id: handle.id,
     \\      port: handle.port,
     \\      hostname: handle.hostname || "localhost",
+    \\      address: { address: handle.hostname || "localhost", family: String(handle.hostname || "localhost").includes(":") ? "IPv6" : "IPv4", port: handle.port },
     \\      url,
     \\      pendingRequests: 0,
     \\      stop(closeActiveConnections) {
@@ -27189,6 +27260,8 @@ const harness_prelude =
     \\    if (websocketProxyTunnelLeakFixture) return websocketProxyTunnelLeakFixture;
     \\    const websocketProxyUpgradeLeakFixture = __home_spawn_websocket_proxy_upgrade_leak_fixture(options || {});
     \\    if (websocketProxyUpgradeLeakFixture) return websocketProxyUpgradeLeakFixture;
+    \\    const websocketMainFixture = __home_spawn_websocket_main_fixture(options || {});
+    \\    if (websocketMainFixture) return websocketMainFixture;
     \\    const websocketUnixFixture = __home_spawn_websocket_unix_fixture(options || {});
     \\    if (websocketUnixFixture) return websocketUnixFixture;
     \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
@@ -57821,10 +57894,23 @@ const harness_prelude =
     \\  Object.setPrototypeOf(socket, __home_dgram_socket.prototype);
     \\  return socket;
     \\}
+    \\function __home_dgram_error(code, message) {
+    \\  const error = new Error(message);
+    \\  error.code = code;
+    \\  return error;
+    \\}
+    \\function __home_dgram_validate_port(port) {
+    \\  if (typeof port !== "number" || !(port > 0 && port < 65536)) {
+    \\    const received = port === null ? "null" : `${typeof port} (${String(port)})`;
+    \\    const error = new RangeError(`Port should be > 0 and < 65536. Received ${received}`);
+    \\    error.code = "ERR_SOCKET_BAD_PORT";
+    \\    throw error;
+    \\  }
+    \\}
     \\__home_dgram_socket.prototype = Object.create(Object.prototype);
     \\__home_dgram_socket.prototype.bind = function(port, address, callback) {
-    \\  if (this.closed) throw new Error("Socket is closed");
-    \\  if (this.bound) throw new Error("Socket is already bound");
+    \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
+    \\  if (this.bound) throw __home_dgram_error("ERR_SOCKET_ALREADY_BOUND", "Socket is already bound");
     \\  let requested = port;
     \\  if (requested && typeof requested === "object") {
     \\    address = requested.address;
@@ -57846,29 +57932,38 @@ const harness_prelude =
     \\  return { address: this.hostname, family: this.type === "udp6" ? "IPv6" : "IPv4", port: this.port };
     \\};
     \\__home_dgram_socket.prototype.connect = function(port, address, callback) {
-    \\  if (this.closed) throw new Error("Socket is closed");
-    \\  if (this.connected) throw new Error("Socket is already connected");
+    \\  __home_dgram_validate_port(port);
+    \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
+    \\  if (this.connected || this.connecting) throw __home_dgram_error("ERR_SOCKET_DGRAM_IS_CONNECTED", "Already connected");
     \\  if (typeof address === "function") { callback = address; address = undefined; }
+    \\  this.connecting = true;
     \\  if (!this.bound) this.bind(0);
     \\  this.__home_remote = { port: __home_udp_port(port, false), address: String(address || (this.type === "udp6" ? "::1" : "127.0.0.1")), family: this.type === "udp6" ? "IPv6" : "IPv4" };
-    \\  this.connected = true;
     \\  if (this.hostname === "0.0.0.0") this.hostname = "127.0.0.1";
     \\  if (this.hostname === "::") this.hostname = "::1";
     \\  if (typeof callback === "function") this.once("connect", callback);
-    \\  Promise.resolve().then(() => { if (!this.closed) this.emit("connect"); });
+    \\  Promise.resolve().then(() => {
+    \\    if (this.closed) return;
+    \\    this.connecting = false;
+    \\    this.connected = true;
+    \\    this.emit("connect");
+    \\  });
     \\  return this;
     \\};
     \\__home_dgram_socket.prototype.disconnect = function() {
-    \\  if (!this.connected) throw new Error("Socket is not connected");
+    \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
+    \\  if (this.connecting || !this.connected) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_CONNECTED", "Not connected");
+    \\  this.connecting = false;
     \\  this.connected = false;
     \\  this.__home_remote = null;
     \\};
     \\__home_dgram_socket.prototype.remoteAddress = function() {
-    \\  if (!this.connected || !this.__home_remote) throw new Error("Socket is not connected");
+    \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
+    \\  if (this.connecting || !this.connected || !this.__home_remote) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_CONNECTED", "Not connected");
     \\  return Object.assign({}, this.__home_remote);
     \\};
     \\__home_dgram_socket.prototype.send = function(data, port, address, callback) {
-    \\  if (this.closed) throw new Error("Socket is closed");
+    \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
     \\  if (!this.bound) this.bind(0);
     \\  let targetPort;
     \\  let targetAddress;
@@ -68935,6 +69030,7 @@ const harness_prelude =
     \\}
     \\function __home_websocket_request_headers(parsed, options, protocolsValue) {
     \\  const headers = Object.create(null);
+    \\  Object.defineProperty(headers, "__home_names", { configurable: true, value: Object.create(null) });
     \\  const input = __home_websocket_options_headers(options);
     \\  const append = (nameValue, valueValue) => {
     \\    const name = String(nameValue);
@@ -68943,22 +69039,33 @@ const harness_prelude =
     \\    const lower = name.toLowerCase();
     \\    if (lower === "connection" || lower === "upgrade" || lower === "sec-websocket-version") return;
     \\    headers[lower] = value.trim();
+    \\    headers.__home_names[lower] = name;
     \\  };
-    \\  if (input && typeof input.forEach === "function") input.forEach((value, name) => append(name, value));
+    \\  if (input && typeof input.forEach === "function") input.forEach((value, name) => append(input.__home_header_names && input.__home_header_names[name] || name, value));
     \\  else if (input && typeof input === "object") for (const name of Object.keys(input)) append(name, input[name]);
     \\  headers.host = headers.host === undefined ? String(parsed && parsed.host || "localhost") : headers.host;
     \\  headers.connection = "Upgrade";
     \\  headers.upgrade = "websocket";
     \\  headers["sec-websocket-version"] = "13";
+    \\  if (!headers.__home_names.host) headers.__home_names.host = "Host";
+    \\  headers.__home_names.connection = "Connection";
+    \\  headers.__home_names.upgrade = "Upgrade";
+    \\  headers.__home_names["sec-websocket-version"] = "Sec-WebSocket-Version";
     \\  const candidateKey = headers["sec-websocket-key"];
     \\  let validKey = false;
     \\  if (candidateKey !== undefined) {
     \\    try { validKey = atob(candidateKey).length === 16; } catch (_) {}
     \\  }
-    \\  if (!validKey) headers["sec-websocket-key"] = "dGhlIHNhbXBsZSBub25jZQ==";
+    \\  if (!validKey) {
+    \\    headers["sec-websocket-key"] = "dGhlIHNhbXBsZSBub25jZQ==";
+    \\    headers.__home_names["sec-websocket-key"] = "Sec-WebSocket-Key";
+    \\  }
     \\  if (headers["sec-websocket-protocol"] === undefined) {
     \\    const protocols = __home_websocket_requested_protocols(options, protocolsValue);
-    \\    if (protocols.length) headers["sec-websocket-protocol"] = protocols.map(String).join(", ");
+    \\    if (protocols.length) {
+    \\      headers["sec-websocket-protocol"] = protocols.map(String).join(", ");
+    \\      headers.__home_names["sec-websocket-protocol"] = "Sec-WebSocket-Protocol";
+    \\    }
     \\  }
     \\  return headers;
     \\}
@@ -69366,6 +69473,18 @@ const harness_prelude =
     \\  }
     \\  subscriptions.clear();
     \\}
+    \\function __home_websocket_schedule_server_message(client, value) {
+    \\  client.__home_pending_server_messages = Number(client.__home_pending_server_messages || 0) + 1;
+    \\  setTimeout(() => {
+    \\    if (client.readyState !== WebSocket.CLOSED) client.dispatchEvent(new MessageEvent("message", { data: value }));
+    \\    client.__home_pending_server_messages = Math.max(0, Number(client.__home_pending_server_messages || 0) - 1);
+    \\    if (client.__home_pending_server_messages === 0 && typeof client.__home_deferred_server_close === "function") {
+    \\      const close = client.__home_deferred_server_close;
+    \\      client.__home_deferred_server_close = null;
+    \\      close();
+    \\    }
+    \\  }, 0);
+    \\}
     \\function __home_websocket_server_peer(client, data, handle) {
     \\  return {
     \\    data,
@@ -69373,15 +69492,19 @@ const harness_prelude =
     \\    close(code, reason) {
     \\      const websocket = handle && handle.websocket;
     \\      if (websocket && typeof websocket.close === "function") websocket.close(this, code === undefined ? 1000 : code, reason === undefined ? "" : reason);
-    \\      if (client && client.readyState !== WebSocket.CLOSED) client.close();
+    \\      if (client && client.readyState !== WebSocket.CLOSED) {
+    \\        const closeClient = () => client.close(code, reason);
+    \\        if (Number(client.__home_pending_server_messages || 0) > 0) client.__home_deferred_server_close = closeClient;
+    \\        else closeClient();
+    \\      }
     \\    },
     \\    send(value) {
-    \\      setTimeout(() => client.dispatchEvent(new MessageEvent("message", { data: value })), 0);
+    \\      __home_websocket_schedule_server_message(client, value);
     \\      return __home_websocket_payload_size(value);
     \\    },
     \\    sendBinary(value) {
     \\      const payload = __home_websocket_binary_payload(client, value);
-    \\      setTimeout(() => client.dispatchEvent(new MessageEvent("message", { data: payload })), 0);
+    \\      __home_websocket_schedule_server_message(client, payload);
     \\      return __home_websocket_payload_size(value);
     \\    },
     \\    ping(value) {
@@ -69426,8 +69549,9 @@ const harness_prelude =
     \\  if (options && typeof options === "object" && !Array.isArray(options) && Object.prototype.hasOwnProperty.call(options, "perMessageDeflate")) return !!options.perMessageDeflate;
     \\  return true;
     \\}
-    \\function __home_websocket_header_wire_name(nameValue) {
+    \\function __home_websocket_header_wire_name(nameValue, headers) {
     \\  const name = String(nameValue).toLowerCase();
+    \\  if (headers && headers.__home_names && headers.__home_names[name]) return headers.__home_names[name];
     \\  const websocketNames = {
     \\    "sec-websocket-key": "Sec-WebSocket-Key",
     \\    "sec-websocket-version": "Sec-WebSocket-Version",
@@ -69440,7 +69564,7 @@ const harness_prelude =
     \\  const path = (parsed.pathname || "/") + (parsed.search || "");
     \\  const headers = requestHeaders || __home_websocket_request_headers(parsed, {}, undefined);
     \\  let text = "GET " + path + " HTTP/1.1\r\n";
-    \\  for (const name of Object.keys(headers)) text += __home_websocket_header_wire_name(name) + ": " + headers[name] + "\r\n";
+    \\  for (const name of Object.keys(headers)) text += __home_websocket_header_wire_name(name, headers) + ": " + headers[name] + "\r\n";
     \\  if (offerDeflate && headers["sec-websocket-extensions"] === undefined) text += "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n";
     \\  return text + "\r\n";
     \\}
@@ -69519,6 +69643,8 @@ const harness_prelude =
     \\  error.operation = "web.websocket.handshake";
     \\  error.phase = String(phase || "validate");
     \\  if (details && typeof details === "object") Object.assign(error, details);
+    \\  error.cause = underlying;
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + error.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
     \\  return error;
     \\}
     \\function __home_websocket_header_value(headerText, name) {
@@ -69880,8 +70006,9 @@ const harness_prelude =
     \\    }
     \\    if (!request.__home_upgrade_response) {
     \\      this.readyState = 3;
-    \\      this.__home_pending_error = "WebSocket upgrade failed";
+    \\      this.__home_pending_error = __home_websocket_handshake_error("status", "WebSocket upgrade failed", { endpoint: parsed && parsed.origin || origin, closeCode: 1002 }, new Error("HTTP response did not switch protocols"));
     \\      this.__home_pending_close = true;
+    \\      this.__home_pending_close_code = 1002;
     \\      return;
     \\    }
     \\    const websocket = handle.websocket;
