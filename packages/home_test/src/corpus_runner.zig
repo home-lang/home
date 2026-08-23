@@ -33406,12 +33406,23 @@ const harness_prelude =
     \\};
     \\const xit = it.skip;
     \\const xtest = test.skip;
+    \\function __home_each_format_name(template, args, rowIndex) {
+    \\  if (typeof template !== "string") return template;
+    \\  let argumentIndex = 0;
+    \\  return template.replace(/%[scdjifoO%#]/g, token => {
+    \\    if (token === "%%") return "%";
+    \\    if (token === "%#") return String(rowIndex);
+    \\    if (argumentIndex >= args.length) return token;
+    \\    return __home_util_format(token, args[argumentIndex++]);
+    \\  });
+    \\}
     \\function __home_each_for(runner) {
     \\  return function(rows) {
     \\    return function(name, fn) {
+    \\      let rowIndex = 0;
     \\      for (const row of rows) {
     \\        const args = Array.isArray(row) ? row : [row];
-    \\        const eachName = typeof name === "string" ? __home_util_format.apply(null, [name].concat(args)) : name;
+    \\        const eachName = __home_each_format_name(name, args, rowIndex++);
     \\        runner(eachName, () => {
     \\          const callArgs = args.slice();
     \\          if (typeof fn === "function" && fn.length > callArgs.length) callArgs.push(__home_done_callback);
@@ -92124,6 +92135,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_each_format_name(template, args, rowIndex)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_each_for(runner)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.each = __home_each_for(it)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip.each = __home_each_for(test.skip)") != null);
@@ -102383,6 +102395,34 @@ test "Bun module import rewrite lowers imported Jest globals fixture" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "import \"./12034.fixture\";") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect.extend") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeOne(actual)") != null);
+}
+
+test "bootstrap imported Jest globals keep each names bounded" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(
+        io,
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/12034/12034.test.js",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10) {
+        std.debug.print(
+            "imported Jest globals regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 10), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "Bun module import rewrite lowers default class static fixture" {
