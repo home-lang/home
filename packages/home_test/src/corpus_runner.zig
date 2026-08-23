@@ -54918,10 +54918,16 @@ const harness_prelude =
     \\};
     \\__home_stream_readable.fromWeb = function(web) {
     \\  const bytesPromise = __home_body_bytes(web);
-    \\  if (web && web.__home_owner) web.__home_owner.bodyUsed = true;
+    \\  if (web) {
+    \\    try { Object.defineProperty(web, "__home_node_from_web_consumed", { configurable: true, value: true }); } catch (error) {}
+    \\  }
+    \\  if (web && web.__home_owner) {
+    \\    web.__home_owner.bodyUsed = true;
+    \\    try { Object.defineProperty(web.__home_owner, "__home_body_transferred_to_node", { configurable: true, value: true }); } catch (error) {}
+    \\  }
     \\  if (web && typeof web.getReader === "function") {
     \\    try {
-    \\      Object.defineProperty(web, "getReader", { configurable: true, value() { throw new TypeError("ReadableStream is locked"); } });
+    \\      Object.defineProperty(web, "getReader", { configurable: true, value() { throw __home_readable_stream_lock_error("readableStream.getReader", new TypeError("Readable.fromWeb owns the stream reader")); } });
     \\    } catch (error) {}
     \\  }
     \\  return {
@@ -66979,6 +66985,19 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + phase + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
     \\  return failure;
     \\}
+    \\function __home_body_transferred_to_node_error(owner, operation) {
+    \\  const cause = new TypeError("Readable.fromWeb owns and consumes the response body stream");
+    \\  const failure = new TypeError("Body already used", { cause });
+    \\  failure.code = "ERR_BODY_ALREADY_USED";
+    \\  failure.operation = String(operation || "body.consume");
+    \\  failure.phase = "transferred-to-node";
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (transferred-to-node, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_require_response_body_ownership(owner, operation) {
+    \\  if (owner && (owner.__home_body_transferred_to_node || (owner.body && owner.body.__home_node_from_web_consumed))) throw __home_body_transferred_to_node_error(owner, operation);
+    \\}
     \\function __home_readable_stream_lock_error(operation, cause) {
     \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "another reader already owns the stream"));
     \\  const failure = new TypeError("ReadableStream is locked", { cause: underlying });
@@ -67243,12 +67262,14 @@ const harness_prelude =
     \\  return Promise.resolve(cached.value);
     \\}
     \\Response.prototype.text = function() {
+    \\  __home_require_response_body_ownership(this, "response.text");
     \\  const cached = __home_consume_static_response(this, "text");
     \\  if (cached) return cached;
     \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this, "response.text", true, "Cannot create a string longer than 2^32-1 characters").then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  return __home_consume_body_text(this, "response.text", "Cannot create a string longer than 2^32-1 characters").then(text => __home_strip_utf8_bom_text(text));
     \\};
     \\Response.prototype.json = function() {
+    \\  __home_require_response_body_ownership(this, "response.json");
     \\  if (this.body == null) return Promise.reject(new SyntaxError("Unexpected end of JSON input"));
     \\  if (String(this.headers.get("content-encoding") || this.headers.get("Content-Encoding") || "") !== "") return __home_consume_response_bytes(this, "response.json", true, "Cannot parse a JSON string longer than 2^32-1 characters").then(bytes => __home_parse_json_body_text(__home_utf8_bytes_to_text(bytes)));
     \\  return __home_consume_body_text(this, "response.json", "Cannot parse a JSON string longer than 2^32-1 characters").then(text => __home_parse_json_body_text(text));
@@ -67262,6 +67283,7 @@ const harness_prelude =
     \\  return null;
     \\}
     \\Response.prototype.arrayBuffer = function() {
+    \\  __home_require_response_body_ownership(this, "response.arrayBuffer");
     \\  const cached = __home_consume_static_response(this, "arrayBuffer");
     \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
@@ -67274,6 +67296,7 @@ const harness_prelude =
     \\  return __home_consume_response_bytes(this, "response.arrayBuffer", false, "Out of memory").then(bytes => new Uint8Array(bytes).buffer);
     \\};
     \\Response.prototype.blob = function() {
+    \\  __home_require_response_body_ownership(this, "response.blob");
     \\  const cached = __home_consume_static_response(this, "blob");
     \\  if (cached) return cached;
     \\  const type = __home_response_blob_type(this.headers);
@@ -67300,6 +67323,7 @@ const harness_prelude =
     \\  return blob;
     \\}
     \\Response.prototype.bytes = function() {
+    \\  __home_require_response_body_ownership(this, "response.bytes");
     \\  const cached = __home_consume_static_response(this, "bytes");
     \\  if (cached) return cached;
     \\  const direct = __home_response_direct_body_view(this);
@@ -67312,6 +67336,7 @@ const harness_prelude =
     \\  return __home_consume_response_bytes(this, "response.bytes", true, "Out of memory").then(bytes => new Uint8Array(bytes));
     \\};
     \\Response.prototype.formData = function() {
+    \\  __home_require_response_body_ownership(this, "response.formData");
     \\  if (this.body == null) return Promise.reject(__home_body_formdata_error("response.formData", __home_content_type(this.headers), new TypeError("Body is null")));
     \\  return __home_consume_response_bytes(this, "response.formData", true, "Out of memory").then(bytes => __home_parse_formdata_bytes(bytes, __home_content_type(this.headers)));
     \\};
@@ -128142,6 +128167,14 @@ test "bootstrap runner supports Readable.fromWeb and sha256 hash parity shape" {
         \\  expect(response.bodyUsed).toBe(false);
         \\  const stream = Readable.fromWeb(response.body!);
         \\  expect(response.bodyUsed).toBe(true);
+        \\  let readerError; try { response.body.getReader(); } catch (error) { readerError = error; }
+        \\  expect(readerError.code).toBe("ERR_BODY_STREAM_STATE"); expect(readerError.operation).toBe("readableStream.getReader"); expect(readerError.phase).toBe("locked");
+        \\  expect(readerError.cause).toBeInstanceOf(TypeError); expect(readerError.stack).toContain("Caused by:");
+        \\  for (const method of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
+        \\    let bodyError; try { response[method](); } catch (error) { bodyError = error; }
+        \\    expect(bodyError.code).toBe("ERR_BODY_ALREADY_USED"); expect(bodyError.operation).toBe("response." + method); expect(bodyError.phase).toBe("transferred-to-node");
+        \\    expect(bodyError.cause).toBeInstanceOf(TypeError); expect(bodyError.stack).toContain("Caused by:");
+        \\  }
         \\  const chunks = [];
         \\  for await (const chunk of stream) chunks.push(chunk);
         \\  expect(Bun.hash(Buffer.concat(chunks))).toBe(Bun.hash(bytes));
@@ -128159,6 +128192,18 @@ test "bootstrap runner supports Readable.fromWeb and sha256 hash parity shape" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/09555.test.ts");
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
+        std.debug.print("Readable.fromWeb ownership corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 5), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap rewrite erases ReadableStreamDefaultController declaration" {
