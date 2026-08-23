@@ -46926,7 +46926,7 @@ pub const Checker = struct {
         // aliases of modules without an export assignment stay writable
         // (`importsImplicitlyReadonly.ts`: `a2.x = 1` is clean).
         if (self.memberAccessReceiverIsRequireAssignmentBinding(object)) {
-            return !self.requireAliasTargetExportsWholeObject(object, local_name);
+            return !self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name);
         }
         const declaration = self.findLocalValueDeclBeforeExpression(object, local_name) orelse return false;
         const kind = self.hir.kindOf(declaration);
@@ -46936,35 +46936,21 @@ pub const Checker = struct {
         const source_name = hir_mod.identifierOf(self.hir, variable.init).name;
         if (self.namespaceImportSpecifierForLocal(source_name, variable.init) != null) return true;
         if (self.requireSpecifierForLocal(source_name, variable.init) != null) {
-            return !self.requireAliasTargetExportsWholeObject(variable.init, source_name);
+            return !self.requireAliasTargetPreservesCommonJsMemberFlags(variable.init, source_name);
         }
         return false;
     }
 
-    /// True when the module bound by `alias_name` (an `import x =
-    /// require(...)` binding in `anchor`'s virtual section) declares a
-    /// whole-object export assignment — either `export = SomeIdent` or
-    /// `module.exports = SomeIdent`. Such shapes carry per-member
-    /// readonly flags that must survive through the alias.
-    fn requireAliasTargetExportsWholeObject(self: *Checker, anchor: NodeId, alias_name: hir_mod.StringId) bool {
-        const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        const has_sections = self.sourceHasVirtualFilenameSections();
-        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
-            if (self.hir.kindOf(stmt) != .import_decl) continue;
-            if (!self.importDeclIsRequireAssignment(stmt)) continue;
-            const imp = hir_mod.importOf(self.hir, stmt);
-            if (imp.default_binding == hir_mod.none_node_id or
-                self.hir.kindOf(imp.default_binding) != .identifier or
-                hir_mod.identifierOf(self.hir, imp.default_binding).name != alias_name) continue;
-            return self.virtualModuleExportsWholeObject(stmt, imp.module);
-        }
-        return false;
+    /// True when the module bound by `alias_name` exposes a CommonJS export
+    /// object whose per-member readonly flags must survive through a require
+    /// alias. Ordinary ES module exports remain writable through `import =`.
+    fn requireAliasTargetPreservesCommonJsMemberFlags(self: *Checker, anchor: NodeId, alias_name: hir_mod.StringId) bool {
+        const specifier = self.requireSpecifierForLocal(alias_name, anchor) orelse return false;
+        const specifier_id = self.string_interner.intern(specifier) catch return false;
+        return self.virtualModulePreservesCommonJsMemberFlags(anchor, specifier_id);
     }
 
-    fn virtualModuleExportsWholeObject(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) bool {
+    fn virtualModulePreservesCommonJsMemberFlags(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) bool {
         const spec = self.string_interner.get(specifier);
         const resolved = (self.resolveVirtualModuleSpecifierPath(anchor, spec) catch return false) orelse return false;
         defer self.gpa.free(resolved);
@@ -46979,6 +46965,10 @@ pub const Checker = struct {
                     if (assignment.value != hir_mod.none_node_id and
                         self.nodeIsModuleExportsAccess(assignment.target) and
                         self.commonJsModuleExportsPropertyName(assignment.target) == null) return true;
+                    if (self.commonJsExportsAssignmentName(node) != null) return true;
+                },
+                .call_expr => if ((self.commonJsDefinePropertyCall(node) catch null)) |call| {
+                    if (self.nodeIsCommonJsExportsObject(call.target)) return true;
                 },
                 .export_decl => {
                     if (!self.exportDeclIsExportEquals(node)) continue;
