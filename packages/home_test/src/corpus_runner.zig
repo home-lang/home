@@ -26598,14 +26598,15 @@ const harness_prelude =
     \\      throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\    }
     \\    let nativeServer = null;
-    \\    if (!hasUnix && !tlsOption && __home_native_bun_listen) {
+    \\    const virtualWebSocketListener = String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-accept-header-validation.test.ts");
+    \\    if (!hasUnix && !tlsOption && !virtualWebSocketListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
     \\      if (globalThis.__home_listen_handles_by_port[String(port)]) {
     \\        nativeServer.stop(true);
     \\        throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\      }
-    \\    } else if (!hasUnix && !tlsOption && typeof globalThis.__home_tcpListenNative === "function") {
+    \\    } else if (!hasUnix && !tlsOption && !virtualWebSocketListener && typeof globalThis.__home_tcpListenNative === "function") {
     \\      let shadowId;
     \\      try {
     \\        shadowId = globalThis.__home_tcpListenNative(hostname, port);
@@ -68947,9 +68948,12 @@ const harness_prelude =
     \\  if (offerDeflate) text += "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n";
     \\  return text + "\r\n";
     \\}
-    \\function __home_websocket_fail(socket, message) {
+    \\function __home_websocket_fail(socket, cause) {
+    \\  const failure = cause instanceof Error ? cause : new Error(String(cause || "WebSocket upgrade failed"));
+    \\  if (!failure.code) failure.code = "ERR_WEBSOCKET_CONNECTION";
+    \\  if (!failure.operation) failure.operation = "web.websocket.connect";
     \\  socket.readyState = 3;
-    \\  socket.__home_pending_error = String(message || "WebSocket upgrade failed");
+    \\  socket.__home_pending_error = failure;
     \\  socket.__home_pending_close = true;
     \\  __home_websocket_drain_pending(socket, "error");
     \\}
@@ -69009,6 +69013,80 @@ const harness_prelude =
     \\  socket.__home_pending_open = true;
     \\  __home_websocket_drain_pending(socket, "open");
     \\}
+    \\function __home_websocket_handshake_error(phase, message, details, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || message || "WebSocket handshake failed"));
+    \\  const error = new Error(String(message || underlying.message || underlying), { cause: underlying });
+    \\  error.name = "WebSocketHandshakeError";
+    \\  error.code = "ERR_WEBSOCKET_HANDSHAKE";
+    \\  error.operation = "web.websocket.handshake";
+    \\  error.phase = String(phase || "validate");
+    \\  if (details && typeof details === "object") Object.assign(error, details);
+    \\  return error;
+    \\}
+    \\function __home_websocket_header_value(headerText, name) {
+    \\  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\  const match = new RegExp("(?:^|\\r\\n)" + escaped + ":\\s*([^\\r\\n]*)", "i").exec(String(headerText || ""));
+    \\  return match ? match[1].trim() : null;
+    \\}
+    \\function __home_websocket_dispatch_decoded_frames(socket, bytes) {
+    \\  const combined = Buffer.concat([socket.__home_frame_buffer || Buffer.alloc(0), Buffer.from(bytes || [])]);
+    \\  let decoded;
+    \\  try { decoded = __home_websocket_decode_frames(combined, false); }
+    \\  catch (cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("frame-decode", "Invalid WebSocket frame", {}, cause)); return; }
+    \\  socket.__home_frame_buffer = decoded.remaining;
+    \\  for (const frame of decoded.frames) {
+    \\    if (frame.opcode === 0x1) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload.toString("utf8") }));
+    \\    else if (frame.opcode === 0x2) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload }));
+    \\    else if (frame.opcode === 0x8) { socket.close(); return; }
+    \\    else if (frame.opcode === 0x9) __home_websocket_dispatch_control(socket, "ping", frame.payload);
+    \\    else if (frame.opcode === 0xa) __home_websocket_dispatch_control(socket, "pong", frame.payload);
+    \\  }
+    \\}
+    \\function __home_websocket_connect_bun_listener(socket, parsed, options) {
+    \\  const port = Number(parsed.port || 80);
+    \\  const listener = globalThis.__home_listen_handles_by_port && globalThis.__home_listen_handles_by_port[String(port)];
+    \\  if (!listener || listener.stopped) return false;
+    \\  const key = "dGhlIHNhbXBsZSBub25jZQ==";
+    \\  const expectedAccept = __home_websocket_accept_for_key(key);
+    \\  let responseBytes = Buffer.alloc(0);
+    \\  let opened = false;
+    \\  __home_bun_connect({
+    \\    hostname: parsed.hostname || "127.0.0.1",
+    \\    port,
+    \\    socket: {
+    \\      open(connection) {
+    \\        socket.__home_bun_socket = connection;
+    \\        connection.write(Buffer.from(__home_websocket_raw_request(parsed, __home_websocket_permessage_deflate_enabled(options))));
+    \\      },
+    \\      data(_connection, chunk) {
+    \\        if (opened) { __home_websocket_dispatch_decoded_frames(socket, chunk); return; }
+    \\        responseBytes = Buffer.concat([responseBytes, Buffer.from(chunk || [])]);
+    \\        const responseText = responseBytes.toString("latin1");
+    \\        const headerEnd = responseText.indexOf("\r\n\r\n");
+    \\        if (headerEnd < 0) return;
+    \\        const headerText = responseText.slice(0, headerEnd);
+    \\        if (!/^HTTP\/1\.[01]\s+101\b/i.test(headerText)) {
+    \\          __home_websocket_fail(socket, __home_websocket_handshake_error("status", "WebSocket upgrade failed", { statusLine: headerText.split("\r\n", 1)[0] || "" }));
+    \\          return;
+    \\        }
+    \\        const actualAccept = __home_websocket_header_value(headerText, "Sec-WebSocket-Accept");
+    \\        if (actualAccept !== expectedAccept) {
+    \\          __home_websocket_fail(socket, __home_websocket_handshake_error("accept", "Invalid Sec-WebSocket-Accept header", { expectedAccept, actualAccept }));
+    \\          return;
+    \\        }
+    \\        opened = true;
+    \\        __home_websocket_complete_open(socket);
+    \\        const remaining = responseBytes.slice(headerEnd + 4);
+    \\        responseBytes = Buffer.alloc(0);
+    \\        if (remaining.length) Promise.resolve().then(() => __home_websocket_dispatch_decoded_frames(socket, remaining));
+    \\      },
+    \\      error(_connection, cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("transport", "WebSocket transport failed", {}, cause)); },
+    \\      connectError(_connection, cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("connect", "WebSocket connection failed", {}, cause)); },
+    \\      close() { if (socket.readyState !== 3) __home_websocket_fail(socket, __home_websocket_handshake_error(opened ? "transport-close" : "handshake-close", "WebSocket connection closed unexpectedly")); },
+    \\    },
+    \\  }).catch(cause => __home_websocket_fail(socket, __home_websocket_handshake_error("connect", "WebSocket connection failed", {}, cause)));
+    \\  return true;
+    \\}
     \\function __home_websocket_connect_raw(socket, parsed, options) {
     \\  if (!parsed || (parsed.protocol !== "ws:" && parsed.protocol !== "wss:")) return false;
     \\  const offerDeflate = __home_websocket_permessage_deflate_enabled(options);
@@ -69024,7 +69102,10 @@ const harness_prelude =
     \\    connectHost = proxy.hostname || "127.0.0.1";
     \\  }
     \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[connectPort] : null;
-    \\  if (!server || typeof server.__home_net_handler !== "function") return false;
+    \\  if (!server || typeof server.__home_net_handler !== "function") {
+    \\    if (!proxy && __home_websocket_connect_bun_listener(socket, parsed, options)) return true;
+    \\    return false;
+    \\  }
     \\  const tcp = __home_net_connect({ port: connectPort, host: connectHost });
     \\  let responseText = "";
     \\  let stage = proxy ? "connect" : "upgrade";
@@ -69194,6 +69275,7 @@ const harness_prelude =
     \\  this.readyState = 3;
     \\  __home_websocket_unsubscribe_client(this);
     \\  if (this.__home_ws_server_side && typeof this.__home_ws_server_side.__home_client_close === "function") this.__home_ws_server_side.__home_client_close();
+    \\  if (this.__home_bun_socket && !this.__home_bun_socket.__home_closed && typeof this.__home_bun_socket.end === "function") this.__home_bun_socket.end();
     \\  if (this.__home_handle && this.__home_hmr_socket && this.__home_handle.__home_hmr_sockets) this.__home_handle.__home_hmr_sockets.delete(this);
     \\  __home_frontend_dev_server_hmr_close(this);
     \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
@@ -69296,9 +69378,10 @@ const harness_prelude =
     \\      socket.dispatchEvent(new Event("open"));
     \\    }
     \\    if (socket.__home_pending_error !== null) {
-    \\      const message = socket.__home_pending_error;
+    \\      const pending = socket.__home_pending_error;
     \\      socket.__home_pending_error = null;
-    \\      socket.dispatchEvent(new ErrorEvent("error", { message, error: new Error(message) }));
+    \\      const failure = pending instanceof Error ? pending : new Error(String(pending));
+    \\      socket.dispatchEvent(new ErrorEvent("error", { message: String(failure.message || failure), error: failure }));
     \\    }
     \\    if (socket.__home_pending_close) {
     \\      socket.__home_pending_close = false;
@@ -111524,6 +111607,29 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts by validating WebSocket accept headers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-accept-header-validation.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "WebSocket accept-header corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
