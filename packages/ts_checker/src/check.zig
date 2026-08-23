@@ -35021,6 +35021,12 @@ pub const Checker = struct {
                 self.expressionContainsThis(pp.default_value);
             const rest_has_contextual_signature = pp.flags.is_rest and
                 self.functionHasContextualCallableType(node);
+            const has_named_jsdoc_param = pp.name != hir_mod.none_node_id and
+                self.hir.kindOf(pp.name) == .identifier and
+                self.fnHasLeadingJsDocParam(
+                    node,
+                    self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name),
+                );
             if (!has_anno and !has_jsdoc_param_type and jsdoc_context_param_t == null and
                 contextual_tuple_param_t == null and
                 contextual_param_t == null and
@@ -35032,7 +35038,7 @@ pub const Checker = struct {
                 !accessor_has_invalid_this and
                 !self.parameterInEs5ObjectLiteralSetterWithSuper(p) and
                 !self.functionIsObjectDefinePropertyDescriptorAccessor(node) and
-                !(self.functionOrOwnerHasLeadingJsDocParamOrTypeTag(node) and
+                !((has_named_jsdoc_param or self.functionOrOwnerHasLeadingJsDocParamOrTypeTag(node)) and
                     !self.fnIsJsDocConstructorOverloadImplementation(node)) and
                 !self.functionIsPrivateAmbientClassMember(node) and
                 !rest_has_contextual_signature and
@@ -86241,12 +86247,35 @@ pub const Checker = struct {
         if (param_name.len == 0) return false;
         const src = self.source orelse return false;
         const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
-        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
-        defer self.gpa.free(tags);
-        for (tags) |tag| {
-            if (tag.kind != .param_tag) continue;
-            // `@param {T} name [desc]` ÃÂ¢ÃÂÃÂ match by name.
-            if (std.mem.eql(u8, tag.name, param_name)) return true;
+        if (ts_parser.jsdoc.parse(self.gpa, body)) |tags| {
+            defer self.gpa.free(tags);
+            for (tags) |tag| {
+                if (tag.kind != .param_tag) continue;
+                // `@param {T} name [desc]` ÃÂ¢ÃÂÃÂ match by name.
+                if (std.mem.eql(u8, tag.name, param_name)) return true;
+            }
+        } else |_| {}
+        return jsDocBodyHasParamNameText(body, param_name);
+    }
+
+    fn jsDocBodyHasParamNameText(body: []const u8, param_name: []const u8) bool {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, body, search_start, "@param")) |marker| {
+            var cursor = marker + "@param".len;
+            search_start = cursor;
+            if (cursor < body.len and !std.ascii.isWhitespace(body[cursor]) and body[cursor] != '{') continue;
+            while (cursor < body.len and std.ascii.isWhitespace(body[cursor])) : (cursor += 1) {}
+            if (cursor < body.len and body[cursor] == '{') {
+                cursor = (std.mem.indexOfScalarPos(u8, body, cursor + 1, '}') orelse continue) + 1;
+                while (cursor < body.len and std.ascii.isWhitespace(body[cursor])) : (cursor += 1) {}
+            }
+            if (cursor < body.len and body[cursor] == '[') cursor += 1;
+            if (cursor + 3 <= body.len and std.mem.eql(u8, body[cursor .. cursor + 3], "...")) cursor += 3;
+            const name_start = cursor;
+            while (cursor < body.len and
+                (std.ascii.isAlphanumeric(body[cursor]) or body[cursor] == '_' or body[cursor] == '$')) : (cursor += 1)
+            {}
+            if (cursor > name_start and std.mem.eql(u8, body[name_start..cursor], param_name)) return true;
         }
         return false;
     }
@@ -225411,6 +225440,22 @@ test "checker: checkjs JSDoc param optional suffix rejects null" {
     }
     try T.expect(assignment_found);
     try T.expect(argument_found);
+}
+
+test "checker: malformed JSDoc param types suppress implicit any by name" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @Filename: /a.js
+        \\/** @param {???!?number?=} documented */
+        \\function f(documented, untagged) {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: checkjs optional JSDoc param rejects binding pattern implementation parameter" {
