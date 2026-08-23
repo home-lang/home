@@ -5373,6 +5373,7 @@ pub const Checker = struct {
         try self.checkCommonJsDefinePropertyDeclarationPrivacy();
         try self.checkAmbientModuleExportAssignments(stmts);
         try self.checkJSDocMalformedImportAttributes(root);
+        try self.checkJSDocTypeOnlyImportAttributes(root);
         try self.checkJSDocImportLocalConflicts(root);
         try self.checkJSDocImportRequireSyntax(root);
         try self.checkJSDocImportTypeModuleTargets(root);
@@ -6606,6 +6607,40 @@ pub const Checker = struct {
                     .pos = open_pos,
                     .code = TsCodes.expected_open_brace,
                     .message = "'{' expected.",
+                });
+            }
+        }
+    }
+
+    fn checkJSDocTypeOnlyImportAttributes(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+            if (!self.sourcePositionIsJsLike(comment_start)) continue;
+            const body = src[body_start..comment_end];
+            var tag_search: usize = 0;
+            while (std.mem.indexOfPos(u8, body, tag_search, "@import")) |tag_at| {
+                const clause_start = tag_at + "@import".len;
+                tag_search = clause_start;
+                if (tag_at > 0 and isJsDocIdentChar(body[tag_at - 1])) continue;
+                if (clause_start < body.len and isJsDocIdentChar(body[clause_start])) continue;
+                const clause_end = jsDocTagBodyEnd(body, clause_start);
+                const clause = body[clause_start..clause_end];
+                if (!jsDocImportHasAttributes(clause) or jsDocImportResolutionMode(clause) != null) continue;
+                const attr = jsDocWordIndex(clause, "with") orelse
+                    (jsDocWordIndex(clause, "assert") orelse continue);
+                const pos: u32 = @intCast(body_start + clause_start + attr);
+                if (self.hasDiagnosticAtPosition(TsCodes.import_attributes_type_only, pos)) continue;
+                try self.diagnostics.append(self.gpa, .{
+                    .node = root,
+                    .pos = pos,
+                    .code = TsCodes.import_attributes_type_only,
+                    .message = "Import attributes cannot be used with type-only imports or exports.",
                 });
             }
         }
@@ -91796,7 +91831,7 @@ pub const Checker = struct {
             const body = jsDocNormalizeBody(src[search..raw_end], &norm_buf) orelse continue;
             const orig = jsDocImportLocalToOriginal(body, base) orelse continue;
             const resolution_mode = if (jsDocImportHasAttributes(body))
-                jsDocImportResolutionMode(body) orelse return null
+                jsDocImportResolutionMode(body)
             else
                 null;
             const spec = jsDocImportSpec(body) orelse continue;
@@ -222073,6 +222108,25 @@ test "checker: checkjs JSDoc bare imports preserve value-only export meaning" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.import_attributes_type_only));
+}
+
+test "checker: invalid JSDoc import attributes retain type bindings" {
+    const b = try newBoundSetup(
+        \\// @module: esnext
+        \\// @checkjs: true
+        \\// @filename: /types.ts
+        \\export interface I {}
+        \\// @filename: /a.js
+        \\/** @import { I } from "./types" with { type: "json" } */
+        \\/** @param {I} value */
+        \\export function f(value) {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.import_attributes_type_only));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
 }
 
 test "checker: relative typeof imports with resolution-mode resolve value exports" {
