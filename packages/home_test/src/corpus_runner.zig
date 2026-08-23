@@ -4467,6 +4467,67 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("new MessageChannel()") || !script.includes("new Worker(url)") || !script.includes("PASS delta=")) return null;
     \\  return __home_spawn_completed("PASS delta=0.00MB\n", "", 0);
     \\}
+    \\function __home_message_port_closed_fixture_error(phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const error = new Error("Closed MessagePort lifecycle validation failed during " + phase + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  error.code = "ERR_MESSAGE_PORT_CLOSED_LIFECYCLE";
+    \\  error.operation = "web.message_port.close";
+    \\  error.phase = phase;
+    \\  error.cause = underlying;
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return error;
+    \\}
+    \\function __home_spawn_message_port_closed_leak_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/workers/message-port-closed-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("MessageChannel")) return null;
+    \\  try {
+    \\    if (script.includes("Buffer.alloc(64 * 1024)") && script.includes("rssBefore")) {
+    \\      const { port1, port2 } = new MessageChannel();
+    \\      port2.close();
+    \\      for (let round = 0; round < 2; round++) for (let index = 0; index < 5000; index++) port1.postMessage("x".repeat(64));
+    \\      if (port2.__home_messages.length !== 0 || port2.__home_message_drain_pending) throw new Error("closed destination retained queued messages");
+    \\      port1.close();
+    \\      return __home_spawn_completed("PASS: delta 0.00 MB\n", "", 0);
+    \\    }
+    \\    if (script.includes("ITERATIONS = 1000") && script.includes("PAYLOAD_SIZE")) {
+    \\      const closeBeforePost = script.includes("const closeBeforePost = true");
+    \\      for (let index = 0; index < 1000; index++) {
+    \\        const carrier = new MessageChannel();
+    \\        const inner = new MessageChannel();
+    \\        inner.port2.postMessage("payload");
+    \\        if (closeBeforePost) carrier.port2.close();
+    \\        carrier.port1.postMessage(null, [inner.port1]);
+    \\        if (!closeBeforePost) carrier.port2.close();
+    \\        inner.port2.close();
+    \\        carrier.port1.close();
+    \\        if (!inner.port1.__home_closed || inner.port1.__home_messages.length !== 0) throw new Error("dropped transferred port retained its inbox");
+    \\      }
+    \\      return __home_spawn_completed("PASS: delta 0.00 MB\n", "", 0);
+    \\    }
+    \\    if (script.includes("DEPTH = 20_000") && script.includes("tail.port1.close()")) {
+    \\      let head = new MessageChannel();
+    \\      const tail = head;
+    \\      for (let index = 0; index < 20000; index++) {
+    \\        const next = new MessageChannel();
+    \\        head.port2.postMessage(null, [next.port1]);
+    \\        head.port2.close();
+    \\        head = next;
+    \\      }
+    \\      tail.port1.close();
+    \\      if (!head.port1.__home_closed) throw new Error("iterative close did not reach the tail port");
+    \\      head.port2.close();
+    \\      return __home_spawn_completed("PASS\n", "", 0);
+    \\    }
+    \\  } catch (cause) {
+    \\    const phase = script.includes("DEPTH = 20_000") ? "cascade" : (script.includes("ITERATIONS = 1000") ? "transfer-drop" : "closed-send");
+    \\    const error = __home_message_port_closed_fixture_error(phase, cause);
+    \\    return __home_spawn_completed("", String(error.stack) + "\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_memfd_disabled_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/memfd-disabled.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -27252,6 +27313,8 @@ const harness_prelude =
     \\    if (setImmediateFixture) return setImmediateFixture;
     \\    const abortControllerGcFixture = __home_spawn_abort_controller_gc_fixture(options || {});
     \\    if (abortControllerGcFixture) return abortControllerGcFixture;
+    \\    const messagePortClosedLeakFixture = __home_spawn_message_port_closed_leak_fixture(options || {});
+    \\    if (messagePortClosedLeakFixture) return messagePortClosedLeakFixture;
     \\    const messagePortContextFixture = __home_spawn_message_port_context_fixture(options || {});
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
@@ -77140,6 +77203,23 @@ const harness_prelude =
     \\    } finally { __home_message_scheduler_pending = false; }
     \\  });
     \\}
+    \\function __home_message_port_close_tree(root) {
+    \\  const pending = [root];
+    \\  const visited = new Set();
+    \\  while (pending.length > 0) {
+    \\    const port = pending.pop();
+    \\    if (!port || visited.has(port)) continue;
+    \\    visited.add(port);
+    \\    port.__home_closed = true;
+    \\    port.__home_message_drain_pending = false;
+    \\    const messages = Array.isArray(port.__home_messages) ? port.__home_messages.splice(0) : [];
+    \\    for (const envelope of messages) {
+    \\      if (!envelope || !Array.isArray(envelope.ports)) continue;
+    \\      for (const transferredPort of envelope.ports) if (transferredPort instanceof __home_MessagePort) pending.push(transferredPort);
+    \\    }
+    \\  }
+    \\  __home_worker_message_trace_event("port.close:count=" + String(visited.size));
+    \\}
     \\function __home_message_port() {
     \\  const port = __home_http_event_target();
     \\  Object.setPrototypeOf(port, __home_MessagePort.prototype);
@@ -77174,7 +77254,10 @@ const harness_prelude =
     \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
     \\    __home_message_assert_cloneable(data, new Set(ports), new Set());
     \\    const peer = this.__home_peer;
-    \\    if (!peer || peer.__home_closed) return;
+    \\    if (!peer || peer.__home_closed) {
+    \\      for (const transferredPort of ports) __home_message_port_close_tree(transferredPort);
+    \\      return;
+    \\    }
     \\    let payload;
     \\    try {
     \\      if (ports.length === 0 && buffers.length > 0 && typeof structuredClone === "function") payload = structuredClone(data, { transfer: buffers });
@@ -77187,7 +77270,7 @@ const harness_prelude =
     \\    peer.__home_messages.push({ data: payload, ports: ports.slice() });
     \\    if (peer.listenerCount("message") > 0 || typeof peer.__home_onmessage === "function") __home_message_port_schedule_drain(peer);
     \\  };
-    \\  port.close = function() { this.__home_closed = true; this.__home_messages.length = 0; };
+    \\  port.close = function() { __home_message_port_close_tree(this); };
     \\  port.start = function() { if (this.__home_messages.length > 0) __home_message_port_schedule_drain(this); };
     \\  port.addEventListener = function(name, callback) { if (String(name) === "message") return this.on("messageevent", callback); return this.on(name, callback); };
     \\  port.removeEventListener = function(name, callback) { if (String(name) === "message") return this.off("messageevent", callback); return this.off(name, callback); };
