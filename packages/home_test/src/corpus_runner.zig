@@ -68861,6 +68861,46 @@ const harness_prelude =
     \\  if (value && typeof value.length === "number") return Number(value.length) || 0;
     \\  return Buffer.byteLength(String(value));
     \\}
+    \\function __home_websocket_server_max_payload_length(handle) {
+    \\  const websocket = handle && handle.websocket;
+    \\  if (!websocket || websocket.maxPayloadLength === undefined || websocket.maxPayloadLength === null) return 16 * 1024 * 1024;
+    \\  const configured = Number(websocket.maxPayloadLength);
+    \\  if (!Number.isFinite(configured)) return 16 * 1024 * 1024;
+    \\  return Math.min(0xffffffff, Math.max(0, Math.trunc(configured)));
+    \\}
+    \\function __home_websocket_server_message_failure(client, serverSide, handle, messageBytes, maxPayloadLength, compressed) {
+    \\  if (!client || client.readyState === WebSocket.CLOSED) return;
+    \\  const cause = new RangeError("WebSocket message exceeds maxPayloadLength");
+    \\  const failure = new Error("WebSocket server rejected an oversized message", { cause });
+    \\  Object.defineProperty(failure, "name", { configurable: true, writable: true, value: "WebSocketServerMessageTooBigError" });
+    \\  failure.code = "ERR_WEBSOCKET_MESSAGE_TOO_BIG";
+    \\  failure.operation = "web.websocket.server.receive";
+    \\  failure.phase = compressed ? "decompress-limit" : "payload-limit";
+    \\  failure.closeCode = 1006;
+    \\  failure.messageBytes = Number(messageBytes);
+    \\  failure.decompressedBytes = Number(messageBytes);
+    \\  failure.maxPayloadLength = Number(maxPayloadLength);
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  client.__home_last_receive_error = failure;
+    \\  if (serverSide) serverSide.__home_last_receive_error = failure;
+    \\  client.readyState = WebSocket.CLOSED;
+    \\  client.__home_pending_open = false;
+    \\  client.__home_pending_server_open = null;
+    \\  __home_websocket_unsubscribe_client(client);
+    \\  Promise.resolve().then(() => {
+    \\    const websocket = handle && handle.websocket;
+    \\    if (websocket && typeof websocket.close === "function") {
+    \\      try { websocket.close(serverSide, 1006, ""); }
+    \\      catch (callbackCause) {
+    \\        const callbackError = callbackCause instanceof Error ? callbackCause : new Error(String(callbackCause));
+    \\        failure.closeCallbackCause = callbackError;
+    \\        failure.stack += "\nClose callback caused by: " + String(callbackError.stack || callbackError);
+    \\      }
+    \\    }
+    \\    client.dispatchEvent(__home_websocket_close_event(1006, "", false));
+    \\  });
+    \\}
     \\function __home_websocket_control_payload(value) {
     \\  if (value === undefined || value === null) return Buffer.alloc(0);
     \\  if (typeof Blob === "function" && value instanceof Blob) return value;
@@ -69659,6 +69699,12 @@ const harness_prelude =
     \\  const websocket = handle && handle.websocket;
     \\  if (!websocket || typeof websocket.message !== "function") return;
     \\  const serverSide = this.__home_server_side || __home_websocket_server_peer(this, undefined, handle);
+    \\  const messageBytes = __home_websocket_payload_size(message);
+    \\  const maxPayloadLength = __home_websocket_server_max_payload_length(handle);
+    \\  if (messageBytes > maxPayloadLength) {
+    \\    __home_websocket_server_message_failure(this, serverSide, handle, messageBytes, maxPayloadLength, !!websocket.perMessageDeflate);
+    \\    return;
+    \\  }
     \\  websocket.message(serverSide, message);
     \\};
     \\WebSocket.prototype.ping = function(value) {
@@ -112232,6 +112278,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     try std.testing.expectEqual(@as(usize, 0), simple_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), simple_summary.unsupported);
 
+    var full_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate.test.ts");
+    defer full_summary.deinit(std.testing.allocator);
+
+    if (full_summary.failed != 0 or full_summary.unsupported != 0 or full_summary.passed != 6 or full_summary.todo != 1) {
+        std.debug.print(
+            "permessage-deflate corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ full_summary.passed, full_summary.failed, full_summary.todo, full_summary.unsupported, full_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), full_summary.files);
+    try std.testing.expectEqual(@as(usize, 6), full_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), full_summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), full_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), full_summary.unsupported);
+
     const source =
         \\import { expect, test } from "bun:test";
         \\test("oversized inflate errors retain their operation and cause", async () => {
@@ -112261,6 +112322,36 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
         \\  expect(errorEvent.error.stack).toContain("permessage-deflate-error.home-regression.test.js");
         \\  expect({ code: closeEvent.code, reason: closeEvent.reason }).toEqual({ code: 1009, reason: "Message too big" });
         \\});
+        \\test("server payload limit failures retain diagnostics across abnormal closure", async () => {
+        \\  const client = Object.create(WebSocket.prototype);
+        \\  client.__home_listeners = Object.create(null);
+        \\  client.__home_pending_open = false;
+        \\  client.__home_pending_error = null;
+        \\  client.__home_pending_close = false;
+        \\  client.__home_pending_flush = false;
+        \\  client.__home_pending_server_open = null;
+        \\  client.readyState = WebSocket.OPEN;
+        \\  const serverSide = {};
+        \\  let serverClose = null;
+        \\  const handle = { websocket: { perMessageDeflate: true, close(ws, code, reason) { serverClose = { ws, code, reason }; } } };
+        \\  const closed = new Promise(resolve => client.onclose = resolve);
+        \\  __home_websocket_server_message_failure(client, serverSide, handle, 4000, 1024, true);
+        \\  const closeEvent = await closed;
+        \\  const error = serverSide.__home_last_receive_error;
+        \\  expect(error.name).toBe("WebSocketServerMessageTooBigError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_MESSAGE_TOO_BIG");
+        \\  expect(error.operation).toBe("web.websocket.server.receive");
+        \\  expect(error.phase).toBe("decompress-limit");
+        \\  expect(error.closeCode).toBe(1006);
+        \\  expect(error.messageBytes).toBe(4000);
+        \\  expect(error.decompressedBytes).toBe(4000);
+        \\  expect(error.maxPayloadLength).toBe(1024);
+        \\  expect(error.cause).toBeInstanceOf(RangeError);
+        \\  expect(error.stack).toContain("web.websocket.server.receive [decompress-limit]");
+        \\  expect(error.stack).toContain("permessage-deflate-error.home-regression.test.js");
+        \\  expect(serverClose).toEqual({ ws: serverSide, code: 1006, reason: "" });
+        \\  expect({ code: closeEvent.code, wasClean: closeEvent.wasClean }).toEqual({ code: 1006, wasClean: false });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/permessage-deflate-error.home-regression.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -112273,7 +112364,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
         std.debug.print("structured permessage-deflate error regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
