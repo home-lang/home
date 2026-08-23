@@ -7715,6 +7715,9 @@ pub const Checker = struct {
         const extends_name = self.string_interner.get(extends_name_id);
         const jsdoc_extends = jsDocFirstExtendsOrAugmentsType(jsdoc.body, jsdoc.start) orelse return;
         if (std.mem.eql(u8, jsdoc_extends.name, extends_name)) return;
+        if (self.source) |src| {
+            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.type_text, class_node);
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "JSDoc '@{s} {s}' does not match the 'extends {s}' clause.",
@@ -92010,7 +92013,7 @@ pub const Checker = struct {
             return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
         }
 
-        if (std.mem.eql(u8, name, "Promise")) {
+        if (std.mem.eql(u8, name, "Promise") or std.mem.eql(u8, name, "Promise.")) {
             const value_text = args.next() orelse return null;
             const value_t = (try self.jsDocTypeTextToType(src, value_text)) orelse types.Primitive.any;
             return try self.buildStructuralPromise(value_t);
@@ -221140,6 +221143,20 @@ test "checker: checked-JS Closure function type syntax reports parse errors with
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
+test "checker: Closure Promise generic syntax is a valid async JSDoc return" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: file.js
+        \\/** @returns {Promise.<*>} */
+        \\async function f() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_return_must_be_promise_did_you_mean));
+}
+
 test "checker: contextual async JSDoc callbacks compare inferred Promise returns" {
     const s = try newSetup(
         \\// @allowJs: true
@@ -222642,7 +222659,7 @@ test "checker: checkjs class JSDoc @extends mismatch reports TS8023" {
         }
     }
     try T.expect(found);
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
 test "checker: checkjs class JSDoc @augments mismatch reports TS8023" {
