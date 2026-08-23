@@ -61087,6 +61087,9 @@ const harness_prelude =
     \\const __home_grpc_echo_service_definition = {
     \\  __home_name: "EchoService",
     \\  echo: { path: "/EchoService/Echo", requestStream: false, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  echoClientStream: { path: "/EchoService/EchoClientStream", requestStream: true, responseStream: false, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  echoServerStream: { path: "/EchoService/EchoServerStream", requestStream: false, responseStream: true, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
+    \\  echoBidiStream: { path: "/EchoService/EchoBidiStream", requestStream: true, responseStream: true, requestSerialize: value => value, requestDeserialize: value => value, responseSerialize: value => value, responseDeserialize: value => value, __home_proto: true },
     \\};
     \\__home_grpc_EchoService.service = __home_grpc_echo_service_definition;
     \\__home_grpc_EchoService.prototype.__home_outlier_clock = function() { return Number(globalThis.__home_performance_clock || 0); };
@@ -61802,30 +61805,57 @@ const harness_prelude =
     \\  } else Promise.resolve().then(() => invokeAttempt(0));
     \\  return clientCall;
     \\};
+    \\function __home_grpc_stream_failure(error, method, target, phase, fallbackCode) {
+    \\  const cause = error instanceof Error ? error : new Error(String(error || "gRPC stream failed"));
+    \\  const details = String(cause.details || cause.message || cause);
+    \\  const numericCode = Number(cause.code);
+    \\  const failure = new Error("Client." + String(method) + " failed for '" + String(target) + "': " + details);
+    \\  failure.code = Number.isFinite(numericCode) && numericCode !== 0 ? numericCode : (fallbackCode || __home_grpc_status.UNKNOWN);
+    \\  failure.details = details;
+    \\  failure.operation = String(method);
+    \\  failure.phase = String(phase || "stream");
+    \\  failure.target = String(target || "");
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at Client." + failure.operation + " (phase " + failure.phase + ", target " + failure.target + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
+    \\function __home_grpc_stream_handler(client, method, options) {
+    \\  if (client.__home_closed) throw __home_grpc_stream_failure(new Error("The client is closed"), method, client.__home_target, "dispatch", __home_grpc_status.UNAVAILABLE);
+    \\  if (options && options.deadline && Number(new Date(options.deadline)) <= Date.now()) throw __home_grpc_stream_failure(new Error("Deadline exceeded"), method, client.__home_target, "deadline", __home_grpc_status.DEADLINE_EXCEEDED);
+    \\  const server = client.__home_server();
+    \\  const handler = server && server.__home_services[method];
+    \\  if (typeof handler !== "function") throw __home_grpc_stream_failure(new Error("The server does not implement the method " + String(method)), method, client.__home_target, "dispatch", server ? __home_grpc_status.UNIMPLEMENTED : __home_grpc_status.UNAVAILABLE);
+    \\  client.__home_touch();
+    \\  return handler;
+    \\}
     \\__home_grpc_EchoService.prototype.echoServerStream = function(request, options) {
     \\  const clientStream = __home_grpc_stream();
-    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoServerStream;
     \\  Promise.resolve().then(() => {
-    \\    if (!handler) return clientStream.emit("error", new Error("gRPC method not implemented"));
+    \\    let handler;
+    \\    try { handler = __home_grpc_stream_handler(this, "echoServerStream", options); }
+    \\    catch (error) { clientStream.emit("error", error); return; }
+    \\    let ended = false;
     \\    const serverCall = {
     \\      request,
-    \\      write(data) { clientStream.emit("data", data); },
-    \\      end() { clientStream.emit("end"); },
+    \\      write(data) { if (ended) return false; clientStream.emit("data", data); return true; },
+    \\      end() { if (ended) return; ended = true; clientStream.emit("end"); },
     \\    };
-    \\    handler(serverCall);
+    \\    try { handler(serverCall); }
+    \\    catch (error) { clientStream.emit("error", __home_grpc_stream_failure(error, "echoServerStream", this.__home_target, "handler", __home_grpc_status.INTERNAL)); }
     \\  });
     \\  return clientStream;
     \\};
     \\__home_grpc_EchoService.prototype.echoClientStream = function(options, callback) {
-    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoClientStream;
     \\  const serverCall = __home_grpc_stream();
-    \\  if (!handler) Promise.resolve().then(() => callback(new Error("gRPC method not implemented")));
-    \\  else handler(serverCall, callback);
+    \\  let handler;
+    \\  try { handler = __home_grpc_stream_handler(this, "echoClientStream", options); }
+    \\  catch (error) { Promise.resolve().then(() => { if (typeof callback === "function") callback(error); else serverCall.emit("error", error); }); return serverCall; }
+    \\  try { handler(serverCall, callback); }
+    \\  catch (error) { const failure = __home_grpc_stream_failure(error, "echoClientStream", this.__home_target, "handler", __home_grpc_status.INTERNAL); Promise.resolve().then(() => { if (typeof callback === "function") callback(failure); else serverCall.emit("error", failure); }); }
     \\  return serverCall;
     \\};
     \\__home_grpc_EchoService.prototype.echoBidiStream = function(options) {
     \\  const clientStream = __home_grpc_stream();
-    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoBidiStream;
     \\  const serverCall = __home_grpc_stream();
     \\  serverCall.write = function(data) {
     \\    clientStream.emit("data", data);
@@ -61843,8 +61873,11 @@ const harness_prelude =
     \\    serverCall.emit("end");
     \\    return clientStream;
     \\  };
-    \\  if (!handler) Promise.resolve().then(() => clientStream.emit("error", new Error("gRPC method not implemented")));
-    \\  else handler(serverCall);
+    \\  let handler;
+    \\  try { handler = __home_grpc_stream_handler(this, "echoBidiStream", options); }
+    \\  catch (error) { Promise.resolve().then(() => clientStream.emit("error", error)); return clientStream; }
+    \\  try { handler(serverCall); }
+    \\  catch (error) { const failure = __home_grpc_stream_failure(error, "echoBidiStream", this.__home_target, "handler", __home_grpc_status.INTERNAL); Promise.resolve().then(() => clientStream.emit("error", failure)); }
     \\  return clientStream;
     \\};
     \\function __home_grpc_server_lifecycle_error(error, operation, address, phase, method) {
@@ -62885,6 +62918,13 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/child_process/child-process-rlimit-nofile.test.ts") && String(file) === "/bin/sh" && extra.some(arg => String(arg).includes("ulimit -Sn 256"))) {
     \\    return { error: null, stdout: __home_child_process_exec_file_output("1024\n", options), stderr: __home_child_process_exec_file_output("", options) };
     \\  }
+    \\  if (String(file) === String(process.execPath) && extra[0] === "-e") {
+    \\    const evaluated = __home_child_process_eval_stdio(extra[1] || "");
+    \\    const stdout = __home_child_process_exec_file_output(evaluated.stdout, options);
+    \\    const stderr = __home_child_process_exec_file_output(evaluated.stderr, options);
+    \\    const error = evaluated.status === 0 ? null : __home_child_process_exec_file_exit_error(file, argv, evaluated.status, null, stdout, stderr, evaluated.cause);
+    \\    return { error, stdout, stderr };
+    \\  }
     \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("child_process native spawn bridge is not installed");
     \\  let result;
     \\  try {
@@ -62897,17 +62937,26 @@ const harness_prelude =
     \\  const stderr = __home_child_process_exec_file_output(result && result.stderr ? result.stderr : "", options);
     \\  const exitCode = result && result.exitCode != null ? result.exitCode : 0;
     \\  if (exitCode !== 0) {
-    \\    const stderrText = stderr && typeof stderr.toString === "function" ? stderr.toString() : String(stderr || "");
-    \\    const error = new Error("Command failed: " + String(file) + (stderrText ? "\n" + stderrText : ""));
-    \\    error.code = exitCode;
-    \\    error.killed = false;
-    \\    error.signal = result && result.signalCode != null ? result.signalCode : null;
-    \\    error.cmd = argv.join(" ");
-    \\    error.stdout = stdout;
-    \\    error.stderr = stderr;
+    \\    const error = __home_child_process_exec_file_exit_error(file, argv, exitCode, result && result.signalCode, stdout, stderr);
     \\    return { error, stdout, stderr };
     \\  }
     \\  return { error: null, stdout, stderr };
+    \\}
+    \\function __home_child_process_exec_file_exit_error(file, argv, exitCode, signal, stdout, stderr, cause) {
+    \\  const stderrText = stderr && typeof stderr.toString === "function" ? stderr.toString() : String(stderr || "");
+    \\  const error = new Error("Command failed: " + String(file) + (stderrText ? "\n" + stderrText : ""));
+    \\  error.code = exitCode;
+    \\  error.killed = false;
+    \\  error.signal = signal == null ? null : signal;
+    \\  error.cmd = argv.join(" ");
+    \\  error.stdout = stdout;
+    \\  error.stderr = stderr;
+    \\  error.operation = "child_process.execFile";
+    \\  error.phase = "wait";
+    \\  error.path = String(file);
+    \\  error.cause = cause instanceof Error ? cause : new Error("Child exited with status " + String(exitCode));
+    \\  error.diagnostic = String(error.name || "Error") + ": " + error.message + "\n    at " + error.operation + " [" + error.phase + "] (" + error.path + ")\nCaused by: " + String(error.cause.message || error.cause);
+    \\  return error;
     \\}
     \\function __home_child_process_stdio_capture(stdio, index) {
     \\  const entry = Array.isArray(stdio) ? stdio[index] : stdio;
@@ -62966,13 +63015,35 @@ const harness_prelude =
     \\  Promise.resolve().then(() => child.emit("message", { type: "listening", host: "localhost", port: server.port }));
     \\  return child;
     \\}
+    \\function __home_child_process_eval_stdio(script) {
+    \\  const stdout = [], stderr = [];
+    \\  const exitSignal = {};
+    \\  let status = 0, cause = null;
+    \\  const childProcess = Object.create(process);
+    \\  Object.defineProperties(childProcess, {
+    \\    stdout: { value: { write(value) { stdout.push(String(value)); return true; } }, enumerable: true },
+    \\    stderr: { value: { write(value) { stderr.push(String(value)); return true; } }, enumerable: true },
+    \\    exit: { value(code) { status = code === undefined ? 0 : Number(code); throw exitSignal; }, enumerable: true },
+    \\  });
+    \\  const format = args => Array.prototype.map.call(args, String).join(" ") + "\n";
+    \\  const childConsole = {
+    \\    log() { stdout.push(format(arguments)); },
+    \\    error() { stderr.push(format(arguments)); },
+    \\    warn() { stderr.push(format(arguments)); },
+    \\  };
+    \\  try {
+    \\    Function("process", "console", String(script || ""))(childProcess, childConsole);
+    \\  } catch (thrown) {
+    \\    if (thrown !== exitSignal) {
+    \\      cause = thrown instanceof Error ? thrown : new Error(String(thrown));
+    \\      status = 1;
+    \\      stderr.push(String(cause.name || "Error") + ": " + String(cause.message || cause) + "\n");
+    \\    }
+    \\  }
+    \\  return { stdout: stdout.join(""), stderr: stderr.join(""), status, cause };
+    \\}
     \\function __home_child_process_eval_stdout(script) {
-    \\  const source = String(script || "");
-    \\  const log = source.match(/console\.log\((["'])(.*?)\1\)/);
-    \\  if (log) return log[2] + "\n";
-    \\  const write = source.match(/process\.stdout\.write\((["'])(.*?)\1\)/);
-    \\  if (write) return write[2];
-    \\  return "";
+    \\  return __home_child_process_eval_stdio(script).stdout;
     \\}
     \\function __home_child_process_file_stdout(file, options) {
     \\  const cwd = options && options.cwd ? String(options.cwd) : process.cwd();
@@ -63023,9 +63094,10 @@ const harness_prelude =
     \\      catch (error) { stderrText = String(error && error.message || error) + "\n"; status = 1; }
     \\    }
     \\  } else if (extra[0] === "-e") {
-    \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
-    \\    const exit = String(extra[1] || "").match(/process\.exit\(\s*(\d+)\s*\)/);
-    \\    if (exit) status = Number(exit[1]);
+    \\    const evaluated = __home_child_process_eval_stdio(extra[1] || "");
+    \\    stdoutText = evaluated.stdout;
+    \\    stderrText = evaluated.stderr;
+    \\    status = evaluated.status;
     \\  } else if (extra.length > 0) {
     \\    stdoutText = __home_child_process_file_stdout(extra[0], opts);
     \\  } else if (typeof globalThis.__home_spawnSyncNative === "function") {
@@ -97283,6 +97355,24 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         \\  });
         \\});
         \\
+        \\test("stream dispatch failures retain lifecycle context", async () => {
+        \\  const EchoService = grpc.loadPackageDefinition({ __home_proto_file: "echo_service.proto" }).EchoService;
+        \\  const client = new EchoService("stream.invalid:4317", grpc.credentials.createInsecure());
+        \\  const failure = await new Promise(resolve => {
+        \\    const stream = client.echoServerStream({ value: "request" }, { deadline: Date.now() + 1000 });
+        \\    stream.on("error", resolve);
+        \\  });
+        \\  assert.strictEqual(failure.code, grpc.status.UNAVAILABLE);
+        \\  assert.strictEqual(failure.operation, "echoServerStream");
+        \\  assert.strictEqual(failure.phase, "dispatch");
+        \\  assert.strictEqual(failure.target, "stream.invalid:4317");
+        \\  assert.ok(failure.cause instanceof Error);
+        \\  assert.ok(String(failure.stack).includes("Client.echoServerStream"));
+        \\  assert.ok(String(failure.stack).includes("phase dispatch"));
+        \\  assert.ok(String(failure.stack).includes("Caused by:"));
+        \\  client.close();
+        \\});
+        \\
         \\test("server lifecycle validation retains operation context and causes", () => {
         \\  const server = new grpc.Server();
         \\  let startError;
@@ -97328,7 +97418,7 @@ test "bootstrap grpc errors retain causes and operation stacks" {
         std.debug.print("grpc diagnostic failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 22), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors grpc frame-size corpus" {
