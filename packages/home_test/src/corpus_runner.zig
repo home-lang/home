@@ -17645,7 +17645,7 @@ const harness_prelude =
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi-finalizer-delete-ref.test.ts")) {
     \\    const cwd = String(options && options.cwd || "");
-    \\    if (cmd.includes("install") && cmd.includes("--verbose") && cwd.endsWith("napi/napi-app")) {
+    \\    if (cmd.includes("install") && cmd.includes("--verbose") && (cwd === "napi-app" || cwd.endsWith("napi/napi-app"))) {
     \\      globalThis.__home_written_files[__home_build_join(cwd, "build/Debug/test_delete_ref_in_finalizer_experimental.node")] = "";
     \\      const result = __home_spawn_completed("", "", 0);
     \\      result.success = true;
@@ -78517,6 +78517,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     }
     if (std.mem.eql(u8, relative_path, "js/web/workers/worker.test.ts")) {
         try out.appendSlice(allocator, "if (!Array.isArray(process.argv) || process.argv.length < 2) process.argv = [process.execPath, __filename];\n");
+    }
+    if (std.mem.eql(u8, relative_path, "napi/napi-finalizer-delete-ref.test.ts")) {
+        try out.appendSlice(allocator, "__home_fs_mark_dir(\"napi-app\"); __home_fs_mark_dir(__home_build_join(__dirname, \"napi-app\"));\n");
     }
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
