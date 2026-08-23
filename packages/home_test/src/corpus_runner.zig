@@ -737,7 +737,10 @@ const harness_prelude =
     \\function __home_build_resolve_entry(path) {
     \\  const text = String(path || "");
     \\  if (text.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
-    \\  return __home_build_normalize(__home_build_join(process.cwd(), text));
+    \\  const normalized = __home_build_normalize(text);
+    \\  const cwd = __home_build_normalize(process.cwd());
+    \\  if (cwd && cwd !== "." && !cwd.startsWith("/") && (normalized === cwd || normalized.startsWith(cwd + "/"))) return normalized;
+    \\  return __home_build_normalize(__home_build_join(cwd, normalized));
     \\}
     \\function __home_utf8_byte_length(value) {
     \\  const text = String(value);
@@ -89663,6 +89666,31 @@ test "bootstrap Bun.build failures retain structured causal context" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.build target externals preserve cwd-qualified entrypoints" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/03844/03844.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+        std.debug.print(
+            "Bun.build target external regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner mirrors Bun.build API artifact corpus" {
