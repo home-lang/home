@@ -91403,6 +91403,9 @@ pub const Checker = struct {
                 if (self.genericTypeAliasVisibleAt(anchor, name)) return t;
             }
         }
+        if (std.mem.eql(u8, base, "Promise") or std.mem.eql(u8, base, "promise")) {
+            return try self.buildStructuralPromise(types.Primitive.any);
+        }
         if (self.jsDocBareBuiltinGenericType(base)) |t| return t;
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocRequireAliasType(anchor, name, true)) |t| return t;
@@ -91555,9 +91558,10 @@ pub const Checker = struct {
         if (std.mem.eql(u8, base, "Void")) return types.Primitive.void_t;
         if (std.mem.eql(u8, base, "Undefined")) return types.Primitive.undefined_t;
         if (std.mem.eql(u8, base, "Null")) return types.Primitive.null_t;
-        // `Function` / Closure-style lowercase `function` in a JSDoc type
-        // position resolve to `any` for the stub rather than reporting TS2304.
-        if (std.mem.eql(u8, base, "Function") or std.mem.eql(u8, base, "function")) return types.Primitive.any;
+        // `Function` keeps the global callable-object meaning; Closure-style
+        // lowercase `function` remains the broad dynamic fallback.
+        if (std.mem.eql(u8, base, "Function")) return self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
+        if (std.mem.eql(u8, base, "function")) return types.Primitive.any;
         if (std.mem.eql(u8, base, "RegExp")) return self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.any;
         const any_globals = [_][]const u8{
             "Promise",   "Map",            "Set",           "WeakMap",
@@ -92970,6 +92974,7 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, t, "string") or std.mem.eql(u8, t, "String")) return types.Primitive.string_t;
         if (std.mem.eql(u8, t, "number") or std.mem.eql(u8, t, "Number")) return types.Primitive.number_t;
+        if (std.mem.eql(u8, t, "bigint") or std.mem.eql(u8, t, "BigInt")) return types.Primitive.bigint_t;
         if (std.mem.eql(u8, t, "boolean") or std.mem.eql(u8, t, "Boolean")) return types.Primitive.boolean_t;
         if (std.mem.eql(u8, t, "symbol")) return types.Primitive.symbol_t;
         if (jsDocTypeTextIsUniqueSymbol(t)) return types.Primitive.symbol_t;
@@ -93017,6 +93022,9 @@ pub const Checker = struct {
         if (std.mem.indexOf(u8, type_text, "=>") == null and jsDocClosureFunctionOpen(type_text) != null) return null;
         if (std.mem.indexOf(u8, type_text, "=>")) |arrow| {
             var params_part = std.mem.trim(u8, type_text[0..arrow], " \t\r\n");
+            const is_construct = std.mem.startsWith(u8, params_part, "new") and
+                params_part.len > "new".len and std.ascii.isWhitespace(params_part["new".len]);
+            if (is_construct) params_part = std.mem.trimStart(u8, params_part["new".len..], " \t\r\n");
             var inline_type_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer inline_type_params.deinit(self.gpa);
             var pushed_inline_scope = false;
@@ -93090,9 +93098,9 @@ pub const Checker = struct {
                 (try self.jsDocTypeTextToType(self.source orelse "", ret_text)) orelse
                 types.Primitive.any;
             const sig = if (explicit_this_t != types.Primitive.none)
-                self.interner.internSignatureWithThisType(params.items, ret_t, false, false, explicit_this_t) catch return error.OutOfMemory
+                self.interner.internSignatureWithThisType(params.items, ret_t, is_construct, false, explicit_this_t) catch return error.OutOfMemory
             else
-                self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+                self.interner.internSignature(params.items, ret_t, is_construct) catch return error.OutOfMemory;
             if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
             try self.recordGenericSignatureParams(sig, inline_type_params.items);
             try self.recordJsDocSignatureArity(sig, omittable.items, has_rest);
@@ -95299,6 +95307,20 @@ pub const Checker = struct {
                         if (object_wrapper_mismatch) {
                             annotation_text_mismatch = .{ .prior = prior_text, .current = current_text };
                             break :blk false;
+                        }
+                    } else if (self.source) |src| {
+                        // A JSDoc declaration can be registered before all
+                        // virtual-file type facts are available. Re-lower its
+                        // preserved spelling at the subsequent declaration so
+                        // prefix/postfix nullable forms compare by semantic
+                        // identity with native `T | null` annotations.
+                        const prior_text = self.string_interner.get(prior_name);
+                        if (try self.jsDocTypeTextToTypeAt(src, prior_text, node)) |replayed_prior| {
+                            if (replayed_prior == final_type or
+                                (self.engine.isIdenticalTo(replayed_prior, final_type) catch false))
+                            {
+                                break :blk true;
+                            }
                         }
                     }
                 }
@@ -231628,6 +231650,29 @@ test "checker: subsequent var mismatch TS2403 renders prior and current type nam
         }
     }
     try T.expect(saw_2403);
+}
+
+test "checker: JSDoc redirected type tags merge with native annotations" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @filename: a.js
+        \\/** @type {bigint} */ var bi;
+        \\/** @type {Promise} */ var promise;
+        \\/** @type {?number} */ var nullable;
+        \\/** @type {Function} */ var callable;
+        \\/** @type {new (s: string) => { s: string }} */ var ctor;
+        \\// @filename: b.ts
+        \\var bi: bigint;
+        \\var promise: Promise<any>;
+        \\var nullable: number | null;
+        \\var callable: Function;
+        \\var ctor: new (s: string) => { s: string };
+    );
+    defer destroySetup(s);
+    s.checker.setAllowJsEnabled(true);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: recovered nested var initializer retains TS2403 binding" {
