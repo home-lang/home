@@ -31,7 +31,7 @@ const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
 const JSGlobalObject = opaques.JSGlobalObject;
 
-const bun_version = "1.3.14";
+const bun_version = "1.4.0";
 
 fn argToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Allocator) ?[]u8 {
     const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse return null;
@@ -1386,7 +1386,7 @@ test "Bun global exposes version + file/write surface" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof Bun === 'object' && Bun.version === '1.3.14' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof Bun === 'object' && Bun.version === '1.4.0' && " ++
         "typeof Bun.file === 'function' && typeof Bun.write === 'function' && " ++
         "typeof globalThis.__home_bun_read_file === 'undefined'"));
 }

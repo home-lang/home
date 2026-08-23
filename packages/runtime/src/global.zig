@@ -6,7 +6,7 @@
 
 const std = @import("std");
 
-// Report the emulated pin version (Bun 1.3.14 @ git_sha fd0b6f1a27) rather than
+// Report the emulated pin version (Bun 1.4.0 @ git_sha 4982b91e37) rather than
 // a "0.0.0" stub. Use the CLEAN release string (no "-debug" suffix that
 // bun_core/Global.zig adds for Zig debug builds): Home is debug-built but
 // emulates the RELEASE pin, and `isDebug = Bun.version.includes("debug")` in

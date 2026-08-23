@@ -70,9 +70,9 @@ pub const export_cpp_apis = if (build_options.override_no_export_cpp_apis) false
 /// objects linked from `$HOME_BUN_OBJ_ROOT`). Stable → no per-commit rebuild
 /// churn; a valid 40-hex revision; never appears in test snapshot content.
 /// Short/shorter mirror upstream's `sha[0..9]` / `sha[0..6]`.
-pub const git_sha: [:0]const u8 = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
-pub const git_sha_short: [:0]const u8 = "fd0b6f1a2";
-pub const git_sha_shorter: [:0]const u8 = "fd0b6f";
+pub const git_sha: [:0]const u8 = "4982b91e3702094330f3be3883354c52b8c01323";
+pub const git_sha_short: [:0]const u8 = "4982b91e3";
+pub const git_sha_shorter: [:0]const u8 = "4982b9";
 pub const enable_logs = false;
 pub const is_canary = false;
 pub const ci_assert = false;
@@ -185,16 +185,17 @@ else if (isAarch64)
 else
     @compileError("Please add your architecture to Environment.Architecture");
 
-// Home emulates Bun's engine pinned at git_sha fd0b6f1a27 (= Bun 1.3.14). Report
-// that version so `Bun.version`/`process.versions.bun`/the `bun test` header and
-// version-gated tests match the pin; "0.0.0" made literal `v1.` checks fail and
-// version-gated `it.if` blocks behave differently than upstream.
+// Home emulates Bun's engine pinned at git_sha 4982b91e37 (= Bun 1.4.0, the
+// same upstream checkout the bun-corpus is synced to). Report that version so
+// `Bun.version`/`process.versions.bun`/the `bun test` header and version-gated
+// tests match the pin; "0.0.0" made literal `v1.` checks fail and version-
+// gated `it.if` blocks behave differently than upstream.
 pub const version: std.SemanticVersion = .{
     .major = 1,
-    .minor = 3,
-    .patch = 14,
+    .minor = 4,
+    .patch = 0,
 };
-pub const version_string = "1.3.14";
+pub const version_string = "1.4.0";
 pub const reported_nodejs_version = "20.0.0";
 
 test "environment flags are mutually consistent" {
