@@ -133159,7 +133159,11 @@ pub const Checker = struct {
         const open = std.mem.lastIndexOf(u8, src[0..pos], "/**") orelse return false;
         const close = std.mem.indexOfPos(u8, src, open + 3, "*/") orelse return false;
         if (pos >= close) return false;
-        return jsDocBodyDeclaresTemplateName(src[open + 3 .. close], self.string_interner.get(name));
+        const body = src[open + 3 .. close];
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        if (jsDocHasInvalidTemplatePlacement(body) or jsDocHasTemplateTypeTagCombination(tags)) return false;
+        return jsDocBodyDeclaresTemplateName(body, self.string_interner.get(name));
     }
 
     fn reportCannotFindNameOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -224587,6 +224591,27 @@ test "checker: checkjs JSDoc @template declares a generic type parameter" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: JSDoc template combined with type does not bind its name" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\/**
+        \\ * @callback Call
+        \\ * @param {*} x
+        \\ */
+        \\/**
+        \\ * @template T
+        \\ * @type {Call<T>}
+        \\ */
+        \\const identity = x => x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'T'."));
 }
 
 test "checker: checkjs JSDoc @template comma list declares each type parameter" {
