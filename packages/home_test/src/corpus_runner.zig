@@ -4047,6 +4047,37 @@ const harness_prelude =
     \\  child.stderr.text = function() { return Promise.resolve(/^y(?:\r?\n)?$/i.test(input) ? "Yes\n" : "No\n"); };
     \\  return child;
     \\}
+    \\function __home_spawn_websocket_short_read_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-client-short-read.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!source.includes("scenarioTeardownFromOpen") || !source.includes("scenarioMessageStillDelivered")) return null;
+    \\  const completion = new Promise(resolve => {
+    \\    const lines = [];
+    \\    let settled = false;
+    \\    function finish(exitCode, stderr) {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      resolve({ stdout: lines.length ? lines.join("\n") + "\n" : "", stderr: String(stderr || ""), exitCode });
+    \\    }
+    \\    const childConsole = Object.create(console);
+    \\    childConsole.log = function() {
+    \\      const line = Array.prototype.map.call(arguments, value => String(value)).join(" ");
+    \\      lines.push(line);
+    \\      if (line === "done") finish(0, "");
+    \\      else if (line.startsWith("error ")) finish(1, line.slice(6) + "\n");
+    \\    };
+    \\    const childProcess = Object.create(process);
+    \\    childProcess.exit = code => { finish(Number(code) || 0, ""); };
+    \\    try {
+    \\      Function("Bun", "WebSocket", "process", "console", source)(Bun, WebSocket, childProcess, childConsole);
+    \\    } catch (cause) {
+    \\      finish(1, String(cause && cause.stack || cause) + "\n");
+    \\    }
+    \\  });
+    \\  return __home_spawn_deferred_completed(completion);
+    \\}
     \\function __home_spawn_comprehensive_fixture(options, sync) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -26598,7 +26629,8 @@ const harness_prelude =
     \\      throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\    }
     \\    let nativeServer = null;
-    \\    const virtualWebSocketListener = String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-accept-header-validation.test.ts");
+    \\    const websocketListenerFilename = String(globalThis.__home_current_filename || "");
+    \\    const virtualWebSocketListener = websocketListenerFilename.endsWith("js/web/websocket/websocket-accept-header-validation.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-client-short-read.test.ts");
     \\    if (!hasUnix && !tlsOption && !virtualWebSocketListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
@@ -26896,6 +26928,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const webGlobalsFixture = __home_spawn_web_globals_fixture(options || {});
     \\    if (webGlobalsFixture) return webGlobalsFixture;
+    \\    const websocketShortReadFixture = __home_spawn_websocket_short_read_fixture(options || {});
+    \\    if (websocketShortReadFixture) return websocketShortReadFixture;
     \\    const respNestingCommand = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\    const streamsLeakCatFixture = __home_spawn_streams_leak_cat_fixture(options || {});
     \\    if (streamsLeakCatFixture) return streamsLeakCatFixture;
@@ -69036,7 +69070,12 @@ const harness_prelude =
     \\  socket.__home_frame_buffer = decoded.remaining;
     \\  for (const frame of decoded.frames) {
     \\    if (frame.opcode === 0x1) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload.toString("utf8") }));
-    \\    else if (frame.opcode === 0x2) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload }));
+    \\    else if (frame.opcode === 0x2) {
+    \\      let data = frame.payload;
+    \\      if (socket.binaryType === "arraybuffer") data = frame.payload.buffer.slice(frame.payload.byteOffset, frame.payload.byteOffset + frame.payload.byteLength);
+    \\      else if (socket.binaryType === "blob") data = new Blob([frame.payload]);
+    \\      socket.dispatchEvent(new MessageEvent("message", { data }));
+    \\    }
     \\    else if (frame.opcode === 0x8) { socket.close(); return; }
     \\    else if (frame.opcode === 0x9) __home_websocket_dispatch_control(socket, "ping", frame.payload);
     \\    else if (frame.opcode === 0xa) __home_websocket_dispatch_control(socket, "pong", frame.payload);
@@ -69048,6 +69087,7 @@ const harness_prelude =
     \\  if (!listener || listener.stopped) return false;
     \\  const key = "dGhlIHNhbXBsZSBub25jZQ==";
     \\  const expectedAccept = __home_websocket_accept_for_key(key);
+    \\  const maxHeaderBytes = 16384;
     \\  let responseBytes = Buffer.alloc(0);
     \\  let opened = false;
     \\  __home_bun_connect({
@@ -69063,7 +69103,13 @@ const harness_prelude =
     \\        responseBytes = Buffer.concat([responseBytes, Buffer.from(chunk || [])]);
     \\        const responseText = responseBytes.toString("latin1");
     \\        const headerEnd = responseText.indexOf("\r\n\r\n");
-    \\        if (headerEnd < 0) return;
+    \\        if (headerEnd < 0) {
+    \\          if (responseBytes.length > maxHeaderBytes) {
+    \\            __home_websocket_fail(socket, __home_websocket_handshake_error("headers", "Invalid response: WebSocket handshake headers exceeded 16384 bytes", { receivedBytes: responseBytes.length, maxHeaderBytes }));
+    \\            if (socket.__home_bun_socket && typeof socket.__home_bun_socket.end === "function") socket.__home_bun_socket.end();
+    \\          }
+    \\          return;
+    \\        }
     \\        const headerText = responseText.slice(0, headerEnd);
     \\        if (!/^HTTP\/1\.[01]\s+101\b/i.test(headerText)) {
     \\          __home_websocket_fail(socket, __home_websocket_handshake_error("status", "WebSocket upgrade failed", { statusLine: headerText.split("\r\n", 1)[0] || "" }));
@@ -69177,6 +69223,7 @@ const harness_prelude =
     \\  }
     \\  this.url = href;
     \\  this.readyState = 0;
+    \\  this.__home_binary_type = "nodebuffer";
     \\  this.__home_handle = handle || null;
     \\  this.__home_socket_id = null;
     \\  this.__home_pending_open = false;
@@ -69270,7 +69317,14 @@ const harness_prelude =
     \\    if (typeof this.onopen === "function") this.onopen({ type: "open" });
     \\  });
     \\}
-    \\WebSocket.prototype.close = function() {
+    \\function __home_websocket_close_event(code, reason, wasClean) {
+    \\  const event = new Event("close");
+    \\  for (const [name, value] of [["code", Number(code)], ["reason", String(reason || "")], ["wasClean", !!wasClean]]) {
+    \\    try { Object.defineProperty(event, name, { configurable: true, enumerable: true, value }); } catch (_) {}
+    \\  }
+    \\  return event;
+    \\}
+    \\WebSocket.prototype.close = function(code, reason) {
     \\  if (this.readyState === 3) return;
     \\  this.readyState = 3;
     \\  __home_websocket_unsubscribe_client(this);
@@ -69281,8 +69335,29 @@ const harness_prelude =
     \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
     \\    globalThis.__home_closeHmrSocketNative(this.__home_handle.id, this.__home_socket_id);
     \\  }
-    \\  Promise.resolve().then(() => this.dispatchEvent(new Event("close")));
+    \\  Promise.resolve().then(() => this.dispatchEvent(__home_websocket_close_event(code === undefined ? 1000 : code, reason, true)));
     \\};
+    \\WebSocket.prototype.terminate = function() {
+    \\  if (this.readyState === 3) return;
+    \\  this.readyState = 3;
+    \\  __home_websocket_unsubscribe_client(this);
+    \\  if (this.__home_ws_server_side && typeof this.__home_ws_server_side.terminate === "function") this.__home_ws_server_side.terminate();
+    \\  if (this.__home_bun_socket && !this.__home_bun_socket.__home_closed) {
+    \\    if (typeof this.__home_bun_socket.terminate === "function") this.__home_bun_socket.terminate();
+    \\    else if (typeof this.__home_bun_socket.end === "function") this.__home_bun_socket.end();
+    \\  }
+    \\  Promise.resolve().then(() => this.dispatchEvent(__home_websocket_close_event(1006, "", false)));
+    \\};
+    \\Object.defineProperty(WebSocket.prototype, "binaryType", {
+    \\  configurable: true,
+    \\  enumerable: true,
+    \\  get() { return this.__home_binary_type || "nodebuffer"; },
+    \\  set(value) {
+    \\    const text = String(value);
+    \\    if (text !== "nodebuffer" && text !== "arraybuffer" && text !== "blob") throw new TypeError("Invalid binaryType");
+    \\    this.__home_binary_type = text;
+    \\  },
+    \\});
     \\WebSocket.prototype.send = function(message) {
     \\  if (this.readyState !== 1) throw __home_websocket_state_error("send", this);
     \\  if (this.__home_inspector_21654) {
@@ -69385,7 +69460,7 @@ const harness_prelude =
     \\    }
     \\    if (socket.__home_pending_close) {
     \\      socket.__home_pending_close = false;
-    \\      socket.dispatchEvent(new Event("close"));
+    \\      socket.dispatchEvent(__home_websocket_close_event(1006, "", false));
     \\    }
     \\  });
     \\}
@@ -69561,8 +69636,9 @@ const harness_prelude =
     \\    const text = String(value);
     \\    if (text !== "nodebuffer" && text !== "arraybuffer" && text !== "blob") throw new TypeError("Invalid binaryType");
     \\    this.__home_binaryType = text;
+    \\    if (this.__home_socket) this.__home_socket.binaryType = text;
     \\  }
-    \\  close(code, reason) { void code; void reason; return this.__home_socket.close(); }
+    \\  close(code, reason) { return this.__home_socket.close(code, reason); }
     \\  send(data) { return this.__home_socket.send(data); }
     \\  ping(data) {
     \\    const payload = data === undefined ? Buffer.alloc(0) : data;
@@ -69583,7 +69659,7 @@ const harness_prelude =
     \\    Promise.resolve().then(() => this.emit("pong", payload));
     \\  }
     \\  terminate() {
-    \\    return this.close();
+    \\    return this.__home_socket.terminate();
     \\  }
     \\  addEventListener(type, callback) { return __home_ws_add_event_listener.call(this, type, callback); }
     \\  removeEventListener(type, callback) { return __home_ws_remove_event_listener.call(this, type, callback); }
@@ -111630,6 +111706,29 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented WebSocket reads" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-client-short-read.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "fragmented WebSocket read corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
