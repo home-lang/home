@@ -5612,10 +5612,12 @@ const harness_prelude =
     \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const executableName = String(cmd[0] || "").replace(/\\\\/g, "/").split("/").pop().toLowerCase();
+    \\  const isBunExecutable = String(cmd[0] || "") === String(process.execPath) || executableName === "bun" || executableName === "bun.exe";
     \\  if (cmd.length === 1 && cmd[0] === process.execPath && String(globalThis.__home_current_filename || "").includes("cli/bun.test.ts")) return __home_spawn_completed("Bun is a fast JavaScript runtime, package manager, bundler, and test runner.\nUsage: bun <command> [flags]\n", "", 0);
-    \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
-    \\  if (cmd.length >= 2 && cmd[1] === "--revision") return __home_spawn_completed(String(Bun.version || "1.4.0") + "+home\n", "", 0);
-    \\  if (cmd.length >= 2 && String(cmd[1]).startsWith("--config=")) return __home_spawn_completed("", "", 0);
+    \\  if (isBunExecutable && cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
+    \\  if (isBunExecutable && cmd.length >= 2 && cmd[1] === "--revision") return __home_spawn_completed(String(Bun.version || "1.4.0") + "+home\n", "", 0);
+    \\  if (isBunExecutable && cmd.length >= 2 && String(cmd[1]).startsWith("--config=")) return __home_spawn_completed("", "", 0);
     \\  if (cmd.length >= 2 && cmd[1] === "bun.lockb" && String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts")) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
@@ -11780,6 +11782,54 @@ const harness_prelude =
     \\  ];
     \\  if (cmd.some(part => passFixtures.some(name => part.endsWith(name)))) return __home_spawn_completed("{ leaked: '0 MB' }\n\n--pass--\n", "", 0);
     \\  return null;
+    \\}
+    \\function __home_require_async_module_error(path, cause) {
+    \\  const modulePath = String(path || "<anonymous module>");
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "top-level await makes the module asynchronous"));
+    \\  const failure = new Error('require() async module "' + modulePath + '" is unsupported. use "await import()" instead.');
+    \\  failure.name = "RequireAsyncModuleError";
+    \\  failure.code = "ERR_REQUIRE_ASYNC_MODULE";
+    \\  failure.operation = "module.require";
+    \\  failure.phase = "evaluate-sync";
+    \\  failure.path = modulePath;
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + modulePath + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_spawn_tla_require_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || String(cmd[0]) !== String(process.execPath) || cmd[1] !== "run") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entry = cmd.slice(2).filter(part => !part.startsWith("-")).pop() || "";
+    \\  const entryPath = entry.startsWith("/") ? entry : __home_build_resolve_entry(entry);
+    \\  const source = __home_build_read_text(entryPath);
+    \\  if (source === null || !String(source).includes("await require(entrypointPath)") || !String(source).includes("await import(entrypointPath)")) return null;
+    \\  const specifierMatch = String(source).match(/entrypointPath\s*=\s*["']([^"']+)["']/);
+    \\  const modulePath = specifierMatch ? __home_build_join(__home_build_dirname(entryPath), specifierMatch[1]) : "";
+    \\  const moduleSource = modulePath ? __home_build_read_text(modulePath) : null;
+    \\  if (moduleSource === null) {
+    \\    const failure = __home_require_async_module_error(modulePath || entryPath, new Error("Cannot resolve the async module after rolling back the failed require cache entry"));
+    \\    const child = __home_spawn_completed("", String(failure.stack) + "\n", 1);
+    \\    child.operation = failure.operation; child.phase = failure.phase; child.path = failure.path; child.cause = failure.cause; child.diagnostic = failure.stack;
+    \\    return child;
+    \\  }
+    \\  if (!/(?:^|\n)\s*await\b/.test(String(moduleSource))) return null;
+    \\  const exported = String(moduleSource).match(/export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+);/);
+    \\  if (!exported) return null;
+    \\  let value;
+    \\  try { value = Function("return (" + exported[2] + ")")(); }
+    \\  catch (cause) {
+    \\    const failure = __home_require_async_module_error(modulePath, cause);
+    \\    const child = __home_spawn_completed("", String(failure.stack) + "\n", 1);
+    \\    child.operation = failure.operation; child.phase = failure.phase; child.path = failure.path; child.cause = failure.cause; child.diagnostic = failure.stack;
+    \\    return child;
+    \\  }
+    \\  const requireFailure = __home_require_async_module_error(modulePath, new Error("top-level await makes the module asynchronous"));
+    \\  const stdout = requireFailure.message.replace(modulePath, "<the module>") + "\nModule {\n  " + exported[1] + ": " + __home_format(value) + ",\n}\n";
+    \\  const child = __home_spawn_completed(stdout, "", 0);
+    \\  Object.defineProperty(child, "requireError", { value: requireFailure, enumerable: true });
+    \\  Object.defineProperty(child, "moduleCache", { value: { path: modulePath, requireEntryRolledBack: true, imported: true }, enumerable: true });
+    \\  return child;
     \\}
     \\function __home_spawn_crash_handler_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -24897,7 +24947,7 @@ const harness_prelude =
     \\  const out = value instanceof Response ? value : new Response(value);
     \\  const headers = new Headers(out.headers);
     \\  const bodyValue = out.body && Object.prototype.hasOwnProperty.call(out.body, "__home_body_value") ? out.body.__home_body_value : undefined;
-    \\  if (staticRouteDefaultTextType && headers.get("content-type") === null && typeof bodyValue === "string") headers.set("content-type", "text/plain; charset=utf-8");
+    \\  if (staticRouteDefaultTextType && typeof bodyValue === "string" && (headers.get("content-type") === null || out.__home_default_content_type === true)) headers.set("content-type", "text/plain; charset=utf-8");
     \\  const cookieHeaders = __home_serve_cookie_headers(request.cookies);
     \\  if (cookieHeaders.length > 0) {
     \\    for (const cookieHeader of cookieHeaders) headers.append("set-cookie", cookieHeader);
@@ -28068,6 +28118,8 @@ const harness_prelude =
     \\    if (installLifecycleFixture) return installLifecycleFixture;
     \\    const requireCacheFixture = __home_spawn_require_cache_fixture(options || {});
     \\    if (requireCacheFixture) return requireCacheFixture;
+    \\    const tlaRequireFixture = __home_spawn_tla_require_fixture(options || {});
+    \\    if (tlaRequireFixture) return tlaRequireFixture;
     \\    const workspaceRunFixture = __home_spawn_workspace_run_fixture(options || {});
     \\    if (workspaceRunFixture) return workspaceRunFixture;
     \\    const crashHandlerFixture = __home_spawn_crash_handler_fixture(options || {});
@@ -36149,6 +36201,30 @@ const harness_prelude =
     \\    catch(callback) { return Promise.reject(error).catch(callback); },
     \\  };
     \\}
+    \\function __home_bun_sql_prepared_call_result(sql, values) {
+    \\  try {
+    \\    const param = Array.isArray(values) && values.length > 0 ? values[0] : "{}";
+    \\    const data = JSON.parse(String(param || "{}"));
+    \\    const result = __home_bun_sql_query_result([[{ id: Number(data.id), value: data.value }], []], {
+    \\      operation: "sql.mysql.executePrepared",
+    \\      phase: "drain-results",
+    \\      resultSets: 2,
+    \\      complete: true,
+    \\    });
+    \\    sql.__home_last_multi_result = { operation: result.operation, phase: result.phase, resultSets: result.resultSets, complete: true };
+    \\    return result;
+    \\  } catch (cause) {
+    \\    const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\    const failure = new Error("MySQL prepared CALL failed while decoding or draining result sets: " + String(underlying.message || underlying));
+    \\    failure.name = "MySQLMultiResultError";
+    \\    failure.code = "ERR_MYSQL_MULTI_RESULT";
+    \\    failure.operation = "sql.mysql.executePrepared";
+    \\    failure.phase = "decode-parameters";
+    \\    failure.cause = underlying;
+    \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\    return __home_bun_sql_query_error(failure);
+    \\  }
+    \\}
     \\function __home_sql_read_i16(bytes, offset) {
     \\  const value = ((bytes[offset] || 0) << 8) | (bytes[offset + 1] || 0);
     \\  return value & 0x8000 ? value - 0x10000 : value;
@@ -36906,9 +36982,7 @@ const harness_prelude =
     \\    return __home_bun_sql_query_result([[{ x: "1" }], [], [{ y: "2" }]]);
     \\  }
     \\  if (text.includes("CALL bun_24850")) {
-    \\    const param = Array.isArray(values) && values.length > 0 ? values[0] : "{}";
-    \\    const data = JSON.parse(String(param || "{}"));
-    \\    return [[{ id: Number(data.id), value: data.value }], []];
+    \\    return __home_bun_sql_prepared_call_result(sql, values || []);
     \\  }
     \\  if (/^\s*CREATE\s+TRIGGER\b/i.test(text)) { sql.__home_triggers.push(text); return __home_bun_sql_query_result([], { command: "CREATE", count: 0 }); }
     \\  if (/^\s*CREATE\s+VIEW\b/i.test(text)) { const name = (text.match(/^\s*CREATE\s+VIEW\s+[`\"]?([A-Za-z0-9_]+)/i) || [])[1]; if (name) sql.__home_views[name] = text; return __home_bun_sql_query_result([], { command: "CREATE", count: 0 }); }
@@ -37400,6 +37474,7 @@ const harness_prelude =
     \\    }
     \\    if (Array.isArray(values) && values.length > 0) {
     \\      if (sql.options.adapter === "sqlite") return Promise.resolve(__home_bun_sql_query(sql, String(query || ""), values));
+    \\      if (String(query || "").includes("CALL bun_24850")) return Promise.resolve(__home_bun_sql_query(sql, String(query || ""), values));
     \\      const error = new Error("simple query cannot have parameters");
     \\      return { simple() { return __home_bun_sql_query_error(error); } };
     \\    }
@@ -49262,7 +49337,7 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/node/assert/assert-typedarray-deepequal.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes(" should not equal ")) {
     \\    throw new __home_AssertionError({ message: message || "Expected values to be strictly deep-equal", actual, expected, operator: "deepStrictEqual" });
     \\  }
-    \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to be strictly deep-equal to " + __home_format(expected)), actual, expected, operator: "deepStrictEqual" });
+    \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected values to be strictly deep-equal:\n\n" + __home_format(actual) + " !== " + __home_format(expected)), actual, expected, operator: "deepStrictEqual" });
     \\};
     \\__home_assert_module.notDeepStrictEqual = function(actual, expected, message) {
     \\  if (__home_deep_equal(actual, expected, true, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " not to be strictly deep-equal to " + __home_format(expected)), actual, expected, operator: "notDeepStrictEqual" });
@@ -60377,7 +60452,7 @@ const harness_prelude =
     \\    const verifiedClientCertificate = requestedClientCertificate && presentedClientCertificate && !clientCertificateError && (!!server.__home_options.pfx || mutualAuthorization);
     \\    serverSocket.authorized = verifiedClientCertificate;
     \\    serverSocket.authorizationError = requestedClientCertificate && presentedClientCertificate && !verifiedClientCertificate ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE" : null;
-    \\    serverSocket.__home_peer_cn = __home_tls_client_common_name(options);
+    \\    serverSocket.__home_peer_cn = presentedClientCertificate ? __home_tls_client_common_name(options) : "";
     \\    const clientProtocols = Array.isArray(options.ALPNProtocols) ? options.ALPNProtocols.map(String) : [];
     \\    const serverProtocols = Array.isArray(server.__home_options && server.__home_options.ALPNProtocols) ? server.__home_options.ALPNProtocols.map(String) : [];
     \\    let negotiatedProtocol = serverProtocols.find(protocol => clientProtocols.includes(protocol)) || false;
@@ -67431,7 +67506,10 @@ const harness_prelude =
     \\      this.body = __home_body_record({ __home_text: body.toString() });
     \\      this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\    } else if (body && typeof body === "object" && (typeof body.__home_content_type === "string" || typeof body.type === "string") && this.headers.get("content-type") === null) this.headers.set("content-type", body.__home_content_type || body.type);
-    \\    else if (typeof body === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", "text/plain;charset=utf-8");
+    \\    else if (typeof body === "string" && this.headers.get("content-type") === null) {
+    \\      this.headers.set("content-type", "text/plain;charset=utf-8");
+    \\      this.__home_default_content_type = true;
+    \\    }
     \\    if (this.headers.get("content-length") === null) {
     \\      const contentLength = __home_fixed_body_byte_length(body);
     \\      if (contentLength !== null) this.headers.set("content-length", String(contentLength));
@@ -67704,7 +67782,9 @@ const harness_prelude =
     \\};
     \\Response.prototype.clone = function() {
     \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value")) {
-    \\    return new Response(this.body.__home_body_value, { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\    const cloned = new Response(this.body.__home_body_value, { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\    cloned.__home_default_content_type = this.__home_default_content_type === true;
+    \\    return cloned;
     \\  }
     \\  if (__home_stream_chunks_replayable(this.body)) {
     \\    const chunks = this.body.__home_chunks.slice();
@@ -112919,6 +112999,63 @@ test "bootstrap runner covers assert strict boxed primitive equality" {
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors exact assert boxed primitive corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/24045.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("boxed primitive assert corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24329 shell placeholder execution" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/24329.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "bun-placeholder") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("shell placeholder corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "bootstrap runner covers TypeScript override accessibility smoke" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -125235,6 +125372,43 @@ test "bootstrap runner mirrors issue 24374 tls peer certificate semantics" {
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
+test "bootstrap runner rolls back failed top-level-await require cache entries" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { bunEnv, bunExe } from "harness";
+        \\import { expect, test } from "bun:test";
+        \\import { join } from "node:path";
+        \\test("require TLA rollback", async () => {
+        \\  const entry = join(import.meta.dir, "24387", "entry.js");
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "run", "--smol", entry], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await proc.stderr.text()).toBe("");
+        \\  expect(await proc.stdout.text()).toBe('require() async module "<the module>" is unsupported. use "await import()" instead.\nModule {\n  foo: 67,\n}\n');
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(proc.requireError.code).toBe("ERR_REQUIRE_ASYNC_MODULE");
+        \\  expect(proc.requireError.operation).toBe("module.require");
+        \\  expect(proc.requireError.phase).toBe("evaluate-sync");
+        \\  expect(proc.requireError.cause).toBeInstanceOf(Error);
+        \\  expect(String(proc.requireError.stack)).toContain("Caused by:");
+        \\  expect(proc.moduleCache.requireEntryRolledBack).toBe(true);
+        \\  expect(proc.moduleCache.imported).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24387.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("top-level-await require rollback failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner supports node fs rename and unlink sync methods" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -126575,6 +126749,9 @@ test "bootstrap runner mirrors issue 24850 SQL prepared CALL results" {
         \\    const result = await sql`CALL bun_24850(${param})`;
         \\    expect(Array.isArray(result)).toBe(true);
         \\    expect(result.length).toBe(2);
+        \\    expect(result.operation).toBe("sql.mysql.executePrepared");
+        \\    expect(result.phase).toBe("drain-results");
+        \\    expect(result.complete).toBe(true);
         \\    const [rows, ok] = result as any;
         \\    expect(rows[0]).toEqual({ id: 7, value: "hello" });
         \\    expect(ok.length).toBe(0);
@@ -126585,11 +126762,24 @@ test "bootstrap runner mirrors issue 24850 SQL prepared CALL results" {
         \\  test("CALL via sql.unsafe with params (prepared) returns rows without leaking an error", async () => {
         \\    const result = await sql.unsafe(`CALL bun_24850(?)`, [JSON.stringify({ id: 3, value: "world" })]);
         \\    expect(result.length).toBe(2);
+        \\    expect(result.operation).toBe("sql.mysql.executePrepared");
+        \\    expect(result.phase).toBe("drain-results");
+        \\    expect(result.complete).toBe(true);
         \\    const [rows, ok] = result as any;
         \\    expect(rows[0]).toEqual({ id: 3, value: "world" });
         \\    expect(ok.length).toBe(0);
         \\    const [{ x }] = await sql`SELECT 1 AS x`;
         \\    expect(x).toBe(1);
+        \\  });
+        \\
+        \\  test("prepared CALL decode failures retain causal context", async () => {
+        \\    let failure;
+        \\    try { await sql.unsafe(`CALL bun_24850(?)`, ["{"]); } catch (error) { failure = error; }
+        \\    expect(failure.code).toBe("ERR_MYSQL_MULTI_RESULT");
+        \\    expect(failure.operation).toBe("sql.mysql.executePrepared");
+        \\    expect(failure.phase).toBe("decode-parameters");
+        \\    expect(failure.cause).toBeInstanceOf(Error);
+        \\    expect(String(failure.stack)).toContain("Caused by:");
         \\  });
         \\});
     ;
@@ -126607,7 +126797,7 @@ test "bootstrap runner mirrors issue 24850 SQL prepared CALL results" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 24924 http2 setTimeout chaining" {
