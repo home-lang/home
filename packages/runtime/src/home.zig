@@ -2620,6 +2620,8 @@ pub const cli = struct {
     pub const PmVersionCommand = @import("runtime/cli/pm_version_command.zig").PmVersionCommand;
     pub const WhyCommand = @import("runtime/cli/why_command.zig").WhyCommand;
     pub const PackageManagerCommand = @import("runtime/cli/package_manager_command.zig").PackageManagerCommand;
+    pub const PublishCommand = @import("runtime/cli/publish_command.zig").PublishCommand;
+    pub const PackCommand = @import("runtime/cli/pack_command.zig").PackCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },

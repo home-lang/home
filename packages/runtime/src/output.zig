@@ -16,6 +16,7 @@ pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
 pub var is_github_action = false;
 pub const ElapsedFormatter = @import("bun_core/output.zig").ElapsedFormatter;
+pub const buffered_stdin = &@import("bun_core/output.zig").buffered_stdin;
 
 const CSI = "\x1b[";
 var error_writer_buffer: [4096]u8 = undefined;

@@ -18,6 +18,7 @@ pub const dirname = @import("paths/resolve_path.zig").dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
 pub const Platform = @import("paths/resolve_path.zig").Platform;
+pub const normalizeBufZ = @import("paths/resolve_path.zig").normalizeBufZ;
 pub const isSepAny = @import("paths/resolve_path.zig").isSepAny;
 pub const isSepAnyT = @import("paths/resolve_path.zig").isSepAnyT;
 pub const joinAbs = @import("paths/resolve_path.zig").joinAbs;

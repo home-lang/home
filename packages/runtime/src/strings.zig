@@ -38,6 +38,7 @@ pub const trimLeadingChar = @import("string/immutable.zig").trimLeadingChar;
 pub const getLinesInText = @import("string/immutable.zig").getLinesInText;
 pub const startsWithCaseInsensitiveAscii = @import("string/immutable.zig").startsWithCaseInsensitiveAscii;
 pub const containsCaseInsensitiveASCII = @import("string/immutable.zig").containsCaseInsensitiveASCII;
+pub const eqlCaseInsensitiveT = @import("string/immutable.zig").eqlCaseInsensitiveT;
 pub const splitFirst = @import("string/immutable.zig").splitFirst;
 pub const splitFirstWithExpected = @import("string/immutable.zig").splitFirstWithExpected;
 pub const startsWithUUID = @import("string/immutable.zig").startsWithUUID;

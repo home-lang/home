@@ -6,6 +6,7 @@
 const std = @import("std");
 pub const formatJSONStringUTF8 = @import("bun_core/fmt.zig").formatJSONStringUTF8;
 pub const fmtSlice = @import("bun_core/fmt.zig").fmtSlice;
+pub const integrity = @import("bun_core/fmt.zig").integrity;
 
 const strings = @import("strings.zig");
 const bun = @import("home");

@@ -183,8 +183,6 @@ pub const Source = struct {
             fd_internals.windows_cached_stdin = if (stdin != INVALID_HANDLE_VALUE) .fromSystem(stdin) else .invalid;
             if (Environment.isDebug) fd_internals.windows_cached_fd_set = true;
 
-            buffered_stdin.unbuffered_reader.context.handle = .stdin();
-
             // https://learn.microsoft.com/en-us/windows/console/setconsoleoutputcp
             const CP_UTF8 = 65001;
             console_output_codepage = c.GetConsoleOutputCP();
@@ -1334,9 +1332,63 @@ pub inline fn errFmt(formatter: anytype) void {
     return errGeneric("{f}", .{formatter});
 }
 
-pub var buffered_stdin = bun.deprecated.BufferedReader(4096, File.Reader){
-    .unbuffered_reader = .{ .context = .{ .handle = if (Environment.isWindows) undefined else .stdin() } },
-    .buf = undefined,
+/// Buffered stdin reader for interactive CLI prompts (`init`, `publish`
+/// browser-login wait). The pre-0.17 std.io `BufferedReader` stack this
+/// used to lean on is gone, so keep the small amount of behavior the CLI
+/// actually needs: byte reads and read-until-delimiter over a 4 KiB window.
+pub var buffered_stdin = StdinBufferedReader{};
+
+pub const StdinBufferedReader = struct {
+    buf: [4096]u8 = undefined,
+    start: usize = 0,
+    end: usize = 0,
+
+    pub const ReaderError = error{ EndOfStream, ReadFailed };
+
+    fn fill(self: *StdinBufferedReader) ReaderError!void {
+        if (self.start < self.end) return;
+        self.start = 0;
+        self.end = 0;
+        switch (bun.sys.read(bun.FD.stdin(), &self.buf)) {
+            .result => |n| {
+                if (n == 0) return error.EndOfStream;
+                self.end = n;
+            },
+            .err => return error.ReadFailed,
+        }
+    }
+
+    pub fn reader(self: *StdinBufferedReader) Reader {
+        return .{ .inner = self };
+    }
+
+    pub const Reader = struct {
+        inner: *StdinBufferedReader,
+
+        pub fn readByte(self: Reader) ReaderError!u8 {
+            try self.inner.fill();
+            const byte = self.inner.buf[self.inner.start];
+            self.inner.start += 1;
+            return byte;
+        }
+
+        /// Reads into `list` up to (not including) `delimiter`. Mirrors the
+        /// pre-0.17 `std.io.Reader.readUntilDelimiterArrayList` contract:
+        /// returns `list.items`, growing it as needed, bounded by `limit`.
+        pub fn readUntilDelimiterArrayList(
+            self: Reader,
+            list: *std.array_list.Managed(u8),
+            delimiter: u8,
+            limit: usize,
+        ) ![]u8 {
+            while (true) {
+                const byte = try self.readByte();
+                if (byte == delimiter) return list.items;
+                if (list.items.len == limit) return error.StreamTooLong;
+                try list.append(byte);
+            }
+        }
+    };
 };
 
 const string = []const u8;

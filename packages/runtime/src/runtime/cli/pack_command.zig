@@ -136,6 +136,22 @@ pub const PackCommand = struct {
         };
     }
 
+    /// Entry for Home's top-level `home pack` route. The host CLI has already
+    /// consumed argv, so re-point clap's process args at a synthetic
+    /// `[prog, "pack", ...]` slice and run Bun's own arg parsing.
+    pub fn execStandalone(ctx: Command.Context, sub_args: []const []const u8) !void {
+        var argv: std.ArrayListUnmanaged([:0]const u8) = .empty;
+        defer argv.deinit(ctx.allocator);
+        try argv.append(ctx.allocator, "home");
+        try argv.append(ctx.allocator, "pack");
+        for (sub_args) |arg| {
+            if (arg.len == 0) continue;
+            try argv.append(ctx.allocator, try bun.dupeZ(ctx.allocator, u8, arg));
+        }
+        bun.clap.args.setProcessArgs(argv.items);
+        return exec(ctx);
+    }
+
     pub fn exec(ctx: Command.Context) !void {
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .pack);
 
@@ -227,7 +243,7 @@ pub const PackCommand = struct {
     const PackQueue = std.PriorityQueue(PackQueueItem, void, PackQueueContext.lessThan);
 
     const DirInfo = struct {
-        std.fs.Dir, // the dir
+        bun.FD, // the dir
         string, // the dir subpath
         usize, // dir depth. used to shrink ignore stack
     };
@@ -238,7 +254,7 @@ pub const PackCommand = struct {
         bins: []const BinInfo,
         includes: []const Pattern,
         excludes: []const Pattern,
-        root_dir: std.fs.Dir,
+        root_dir: bun.FD,
         log_level: LogLevel,
     ) OOM!void {
         if (comptime Environment.isDebug) {
@@ -270,7 +286,7 @@ pub const PackCommand = struct {
                 }
             }
 
-            var dir_iter = DirIterator.iterate(.fromStdDir(dir), .u8);
+            var dir_iter = DirIterator.iterate(dir, .u8);
             next_entry: while (dir_iter.next().unwrap() catch null) |entry| {
                 if (entry.kind != .file and entry.kind != .directory) continue;
 
@@ -359,7 +375,7 @@ pub const PackCommand = struct {
                             }
                         }
 
-                        try pack_queue.add(.{ .path = entry_subpath });
+                        try pack_queue.push(allocator, .{ .path = entry_subpath });
                     },
                     else => unreachable,
                 }
@@ -420,7 +436,8 @@ pub const PackCommand = struct {
             var dir, const dir_subpath, const dir_depth = dir_info;
             defer dir.close();
 
-            while (ignores.getLastOrNull()) |last| {
+            while (ignores.items.len > 0) {
+                const last = &ignores.items[ignores.items.len - 1];
                 if (last.depth < dir_depth) break;
 
                 last.deinit(allocator);
@@ -440,7 +457,7 @@ pub const PackCommand = struct {
                 }
             }
 
-            var iter = DirIterator.iterate(.fromStdDir(dir), .u8);
+            var iter = DirIterator.iterate(dir, .u8);
             next_entry: while (iter.next().unwrap() catch null) |entry| {
                 if (entry.kind != .file and entry.kind != .directory) continue;
 
@@ -474,7 +491,7 @@ pub const PackCommand = struct {
                                 continue :next_entry;
                             }
                         }
-                        try pack_queue.add(.{ .path = entry_subpath });
+                        try pack_queue.push(allocator, .{ .path = entry_subpath });
                     },
                     .directory => {
                         for (bins) |bin| {
@@ -498,16 +515,16 @@ pub const PackCommand = struct {
     }
 
     fn openSubdir(
-        dir: std.fs.Dir,
+        dir: bun.FD,
         entry_name: string,
         entry_subpath: stringZ,
-    ) std.fs.Dir {
-        return dir.openDirZ(
-            entryNameZ(entry_name, entry_subpath),
-            .{ .iterate = true },
-        ) catch |err| {
-            Output.err(err, "failed to open directory \"{s}\" for packing", .{entry_subpath});
-            Global.crash();
+    ) bun.FD {
+        return switch (bun.sys.openatA(dir, entryNameZ(entry_name, entry_subpath), bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+            .err => |err| {
+                Output.err(err, "failed to open directory \"{s}\" for packing", .{entry_subpath});
+                Global.crash();
+            },
+            .result => |fd| fd,
         };
     }
 
@@ -533,22 +550,24 @@ pub const PackCommand = struct {
 
     fn iterateBundledDeps(
         ctx: *Context,
-        root_dir: std.fs.Dir,
+        root_dir: bun.FD,
         log_level: LogLevel,
     ) OOM!PackQueue {
-        var bundled_pack_queue = PackQueue.init(ctx.allocator, {});
+        var bundled_pack_queue = PackQueue.initContext({});
         if (ctx.bundled_deps.items.len == 0) return bundled_pack_queue;
 
-        var dir = root_dir.openDirZ("node_modules", .{ .iterate = true }) catch |err| {
-            switch (err) {
+        var dir = node_modules_dir: {
+            break :node_modules_dir switch (bun.sys.openatA(root_dir, "node_modules", bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
                 // ignore node_modules if it isn't a directory, or doesn't exist
-                error.NotDir, error.FileNotFound => return bundled_pack_queue,
-
-                else => {
-                    Output.err(err, "failed to open \"node_modules\" to pack bundled dependencies", .{});
-                    Global.crash();
+                .err => |err| switch (err.getErrno()) {
+                    .NOTDIR, .NOENT => return bundled_pack_queue,
+                    else => {
+                        Output.err(err, "failed to open \"node_modules\" to pack bundled dependencies", .{});
+                        Global.crash();
+                    },
                 },
-            }
+                .result => |fd| fd,
+            };
         };
         defer dir.close();
 
@@ -563,7 +582,7 @@ pub const PackCommand = struct {
         var additional_bundled_deps: std.ArrayListUnmanaged(DirInfo) = .empty;
         defer additional_bundled_deps.deinit(ctx.allocator);
 
-        var iter = DirIterator.iterate(.fromStdDir(dir), .u8);
+        var iter = DirIterator.iterate(dir, .u8);
         while (iter.next().unwrap() catch null) |entry| {
             if (entry.kind != .directory) continue;
 
@@ -572,12 +591,13 @@ pub const PackCommand = struct {
             if (strings.startsWithChar(_entry_name, '@')) {
                 const concat = try entrySubpath(ctx.allocator, "node_modules", _entry_name);
 
-                var scoped_dir = root_dir.openDirZ(concat, .{ .iterate = true }) catch {
-                    continue;
+                var scoped_dir = switch (bun.sys.openatA(root_dir, concat, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+                    .err => continue,
+                    .result => |fd| fd,
                 };
                 defer scoped_dir.close();
 
-                var scoped_iter = DirIterator.iterate(.fromStdDir(scoped_dir), .u8);
+                var scoped_iter = DirIterator.iterate(scoped_dir, .u8);
                 while (scoped_iter.next().unwrap() catch null) |sub_entry| {
                     const entry_name = try entrySubpath(ctx.allocator, _entry_name, sub_entry.name.slice());
 
@@ -669,7 +689,7 @@ pub const PackCommand = struct {
 
     fn addBundledDep(
         ctx: *Context,
-        root_dir: std.fs.Dir,
+        root_dir: bun.FD,
         bundled_dir_info: DirInfo,
         bundled_pack_queue: *PackQueue,
         dedupe: *bun.StringHashMap(void),
@@ -687,7 +707,7 @@ pub const PackCommand = struct {
             var dir, const dir_subpath, const dir_depth = dir_info;
             defer dir.close();
 
-            var iter = DirIterator.iterate(.fromStdDir(dir), .u8);
+            var iter = DirIterator.iterate(dir, .u8);
             while (iter.next().unwrap() catch null) |entry| {
                 if (entry.kind != .file and entry.kind != .directory) continue;
 
@@ -729,12 +749,14 @@ pub const PackCommand = struct {
                                 // starting at `node_modules/is-even/node_modules/is-odd`
                                 var dep_dir_depth: usize = bundled_dir_info[2] + 2;
 
-                                if (root_dir.openDirZ(dep_subpath, .{ .iterate = true })) |dep_dir| {
+                                const dep_dir_result = bun.sys.openatA(root_dir, dep_subpath, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0);
+                                if (dep_dir_result == .result) {
+                                    const dep_dir = dep_dir_result.result;
                                     const dedupe_entry = try dedupe.getOrPut(dep_subpath);
                                     if (dedupe_entry.found_existing) continue;
 
                                     try additional_bundled_deps.append(ctx.allocator, .{ dep_dir, dep_subpath, dep_dir_depth });
-                                } else |_| {
+                                } else {
                                     // keep searching
 
                                     // slice off the `node_modules` from above
@@ -749,7 +771,10 @@ pub const PackCommand = struct {
                                         const parent_dep_subpath = dep_subpath[0 .. node_modules_end + 1 + dep_name.len :0];
                                         remain = remain[0..node_modules_start];
 
-                                        const parent_dep_dir = root_dir.openDirZ(parent_dep_subpath, .{ .iterate = true }) catch continue;
+                                        const parent_dep_dir = switch (bun.sys.openatA(root_dir, parent_dep_subpath, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+                                            .err => continue,
+                                            .result => |fd| fd,
+                                        };
 
                                         const dedupe_entry = try dedupe.getOrPut(parent_dep_subpath);
                                         if (dedupe_entry.found_existing) continue :next_dep;
@@ -783,7 +808,7 @@ pub const PackCommand = struct {
 
                 switch (entry.kind) {
                     .file => {
-                        try bundled_pack_queue.add(.{ .path = entry_subpath });
+                        try bundled_pack_queue.push(ctx.allocator, .{ .path = entry_subpath });
                     },
                     .directory => {
                         const subdir = openSubdir(dir, entry_name, entry_subpath);
@@ -826,7 +851,8 @@ pub const PackCommand = struct {
                 }
             }
 
-            while (ignores.getLastOrNull()) |last| {
+            while (ignores.items.len > 0) {
+                const last = &ignores.items[ignores.items.len - 1];
                 if (last.depth < dir_depth) break;
 
                 // pop patterns from files greater than or equal to the current depth.
@@ -847,7 +873,7 @@ pub const PackCommand = struct {
                 }
             }
 
-            var dir_iter = DirIterator.iterate(.fromStdDir(dir), .u8);
+            var dir_iter = DirIterator.iterate(dir, .u8);
             next_entry: while (dir_iter.next().unwrap() catch null) |entry| {
                 if (entry.kind != .file and entry.kind != .directory) continue;
 
@@ -887,7 +913,7 @@ pub const PackCommand = struct {
                                 continue :next_entry;
                             }
                         }
-                        try pack_queue.add(.{ .path = entry_subpath });
+                        try pack_queue.push(allocator, .{ .path = entry_subpath });
                     },
                     .directory => {
                         for (bins) |bin| {
@@ -921,7 +947,7 @@ pub const PackCommand = struct {
         invalid_field: {
             switch (bundled_deps.data) {
                 .e_array => {
-                    var iter = bundled_deps.asArray() orelse return .{};
+                    var iter = bundled_deps.asArray() orelse return .empty;
 
                     while (iter.next()) |bundled_dep_item| {
                         const bundled_dep = try bundled_dep_item.asStringCloned(allocator) orelse break :invalid_field;
@@ -932,8 +958,8 @@ pub const PackCommand = struct {
                     }
                 },
                 .e_boolean => {
-                    const b = bundled_deps.asBool() orelse return .{};
-                    if (!b == true) return .{};
+                    const b = bundled_deps.asBool() orelse return .empty;
+                    if (!b == true) return .empty;
 
                     if (json.get("dependencies")) |dependencies_expr| {
                         switch (dependencies_expr.data) {
@@ -1163,7 +1189,36 @@ pub const PackCommand = struct {
             };
     }
 
-    const BufferedFileReader = bun.deprecated.BufferedReader(1024 * 512, File.Reader);
+    /// Buffered streaming reader over an open file. The pre-0.17
+    /// `bun.deprecated.BufferedReader` generic is gone from std; this keeps the
+    /// 512 KiB-window behavior the archive path needs (hash + stream through
+    /// libarchive without loading whole files).
+    const BufferedFileReader = struct {
+        inner: File,
+        buf: [1024 * 512]u8 = undefined,
+        start: usize = 0,
+        end: usize = 0,
+
+        pub const ReadError = error{ReadFailed};
+
+        fn fill(self: *BufferedFileReader) ReadError!void {
+            if (self.start < self.end) return;
+            self.start = 0;
+            self.end = 0;
+            switch (bun.sys.read(self.inner.handle, &self.buf)) {
+                .result => |n| self.end = n,
+                .err => return error.ReadFailed,
+            }
+        }
+
+        pub fn read(self: *BufferedFileReader, dest: []u8) ReadError!usize {
+            try self.fill();
+            const n = @min(dest.len, self.end - self.start);
+            @memcpy(dest[0..n], self.buf[self.start..][0..n]);
+            self.start += n;
+            return n;
+        }
+    };
 
     pub fn pack(
         ctx: *Context,
@@ -1420,14 +1475,12 @@ pub const PackCommand = struct {
         const edited_package_json = try editRootPackageJSON(ctx.allocator, ctx.lockfile, json);
 
         var root_dir = root_dir: {
-            var path_buf: PathBuffer = undefined;
-            @memcpy(path_buf[0..abs_workspace_path.len], abs_workspace_path);
-            path_buf[abs_workspace_path.len] = 0;
-            break :root_dir std.fs.openDirAbsoluteZ(path_buf[0..abs_workspace_path.len :0], .{
-                .iterate = true,
-            }) catch |err| {
-                Output.err(err, "failed to open root directory: {s}\n", .{abs_workspace_path});
-                Global.crash();
+            break :root_dir switch (bun.sys.openA(abs_workspace_path, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+                .err => |err| {
+                    Output.err(err, "failed to open root directory: {s}\n", .{abs_workspace_path});
+                    Global.crash();
+                },
+                .result => |fd| fd,
             };
         };
         defer root_dir.close();
@@ -1442,10 +1495,10 @@ pub const PackCommand = struct {
 
         ctx.bundled_deps = try getBundledDeps(ctx.allocator, json.root, "bundledDependencies") orelse
             try getBundledDeps(ctx.allocator, json.root, "bundleDependencies") orelse
-            .{};
+            .empty;
 
-        var pack_queue: PackQueue = .init(ctx.allocator, {});
-        defer pack_queue.deinit();
+        var pack_queue: PackQueue = .initContext({});
+        defer pack_queue.deinit(ctx.allocator);
 
         const bins = try getPackageBins(ctx.allocator, json.root);
         defer for (bins) |bin| ctx.allocator.free(bin.path);
@@ -1453,12 +1506,13 @@ pub const PackCommand = struct {
         for (bins) |bin| {
             switch (bin.type) {
                 .file => {
-                    try pack_queue.add(.{ .path = bin.path, .optional = true });
+                    try pack_queue.push(ctx.allocator, .{ .path = bin.path, .optional = true });
                 },
                 .dir => {
-                    const bin_dir = root_dir.openDir(bin.path, .{ .iterate = true }) catch {
+                    const bin_dir = switch (bun.sys.openatA(root_dir, bin.path, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
                         // non-existent bins are ignored
-                        continue;
+                        .err => continue,
+                        .result => |fd| fd,
                     };
 
                     try iterateProjectTree(ctx.allocator, &pack_queue, &.{}, .{ bin_dir, bin.path, 2 }, log_level);
@@ -1524,7 +1578,7 @@ pub const PackCommand = struct {
         }
 
         var bundled_pack_queue = try iterateBundledDeps(ctx, root_dir, log_level);
-        defer bundled_pack_queue.deinit();
+        defer bundled_pack_queue.deinit(ctx.allocator);
 
         // +1 for package.json
         ctx.stats.total_files = pack_queue.count() + bundled_pack_queue.count() + 1;
@@ -1608,7 +1662,6 @@ pub const PackCommand = struct {
 
         var print_buf = std.array_list.Managed(u8).init(ctx.allocator);
         defer print_buf.deinit();
-        const print_buf_writer = print_buf.writer();
 
         var archive = Archive.writeNew();
 
@@ -1630,7 +1683,8 @@ pub const PackCommand = struct {
         // default is 9
         // https://github.com/npm/cli/blob/ec105f400281a5bfd17885de1ea3d54d0c231b27/node_modules/pacote/lib/util/tar-create-options.js#L12
         const compression_level = manager.options.pack_gzip_level orelse "9";
-        try print_buf_writer.print("{s}\x00", .{compression_level});
+        try print_buf.appendSlice(compression_level);
+        try print_buf.append(0);
         switch (archive.writeSetFilterOption(null, "compression-level", print_buf.items[0..compression_level.len :0])) {
             .failed, .fatal, .warn => {
                 Output.errGeneric("compression level must be between 0 and 9, received {s}", .{compression_level});
@@ -1671,7 +1725,7 @@ pub const PackCommand = struct {
             const most_likely_a_slash = dest_buf[abs_tarball_dest_dir_end];
             dest_buf[abs_tarball_dest_dir_end] = 0;
             const abs_tarball_dest_dir = dest_buf[0..abs_tarball_dest_dir_end :0];
-            bun.makePath(std.fs.cwd(), abs_tarball_dest_dir) catch {};
+            bun.makePath(bun.FD.cwd(), abs_tarball_dest_dir) catch {};
             dest_buf[abs_tarball_dest_dir_end] = most_likely_a_slash;
         }
 
@@ -1685,16 +1739,13 @@ pub const PackCommand = struct {
         }
 
         // append removed items from `pack_queue` with their file size
-        var pack_list: PackList = .{};
+        var pack_list: PackList = .empty;
         defer pack_list.deinit(ctx.allocator);
 
         var read_buf: [8192]u8 = undefined;
         const file_reader = try ctx.allocator.create(BufferedFileReader);
         defer ctx.allocator.destroy(file_reader);
-        file_reader.* = .{
-            .unbuffered_reader = undefined,
-            .buf = undefined,
-        };
+        file_reader.* = .{ .inner = undefined };
 
         var entry = Archive.Entry.new2(archive);
 
@@ -1712,10 +1763,10 @@ pub const PackCommand = struct {
             entry = try archivePackageJSON(ctx, archive, entry, root_dir, edited_package_json);
             if (log_level.showProgress()) node.completeOne();
 
-            while (pack_queue.removeOrNull()) |item| {
+            while (pack_queue.pop()) |item| {
                 defer if (log_level.showProgress()) node.completeOne();
 
-                const file = bun.sys.openat(.fromStdDir(root_dir), item.path, bun.O.RDONLY, 0).unwrap() catch |err| {
+                const file = bun.sys.openat(root_dir, item.path, bun.O.RDONLY, 0).unwrap() catch |err| {
                     if (item.optional) {
                         ctx.stats.total_files -= 1;
                         continue;
@@ -1731,7 +1782,7 @@ pub const PackCommand = struct {
 
                 defer fd.close();
 
-                const stat = bun.sys.sys_uv.fstat(fd).unwrap() catch |err| {
+                const stat = bun.sys.fstat(fd).unwrap() catch |err| {
                     Output.err(err, "failed to stat file: \"{s}\"", .{item.path});
                     Global.crash();
                 };
@@ -1752,10 +1803,10 @@ pub const PackCommand = struct {
                 );
             }
 
-            while (bundled_pack_queue.removeOrNull()) |item| {
+            while (bundled_pack_queue.pop()) |item| {
                 defer if (log_level.showProgress()) node.completeOne();
 
-                const file = File.openat(.fromStdDir(root_dir), item.path, bun.O.RDONLY, 0).unwrap() catch |err| {
+                const file = File.openat(root_dir, item.path, bun.O.RDONLY, 0).unwrap() catch |err| {
                     if (item.optional) {
                         ctx.stats.total_files -= 1;
                         continue;
@@ -1806,10 +1857,13 @@ pub const PackCommand = struct {
         var integrity: sha.SHA512.Digest = undefined;
 
         const tarball_bytes = tarball_bytes: {
-            const tarball_file = File.open(abs_tarball_dest, bun.O.RDONLY, 0).unwrap() catch |err| {
-                Output.err(err, "failed to open tarball at: \"{s}\"", .{abs_tarball_dest});
-                Global.crash();
-            };
+                const tarball_file = switch (bun.sys.openA(abs_tarball_dest, bun.O.RDONLY, 0)) {
+                    .err => |err| {
+                        Output.err(err, "failed to open tarball: \"{s}\"", .{abs_tarball_dest});
+                        Global.crash();
+                    },
+                    .result => |fd| File.from(fd),
+                };
             defer tarball_file.close();
 
             var sha1 = sha.SHA1.init();
@@ -1835,10 +1889,7 @@ pub const PackCommand = struct {
                 break :tarball_bytes tarball_bytes;
             }
 
-            file_reader.* = .{
-                .unbuffered_reader = tarball_file.reader(),
-                .buf = undefined,
-            };
+            file_reader.* = .{ .inner = tarball_file };
 
             var size: usize = 0;
             var read = file_reader.read(&read_buf) catch |err| {
@@ -2044,10 +2095,10 @@ pub const PackCommand = struct {
         ctx: *Context,
         archive: *Archive,
         entry: *Archive.Entry,
-        root_dir: std.fs.Dir,
+        root_dir: bun.FD,
         edited_package_json: string,
     ) OOM!*Archive.Entry {
-        const stat = bun.sys.fstatat(.fromStdDir(root_dir), "package.json").unwrap() catch |err| {
+        const stat = bun.sys.fstatat(root_dir, "package.json").unwrap() catch |err| {
             Output.err(err, "failed to stat package.json", .{});
             Global.crash();
         };
@@ -2086,15 +2137,15 @@ pub const PackCommand = struct {
         print_buf: *std.array_list.Managed(u8),
         bins: []const BinInfo,
     ) OOM!*Archive.Entry {
-        const print_buf_writer = print_buf.writer();
-
-        try print_buf_writer.print("{s}{s}\x00", .{ package_prefix, filename });
+        try print_buf.appendSlice(package_prefix);
+        try print_buf.appendSlice(filename);
+        try print_buf.append(0);
         const pathname = print_buf.items[0 .. package_prefix.len + filename.len :0];
         if (comptime Environment.isWindows)
             entry.setPathnameUtf8(pathname)
         else
             entry.setPathname(pathname);
-        print_buf_writer.context.clearRetainingCapacity();
+        print_buf.clearRetainingCapacity();
 
         entry.setSize(@intCast(stat.size));
 
@@ -2118,10 +2169,7 @@ pub const PackCommand = struct {
             else => {},
         }
 
-        file_reader.* = .{
-            .unbuffered_reader = File.from(file).reader(),
-            .buf = undefined,
-        };
+        file_reader.* = .{ .inner = File.from(file) };
 
         var read = file_reader.read(read_buf) catch |err| {
             Output.err(err, "failed to read file: \"{s}\"", .{filename});
@@ -2430,17 +2478,29 @@ pub const PackCommand = struct {
 
         pub const List = std.ArrayListUnmanaged(IgnorePatterns);
 
-        fn ignoreFileFail(dir: std.fs.Dir, ignore_kind: Kind, reason: enum { read, open }, err: anyerror) noreturn {
+        fn ignoreFileFail(dir: bun.FD, ignore_kind: Kind, reason: enum { read, open }, err: anyerror) noreturn {
             var buf: PathBuffer = undefined;
-            const dir_path = bun.getFdPath(.fromStdDir(dir), &buf) catch "";
+            const dir_path = bun.getFdPath(dir, &buf) catch "";
             Output.err(err, "failed to {s} {s} at: \"{s}{s}{s}\"", .{
                 @tagName(reason),
                 @tagName(ignore_kind),
                 strings.withoutTrailingSlash(dir_path),
-                std.fs.path.sep_str,
+                if (Environment.isWindows) std.fs.path.sep_str_windows else std.fs.path.sep_str_posix,
                 @tagName(ignore_kind),
             });
             Global.crash();
+        }
+
+        fn openIgnoreFileOrCrash(dir: bun.FD, comptime name: []const u8, ignore_kind: Kind) ?bun.FD {
+            return switch (bun.sys.openatA(dir, name, bun.O.RDONLY, 0)) {
+                .err => |err| switch (err.getErrno()) {
+                    // A missing ignore file is normal; anything else means the
+                    // tarball could include files the author wanted ignored.
+                    .NOENT => null,
+                    else => ignoreFileFail(dir, ignore_kind, .open, bun.errnoToZigErr(err.getErrno())),
+                },
+                .result => |fd| fd,
+            };
         }
 
         fn trimTrailingSpaces(line: string) string {
@@ -2455,26 +2515,15 @@ pub const PackCommand = struct {
         }
 
         // ignore files are always ignored, don't need to worry about opening or reading twice
-        pub fn readFromDisk(allocator: std.mem.Allocator, dir: std.fs.Dir, dir_depth: usize) OOM!?IgnorePatterns {
+        pub fn readFromDisk(allocator: std.mem.Allocator, dir: bun.FD, dir_depth: usize) OOM!?IgnorePatterns {
             var patterns: std.ArrayListUnmanaged(Pattern) = .empty;
             errdefer patterns.deinit(allocator);
 
             var ignore_kind: Kind = .@".npmignore";
 
-            const ignore_file = dir.openFileZ(".npmignore", .{}) catch |err| ignore_file: {
-                if (err != error.FileNotFound) {
-                    // Crash if the file exists and fails to open. Don't want to create a tarball
-                    // with files you want to ignore.
-                    ignoreFileFail(dir, ignore_kind, .open, err);
-                }
+            var ignore_file: bun.FD = openIgnoreFileOrCrash(dir, ".npmignore", ignore_kind) orelse blk: {
                 ignore_kind = .@".gitignore";
-                break :ignore_file dir.openFileZ(".gitignore", .{}) catch |err2| {
-                    if (err2 != error.FileNotFound) {
-                        ignoreFileFail(dir, ignore_kind, .open, err2);
-                    }
-
-                    return null;
-                };
+                break :blk openIgnoreFileOrCrash(dir, ".gitignore", ignore_kind) orelse return null;
             };
             defer ignore_file.close();
 
@@ -2529,12 +2578,12 @@ pub const PackCommand = struct {
 
     fn printArchivedFilesAndPackages(
         ctx: *Context,
-        root_dir_std: std.fs.Dir,
+        root_dir: bun.FD,
         comptime is_dry_run: bool,
         pack_list: if (is_dry_run) *PackQueue else PackList,
         package_json_len: usize,
     ) void {
-        const root_dir = bun.FD.fromStdDir(root_dir_std);
+
         if (ctx.manager.options.log_level == .silent or ctx.manager.options.log_level == .quiet) return;
         const packed_fmt = "<r><b><cyan>packed<r> {f} {s}";
 
@@ -2551,7 +2600,7 @@ pub const PackCommand = struct {
                 "package.json",
             });
 
-            while (pack_list.removeOrNull()) |item| {
+            while (pack_list.pop()) |item| {
                 const stat = root_dir.statat(item.path).unwrap() catch |err| {
                     if (item.optional) {
                         ctx.stats.total_files -= 1;

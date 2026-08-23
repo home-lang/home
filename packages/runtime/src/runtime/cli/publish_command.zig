@@ -307,10 +307,25 @@ pub const PublishCommand = struct {
         };
     }
 
+    /// Entry for Home's top-level `home publish` route. The host CLI has
+    /// already consumed argv, so re-point clap's process args at a synthetic
+    /// `[prog, "publish", ...]` slice and run Bun's own arg parsing.
+    pub fn execStandalone(ctx: Command.Context, sub_args: []const []const u8) !void {
+        var argv: std.ArrayListUnmanaged([:0]const u8) = .empty;
+        defer argv.deinit(ctx.allocator);
+        try argv.append(ctx.allocator, "home");
+        try argv.append(ctx.allocator, "publish");
+        for (sub_args) |arg| {
+            if (arg.len == 0) continue;
+            try argv.append(ctx.allocator, try bun.dupeZ(ctx.allocator, u8, arg));
+        }
+        bun.clap.args.setProcessArgs(argv.items);
+        return exec(ctx);
+    }
+
     pub fn exec(ctx: Command.Context) !void {
         Output.prettyln("<r><b>bun publish <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>", .{});
         Output.flush();
-
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .publish);
 
         const manager, const original_cwd = PackageManager.init(ctx, cli, .publish) catch |err| {
@@ -596,7 +611,7 @@ pub const PublishCommand = struct {
 
         var response_buf = try MutableString.init(ctx.allocator, 1024);
 
-        try print_writer.print("{s}/{f}", .{
+        try printOrOOM(print_writer, "{s}/{f}", .{
             strings.withoutTrailingSlash(registry.url.href),
             bun.fmt.dependencyUrl(ctx.package_name),
         });
@@ -754,8 +769,18 @@ pub const PublishCommand = struct {
 
         while ('\n' != Output.buffered_stdin.reader().readByte() catch return) {}
 
-        var child = std.process.Child.init(&.{ Open.opener, auth_url }, bun.default_allocator);
-        _ = child.spawnAndWait() catch return;
+        // this Zig has no std.process.Child.init; use the Io-based spawn
+        var threaded = std.Io.Threaded.init(bun.default_allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var child = std.process.spawn(io, .{
+            .argv = &.{ Open.opener, auth_url },
+            .cwd = .inherit,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(io) catch return;
     }
 
     fn getOTP(
@@ -870,7 +895,14 @@ pub const PublishCommand = struct {
                             break :nanoseconds 500 * std.time.ns_per_ms;
                         };
 
-                        std.Thread.sleep(nanoseconds);
+                        // this Zig lacks std.Thread.sleep; block the thread via
+                        // nanosleep (same primitive Bun's sleepSync uses here)
+                        const sleep_ns: u64 = @min(nanoseconds, std.math.maxInt(u64));
+                        var sleep_req: std.c.timespec = .{
+                            .sec = @intCast(sleep_ns / std.time.ns_per_s),
+                            .nsec = @intCast(sleep_ns % std.time.ns_per_s),
+                        };
+                        _ = std.c.nanosleep(&sleep_req, null);
                         continue;
                     },
                     200 => {
@@ -1092,23 +1124,29 @@ pub const PublishCommand = struct {
         allocator: std.mem.Allocator,
         abs_workspace_path: string,
     ) OOM!?ReadmeInfo {
-        var workspace_dir = std.fs.openDirAbsolute(abs_workspace_path, .{ .iterate = true }) catch return null;
+        var workspace_dir = switch (bun.sys.openA(abs_workspace_path, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+            .err => return null,
+            .result => |fd| fd,
+        };
         defer workspace_dir.close();
 
-        var iter = bun.DirIterator.iterate(.fromStdDir(workspace_dir), .u8);
+        var iter = bun.DirIterator.iterate(workspace_dir, .u8);
         while (iter.next().unwrap() catch null) |entry| {
             if (entry.kind == .directory) continue;
             const name = entry.name.slice();
             if (!isReadmeFilename(name)) continue;
 
             const name_dup = try allocator.dupe(u8, name);
-            const contents = switch (bun.sys.File.readFrom(bun.FD.fromStdDir(workspace_dir), name_dup, allocator)) {
+            const name_z = try bun.dupeZ(allocator, u8, name);
+            const contents = switch (bun.sys.File.readFrom(workspace_dir, name_z, allocator)) {
                 .result => |bytes| bytes,
                 .err => {
                     allocator.free(name_dup);
+                    allocator.free(name_z);
                     return null;
                 },
             };
+            allocator.free(name_z);
             return .{ .filename = name_dup, .contents = contents };
         }
         return null;
@@ -1272,16 +1310,16 @@ pub const PublishCommand = struct {
                     }
                 };
 
-                var dirs: std.ArrayListUnmanaged(struct { std.fs.Dir, string, bool }) = .empty;
+                var dirs: std.ArrayListUnmanaged(struct { bun.FD, string, bool }) = .empty;
                 defer dirs.deinit(allocator);
 
-                try dirs.append(allocator, .{ bin_dir.stdDir(), normalized_bin_dir, false });
+                try dirs.append(allocator, .{ bin_dir, normalized_bin_dir, false });
 
                 while (dirs.pop()) |dir_info| {
                     var dir, const dir_subpath, const close_dir = dir_info;
                     defer if (close_dir) dir.close();
 
-                    var iter = bun.DirIterator.iterate(.fromStdDir(dir), .u8);
+                    var iter = bun.DirIterator.iterate(dir, .u8);
                     while (iter.next().unwrap() catch null) |entry| {
                         const name, const subpath = name_and_subpath: {
                             const name = entry.name.slice();
@@ -1313,8 +1351,9 @@ pub const PublishCommand = struct {
                         });
 
                         if (entry.kind == .directory) {
-                            const subdir = dir.openDirZ(name, .{ .iterate = true }) catch {
-                                continue;
+                            const subdir = switch (bun.sys.openatA(dir, name, bun.O.DIRECTORY | bun.O.CLOEXEC | bun.O.RDONLY, 0)) {
+                                .err => continue,
+                                .result => |fd| fd,
                             };
                             try dirs.append(allocator, .{ subdir, subpath, true });
                         }
@@ -1332,9 +1371,17 @@ pub const PublishCommand = struct {
         // no bins
     }
 
+    /// Zig 0.17 writers report allocation failure as `WriteFailed`; these
+    /// builders surface it as OOM like every other allocation on the path.
+    fn printOrOOM(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) OOM!void {
+        writer.print(fmt, args) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+        };
+    }
+
     fn constructPublishHeaders(
         allocator: std.mem.Allocator,
-        print_buf: *std.ArrayListUnmanaged(u8),
+        print_buf: *std.Io.Writer.Allocating,
         registry: *const Npm.Registry.Scope,
         maybe_json_len: ?usize,
         maybe_otp: ?[]const u8,
@@ -1354,11 +1401,11 @@ pub const PublishCommand = struct {
             headers.count("accept-encoding", "gzip,deflate");
 
             if (registry.token.len > 0) {
-                try print_writer.print("Bearer {s}", .{registry.token});
+                try printOrOOM(print_writer, "Bearer {s}", .{registry.token});
                 headers.count("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             } else if (registry.auth.len > 0) {
-                try print_writer.print("Basic {s}", .{registry.auth});
+                try printOrOOM(print_writer, "Basic {s}", .{registry.auth});
                 headers.count("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
@@ -1374,7 +1421,7 @@ pub const PublishCommand = struct {
             }
             headers.count("npm-command", "publish");
 
-            try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
+            try printOrOOM(print_writer, "{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
             // headers.count("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
             headers.count("user-agent", print_buf.written());
             print_buf.clearRetainingCapacity();
@@ -1383,7 +1430,7 @@ pub const PublishCommand = struct {
             headers.count("Host", registry.url.host);
 
             if (maybe_json_len) |json_len| {
-                try print_writer.print("{d}", .{json_len});
+                try printOrOOM(print_writer, "{d}", .{json_len});
                 headers.count("Content-Length", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
@@ -1396,11 +1443,11 @@ pub const PublishCommand = struct {
             headers.append("accept-encoding", "gzip,deflate");
 
             if (registry.token.len > 0) {
-                try print_writer.print("Bearer {s}", .{registry.token});
+                try printOrOOM(print_writer, "Bearer {s}", .{registry.token});
                 headers.append("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             } else if (registry.auth.len > 0) {
-                try print_writer.print("Basic {s}", .{registry.auth});
+                try printOrOOM(print_writer, "Basic {s}", .{registry.auth});
                 headers.append("authorization", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
@@ -1416,7 +1463,7 @@ pub const PublishCommand = struct {
             }
             headers.append("npm-command", "publish");
 
-            try print_writer.print("{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
+            try printOrOOM(print_writer, "{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
             // headers.append("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
             headers.append("user-agent", print_buf.written());
             print_buf.clearRetainingCapacity();
@@ -1425,7 +1472,7 @@ pub const PublishCommand = struct {
             headers.append("Host", registry.url.host);
 
             if (maybe_json_len) |json_len| {
-                try print_writer.print("{d}", .{json_len});
+                try printOrOOM(print_writer, "{d}", .{json_len});
                 headers.append("Content-Length", print_buf.written());
                 print_buf.clearRetainingCapacity();
             }
@@ -1456,33 +1503,33 @@ pub const PublishCommand = struct {
         errdefer buf.deinit();
         const writer = &buf.writer;
 
-        try writer.print("{{\"_id\":\"{s}\",\"name\":\"{s}\"", .{
+        try printOrOOM(writer, "{{\"_id\":\"{s}\",\"name\":\"{s}\"", .{
             ctx.package_name,
             ctx.package_name,
         });
 
-        try writer.print(",\"dist-tags\":{{\"{s}\":\"{s}\"}}", .{
+        try printOrOOM(writer, ",\"dist-tags\":{{\"{s}\":\"{s}\"}}", .{
             tag,
             version_without_build_tag,
         });
 
         // "versions"
         {
-            try writer.print(",\"versions\":{{\"{s}\":{s}}}", .{
+            try printOrOOM(writer, ",\"versions\":{{\"{s}\":{s}}}", .{
                 version_without_build_tag,
                 ctx.normalized_pkg_info,
             });
         }
 
         if (ctx.manager.options.publish_config.access) |access| {
-            try writer.print(",\"access\":\"{s}\"", .{@tagName(access)});
+            try printOrOOM(writer, ",\"access\":\"{s}\"", .{@tagName(access)});
         } else {
-            try writer.writeAll(",\"access\":null");
+            try printOrOOM(writer, ",\"access\":null", .{});
         }
 
         // "_attachments"
         {
-            try writer.print(",\"_attachments\":{{\"{f}\":{{\"content_type\":\"{s}\",\"data\":\"", .{
+            try printOrOOM(writer, ",\"_attachments\":{{\"{f}\":{{\"content_type\":\"{s}\",\"data\":\"", .{
                 Pack.fmtTarballFilename(ctx.package_name, ctx.package_version, .raw),
                 "application/octet-stream",
             });
@@ -1491,9 +1538,9 @@ pub const PublishCommand = struct {
             defer ctx.allocator.free(encoded_tarball);
             const count = bun.simdutf.base64.encode(ctx.tarball_bytes, encoded_tarball, false);
             bun.assertWithLocation(count == encoded_tarball_len, @src());
-            try writer.writeAll(encoded_tarball);
+            try printOrOOM(writer, "{s}", .{encoded_tarball});
 
-            try writer.print("\",\"length\":{d}}}}}}}", .{
+            try printOrOOM(writer, "\",\"length\":{d}}}}}}}", .{
                 ctx.tarball_bytes.len,
             });
         }
@@ -1532,7 +1579,7 @@ const G = bun.ast.G;
 const Command = bun.cli.Command;
 const Pack = bun.cli.PackCommand;
 const Run = bun.cli.RunCommand;
-const prompt = bun.cli.InitCommand.prompt;
+const prompt = @import("./init_command.zig").InitCommand.prompt;
 
 const http = bun.http;
 const HeaderBuilder = http.HeaderBuilder;
