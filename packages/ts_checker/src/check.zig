@@ -27613,6 +27613,19 @@ pub const Checker = struct {
         return false;
     }
 
+    fn isTypeOnlyValueUseInAmbientClassHeritage(self: *Checker, node: NodeId) bool {
+        var cur = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const class = hir_mod.classOf(self.hir, cur);
+            if (class.extends == hir_mod.none_node_id or
+                (class.extends != node and !self.nodeHasAncestor(node, class.extends))) return false;
+            return self.declarationSourceHasLeadingDeclare(cur) or self.bigIntLiteralIsAmbient(cur);
+        }
+        return false;
+    }
+
     /// True when `node` is a bare `identifier` HIR node whose name
     /// has no binding visible from the current position ÃÂ¢ÃÂÃÂ checked by
     /// walking the parent chain for matching parameter/let/const/var
@@ -52173,6 +52186,7 @@ pub const Checker = struct {
 
     fn reportClassExtendsTypeOnlyImportValue(self: *Checker, extends_expr: NodeId) CheckError!void {
         if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .identifier) return;
+        if (self.isTypeOnlyValueUseInAmbientClassHeritage(extends_expr)) return;
         const id = hir_mod.identifierOf(self.hir, extends_expr);
         const import_decl = self.typeOnlyImportLocalDecl(id.name, extends_expr) orelse return;
         if (self.diagnosticExists(extends_expr, TsCodes.type_only_import_used_as_value)) return;
@@ -124628,6 +124642,7 @@ pub const Checker = struct {
         }
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             !self.isBuiltinName(id.name) and self.typeOnlyImportLocal(id.name, node))
         {
             if (self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node)) return types.Primitive.any;
@@ -124645,6 +124660,7 @@ pub const Checker = struct {
         }
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and
             !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             (self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null)
         {
             const msg = std.fmt.allocPrint(
@@ -124663,6 +124679,7 @@ pub const Checker = struct {
         // source module, used as a value (cross-module sibling of TS1361).
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             self.nameIsCrossModuleTypeOnlyExport(id.name, node))
         {
             const msg = std.fmt.allocPrint(
@@ -132565,6 +132582,7 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
+        if (self.hir.kindOf(node) == .type_ref and self.typeOnlyImportLocal(name, node)) return;
         if (std.mem.eql(u8, name_str, "const") and self.hir.kindOf(node) == .type_ref) {
             const parent = self.hir.parentOf(node);
             if (parent != hir_mod.none_node_id and
@@ -187904,6 +187922,40 @@ test "checker: class extends reports a named type-only import value use" {
         }
     }
     try T.expect(saw_related);
+}
+
+test "checker: ambient class heritage accepts type-only imports" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\export class A {}
+        \\// @filename: /b.ts
+        \\import type { A } from './a';
+        \\declare class B extends A {}
+        \\declare namespace ns {
+        \\  class C extends A {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+}
+
+test "checker: type-only import-equals binding resolves in type space" {
+    const s = try newSetup(
+        \\// @filename: /dep.ts
+        \\declare class SpecialError extends Error {}
+        \\export = SpecialError;
+        \\// @filename: /index.ts
+        \\import type SpecialError = require("./dep");
+        \\function handleError(error: SpecialError) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
 }
 
 test "checker: reference lib directives validate known library names" {
