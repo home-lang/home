@@ -56721,8 +56721,24 @@ const harness_prelude =
     \\      Promise.resolve().then(() => client.emit("end"));
     \\      return this;
     \\    };
-    \\    client.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
-    \\    peer.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\    function destroyPairEndpoint(error) {
+    \\      if (this.destroyed) return this;
+    \\      this.destroyed = true;
+    \\      __home_net_clear_idle_timeout(this);
+    \\      if (error) this.emit("error", error);
+    \\      this.emit("close", !!error);
+    \\      const other = this.__home_peer;
+    \\      Promise.resolve().then(() => {
+    \\        if (!other || other.destroyed) return;
+    \\        other.destroyed = true;
+    \\        __home_net_clear_idle_timeout(other);
+    \\        other.emit("end");
+    \\        other.emit("close", false);
+    \\      });
+    \\      return this;
+    \\    }
+    \\    client.destroy = destroyPairEndpoint;
+    \\    peer.destroy = destroyPairEndpoint;
     \\    client.pipe = function(destination) { return __home_net_pipe(this, destination); };
     \\    peer.pipe = function(destination) { return __home_net_pipe(this, destination); };
     \\    Promise.resolve().then(() => {
@@ -68890,6 +68906,33 @@ const harness_prelude =
     \\  if (!options || typeof options !== "object" || Array.isArray(options)) return {};
     \\  return options.headers || {};
     \\}
+    \\function __home_websocket_requested_protocols(options, protocolsValue) {
+    \\  const input = options && Array.isArray(options.protocols) ? options.protocols : Array.isArray(protocolsValue) ? protocolsValue : typeof protocolsValue === "string" ? [protocolsValue] : [];
+    \\  return input.map(String);
+    \\}
+    \\function __home_websocket_subprotocol_request_error(protocol, index, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new SyntaxError(String(cause || "Invalid WebSocket subprotocol"));
+    \\  const failure = new SyntaxError("Invalid WebSocket subprotocol at index " + String(index) + ": " + String(protocol), { cause: underlying });
+    \\  failure.code = "ERR_WEBSOCKET_PROTOCOL";
+    \\  failure.operation = "web.websocket.handshake.protocols";
+    \\  failure.phase = "request-validate";
+    \\  failure.protocol = String(protocol);
+    \\  failure.protocolIndex = Number(index);
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_websocket_validate_requested_protocols(options, protocolsValue) {
+    \\  const protocols = __home_websocket_requested_protocols(options, protocolsValue);
+    \\  const seen = new Set();
+    \\  for (let index = 0; index < protocols.length; index++) {
+    \\    const protocol = protocols[index];
+    \\    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(protocol)) throw __home_websocket_subprotocol_request_error(protocol, index, new SyntaxError("WebSocket subprotocols must be valid HTTP tokens"));
+    \\    if (seen.has(protocol)) throw __home_websocket_subprotocol_request_error(protocol, index, new SyntaxError("WebSocket subprotocols must be unique"));
+    \\    seen.add(protocol);
+    \\  }
+    \\  return protocols;
+    \\}
     \\function __home_websocket_request_headers(parsed, options, protocolsValue) {
     \\  const headers = Object.create(null);
     \\  const input = __home_websocket_options_headers(options);
@@ -68914,7 +68957,7 @@ const harness_prelude =
     \\  }
     \\  if (!validKey) headers["sec-websocket-key"] = "dGhlIHNhbXBsZSBub25jZQ==";
     \\  if (headers["sec-websocket-protocol"] === undefined) {
-    \\    const protocols = options && Array.isArray(options.protocols) ? options.protocols : Array.isArray(protocolsValue) ? protocolsValue : typeof protocolsValue === "string" ? [protocolsValue] : [];
+    \\    const protocols = __home_websocket_requested_protocols(options, protocolsValue);
     \\    if (protocols.length) headers["sec-websocket-protocol"] = protocols.map(String).join(", ");
     \\  }
     \\  return headers;
@@ -69705,6 +69748,7 @@ const harness_prelude =
     \\}
     \\function WebSocket(url, protocolsOrOptions) {
     \\  const websocketOptions = __home_websocket_options_from_args(protocolsOrOptions, arguments.length > 2 ? arguments[2] : undefined);
+    \\  __home_websocket_validate_requested_protocols(websocketOptions, protocolsOrOptions);
     \\  const proxy = __home_websocket_proxy_url(websocketOptions);
     \\  this.__home_listeners = Object.create(null);
     \\  let href = String(url);
@@ -112348,6 +112392,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), upgrade_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), upgrade_summary.unsupported);
 
+    var unicode_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-utf16-headers.test.ts");
+    defer unicode_summary.deinit(std.testing.allocator);
+
+    if (unicode_summary.failed != 0 or unicode_summary.unsupported != 0 or unicode_summary.passed != 7 or unicode_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket Unicode upgrade corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ unicode_summary.passed, unicode_summary.failed, unicode_summary.todo, unicode_summary.unsupported, unicode_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), unicode_summary.files);
+    try std.testing.expectEqual(@as(usize, 7), unicode_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), unicode_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), unicode_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), unicode_summary.unsupported);
+
     const source =
         \\import { expect, test } from "bun:test";
         \\test("proxy lifecycle failures retain reference context", () => {
@@ -112500,6 +112559,19 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         \\  expect(error.stack).toContain("web.websocket.unix.parse [url]");
         \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
         \\});
+        \\test("invalid request subprotocols retain token and source context", () => {
+        \\  let error;
+        \\  try { new WebSocket("ws://127.0.0.1:8080/", { protocols: ["chat", "proto-🔥"] }); } catch (cause) { error = cause; }
+        \\  expect(error).toBeInstanceOf(SyntaxError);
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_PROTOCOL");
+        \\  expect(error.operation).toBe("web.websocket.handshake.protocols");
+        \\  expect(error.phase).toBe("request-validate");
+        \\  expect(error.protocol).toBe("proto-🔥");
+        \\  expect(error.protocolIndex).toBe(1);
+        \\  expect(error.cause).toBeInstanceOf(SyntaxError);
+        \\  expect(error.stack).toContain("web.websocket.handshake.protocols [request-validate]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/subprotocol-error.home-regression.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -112512,7 +112584,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         std.debug.print("structured WebSocket subprotocol regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented WebSocket reads" {
