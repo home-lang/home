@@ -20265,7 +20265,7 @@ pub const Checker = struct {
             try self.lowerValueTypeAnnotation(object_id.name, variable.type_annotation)
         else
             (try self.jsDocTypeForLeadingNode(declaration)) orelse return null;
-        if (self.interner.objectMember(declared_t, member.name)) |member_t| return member_t;
+        if (try self.lookupObjectMember(declared_t, member.name)) |member_t| return member_t;
         if (self.varDeclHasReactFunctionComponentType(declaration)) {
             const member_text = self.string_interner.get(member.name);
             if (std.mem.eql(u8, member_text, "propTypes") or
@@ -97721,6 +97721,8 @@ pub const Checker = struct {
     }
 
     fn findLocalValueDeclBeforeExpression(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
         var anchor = node;
         var scope = self.hir.parentOf(node);
         while (scope != hir_mod.none_node_id) {
@@ -97734,6 +97736,7 @@ pub const Checker = struct {
                 },
             };
             for (stmts) |stmt| {
+                if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
                 if (stmt == anchor or (self.hir.kindOf(stmt) == .export_decl and hir_mod.exportOf(self.hir, stmt).decl == anchor)) return null;
                 const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
                 if (decl == hir_mod.none_node_id) continue;
@@ -253672,6 +253675,27 @@ test "checker: checked JSX function components retain local and React expandos" 
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: checked JSX expandos resolve repeated names within their virtual file" {
+    const s = try newTsxSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: first.jsx
+        \\const Component = () => null;
+        \\Component.defaultProps = { first: true };
+        \\// @filename: declared.jsx
+        \\/** @type {{defaultProps: {tabs: string}} & (() => any)} */
+        \\const Component = () => null;
+        \\Component.defaultProps = { tabs: "default" };
+        \\// @filename: inferred.jsx
+        \\const Component = (/** @type {{className: string}} */ props) => null;
+        \\Component.defaultProps = { tabs: "default" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
