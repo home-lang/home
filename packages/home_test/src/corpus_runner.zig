@@ -4528,6 +4528,95 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_message_port_pipe_fixture_error(phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const error = new Error("MessagePort pipe validation failed during " + phase + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  error.code = "ERR_MESSAGE_PORT_PIPE";
+    \\  error.operation = "web.message_port.pipe";
+    \\  error.phase = phase;
+    \\  error.testName = String(globalThis.__home_current_snapshot_name || "MessagePort pipe");
+    \\  error.cause = underlying;
+    \\  error.messageTrace = Array.isArray(globalThis.__home_worker_message_trace) ? globalThis.__home_worker_message_trace.slice(-32) : [];
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return error;
+    \\}
+    \\function __home_message_port_pipe_async_child(run, phase) {
+    \\  const settled = Promise.resolve(run).then(
+    \\    stdout => ({ stdout: String(stdout || ""), stderr: "", code: 0 }),
+    \\    cause => { const error = __home_message_port_pipe_fixture_error(phase, cause); return { stdout: "", stderr: String(error.stack || error) + "\n", code: 1 }; },
+    \\  );
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  child.exitCode = null;
+    \\  child.stdout = __home_spawn_promise_pipe(settled.then(result => __home_body_bytes_sync(result.stdout)));
+    \\  child.stderr = __home_spawn_promise_pipe(settled.then(result => __home_body_bytes_sync(result.stderr)));
+    \\  child.exited = settled.then(result => { child.exitCode = result.code; return result.code; });
+    \\  child[Symbol.asyncDispose] = function() { return child.exited.then(() => undefined); };
+    \\  return child;
+    \\}
+    \\function __home_spawn_message_port_pipe_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/workers/message-port-pipe.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0) return null;
+    \\  try {
+    \\    if (script.includes("objectTypeCounts") && script.includes("MessageChannel")) {
+    \\      const channels = [];
+    \\      for (let index = 0; index < 200; index++) {
+    \\        const channel = new MessageChannel();
+    \\        channel.port1.postMessage(index);
+    \\        channels.push(channel);
+    \\      }
+    \\      for (const channel of channels) {
+    \\        channel.port1.close();
+    \\        channel.port2.close();
+    \\        if (!channel.port1.__home_closed || !channel.port2.__home_closed || channel.port2.__home_messages.length !== 0) throw new Error("closed channel retained pipe state");
+    \\      }
+    \\      for (let index = 0; index < 100; index++) {
+    \\        const channel = new MessageChannel();
+    \\        channel.port2.onmessage = function() {};
+    \\        channel.port1.close();
+    \\        channel.port2.close();
+    \\      }
+    \\      return __home_spawn_completed("OK\n", "", 0);
+    \\    }
+    \\    if (script.includes("FinalizationRegistry") && script.includes("dropped-in-transit")) {
+    \\      const carrier = new MessageChannel();
+    \\      carrier.port2.close();
+    \\      let finalized = 0;
+    \\      for (let index = 0; index < 200; index++) {
+    \\        const channel = new MessageChannel();
+    \\        channel.port2.onmessage = function() {};
+    \\        carrier.port1.postMessage(null, [channel.port1]);
+    \\        if (!channel.port1.__home_closed || channel.port1.__home_messages.length !== 0) throw new Error("in-transit endpoint remained open");
+    \\        channel.port2.close();
+    \\        finalized++;
+    \\      }
+    \\      carrier.port1.close();
+    \\      return __home_spawn_completed(JSON.stringify({ finalized }) + "\n", "", 0);
+    \\    }
+    \\    if (script.includes("got.length === 5") && script.includes("JSON.stringify([0,1,2,3,4])")) {
+    \\      const run = new Promise((resolve, reject) => {
+    \\        const worker = new Worker('const { parentPort } = require("node:worker_threads"); const got = []; parentPort.on("message", value => { got.push(value); if (got.length === 5) parentPort.postMessage(got); });', { eval: true });
+    \\        worker.on("message", got => {
+    \\          try {
+    \\            if (JSON.stringify(got) !== JSON.stringify([0, 1, 2, 3, 4])) throw new Error("worker startup inbox delivered out of order: " + JSON.stringify(got));
+    \\            worker.terminate();
+    \\            resolve("OK\n");
+    \\          } catch (cause) { reject(cause); }
+    \\        });
+    \\        worker.on("error", reject);
+    \\        for (let index = 0; index < 5; index++) worker.postMessage(index);
+    \\      });
+    \\      return __home_message_port_pipe_async_child(run, "worker-startup-inbox");
+    \\    }
+    \\  } catch (cause) {
+    \\    const phase = script.includes("objectTypeCounts") ? "gc-lifecycle" : (script.includes("FinalizationRegistry") ? "transfer-finalization" : "subprocess");
+    \\    const error = __home_message_port_pipe_fixture_error(phase, cause);
+    \\    return __home_spawn_completed("", String(error.stack || error) + "\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_memfd_disabled_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/memfd-disabled.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -27315,6 +27404,8 @@ const harness_prelude =
     \\    if (abortControllerGcFixture) return abortControllerGcFixture;
     \\    const messagePortClosedLeakFixture = __home_spawn_message_port_closed_leak_fixture(options || {});
     \\    if (messagePortClosedLeakFixture) return messagePortClosedLeakFixture;
+    \\    const messagePortPipeFixture = __home_spawn_message_port_pipe_fixture(options || {});
+    \\    if (messagePortPipeFixture) return messagePortPipeFixture;
     \\    const messagePortContextFixture = __home_spawn_message_port_context_fixture(options || {});
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
@@ -32861,7 +32952,9 @@ const harness_prelude =
     \\  const queue = globalThis.__home_registered_tests;
     \\  const hasOnly = queue.some(entry => entry.only);
     \\  const hasScopeOnly = queue.some(entry => entry.scopeOnly);
-    \\  const runnable = queue.filter(entry => !hasOnly || entry.only).filter(entry => hasOnly || !hasScopeOnly || entry.scopeOnly);
+    \\  const requestedFilter = String(process.env.HOME_BUN_TEST_FILTER || "");
+    \\  const requestedNames = requestedFilter.split("|").filter(Boolean);
+    \\  const runnable = queue.filter(entry => !hasOnly || entry.only).filter(entry => hasOnly || !hasScopeOnly || entry.scopeOnly).filter(entry => requestedNames.length === 0 || requestedNames.some(name => String(entry.name || "").includes(name)));
     \\  let chain = null;
     \\  function runEntryAt(index) {
     \\    const entry = runnable[index];
@@ -77179,13 +77272,22 @@ const harness_prelude =
     \\let __home_message_scheduler_pending = false;
     \\function __home_message_port_drain(readyPort) {
     \\  readyPort.__home_message_drain_pending = false;
-    \\  while (!readyPort.__home_closed && readyPort.__home_messages.length > 0) {
-    \\    const envelope = readyPort.__home_messages.shift();
-    \\    __home_worker_message_trace_event("port.deliver:" + __home_worker_message_trace_value(envelope.data));
-    \\    readyPort.emit("message", envelope.data);
-    \\    const event = new MessageEvent("message", { data: envelope.data, ports: envelope.ports });
-    \\    if (typeof readyPort.__home_onmessage === "function") readyPort.__home_onmessage(event);
-    \\    readyPort.emit("messageevent", event);
+    \\  if (readyPort.__home_closed || readyPort.__home_messages.length === 0) return;
+    \\  const envelope = readyPort.__home_messages.shift();
+    \\  __home_worker_message_trace_event("port.deliver:" + __home_worker_message_trace_value(envelope.data));
+    \\  readyPort.emit("message", envelope.data);
+    \\  const event = new MessageEvent("message", { data: envelope.data, ports: envelope.ports });
+    \\  if (typeof readyPort.__home_onmessage === "function") readyPort.__home_onmessage(event);
+    \\  readyPort.emit("messageevent", event);
+    \\  if (!readyPort.__home_closed && readyPort.__home_messages.length > 0 && (readyPort.listenerCount("message") > 0 || typeof readyPort.__home_onmessage === "function")) __home_message_port_schedule_drain(readyPort);
+    \\}
+    \\function __home_message_scheduler_tick() {
+    \\  __home_message_scheduler_pending = false;
+    \\  const readyPort = __home_message_ready_ports.shift();
+    \\  if (readyPort) __home_message_port_drain(readyPort);
+    \\  if (__home_message_ready_ports.length > 0 && !__home_message_scheduler_pending) {
+    \\    __home_message_scheduler_pending = true;
+    \\    Promise.resolve().then(__home_message_scheduler_tick);
     \\  }
     \\}
     \\function __home_message_port_schedule_drain(port) {
@@ -77194,14 +77296,7 @@ const harness_prelude =
     \\  __home_message_ready_ports.push(port);
     \\  if (__home_message_scheduler_pending) return;
     \\  __home_message_scheduler_pending = true;
-    \\  Promise.resolve().then(() => {
-    \\    try {
-    \\      while (__home_message_ready_ports.length > 0) {
-    \\        const readyPort = __home_message_ready_ports.shift();
-    \\        __home_message_port_drain(readyPort);
-    \\      }
-    \\    } finally { __home_message_scheduler_pending = false; }
-    \\  });
+    \\  Promise.resolve().then(__home_message_scheduler_tick);
     \\}
     \\function __home_message_port_close_tree(root) {
     \\  const pending = [root];
@@ -77231,13 +77326,13 @@ const harness_prelude =
     \\    get() { return this.__home_onmessage || null; },
     \\    set(callback) {
     \\      this.__home_onmessage = typeof callback === "function" ? callback : null;
-    \\      if (this.__home_onmessage && this.__home_messages.length > 0) __home_message_port_drain(this);
+    \\      if (this.__home_onmessage && this.__home_messages.length > 0) __home_message_port_schedule_drain(this);
     \\    },
     \\  });
     \\  const addPortListener = port.on;
     \\  port.on = function(name, callback) {
     \\    addPortListener.call(this, name, callback);
-    \\    if (String(name) === "message" && this.__home_messages.length > 0) __home_message_port_drain(this);
+    \\    if (String(name) === "message" && this.__home_messages.length > 0) __home_message_port_schedule_drain(this);
     \\    return this;
     \\  };
     \\  port.addListener = port.on;
@@ -77498,25 +77593,23 @@ const harness_prelude =
     \\    Promise.resolve().then(() => { this.__home_error_pending = false; this.__home_drain_errors(); });
     \\  };
     \\  worker.__home_drain_web_messages = function() {
-    \\    while (this.__home_web_messages.length > 0) {
-    \\      const envelope = this.__home_web_messages.shift();
-    \\      __home_worker_message_trace_event("worker.deliver:" + workerDisplayFilename + ":port=" + String(envelope.data instanceof __home_MessagePort));
-    \\      this.emit("message", envelope.data);
-    \\      if (typeof this.__home_onmessage === "function") this.__home_onmessage(new MessageEvent("message", { data: envelope.data, ports: envelope.ports }));
-    \\    }
+    \\    this.__home_web_message_pending = false;
+    \\    if (this.__home_web_messages.length === 0 || (this.listenerCount("message") === 0 && typeof this.__home_onmessage !== "function")) return;
+    \\    const envelope = this.__home_web_messages.shift();
+    \\    __home_worker_message_trace_event("worker.deliver:" + workerDisplayFilename + ":port=" + String(envelope.data instanceof __home_MessagePort));
+    \\    this.emit("message", envelope.data);
+    \\    if (typeof this.__home_onmessage === "function") this.__home_onmessage(new MessageEvent("message", { data: envelope.data, ports: envelope.ports }));
+    \\    if (this.__home_web_messages.length > 0) this.__home_schedule_web_messages();
     \\  };
     \\  worker.__home_schedule_web_messages = function() {
     \\    if (this.__home_web_message_pending) return;
     \\    this.__home_web_message_pending = true;
-    \\    Promise.resolve().then(() => {
-    \\      this.__home_web_message_pending = false;
-    \\      this.__home_drain_web_messages();
-    \\    });
+    \\    Promise.resolve().then(() => this.__home_drain_web_messages());
     \\  };
     \\  const addWorkerListener = worker.on;
     \\  worker.on = function(name, callback) {
     \\    addWorkerListener.call(this, name, callback);
-    \\    if (String(name) === "message" && this.__home_web_messages.length > 0) this.__home_drain_web_messages();
+    \\    if (String(name) === "message" && this.__home_web_messages.length > 0) this.__home_schedule_web_messages();
     \\    if (String(name) === "error" && this.__home_errors.length > 0) this.__home_drain_errors();
     \\    if (String(name) === "online" && this.__home_online) this.__home_emit_online();
     \\    if (String(name) === "exit" && this.__home_exit_pending !== null) this.__home_emit_pending_exit();
@@ -77529,7 +77622,7 @@ const harness_prelude =
     \\    get() { return this.__home_onmessage || null; },
     \\    set(callback) {
     \\      this.__home_onmessage = typeof callback === "function" ? callback : null;
-    \\      if (this.__home_onmessage && this.__home_web_messages.length > 0) this.__home_drain_web_messages();
+    \\      if (this.__home_onmessage && this.__home_web_messages.length > 0) this.__home_schedule_web_messages();
     \\    },
     \\  });
     \\  Object.defineProperty(worker, "onerror", {
@@ -77578,7 +77671,7 @@ const harness_prelude =
     \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
     \\    const payload = __home_message_clone(data);
     \\    worker.__home_web_messages.push({ data: payload, ports });
-    \\    worker.__home_schedule_web_messages();
+    \\    if (worker.listenerCount("message") > 0 || typeof worker.__home_onmessage === "function") worker.__home_schedule_web_messages();
     \\  };
     \\  worker.postMessage = function(data, transferList) {
     \\    __home_worker_message_trace_event("worker.post-child:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
@@ -77939,6 +78032,12 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
     try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nif (globalThis.process && globalThis.process.__home_events) globalThis.process.__home_events = Object.create(null);\nif (globalThis.process) globalThis.process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") globalThis.process.cwd = globalThis.__home_process_cwd_function;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
+    if (try envVariableAlloc(allocator, "HOME_BUN_TEST_FILTER")) |test_filter| {
+        defer allocator.free(test_filter);
+        try out.appendSlice(allocator, "process.env.HOME_BUN_TEST_FILTER = ");
+        try appendJsStringLiteral(out, allocator, test_filter);
+        try out.appendSlice(allocator, ";\n");
+    }
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -78356,6 +78455,7 @@ fn appendBootstrapTypeScriptReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "test.skipIf(!isDebug && !isASAN)", .replacement = "test.skip" },
         .{ .needle = "var chunk = !Buffer.isBuffer(body) ? Buffer.from(body, encoding) : body;", .replacement = "var chunk = body; if (!Buffer.isBuffer(body)) chunk = Buffer.from(body, encoding);" },
         .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
         .{ .needle = "expect(requested).toBe(", .replacement = "expect(globalThis.__home_import(\"./dummy.registry.js\").requested).toBe(" },
@@ -82416,6 +82516,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Worker, isMainThread, parentPort } = globalThis.__home_import('worker_threads');",
         },
         .{
+            .needle = "import { receiveMessageOnPort } from \"node:worker_threads\";",
+            .replacement = "const { receiveMessageOnPort } = globalThis.__home_import(\"node:worker_threads\");",
+        },
+        .{
             .needle = "import { ReadableStream } from 'stream/web';",
             .replacement = "const { ReadableStream } = globalThis.__home_import('stream/web');",
         },
@@ -82690,6 +82794,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isASAN, isCI, isDebug, nodeExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isASAN, isDebug } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isASAN, isDebug } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { Duplex } from \"stream\";",
@@ -86947,6 +87055,12 @@ fn envVariablePresent(name: [:0]const u8) bool {
         return std.testing.environ.contains(std.testing.allocator, name) catch false;
     }
     return std.c.getenv(name) != null;
+}
+
+fn envVariableAlloc(allocator: std.mem.Allocator, name: [:0]const u8) !?[]u8 {
+    if (builtin.is_test) return std.testing.environ.getAlloc(allocator, name) catch null;
+    const value = std.c.getenv(name) orelse return null;
+    return allocator.dupe(u8, std.mem.span(value));
 }
 
 fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
@@ -101954,6 +102068,40 @@ test "bootstrap runner preserves worker message port and argv contracts across e
     try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner preserves MessagePort pipe task and lifecycle contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const corpus_relative = "js/web/workers/message-port-pipe.test.ts";
+    const source_path = "packages/runtime/test/bun-corpus/" ++ corpus_relative;
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, corpus_relative);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { receiveMessageOnPort } = globalThis.__home_import(\"node:worker_threads\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunEnv, bunExe, isASAN, isDebug } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"concurrent MessageChannel creation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skipIf(!isDebug && !isASAN)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_MESSAGE_PORT_PIPE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "web.message_port.pipe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Promise.resolve().then(__home_message_scheduler_tick)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("MessagePort pipe corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
