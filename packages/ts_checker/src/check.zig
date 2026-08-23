@@ -29164,20 +29164,26 @@ pub const Checker = struct {
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, parent);
                 if (b.op != .comma or b.rhs != fn_node) return null;
-                return self.contextualTargetTypeForExpression(parent);
+                const contextual_t = self.contextualTargetTypeForExpression(parent) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
             },
             .conditional => {
                 const conditional = hir_mod.conditionalOf(self.hir, parent);
                 if (conditional.then_branch != fn_node and conditional.else_branch != fn_node) return null;
-                return self.contextualTargetTypeForExpression(parent);
+                const contextual_t = self.contextualTargetTypeForExpression(parent) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
             },
             .return_stmt => {
                 const ret = hir_mod.returnOf(self.hir, parent);
                 if (ret.value != fn_node) return null;
                 const outer = self.enclosingFunctionLike(parent) orelse return null;
-                return self.declaredOrContextualReturnTypeForFunction(outer);
+                const contextual_t = self.declaredOrContextualReturnTypeForFunction(outer) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
             },
-            .array_literal => return self.contextualArrayLiteralFunctionElementTarget(fn_node, parent) catch null,
+            .array_literal => {
+                const contextual_t = (self.contextualArrayLiteralFunctionElementTarget(fn_node, parent) catch null) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
+            },
             .var_decl, .let_decl, .const_decl => {
                 const v = hir_mod.varDeclOf(self.hir, parent);
                 if (v.init != fn_node) return null;
@@ -29222,7 +29228,7 @@ pub const Checker = struct {
             },
             else => return null,
         }
-        return target_t;
+        return if (self.typeIsBuiltinFunctionObject(target_t)) null else target_t;
     }
 
     fn functionContextReturnDiagnosticOwnedByOuterExpression(self: *Checker, fn_node: NodeId) bool {
@@ -87715,6 +87721,7 @@ pub const Checker = struct {
         if (reduced_source_t != source_t) return try self.checkerAssignableTo(reduced_source_t, target_t);
         const reduced_target_t = try self.reduceNeverIntersectionsForAssignability(target_t);
         if (reduced_target_t != target_t) return try self.checkerAssignableTo(source_t, reduced_target_t);
+        if (self.functionObjectTargetAcceptsArgument(source_t, target_t, 0)) return true;
         if (try self.jsDocGenericUnionAssignableToTypeParameter(source_t, target_t)) return true;
         if (self.typeIsUniversalEmptyObjectNullishUnion(target_t)) return true;
         if (self.indexedAccessPayloadOrNull(source_t) != null) {
@@ -90662,6 +90669,7 @@ pub const Checker = struct {
             break :blk node;
         };
         const t = (try self.jsDocTypeForLeadingNode(jsdoc_node)) orelse return null;
+        if (self.typeIsBuiltinFunctionObject(t)) return null;
         if (self.callableSignatureCount(t) != 1) return null;
         return self.firstSignatureType(t);
     }
@@ -225153,6 +225161,25 @@ test "checker: checkjs JSDoc type tags preserve object and callable arity" {
     try T.expect(saw_spaced_argument_mismatch);
     try T.expectEqual(@as(usize, 2), broad_implicit_any);
     try T.expect(saw_object_wrapper_mismatch);
+}
+
+test "checker: JSDoc Function accepts callables without contextual parameter types" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\/** @type {Function} */
+        \\const broad = value => value + 1;
+        \\/** @type {Function} */
+        \\const variadic = (...items) => items.length;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.rest_parameter_implicitly_any));
 }
 
 test "checker: checkjs JSDoc callable typedefs preserve return contracts" {
