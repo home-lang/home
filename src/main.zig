@@ -201,6 +201,10 @@ fn printUsage() void {
         \\  pkg dedupe         Dedupe dependency installs through pantry
         \\  pkg publish        Publish package through pantry
         \\  pkg size           Show package/build size report
+        \\
+        \\  {s}Registry Publishing:{s}
+        \\  pack               Pack the current package (Bun-compatible)
+        \\  publish [tarball]  Publish a package to the registry (Bun-compatible)
         \\  pkg docs           Generate Markdown API docs from .d.hm metadata
         \\  pkg tree           Show dependency tree
         \\  pkg why <name>     Explain why a dependency is present
@@ -254,6 +258,8 @@ fn printUsage() void {
         Color.Green.code(),
         Color.Reset.code(),
         Color.Cyan.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
         Color.Reset.code(),
         Color.Green.code(),
         Color.Reset.code(),
@@ -1382,7 +1388,7 @@ fn completionsCommand(shell_name: []const u8) !void {
             \\  COMPREPLY=()
             \\  cur="${COMP_WORDS[COMP_CWORD]}"
             \\  prev="${COMP_WORDS[COMP_CWORD-1]}"
-            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help"
+            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg publish pack help"
             \\  pkg_commands="init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami"
             \\  if [[ "${COMP_WORDS[1]}" == "pkg" && ${COMP_CWORD} -eq 2 ]]; then
             \\    COMPREPLY=($(compgen -W "$pkg_commands" -- "$cur"))
@@ -5603,6 +5609,18 @@ pub fn main(init: std.process.Init) !void {
         log.* = home_rt.logger.Log.init(runtime_allocator);
         const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
         try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "publish") or std.mem.eql(u8, command, "pack")) {
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+        if (std.mem.eql(u8, command, "publish")) {
+            try home_rt.cli.PublishCommand.execStandalone(ctx, args[2..]);
+        } else {
+            try home_rt.cli.PackCommand.execStandalone(ctx, args[2..]);
+        }
         return;
     }
     if (std.mem.eql(u8, command, "info")) {
