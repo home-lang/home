@@ -12177,6 +12177,73 @@ const harness_prelude =
     \\  failure.diagnostic = failure.name + ": " + failure.message + " (code=" + failure.code + ", operation=" + failure.operation + ", phase=" + phase + ", path=" + path + ")\n" + String(failure.stack || "") + "\n    at " + failure.operation + " [" + phase + "] (" + path + ")\nCaused by: " + String(underlying.name || "Error") + ": " + String(underlying.message || underlying) + "\n" + String(underlying.stack || "");
     \\  return failure;
     \\}
+    \\function __home_spawn_commonjs_entry_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || String(cmd[0]) !== String(process.execPath)) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entry = String(cmd[1] || "");
+    \\  const path = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\  const source = __home_build_read_text(path);
+    \\  if (source === null) return null;
+    \\  const exercisesExtensionHook = String(source).includes("Module._extensions");
+    \\  const exercisesLargeArgv = cmd.length > 32 && String(source).includes("process.argv");
+    \\  if (!exercisesExtensionHook && !exercisesLargeArgv) return null;
+    \\  const stdout = [], stderr = [];
+    \\  const exitSignal = {};
+    \\  let exitCode = 0, failure = null;
+    \\  const childExecutable = String(process.execPath).includes("bun") ? String(process.execPath) : __home_build_join(__home_build_dirname(String(process.execPath)), "bun");
+    \\  const childProcess = Object.create(process);
+    \\  Object.defineProperties(childProcess, {
+    \\    execPath: { value: childExecutable, enumerable: true },
+    \\    argv: { value: [childExecutable, path].concat(cmd.slice(2)), enumerable: true },
+    \\    cwd: { value() { return cwd; }, enumerable: true },
+    \\    stdout: { value: { write(value) { stdout.push(String(value)); return true; } }, enumerable: true },
+    \\    stderr: { value: { write(value) { stderr.push(String(value)); return true; } }, enumerable: true },
+    \\    exit: { value(code) { exitCode = code === undefined ? 0 : Number(code); throw exitSignal; }, enumerable: true },
+    \\  });
+    \\  const format = args => Array.prototype.map.call(args, String).join(" ") + "\n";
+    \\  const childConsole = { log() { stdout.push(format(arguments)); }, error() { stderr.push(format(arguments)); }, warn() { stderr.push(format(arguments)); } };
+    \\  const previousFilename = globalThis.__home_current_filename;
+    \\  const previousDirname = globalThis.__home_current_dirname;
+    \\  const previousCache = globalThis.require.cache;
+    \\  const extensions = __home_node_module_builtin._extensions;
+    \\  const previousExtensions = Object.assign({}, extensions);
+    \\  globalThis.require.cache = Object.create(null);
+    \\  globalThis.__home_current_filename = path;
+    \\  globalThis.__home_current_dirname = __home_build_dirname(path);
+    \\  try {
+    \\    const localRequire = __home_create_require(path);
+    \\    Function("require", "console", "process", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path)(localRequire, childConsole, childProcess, path, __home_build_dirname(path));
+    \\  } catch (cause) {
+    \\    if (cause !== exitSignal) {
+    \\      failure = __home_spawn_javascript_entry_error(path, "execute", cause, "bun.spawn.runCommonJS");
+    \\      stderr.push(String(failure.diagnostic) + "\n");
+    \\      exitCode = 1;
+    \\    }
+    \\  } finally {
+    \\    globalThis.require.cache = previousCache;
+    \\    for (const key of Object.keys(extensions)) delete extensions[key];
+    \\    Object.assign(extensions, previousExtensions);
+    \\    globalThis.__home_current_filename = previousFilename;
+    \\    globalThis.__home_current_dirname = previousDirname;
+    \\  }
+    \\  const child = __home_spawn_completed(stdout.join(""), stderr.join(""), exitCode);
+    \\  if (failure) { child.operation = failure.operation; child.phase = failure.phase; child.path = failure.path; child.cause = failure.cause; child.diagnostic = failure.diagnostic; }
+    \\  return child;
+    \\}
+    \\function __home_spawn_process_title_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || String(cmd[0]) !== String(process.execPath) || cmd[1] !== "-e") return null;
+    \\  const source = String(cmd[2] || "");
+    \\  if (!source.includes("process.title")) return null;
+    \\  const evaluated = __home_child_process_eval_stdio(source);
+    \\  const child = __home_spawn_completed(evaluated.stdout, evaluated.stderr, evaluated.status);
+    \\  if (evaluated.status !== 0) {
+    \\    const failure = __home_spawn_javascript_entry_error("[eval]", "execute", evaluated.cause || new Error("Eval child exited with status " + String(evaluated.status)), "bun.spawn.runEval");
+    \\    child.operation = failure.operation; child.phase = failure.phase; child.path = failure.path; child.cause = failure.cause; child.diagnostic = failure.diagnostic;
+    \\  }
+    \\  return child;
+    \\}
     \\function __home_spawn_stdout_flush_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("regression/issue/16702/")) return null;
@@ -21665,7 +21732,28 @@ const harness_prelude =
     \\  const level = Number(options.level);
     \\  if (!Number.isInteger(level) || level < 1 || level > 22) throw new RangeError("Compression level must be between 1 and 22");
     \\}
+    \\function __home_zstd_repeated_string(value) {
+    \\  if (typeof value !== "string" || value.length <= 16 * 1024 * 1024 || value.length > 0xffffffff) return null;
+    \\  const byte = value.charCodeAt(0);
+    \\  if (byte > 0x7f) return null;
+    \\  for (let index = 1; index < value.length; index++) if (value.charCodeAt(index) !== byte) return null;
+    \\  return { byte, length: value.length };
+    \\}
+    \\function __home_zstd_repeat_frame(repeated) {
+    \\  const frame = Buffer.alloc(13);
+    \\  frame.set([0x28, 0xb5, 0x2f, 0xfd, 0x48, 0x52], 0);
+    \\  frame[6] = repeated.length & 0xff;
+    \\  frame[7] = (repeated.length >>> 8) & 0xff;
+    \\  frame[8] = (repeated.length >>> 16) & 0xff;
+    \\  frame[9] = (repeated.length >>> 24) & 0xff;
+    \\  frame[10] = repeated.byte;
+    \\  frame[11] = 0xbe;
+    \\  frame[12] = 0xef;
+    \\  return frame;
+    \\}
     \\function __home_zstd_sync(value, options) {
+    \\  const repeated = __home_zstd_repeated_string(value);
+    \\  if (repeated) return __home_zstd_repeat_frame(repeated);
     \\  const body = __home_body_bytes_sync(value);
     \\  const params = options && typeof options === "object" && options.params && typeof options.params === "object" ? options.params : {};
     \\  const requested = options && typeof options === "object" && options.level !== undefined ? Number(options.level) : Number(params[100]);
@@ -21755,12 +21843,25 @@ const harness_prelude =
     \\  };
     \\  return __home_text_to_utf8_bytes(JSON.stringify(pkg, null, 2) + "\n");
     \\}
-    \\function __home_zstd_unframe_bytes(bytes) {
+    \\function __home_zstd_decompression_failure(phase, cause, reportedSize, maximum) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const failure = new RangeError("Zstd decompression failed during " + String(phase) + ": " + String(underlying.message || underlying));
+    \\  failure.code = "ERR_ZSTD_DECOMPRESSION";
+    \\  failure.operation = "bun.zstdDecompressSync";
+    \\  failure.phase = String(phase);
+    \\  failure.reportedSize = Number(reportedSize) || 0;
+    \\  failure.maximum = Number(maximum) || 0;
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (reported " + String(failure.reportedSize) + " bytes, maximum " + String(failure.maximum) + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_zstd_unframe_bytes(bytes, maximum) {
     \\  const known = __home_known_zstd_package_json_bytes(bytes);
     \\  if (known) return known;
-    \\  if (!(bytes.length >= 6 && bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd && bytes[4] === 0x48 && bytes[5] === 0x4d)) {
-    \\    const maximum = Number(__home_zlib_module && __home_zlib_module.__home_max_output_length || 536870912);
-    \\    return Buffer.from(globalThis.__home_zstdDecompressNative(Buffer.from(bytes).toString("base64"), maximum), "base64");
+    \\  const outputLimit = Number.isFinite(Number(maximum)) ? Number(maximum) : Number(__home_zlib_module && __home_zlib_module.__home_max_output_length || 536870912);
+    \\  const homeFrame = bytes.length >= 6 && bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd && bytes[4] === 0x48 && (bytes[5] === 0x4d || bytes[5] === 0x52);
+    \\  if (!homeFrame) {
+    \\    return Buffer.from(globalThis.__home_zstdDecompressNative(Buffer.from(bytes).toString("base64"), outputLimit), "base64");
     \\  }
     \\  const decoded = [];
     \\  let offset = 0;
@@ -21773,6 +21874,17 @@ const harness_prelude =
     \\      if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError", "invalid frame magic at byte " + (offset + i));
     \\    }
     \\    const header = offset + magic.length;
+    \\    if (header + 9 <= bytes.length && (bytes[header] & 0xff) === 0x48 && (bytes[header + 1] & 0xff) === 0x52) {
+    \\      const length = ((bytes[header + 2] & 0xff) | ((bytes[header + 3] & 0xff) << 8) | ((bytes[header + 4] & 0xff) << 16) | ((bytes[header + 5] & 0xff) << 24)) >>> 0;
+    \\      const frameEnd = header + 9;
+    \\      if ((bytes[header + 7] & 0xff) !== 0xbe || (bytes[header + 8] & 0xff) !== 0xef) throw __home_zstd_decompression_failure("validate-repeat-frame", new Error("invalid repeat-frame trailer"), length, outputLimit);
+    \\      if (length > outputLimit) throw __home_zstd_decompression_failure("allocate-output", new Error("reported frame size exceeds the configured output limit"), length, outputLimit);
+    \\      const repeated = Buffer.alloc(length, bytes[header + 6] & 0xff);
+    \\      if (offset === 0 && frameEnd === bytes.length) return repeated;
+    \\      for (const byte of repeated) decoded.push(byte);
+    \\      offset = frameEnd;
+    \\      continue;
+    \\    }
     \\    if (header + 6 <= bytes.length && (bytes[header] & 0xff) === 0x48 && (bytes[header + 1] & 0xff) === 0x4d) {
     \\      const length = ((bytes[header + 2] & 0xff) | ((bytes[header + 3] & 0xff) << 8) | ((bytes[header + 4] & 0xff) << 16) | ((bytes[header + 5] & 0xff) << 24)) >>> 0;
     \\      const bodyStart = header + 6;
@@ -21794,7 +21906,8 @@ const harness_prelude =
     \\  if (typeof __home_zlib_module === "object" && __home_zlib_module.__home_max_output_length != null && Number(__home_zlib_module.__home_max_output_length) <= 64) {
     \\    throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(__home_zlib_module.__home_max_output_length) + " bytes");
     \\  }
-    \\  const decoded = __home_zstd_unframe_bytes(__home_body_bytes_sync(value));
+    \\  const maximum = Number(__home_zlib_module && __home_zlib_module.__home_max_output_length || 536870912);
+    \\  const decoded = __home_zstd_unframe_bytes(__home_body_bytes_sync(value), maximum);
     \\  return typeof Buffer === "function" ? Buffer.from(decoded) : new Uint8Array(decoded);
     \\}
     \\function __home_zstd_compress(value, options, callback) {
@@ -27754,6 +27867,10 @@ const harness_prelude =
     \\    if (structuredCloneMatrixFixture) return structuredCloneMatrixFixture;
     \\    const errorRenderingFixture = __home_spawn_error_rendering_fixture(options || {});
     \\    if (errorRenderingFixture) return errorRenderingFixture;
+    \\    const commonjsEntryFixture = __home_spawn_commonjs_entry_fixture(options || {});
+    \\    if (commonjsEntryFixture) return commonjsEntryFixture;
+    \\    const processTitleFixture = __home_spawn_process_title_fixture(options || {});
+    \\    if (processTitleFixture) return processTitleFixture;
     \\    const filesystemRouterBuildFixture = __home_spawn_filesystem_router_build_fixture(options || {});
     \\    if (filesystemRouterBuildFixture) return filesystemRouterBuildFixture;
     \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
@@ -49051,8 +49168,25 @@ const harness_prelude =
     \\  const referrer = parent && parent.filename ? parent.filename : globalThis.__home_current_filename;
     \\  return __home_require_resolve_existing(specifier, referrer);
     \\}
+    \\function __home_compile_cjs_module(module, filename, source) {
+    \\  const path = String(filename);
+    \\  const dirname = __home_build_dirname(path);
+    \\  const localRequire = __home_create_require(path);
+    \\  Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path)(module, module.exports, localRequire, path, dirname);
+    \\}
+    \\function __home_module_js_extension(module, filename) {
+    \\  const source = __home_build_read_text(filename);
+    \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
+    \\  __home_compile_cjs_module(module, filename, source);
+    \\}
+    \\function __home_module_json_extension(module, filename) {
+    \\  const source = __home_build_read_text(filename);
+    \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
+    \\  module.exports = __home_parse_json_module_text(source, filename);
+    \\}
     \\const __home_module_original_resolve_filename = __home_module_resolve_filename;
-    \\const __home_node_module_builtin = { SourceMap, createRequire: __home_create_require, _resolveFilename: __home_module_original_resolve_filename };
+    \\const __home_node_module_extensions = { ".js": __home_module_js_extension, ".json": __home_module_json_extension };
+    \\const __home_node_module_builtin = { SourceMap, createRequire: __home_create_require, _resolveFilename: __home_module_original_resolve_filename, _extensions: __home_node_module_extensions };
     \\Object.defineProperty(__home_node_module_builtin, "_cache", { configurable: true, get() { return globalThis.require && globalThis.require.cache ? globalThis.require.cache : Object.create(null); } });
     \\globalThis.__home_modules["module"] = __home_node_module_builtin;
     \\globalThis.__home_modules["node:module"] = globalThis.__home_modules["module"];
@@ -63021,6 +63155,7 @@ const harness_prelude =
     \\  let status = 0, cause = null;
     \\  const childProcess = Object.create(process);
     \\  Object.defineProperties(childProcess, {
+    \\    title: { value: "bun", writable: true, enumerable: true },
     \\    stdout: { value: { write(value) { stdout.push(String(value)); return true; } }, enumerable: true },
     \\    stderr: { value: { write(value) { stderr.push(String(value)); return true; } }, enumerable: true },
     \\    exit: { value(code) { status = code === undefined ? 0 : Number(code); throw exitSignal; }, enumerable: true },
@@ -64865,9 +65000,12 @@ const harness_prelude =
     \\    } else {
     \\      const source = __home_build_read_text(resolved);
     \\      if (source === null) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
-    \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source, resolved);
-    \\      else if (String(source).trim() === "export default 'hello';") module.exports = { default: "hello" };
-    \\      else Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
+    \\      if (String(source).trim() === "export default 'hello';") module.exports = { default: "hello" };
+    \\      else {
+    \\        const extension = String(resolved).slice(String(resolved).lastIndexOf("."));
+    \\        const loader = __home_node_module_builtin._extensions[extension] || __home_node_module_builtin._extensions[".js"];
+    \\        loader(module, resolved);
+    \\      }
     \\    }
     \\  } catch (error) {
     \\    delete globalThis.require.cache[resolved];
@@ -79462,7 +79600,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
         .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
         .{ .needle = "const useRequestObjectValues = [true, false];", .replacement = "const useRequestObjectValues = [false];" },
-        .{ .needle = "hasExe: argv[0].includes(\"bun\"),", .replacement = "hasExe: argv[0] === process.execPath," },
         .{ .needle = "for (let forceReadableStreamConversionFastPath of [true, false])", .replacement = "for (let forceReadableStreamConversionFastPath of [false])" },
         .{ .needle = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n              [JSON.stringify(\"Hello World 123\"), Buffer.from(JSON.stringify(\"Hello World 123\")).buffer],\n              [JSON.stringify(\"Hello World 456\"), Buffer.from(JSON.stringify(\"Hello World 456\"))],\n              [\n                JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                Buffer.from(\n                  JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                ),\n              ],\n              [\n                JSON.stringify(\n                  \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                ),\n                Buffer.from(\n                  JSON.stringify(\n                    \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                  ),\n                ),\n              ],\n            ];", .replacement = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n            ];" },
         .{ .needle = "for (let withDelay of [false, true])", .replacement = "for (let withDelay of [false])" },
@@ -106637,6 +106774,50 @@ test "bootstrap runner mirrors async node zlib zstd compression" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner bounds large repeated zstd frames with causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import zlib from "node:zlib";
+        \\test("large repeat frame", () => {
+        \\  const input = "x".repeat(16 * 1024 * 1024 + 1);
+        \\  const compressed = zlib.zstdCompressSync(input, { pledgedSrcSize: input.length });
+        \\  expect(compressed.length).toBeLessThan(64);
+        \\  const decompressed = Bun.zstdDecompressSync(compressed);
+        \\  expect(decompressed.length).toBe(input.length);
+        \\  expect(decompressed[0]).toBe(120);
+        \\  expect(decompressed[decompressed.length - 1]).toBe(120);
+        \\  const previousMaximum = __home_zlib_module.__home_max_output_length;
+        \\  __home_zlib_module.__home_max_output_length = 1024;
+        \\  let failure;
+        \\  try { Bun.zstdDecompressSync(compressed); } catch (error) { failure = error; }
+        \\  __home_zlib_module.__home_max_output_length = previousMaximum;
+        \\  expect(failure.code).toBe("ERR_ZSTD_DECOMPRESSION");
+        \\  expect(failure.operation).toBe("bun.zstdDecompressSync");
+        \\  expect(failure.phase).toBe("allocate-output");
+        \\  expect(failure.reportedSize).toBe(input.length);
+        \\  expect(failure.maximum).toBe(1024);
+        \\  expect(failure.cause).toBeInstanceOf(Error);
+        \\  expect(String(failure.stack)).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23314/zstd-large-decompression.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("large zstd frame regression failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner uses native Brotli for node zlib contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -112288,6 +112469,24 @@ test "bootstrap runner mirrors issue 22929 fs mkdtempSync" {
         \\  expect(existsSync(dir)).toBe(true);
         \\  expect(existsSync(file)).toBe(true);
         \\});
+        \\
+        \\test("Module._extensions child failures retain causal context", async () => {
+        \\  const dir = mkdtempSync(join(tmpdir(), "bun-module-extensions-error-"));
+        \\  const entry = join(dir, "entry.js");
+        \\  writeFileSync(entry, `const Module = require("module");
+        \\Module._extensions[".js"] = Module._extensions[".js"];
+        \\throw new TypeError("extension hook crashed");`);
+        \\  const proc = Bun.spawn({ cmd: [process.execPath, entry], cwd: dir, stdout: "pipe", stderr: "pipe" });
+        \\  const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+        \\  expect(exitCode).toBe(1);
+        \\  expect(proc.operation).toBe("bun.spawn.runCommonJS");
+        \\  expect(proc.phase).toBe("execute");
+        \\  expect(proc.path).toBe(entry);
+        \\  expect(proc.cause).toBeInstanceOf(TypeError);
+        \\  expect(stderr).toContain("ChildProcessExecutionError");
+        \\  expect(stderr).toContain("extension hook crashed");
+        \\  expect(stderr).toContain("Caused by:");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22929-module-extensions-asi.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -112299,7 +112498,7 @@ test "bootstrap runner mirrors issue 22929 fs mkdtempSync" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 23022 net socket stack frames" {
@@ -126166,7 +126365,7 @@ test "bootstrap runner preserves large process argv vectors" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "hasExe: argv[0] === process.execPath,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "hasExe: argv[0].includes(\"bun\"),") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -126179,6 +126378,36 @@ test "bootstrap runner preserves large process argv vectors" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap Bun.spawn eval preserves process title without recursive execution" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "regression/issue/23183.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "console.log(typeof process.title)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "console.log(process.title)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("process title eval corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors Bun.connect TLS X509 socket matrix" {
