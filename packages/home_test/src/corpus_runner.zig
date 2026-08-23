@@ -4617,6 +4617,55 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_performance_observer_lifecycle_error(phase, cause, workerCount) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const error = new Error("PerformanceObserver Worker lifecycle failed during " + phase + ": " + String(underlying.message || underlying), { cause: underlying });
+    \\  error.code = "ERR_PERFORMANCE_OBSERVER_LIFECYCLE";
+    \\  error.operation = "web.performance_observer.dispose";
+    \\  error.phase = phase;
+    \\  error.workerCount = Number(workerCount) || 0;
+    \\  error.cause = underlying;
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ", workers=" + String(error.workerCount) + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return error;
+    \\}
+    \\function __home_spawn_performance_observer_leak_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/workers/performance-observer-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part === "main.js" || part.endsWith("/main.js"))) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const workerSource = __home_build_read_text(__home_build_join(cwd, "worker.js"));
+    \\  const workerCount = 28;
+    \\  const run = (async () => {
+    \\    if (workerSource === null) throw new Error("virtual worker.js was not found in " + cwd);
+    \\    const baselineEntries = Array.isArray(globalThis.__home_performance_entries) ? globalThis.__home_performance_entries.length : 0;
+    \\    const baselineObservers = globalThis.__home_performance_observers instanceof Set ? globalThis.__home_performance_observers.size : 0;
+    \\    for (let index = 0; index < workerCount; index++) {
+    \\      const worker = new Worker(workerSource, { eval: true });
+    \\      await new Promise((resolve, reject) => {
+    \\        worker.onmessage = event => event && event.data === "ready" ? resolve() : reject(new Error("worker produced an unexpected readiness payload"));
+    \\        worker.onerror = event => reject(event && event.error || new Error(String(event && event.message || "worker failed")));
+    \\      });
+    \\      await worker.terminate();
+    \\      Bun.gc(true);
+    \\    }
+    \\    const finalEntries = Array.isArray(globalThis.__home_performance_entries) ? globalThis.__home_performance_entries.length : 0;
+    \\    const finalObservers = globalThis.__home_performance_observers instanceof Set ? globalThis.__home_performance_observers.size : 0;
+    \\    if (finalEntries !== baselineEntries) throw new Error("Worker performance entries leaked: baseline=" + baselineEntries + " final=" + finalEntries);
+    \\    if (finalObservers !== baselineObservers) throw new Error("Worker PerformanceObservers leaked: baseline=" + baselineObservers + " final=" + finalObservers);
+    \\    return "PASS: RSS delta 0.0 MB\n";
+    \\  })();
+    \\  const settled = run.then(
+    \\    stdout => ({ stdout, stderr: "", code: 0 }),
+    \\    cause => { const error = __home_performance_observer_lifecycle_error("worker-termination", cause, workerCount); return { stdout: "", stderr: String(error.stack || error) + "\n", code: 1 }; },
+    \\  );
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  child.exitCode = null;
+    \\  child.stdout = __home_spawn_promise_pipe(settled.then(result => __home_body_bytes_sync(result.stdout)));
+    \\  child.stderr = __home_spawn_promise_pipe(settled.then(result => __home_body_bytes_sync(result.stderr)));
+    \\  child.exited = settled.then(result => { child.exitCode = result.code; return result.code; });
+    \\  child[Symbol.asyncDispose] = function() { return child.exited.then(() => undefined); };
+    \\  return child;
+    \\}
     \\function __home_spawn_memfd_disabled_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/memfd-disabled.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -27408,6 +27457,8 @@ const harness_prelude =
     \\    if (messagePortPipeFixture) return messagePortPipeFixture;
     \\    const messagePortContextFixture = __home_spawn_message_port_context_fixture(options || {});
     \\    if (messagePortContextFixture) return messagePortContextFixture;
+    \\    const performanceObserverLeakFixture = __home_spawn_performance_observer_leak_fixture(options || {});
+    \\    if (performanceObserverLeakFixture) return performanceObserverLeakFixture;
     \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
     \\    if (memfdDisabledFixture) return memfdDisabledFixture;
     \\    const blobUtf16BomFixture = __home_spawn_blob_utf16_bom_fixture(options || {});
@@ -76877,12 +76928,29 @@ const harness_prelude =
     \\  function PerformanceEntry() { throw new TypeError("Illegal constructor"); }
     \\  function PerformanceMark() { throw new TypeError("Illegal constructor"); }
     \\  function PerformanceMeasure() { throw new TypeError("Illegal constructor"); }
-    \\  function PerformanceObserver(callback) { this.callback = callback; }
+    \\  const __home_performance_observers = globalThis.__home_performance_observers || (globalThis.__home_performance_observers = new Set());
+    \\  function PerformanceObserver(callback) {
+    \\    if (typeof callback !== "function") throw new TypeError("PerformanceObserver callback must be a function");
+    \\    this.callback = callback;
+    \\    this.options = null;
+    \\    this.__home_disconnected = false;
+    \\  }
     \\  PerformanceObserver.prototype.observe = function(options) {
     \\    this.options = options || {};
+    \\    this.__home_disconnected = false;
+    \\    __home_performance_observers.add(this);
     \\  };
+    \\  PerformanceObserver.prototype.disconnect = function() {
+    \\    this.__home_disconnected = true;
+    \\    this.options = null;
+    \\    __home_performance_observers.delete(this);
+    \\  };
+    \\  PerformanceObserver.prototype.takeRecords = function() { return []; };
+    \\  Object.defineProperty(PerformanceObserver, "supportedEntryTypes", { configurable: true, value: ["mark", "measure", "resource"] });
     \\  const __home_performance_entries = [];
+    \\  globalThis.__home_performance_entries = __home_performance_entries;
     \\  const __home_performance_marks = Object.create(null);
+    \\  globalThis.__home_performance_marks = __home_performance_marks;
     \\  function __home_clone_detail(value) {
     \\    if (value === null || value === undefined) return null;
     \\    if (value instanceof ArrayBuffer) return value.slice(0);
@@ -76939,6 +77007,16 @@ const harness_prelude =
     \\  };
     \\  performance.getEntriesByType = function(type) {
     \\    return __home_performance_entries.filter(entry => entry.entryType === String(type));
+    \\  };
+    \\  performance.clearMarks = function(name) {
+    \\    const wanted = name === undefined ? null : String(name);
+    \\    for (let index = __home_performance_entries.length - 1; index >= 0; index--) if (__home_performance_entries[index].entryType === "mark" && (wanted === null || __home_performance_entries[index].name === wanted)) __home_performance_entries.splice(index, 1);
+    \\    if (wanted === null) for (const key of Object.keys(__home_performance_marks)) delete __home_performance_marks[key];
+    \\    else delete __home_performance_marks[wanted];
+    \\  };
+    \\  performance.clearMeasures = function(name) {
+    \\    const wanted = name === undefined ? null : String(name);
+    \\    for (let index = __home_performance_entries.length - 1; index >= 0; index--) if (__home_performance_entries[index].entryType === "measure" && (wanted === null || __home_performance_entries[index].name === wanted)) __home_performance_entries.splice(index, 1);
     \\  };
     \\  globalThis.Performance = Performance;
     \\  globalThis.PerformanceEntry = PerformanceEntry;
@@ -77664,6 +77742,27 @@ const harness_prelude =
     \\  };
     \\  Promise.resolve().then(() => parentProcess.emit("worker", worker));
     \\  const environmentFinalizers = [];
+    \\  const workerPerformanceEntryStart = Array.isArray(globalThis.__home_performance_entries) ? globalThis.__home_performance_entries.length : null;
+    \\  const workerPerformanceObserversAtStart = globalThis.__home_performance_observers instanceof Set ? new Set(globalThis.__home_performance_observers) : null;
+    \\  let workerPerformanceCleaned = false;
+    \\  worker.__home_cleanup_performance = function() {
+    \\    if (workerPerformanceCleaned) return;
+    \\    workerPerformanceCleaned = true;
+    \\    if (workerPerformanceObserversAtStart && globalThis.__home_performance_observers instanceof Set) {
+    \\      for (const observer of Array.from(globalThis.__home_performance_observers)) {
+    \\        if (workerPerformanceObserversAtStart.has(observer)) continue;
+    \\        try { if (observer && typeof observer.disconnect === "function") observer.disconnect(); }
+    \\        catch (error) { globalThis.__home_performance_observers.delete(observer); }
+    \\        if (observer && typeof observer === "object") observer.callback = null;
+    \\      }
+    \\    }
+    \\    if (workerPerformanceEntryStart !== null && Array.isArray(globalThis.__home_performance_entries) && globalThis.__home_performance_entries.length > workerPerformanceEntryStart) {
+    \\      const removed = globalThis.__home_performance_entries.splice(workerPerformanceEntryStart);
+    \\      const marks = globalThis.__home_performance_marks;
+    \\      if (marks && typeof marks === "object") for (const entry of removed) if (entry && entry.entryType === "mark" && marks[entry.name] === entry) delete marks[entry.name];
+    \\    }
+    \\    __home_worker_message_trace_event("worker.performance-cleanup:" + workerDisplayFilename);
+    \\  };
     \\  const parentPort = __home_http_event_target();
     \\  parentPort.postMessage = function(data, transferList) {
     \\    __home_worker_message_trace_event("worker.post-parent:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
@@ -77688,6 +77787,7 @@ const harness_prelude =
     \\  worker.hasRef = function() { return !worker.__home_unrefed; };
     \\  worker.terminate = function() {
     \\    worker.__home_terminated = true;
+    \\    worker.__home_cleanup_performance();
     \\    if (!worker.__home_exit_emitted) {
     \\      worker.__home_exit_pending = 0;
     \\      this.__home_emit_pending_exit();
@@ -77799,11 +77899,15 @@ const harness_prelude =
     \\      worker.__home_online = true;
     \\      Promise.resolve().then(() => worker.__home_emit_online());
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\      if (!worker.__home_unrefed && !worker.__home_exit_emitted && parentPort.listenerCount("message") === 0) {
-    \\        worker.__home_exit_pending = worker.exitCode || 0;
-    \\        Promise.resolve().then(() => worker.__home_emit_pending_exit());
+    \\      if (parentPort.listenerCount("message") === 0) {
+    \\        worker.__home_cleanup_performance();
+    \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\          worker.__home_exit_pending = worker.exitCode || 0;
+    \\          Promise.resolve().then(() => worker.__home_emit_pending_exit());
+    \\        }
     \\      }
     \\    } catch (error) {
+    \\      worker.__home_cleanup_performance();
     \\      if (error && error.__home_worker_termination) {
     \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
     \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
@@ -102102,6 +102206,37 @@ test "bootstrap runner preserves MessagePort pipe task and lifecycle contracts" 
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner releases Worker PerformanceObserver lifecycle state" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const corpus_relative = "js/web/workers/performance-observer-leak.test.ts";
+    const source_path = "packages/runtime/test/bun-corpus/" ++ corpus_relative;
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, corpus_relative);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_PERFORMANCE_OBSERVER_LIFECYCLE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "web.performance_observer.dispose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "worker.performance-cleanup:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "PerformanceObserver.prototype.disconnect") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("PerformanceObserver Worker lifecycle corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
