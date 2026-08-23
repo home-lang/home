@@ -103057,7 +103057,14 @@ pub const Checker = struct {
                         !self.isThisTypeParameter(target_t) and
                         !source_is_nonnullable_for_target;
                     const target_annotation_is_nonnullable = self.identifierAnnotationIsNonNullable(a.target);
-                    if (((!self.nodeIsInsideFunctionLike(node) and target_accepts_nullish_flow) or has_effective_target_narrow or target_is_untyped_uninitialized_var or source_is_nonnullable_for_target) and
+                    if (has_active_target_narrow and
+                        self.hir.kindOf(a.target) == .identifier and
+                        !self.nodeIsInsideLoop(node) and
+                        assignment_result_t == types.Primitive.any)
+                    {
+                        const target_id = hir_mod.identifierOf(self.hir, a.target);
+                        try self.recordNarrow(target_id.name, types.Primitive.any);
+                    } else if (((!self.nodeIsInsideFunctionLike(node) and target_accepts_nullish_flow) or has_effective_target_narrow or target_is_untyped_uninitialized_var or source_is_nonnullable_for_target) and
                         !self.nodeIsInsideLoop(node) and
                         self.hir.kindOf(a.target) == .identifier and
                         assignment_flow_write_is_valid and
@@ -186033,6 +186040,25 @@ test "checker: nullish assignment comparison replaces uninitialized target flow"
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
+test "checker: any assignment replaces an active nullish narrow" {
+    const s = try newSetup(
+        \\interface Box { value: number }
+        \\function initialize() {
+        \\    let box: Box | null = null;
+        \\    if (box === null) {
+        \\        box = new MissingBox();
+        \\        box.value;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_nullish));
 }
 
 test "checker: loose assignment guard survives unresolved loop rhs recovery" {
