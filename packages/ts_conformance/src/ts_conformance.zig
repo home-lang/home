@@ -1533,6 +1533,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
     }
     if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
     if (rawSourceHasCommonJsNamedExportsAndRelativeImport(c.raw_source)) return true;
+    if (rawSourceHasExplicitUmdDependency(c.raw_source)) return true;
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
     // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
     // no non-code package.json / tsconfig / node_modules markers) work
@@ -1771,6 +1772,19 @@ fn rawSourceHasCommonJsNamedExportsAndRelativeImport(raw: []const u8) bool {
     const has_relative_from = std.mem.indexOf(u8, raw, " from './") != null or
         std.mem.indexOf(u8, raw, " from \"./") != null;
     return has_named_import and has_relative_from;
+}
+
+fn rawSourceHasExplicitUmdDependency(raw: []const u8) bool {
+    if (std.mem.indexOf(u8, raw, "export as namespace") == null) return false;
+    if (std.mem.indexOf(u8, raw, "<reference path=") != null) return true;
+    return std.mem.indexOf(u8, raw, " from './") != null or
+        std.mem.indexOf(u8, raw, " from \"./") != null or
+        std.mem.indexOf(u8, raw, " from '../") != null or
+        std.mem.indexOf(u8, raw, " from \"../") != null or
+        std.mem.indexOf(u8, raw, "require('./") != null or
+        std.mem.indexOf(u8, raw, "require(\"./") != null or
+        std.mem.indexOf(u8, raw, "require('../") != null or
+        std.mem.indexOf(u8, raw, "require(\"../") != null;
 }
 
 fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
@@ -2063,6 +2077,29 @@ fn collectUmdGlobalsFromVirtualFiles(
             try out.append(gpa, .{ .name = owned });
         }
     }
+}
+
+test "conformance: collects UMD globals from declaration virtual files" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "foo.d.ts",
+            .source =
+            \\export var x: number;
+            \\export as namespace Foo;
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "a.ts", .source = "Foo;", .extra_strip = 0 },
+    };
+    var globals: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
+    defer {
+        for (globals.items) |global| std.testing.allocator.free(global.name);
+        globals.deinit(std.testing.allocator);
+    }
+
+    try collectUmdGlobalsFromVirtualFiles(std.testing.allocator, &files, &globals);
+    try T.expectEqual(@as(usize, 1), globals.items.len);
+    try T.expectEqualStrings("Foo", globals.items[0].name);
 }
 
 fn virtualPathIsDeclarationFile(path: []const u8) bool {
@@ -3028,6 +3065,41 @@ test "conformance: checked JS CommonJS named exports route through program" {
         .expected_errors = "b.js(1,10): error TS2305: placeholder",
         .strict_flags = .{},
     }));
+}
+
+test "conformance: explicitly referenced UMD declarations route through program" {
+    const declaration =
+        \\// @filename: foo.d.ts
+        \\export var x: number;
+        \\export as namespace Foo;
+    ;
+    const referenced = declaration ++
+        \\// @filename: reference.ts
+        \\/// <reference path="foo.d.ts" />
+        \\Foo.x;
+    ;
+    const imported = declaration ++
+        \\// @filename: import.ts
+        \\import * as Bar from './foo';
+        \\let x = Foo;
+    ;
+    const unrelated = declaration ++
+        \\// @filename: unrelated.ts
+        \\Foo.x;
+    ;
+
+    for ([_][]const u8{ referenced, imported }) |raw| {
+        try T.expect(rawSourceHasExplicitUmdDependency(raw));
+        try T.expect(shouldRouteThroughProgram(.{
+            .name = "umdExplicitDependency",
+            .source = raw,
+            .path = "consumer.ts",
+            .raw_source = raw,
+            .expected_errors = "consumer.ts(1,1): error TS2304: placeholder",
+            .strict_flags = .{},
+        }));
+    }
+    try T.expect(!rawSourceHasExplicitUmdDependency(unrelated));
 }
 
 test "conformance: clean virtual shebang fixture routes through program" {

@@ -7348,3 +7348,44 @@ test "Program: missing compiler type reference reports global TS2688" {
     }
     try T.expect(found);
 }
+
+test "Program: declaration UMD globals reach script and module consumers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/foo.d.ts",
+        "export var x: number;\nexport function fn(): void;\nexport interface Thing { n: typeof x }\nexport as namespace Foo;\n",
+    );
+    const script_id = try program.add(
+        "/script.ts",
+        "Foo.fn();\nlet x: Foo.Thing;\nlet y: number = x.n;\n",
+    );
+    const module_id = try program.add(
+        "/module.ts",
+        "export {};\nlet z = Foo;\n",
+    );
+
+    try program.compileAll(.{ .no_emit = true });
+
+    const script = program.fileById(script_id).compilation orelse return error.TestExpectedEqual;
+    var script_used_before_assignment: usize = 0;
+    for (script.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2304);
+        try T.expect(diagnostic.code != 2503);
+        if (diagnostic.code == 2454) script_used_before_assignment += 1;
+    }
+    try T.expectEqual(@as(usize, 1), script_used_before_assignment);
+
+    const module = program.fileById(module_id).compilation orelse return error.TestExpectedEqual;
+    var module_umd_diagnostics: usize = 0;
+    for (module.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2304);
+        if (diagnostic.code == 2686) module_umd_diagnostics += 1;
+    }
+    try T.expectEqual(@as(usize, 1), module_umd_diagnostics);
+}

@@ -211227,6 +211227,32 @@ test "checker: TS2686 does not report UMD global value use from a script" {
     try T.expect(!checkerHasAnyCode(b.base, TsCodes.umd_global_in_module));
 }
 
+test "checker: program UMD globals resolve in scripts and diagnose in modules" {
+    const globals = [_]ProgramUmdGlobal{.{ .name = "Foo" }};
+
+    const script = try newBoundSetup(
+        \\Foo.fn();
+        \\let x: Foo.Thing;
+        \\let y: number = x.n;
+    );
+    defer destroyBoundSetup(script);
+    script.base.checker.setProgramUmdGlobals(&globals);
+    try script.base.checker.checkSourceFile(script.base.root);
+    try T.expect(!checkerHasAnyCode(script.base, TsCodes.cannot_find_name));
+    try T.expect(!checkerHasAnyCode(script.base, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(script.base, TsCodes.used_before_assignment));
+
+    const external_module = try newBoundSetup(
+        \\export {};
+        \\Foo;
+    );
+    defer destroyBoundSetup(external_module);
+    external_module.base.checker.setProgramUmdGlobals(&globals);
+    try external_module.base.checker.checkSourceFile(external_module.base.root);
+    try T.expect(!checkerHasAnyCode(external_module.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(external_module.base, TsCodes.umd_global_in_module));
+}
+
 test "checker: noImplicitReferences hides sibling UMD globals" {
     const b = try newBoundSetup(
         \\// @noImplicitReferences: true
