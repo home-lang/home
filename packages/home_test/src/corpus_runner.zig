@@ -112217,6 +112217,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 
+    var simple_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate-simple.test.ts");
+    defer simple_summary.deinit(std.testing.allocator);
+
+    if (simple_summary.failed != 0 or simple_summary.unsupported != 0 or simple_summary.passed != 2 or simple_summary.todo != 0) {
+        std.debug.print(
+            "simple permessage-deflate corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ simple_summary.passed, simple_summary.failed, simple_summary.todo, simple_summary.unsupported, simple_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), simple_summary.files);
+    try std.testing.expectEqual(@as(usize, 2), simple_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), simple_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), simple_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), simple_summary.unsupported);
+
     const source =
         \\import { expect, test } from "bun:test";
         \\test("oversized inflate errors retain their operation and cause", async () => {
