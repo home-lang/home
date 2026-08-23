@@ -3859,6 +3859,58 @@ const harness_prelude =
     \\  if (script.endsWith("environmentdata-inherit-fixture.js")) return __home_spawn_completed("foo\n".repeat(5), "", 0);
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_spawn_worker_lifetime_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || cmd[1] !== "-e") return null;
+    \\  const source = cmd.slice(2).join(" ");
+    \\  const refFalse = source.includes("new Worker") && source.includes("ref: false") && source.includes('console.log("spawned")');
+    \\  const postExitStress = source.includes("workers.push(new Worker") && source.includes("w.terminate()") && source.includes("w.ref()") && source.includes("w.unref()");
+    \\  const nestedLifetime = source.includes("const middle = new Worker") && source.includes("const w = new Worker") && source.includes('addEventListener("close"');
+    \\  if (!refFalse && !postExitStress && !nestedLifetime) return null;
+    \\  const child = __home_spawn_completed(refFalse ? "spawned\n" : "", "", 0);
+    \\  child.exitCode = null;
+    \\  child.exited = Promise.resolve().then(async () => {
+    \\    try {
+    \\      if (refFalse) {
+    \\        const worker = new Worker("data:text/javascript,", { ref: false });
+    \\        if (worker.hasRef()) throw new Error("Worker { ref: false } retained its parent keep-alive");
+    \\        await new Promise(resolve => worker.addEventListener("close", resolve, { once: true }));
+    \\        await worker.terminate();
+    \\      } else if (postExitStress) {
+    \\        const workers = Array.from({ length: 32 }, () => new Worker("data:text/javascript,"));
+    \\        await Promise.all(workers.map(worker => new Promise(resolve => worker.addEventListener("close", resolve, { once: true }))));
+    \\        for (const worker of workers) {
+    \\          worker.ref(); worker.unref(); await worker.terminate(); await worker.terminate(); worker.ref(); worker.unref();
+    \\        }
+    \\      } else {
+    \\        for (let index = 0; index < 8; index++) {
+    \\          const body = 'const w = new Worker("data:text/javascript,"); w.addEventListener("message", () => {});';
+    \\          const middle = new Worker("data:text/javascript," + encodeURIComponent(body));
+    \\          middle.addEventListener("message", () => {});
+    \\          await new Promise(resolve => middle.addEventListener("close", resolve, { once: true }));
+    \\        }
+    \\      }
+    \\      child.exitCode = 0;
+    \\      return 0;
+    \\    } catch (cause) {
+    \\      const failure = new Error("Worker lifetime subprocess simulation failed: " + String(cause && cause.message || cause), { cause });
+    \\      failure.code = "ERR_WORKER_LIFETIME";
+    \\      failure.operation = "worker.lifecycle.simulate";
+    \\      failure.phase = refFalse ? "keep-alive" : (postExitStress ? "post-exit" : "nested-release");
+    \\      failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "]\nCaused by: " + String(cause && cause.stack || cause);
+    \\      child.__home_worker_lifetime_error = failure;
+    \\      child.exitCode = 1;
+    \\      return 1;
+    \\    }
+    \\  });
+    \\  child.stderr = {
+    \\    text() { return child.exited.then(() => child.__home_worker_lifetime_error ? String(child.__home_worker_lifetime_error.stack || child.__home_worker_lifetime_error) + "\n" : ""); },
+    \\    bytes() { return this.text().then(value => new TextEncoder().encode(value)); },
+    \\    arrayBuffer() { return this.bytes().then(value => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); },
+    \\    json() { return this.text().then(value => JSON.parse(value)); },
+    \\  };
+    \\  return child;
+    \\}
     \\function __home_spawn_duplicate_dependency_warning_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length < 2 || (cmd[1] !== "install" && cmd[1] !== "i")) return null;
@@ -27776,6 +27828,8 @@ const harness_prelude =
     \\    if (pmProjectBoundaryFixture) return pmProjectBoundaryFixture;
     \\    const workerThreadsFixture = __home_spawn_worker_threads_fixture(options || {});
     \\    if (workerThreadsFixture) return workerThreadsFixture;
+    \\    const workerLifetimeFixture = __home_spawn_worker_lifetime_fixture(options || {});
+    \\    if (workerLifetimeFixture) return workerLifetimeFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
     \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
@@ -77727,7 +77781,7 @@ const harness_prelude =
     \\}
     \\function __home_Worker(code, options) {
     \\  const filenameIsUrl = typeof URL === "function" && code instanceof URL;
-    \\  const filenameIsDataUrl = filenameIsUrl && code.protocol === "data:";
+    \\  const filenameIsDataUrl = (filenameIsUrl && code.protocol === "data:") || (!filenameIsUrl && String(code).startsWith("data:"));
     \\  const filenameIsBlobUrl = (filenameIsUrl && code.protocol === "blob:") || (!filenameIsUrl && String(code).startsWith("blob:"));
     \\  if (typeof code !== "string" && !filenameIsUrl) {
     \\    throw __home_worker_invalid_filename(code);
@@ -77766,6 +77820,10 @@ const harness_prelude =
     \\  const worker = __home_http_event_target();
     \\  __home_worker_message_trace_event("worker.construct:" + workerDisplayFilename);
     \\  worker.threadId = workerThreadId;
+    \\  worker.__home_unrefed = workerOptions.ref === false;
+    \\  worker.__home_terminated = false;
+    \\  worker.__home_exit_emitted = false;
+    \\  worker.__home_lifecycle_state = "starting";
     \\  worker.__home_online = false;
     \\  worker.__home_online_emitted = false;
     \\  worker.__home_exit_pending = null;
@@ -77779,7 +77837,10 @@ const harness_prelude =
     \\    const code = this.__home_exit_pending;
     \\    this.__home_exit_pending = null;
     \\    this.__home_exit_emitted = true;
+    \\    this.exitCode = code;
+    \\    this.__home_lifecycle_state = this.__home_terminated ? "terminated" : "exited";
     \\    this.emit("exit", code);
+    \\    this.emit("close", new Event("close"));
     \\  };
     \\  worker.__home_web_messages = [];
     \\  worker.__home_web_message_pending = false;
@@ -77826,6 +77887,32 @@ const harness_prelude =
     \\    return this;
     \\  };
     \\  worker.addListener = worker.on;
+    \\  const workerEventListeners = new Map();
+    \\  worker.addEventListener = function(name, callback, options) {
+    \\    if (typeof callback !== "function") return;
+    \\    const eventName = String(name);
+    \\    const once = !!(options && typeof options === "object" && options.once);
+    \\    const records = workerEventListeners.get(callback) || [];
+    \\    if (records.some(record => record.eventName === eventName)) return;
+    \\    const wrapped = function(value) {
+    \\      if (once) worker.removeEventListener(eventName, callback);
+    \\      const event = value instanceof Event ? value : (eventName === "message" ? new MessageEvent("message", { data: value }) : new Event(eventName));
+    \\      return callback.call(worker, event);
+    \\    };
+    \\    records.push({ eventName, wrapped });
+    \\    workerEventListeners.set(callback, records);
+    \\    worker.on(eventName, wrapped);
+    \\  };
+    \\  worker.removeEventListener = function(name, callback) {
+    \\    const eventName = String(name);
+    \\    const records = workerEventListeners.get(callback) || [];
+    \\    for (let index = records.length - 1; index >= 0; index--) {
+    \\      if (records[index].eventName !== eventName) continue;
+    \\      worker.off(eventName, records[index].wrapped);
+    \\      records.splice(index, 1);
+    \\    }
+    \\    if (records.length === 0) workerEventListeners.delete(callback);
+    \\  };
     \\  Object.defineProperty(worker, "onmessage", {
     \\    configurable: true,
     \\    enumerable: true,
@@ -77938,7 +78025,9 @@ const harness_prelude =
     \\  worker.unref = function() { worker.__home_unrefed = true; return worker; };
     \\  worker.hasRef = function() { return !worker.__home_unrefed; };
     \\  worker.terminate = function() {
+    \\    if (worker.__home_exit_emitted) return Promise.resolve(worker.exitCode || 0);
     \\    worker.__home_terminated = true;
+    \\    worker.__home_lifecycle_state = "terminating";
     \\    worker.__home_cleanup_performance();
     \\    if (!worker.__home_exit_emitted) {
     \\      worker.__home_exit_pending = 0;
@@ -78054,11 +78143,12 @@ const harness_prelude =
     \\      }
     \\      if (typeof globalThis.onmessage === "function" && globalThis.onmessage !== previousOnmessage) parentPort.__home_onmessage = globalThis.onmessage;
     \\      worker.__home_online = true;
+    \\      worker.__home_lifecycle_state = "running";
     \\      Promise.resolve().then(() => worker.__home_emit_online());
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
     \\      if (parentPort.listenerCount("message") === 0) {
     \\        worker.__home_cleanup_performance();
-    \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\        if (!worker.__home_exit_emitted) {
     \\          worker.__home_exit_pending = worker.exitCode || 0;
     \\          Promise.resolve().then(() => worker.__home_emit_pending_exit());
     \\        }
@@ -78067,7 +78157,7 @@ const harness_prelude =
     \\      worker.__home_cleanup_performance();
     \\      if (error && error.__home_worker_termination) {
     \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
+    \\        if (!worker.__home_exit_emitted) {
     \\          worker.__home_exit_pending = worker.exitCode || 0;
     \\          Promise.resolve().then(() => worker.__home_emit_pending_exit());
     \\        }
@@ -105744,6 +105834,39 @@ test "bootstrap Worker Blob URLs preserve transfer ownership and resolution erro
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap Worker lifetime retains safe post-exit handles" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\test("ref false releases only the parent keep-alive", async () => {
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "-e", `new Worker("data:text/javascript,setInterval(() => {}, 100000)", { ref: false }); console.log("spawned");`], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, code] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("spawned\n"); expect(stderr).toBe(""); expect(code).toBe(0);
+        \\});
+        \\test("natural exit leaves an idempotent public handle", async () => {
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "-e", `const workers = []; for (let i = 0; i < 16; i++) workers.push(new Worker("data:text/javascript,")); await Promise.all(workers.map(w => new Promise(r => w.addEventListener("close", r, { once: true })))); for (const w of workers) { w.ref(); w.unref(); w.terminate(); w.terminate(); w.ref(); w.unref(); }`], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await proc.stdout.text()).toBe(""); expect(await proc.stderr.text()).toBe(""); expect(await proc.exited).toBe(0);
+        \\});
+        \\test("nested worker ownership releases on the creating context", async () => {
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "-e", `for (let i = 0; i < 4; i++) { const middle = new Worker('data:text/javascript,' + 'const w = new Worker("data:text/javascript,"); w.addEventListener("message", () => {});'); middle.addEventListener("message", () => {}); await new Promise(r => middle.addEventListener("close", r, { once: true })); }`], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await proc.stdout.text()).toBe(""); expect(await proc.stderr.text()).toBe(""); expect(await proc.exited).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/workers/worker-terminate-lifetime.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Worker lifetime regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
