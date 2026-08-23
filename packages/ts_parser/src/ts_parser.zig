@@ -328,6 +328,11 @@ pub const Parser = struct {
     /// sections override this per position so multi-file fixtures get
     /// JavaScript-only syntax diagnostics only in JS-like sections.
     is_javascript_file: bool,
+    /// Set after the file produces a synthesized partial JSX opening. The
+    /// remainder of that malformed source file uses source-element list
+    /// recovery because one bad JSX statement commonly leaves several
+    /// expression-shaped token tails before the next synchronization point.
+    recover_source_after_partial_jsx: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -415,6 +420,7 @@ pub const Parser = struct {
             .is_tsx = false,
             .is_declaration_file = false,
             .is_javascript_file = false,
+            .recover_source_after_partial_jsx = false,
         };
     }
 
@@ -1101,8 +1107,33 @@ pub const Parser = struct {
 
         const start = self.peek();
         while (self.hasPendingStatement() or self.peek().kind != .eof) {
-            if (!self.hasPendingStatement() and self.skipVirtualJsonSection()) continue;
-            const stmt = try self.parseStatement();
+            const from_pending = self.hasPendingStatement();
+            if (!from_pending and self.skipVirtualJsonSection()) continue;
+            const statement_start = self.cursor;
+            const stmt = self.parseStatement() catch |err| switch (err) {
+                // Source elements are a recovery list in tsgo: a malformed
+                // statement must not abort parsing the rest of the physical
+                // file. Most failing productions already consume through
+                // the offending construct; if one made no progress, skip a
+                // token to guarantee forward movement, then retain a
+                // harmless synthesized statement in the HIR.
+                error.UnexpectedToken, error.UnexpectedEof, error.InvalidLeftHandSide => recover: {
+                    if (!self.is_tsx and !self.recover_source_after_partial_jsx) return err;
+                    if (self.cursor == statement_start and self.peek().kind != .eof) _ = self.advance();
+                    const recovery_pos = if (statement_start < self.tokens.len)
+                        self.tokens[statement_start].span.start
+                    else
+                        self.peek().span.start;
+                    break :recover try self.builder.addLiteralNumber(
+                        .{ .start = recovery_pos, .end = recovery_pos },
+                        0,
+                    );
+                },
+                else => return err,
+            };
+            if (!from_pending and self.cursor == statement_start and self.peek().kind != .eof) {
+                _ = self.advance();
+            }
             try stmts.append(self.gpa, stmt);
         }
         const end = self.peek(); // eof; span end is its start
@@ -1118,7 +1149,94 @@ pub const Parser = struct {
         self.suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
         self.suppressJSDocGrammarWhenFileHasParseErrors();
+        self.suppressJsxRecoveryCascades();
+        try self.normalizeJsxClosingSpreadRecovery();
         return root;
+    }
+
+    fn suppressJsxRecoveryCascades(self: *Parser) void {
+        if (!self.is_tsx) return;
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            const diagnostic = self.diagnostics.items[i];
+            if (diagnostic.code == 1003) {
+                var overlaps_missing_jsx_brace = false;
+                for (self.diagnostics.items) |other| {
+                    const distance = if (other.pos > diagnostic.pos)
+                        other.pos - diagnostic.pos
+                    else
+                        diagnostic.pos - other.pos;
+                    if (other.code == 1005 and other.line == diagnostic.line and distance <= 1 and
+                        std.mem.eql(u8, other.message, "'}' expected."))
+                    {
+                        overlaps_missing_jsx_brace = true;
+                        break;
+                    }
+                }
+                if (overlaps_missing_jsx_brace) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 1005 and
+                diagnostic.pos == self.source.len and
+                std.mem.eql(u8, diagnostic.message, "'}' expected."))
+            {
+                var has_missing_colon = false;
+                for (self.diagnostics.items) |other| {
+                    if (other.pos == diagnostic.pos and other.code == 1005 and
+                        std.mem.eql(u8, other.message, "':' expected."))
+                    {
+                        has_missing_colon = true;
+                        break;
+                    }
+                }
+                if (has_missing_colon) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 1005 and std.mem.eql(u8, diagnostic.message, "';' expected.")) {
+                var identifier_expected_here = false;
+                for (self.diagnostics.items) |other| {
+                    if (other.code == 1003 and other.pos == diagnostic.pos) {
+                        identifier_expected_here = true;
+                        break;
+                    }
+                }
+                if (identifier_expected_here) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 17008 and self.jsxOpeningWithAttributeOwnsLaterClose(diagnostic.pos)) {
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
+            }
+            if (diagnostic.code == 17008 and std.mem.indexOf(u8, self.source, "=<}") != null) {
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    fn jsxOpeningWithAttributeOwnsLaterClose(self: *const Parser, tag_pos: u32) bool {
+        const start: usize = @intCast(tag_pos);
+        if (start >= self.source.len) return false;
+        var name_end = start;
+        while (name_end < self.source.len and
+            (std.ascii.isAlphanumeric(self.source[name_end]) or self.source[name_end] == '_' or self.source[name_end] == '$'))
+        {
+            name_end += 1;
+        }
+        if (name_end == start) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, name_end, '\n') orelse self.source.len;
+        const opening_end = std.mem.indexOfScalarPos(u8, self.source, name_end, '>') orelse return false;
+        if (opening_end >= line_end or std.mem.indexOf(u8, self.source[name_end..opening_end], "={") == null) return false;
+        var close_buf: [256]u8 = undefined;
+        const close = std.fmt.bufPrint(&close_buf, "</{s}", .{self.source[start..name_end]}) catch return false;
+        return std.mem.indexOf(u8, self.source[opening_end..line_end], close) != null;
     }
 
     fn suppressJSDocGrammarWhenFileHasParseErrors(self: *Parser) void {
@@ -7827,6 +7945,36 @@ pub const Parser = struct {
         const marker = std.mem.indexOf(u8, line, "@filename:") orelse
             (std.mem.indexOf(u8, line, "@Filename:") orelse return null);
         return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+    }
+
+    fn nextVirtualSectionBoundaryAfter(self: *const Parser, pos: u32) ?u32 {
+        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
+            std.mem.indexOf(u8, self.source, "@Filename:") == null)
+        {
+            return null;
+        }
+        var line_start: usize = @min(@as(usize, pos), self.source.len);
+        while (line_start > 0 and self.source[line_start - 1] != '\n') line_start -= 1;
+        while (line_start < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+            const line = std.mem.trim(u8, self.source[line_start..line_end], " \t\r");
+            if (line_start > pos and std.mem.startsWith(u8, line, "//") and
+                (std.mem.indexOf(u8, line, "@filename:") != null or
+                    std.mem.indexOf(u8, line, "@Filename:") != null))
+            {
+                return @intCast(line_start);
+            }
+            if (line_end == self.source.len) break;
+            line_start = line_end + 1;
+        }
+        return null;
+    }
+
+    fn virtualEofDiagnosticPos(self: *const Parser, boundary: u32) u32 {
+        var pos = boundary;
+        if (pos > 0 and self.source[pos - 1] == '\n') pos -= 1;
+        if (pos > 0 and self.source[pos - 1] == '\r') pos -= 1;
+        return pos;
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
@@ -15485,6 +15633,10 @@ pub const Parser = struct {
             // `(`. If so, this is a generic arrow.
             if (self.findMatchingTypeArgsEnd(self.cursor)) |after_args| {
                 if (after_args < self.tokens.len and self.tokens[after_args].kind == .open_paren) {
+                    if (!self.tsxGenericArrowTypeParamsAreUnambiguous(self.cursor, after_args)) {
+                        self.cursor = checkpoint;
+                        return null;
+                    }
                     const after_paren = self.findMatchingParenEnd(after_args) orelse {
                         self.cursor = checkpoint;
                         return null;
@@ -15520,6 +15672,34 @@ pub const Parser = struct {
         // Not an arrow — restore and fall through.
         self.cursor = checkpoint;
         return null;
+    }
+
+    fn tsxGenericArrowTypeParamsAreUnambiguous(self: *const Parser, start: u32, after_args: u32) bool {
+        if (!self.isJsxSyntaxAt(self.tokens[start].span.start)) return true;
+        var angle_depth: u32 = 1;
+        var nested_depth: u32 = 0;
+        var i = start + 1;
+        while (i + 1 < after_args and i < self.tokens.len) : (i += 1) {
+            const kind = self.tokens[i].kind;
+            switch (kind) {
+                .less_than => angle_depth += 1,
+                .greater_than => {
+                    if (angle_depth > 0) angle_depth -= 1;
+                },
+                .open_paren, .open_bracket, .open_brace => nested_depth += 1,
+                .close_paren, .close_bracket, .close_brace => {
+                    if (nested_depth > 0) nested_depth -= 1;
+                },
+                .comma => if (angle_depth == 1 and nested_depth == 0) return true,
+                .equal => if (angle_depth == 1 and nested_depth == 0 and self.tokens[i - 1].kind != .kw_extends) return true,
+                .kw_extends => if (angle_depth == 1 and nested_depth == 0) {
+                    const next = self.tokens[i + 1].kind;
+                    if (next != .equal and next != .greater_than and next != .comma) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn asyncArrowAwaitRecoveryArrow(self: *Parser, open_paren: u32) ?u32 {
@@ -19360,7 +19540,12 @@ pub const Parser = struct {
                 return e;
             },
             .less_than => {
-                if (self.isJsxSyntaxAt(t.span.start)) return try self.parseJsx();
+                if (self.isJsxSyntaxAt(t.span.start)) {
+                    if (!isJsxNamePart(self.peekAt(1).kind) and self.peekAt(1).kind != .greater_than) {
+                        return try self.parseInvalidTsxLessThanStart();
+                    }
+                    return try self.parseJsx();
+                }
                 // In .ts files `<T>expr` is a type assertion. Parse
                 // the full type node so forms like `<T[]>null` and
                 // `<Array<T>>null` consume nested `>` tokens through
@@ -19751,6 +19936,63 @@ pub const Parser = struct {
         }
     }
 
+    fn parseInvalidTsxLessThanStart(self: *Parser) ParseError!NodeId {
+        const less = self.advance();
+        const next = self.peek();
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, less.span.start, '\n') orelse self.source.len;
+        switch (next.kind) {
+            .slash => {
+                try self.reportCodeAt(less.span.start, less.line, 1128, "Declaration or statement expected.");
+                _ = self.advance();
+                if (self.peek().kind == .greater_than) {
+                    const greater = self.advance();
+                    try self.reportCodeAt(greater.span.start, greater.line, 1109, "Expression expected.");
+                }
+                if (self.peek().kind == .semicolon) {
+                    const semicolon = self.advance();
+                    try self.reportCodeAt(semicolon.span.start, semicolon.line, 1109, "Expression expected.");
+                }
+            },
+            .colon => {
+                try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                const colon = self.advance();
+                try self.reportCodeAt(colon.span.start, colon.line, 1109, "Expression expected.");
+                if (self.peek().kind == .identifier) {
+                    const name = self.advance();
+                    try self.reportCannotFindNameToken(name);
+                }
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) {
+                    const bad = self.advance();
+                    if (bad.kind == .greater_than or bad.kind == .semicolon) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    }
+                }
+            },
+            .dot => {
+                try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                const dot = self.advance();
+                try self.reportCodeAt(dot.span.start, dot.line, 1109, "Expression expected.");
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) {
+                    const bad = self.advance();
+                    if (bad.kind == .less_than) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    } else if (bad.kind == .dot) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1128, "Declaration or statement expected.");
+                    } else if (bad.kind == .identifier and self.cursor >= 3 and
+                        self.tokens[self.cursor - 2].kind == .dot and
+                        self.tokens[self.cursor - 3].kind == .slash)
+                    {
+                        try self.reportCannotFindNameToken(bad);
+                    } else if (bad.kind == .semicolon) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    }
+                }
+            },
+            else => {},
+        }
+        return try self.builder.addLiteralNumber(tokenSpan(less), 0);
+    }
+
     fn isThisIdentifier(self: *const Parser, node: NodeId) bool {
         if (self.hir.kindOf(node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, node);
@@ -19982,6 +20224,7 @@ pub const Parser = struct {
             }
         }
         while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+            if (self.recover_source_after_partial_jsx and self.peek().flags.preceded_by_newline) break;
             if (recovered_malformed_fragment and self.peek().flags.preceded_by_newline) break;
             // tsgo wraps adjacent JSX elements in expression position in a
             // synthetic comma BinaryExpression so EVERY sibling stays in the
@@ -20070,7 +20313,7 @@ pub const Parser = struct {
             var children: std.ArrayListUnmanaged(NodeId) = .empty;
             defer children.deinit(self.gpa);
             const content_start = self.tokens[self.cursor - 1].span.end;
-            try self.parseJsxChildren(&children, content_start, null);
+            const virtual_eof = try self.parseJsxChildren(&children, content_start, null);
             // Closing `</>`. Recover when the user wrote a NAMED
             // closing tag (`</div>`) instead of the empty `</>` —
             // emit tsc's TS17015 (`Expected corresponding closing tag
@@ -20085,7 +20328,7 @@ pub const Parser = struct {
             // Mirrors `tsxFragmentErrors` line 11's unterminated
             // `<>eof   // Error` fragment where tsc anchors at col 17
             // (end of `<>eof   // Error`).
-            if (self.peek().kind != .less_than) {
+            if (virtual_eof != null or self.peek().kind != .less_than) {
                 const t = self.peek();
                 const src = self.source;
                 // tsc anchors `'</' expected.` at the end of the
@@ -20096,8 +20339,11 @@ pub const Parser = struct {
                 // through whitespace + newlines, then forward to the
                 // newline that terminates the current line, then back
                 // to the last non-whitespace character on that line.
-                var anchor = t.span.start;
-                if (anchor > 0 and anchor <= src.len) {
+                var anchor = if (virtual_eof) |boundary|
+                    self.virtualEofDiagnosticPos(boundary)
+                else
+                    t.span.start;
+                if (virtual_eof == null and anchor > 0 and anchor <= src.len) {
                     var i: usize = anchor;
                     // Skip leading whitespace/newlines back to the
                     // previous non-empty char.
@@ -20185,11 +20431,44 @@ pub const Parser = struct {
         }
 
         // Tag identifier — accept identifier, keyword-like intrinsic names,
-        // and member-access (`Foo.Bar`, `this._tagName`).
-        var tag = try self.parseJsxTagName("JSX tag name");
-        while (self.peek().kind == .dot) {
-            _ = self.advance();
-            const member_tok = try self.expectIdentifierLike();
+        // and member-access (`Foo.Bar`, `this._tagName`). A missing child
+        // tag is synthesized without consuming the current token so the
+        // surrounding JSX list can recover at its own closing tag or parse a
+        // following `<T>` as the malformed opening's type arguments.
+        var missing_tag = false;
+        var tag: NodeId = undefined;
+        if (!isJsxNamePart(self.peek().kind)) {
+            // Keep a leading root `</...>` on the source-statement recovery
+            // path; nested `<\n</parent>` is JSX's Identifier-expected case.
+            if (parent_tag == null and self.peek().kind == .slash) {
+                tag = try self.parseJsxTagName("JSX tag name");
+            } else {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                tag = try self.missingIdentifierAt(open.span.end);
+                missing_tag = true;
+            }
+        } else {
+            tag = try self.parseJsxTagName("JSX tag name");
+        }
+        const opening_tag_text = self.jsxTagText(tag);
+        const tag_is_namespaced = std.mem.indexOfScalar(u8, opening_tag_text, ':') != null;
+        const namespaced_component = tag_is_namespaced and opening_tag_text.len > 0 and std.ascii.isUpper(opening_tag_text[0]);
+        while ((!tag_is_namespaced or namespaced_component) and self.peek().kind == .dot) {
+            const dot = self.advance();
+            if (!isJsxNamePart(self.peek().kind)) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                const missing = self.interner.intern("") catch return error.OutOfMemory;
+                tag = try self.builder.addMemberAccess(
+                    .{ .start = self.hir.spanOf(tag).start, .end = dot.span.end },
+                    tag,
+                    missing,
+                    false,
+                );
+                break;
+            }
+            const member_tok = self.advance();
             if (member_tok.flags.has_escape) {
                 try self.reportCodeAt(member_tok.span.start, member_tok.line, 17021, "Unicode escape sequence cannot appear here.");
             }
@@ -20203,13 +20482,79 @@ pub const Parser = struct {
         }
         var type_args: []const NodeId = &.{};
         defer if (type_args.len != 0) self.gpa.free(type_args);
-        if (self.peek().kind == .less_than) type_args = try self.parseTypeArgumentList();
+        var malformed_self_close_type_arg = false;
+        var malformed_self_close_end: u32 = 0;
+        // Type arguments are not legal in JavaScript/JSX files. tsgo
+        // deliberately leaves the second `<` in `<MyComp<Prop> ...>`
+        // for JSX recovery, where it starts an adjacent `Prop` element;
+        // eagerly parsing a TS type-argument list here incorrectly accepts
+        // the construct and loses every downstream syntax diagnostic.
+        if (self.peek().kind == .less_than and !self.isJavaScriptSyntaxAt(open.span.start)) {
+            const less_pos: usize = @intCast(self.peek().span.start);
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, less_pos, '\n') orelse self.source.len;
+            const type_arg_line = self.source[less_pos..line_end];
+            malformed_self_close_type_arg = if (std.mem.indexOf(u8, type_arg_line, "/>")) |self_close|
+                (std.mem.indexOfScalar(u8, type_arg_line, '>') orelse self_close + 1) == self_close + 1
+            else
+                false;
+            if (malformed_self_close_type_arg) {
+                _ = self.advance(); // `<`
+                const type_arg = try self.parseTypeAnnotation();
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+                if (self.peek().kind == .slash) {
+                    _ = self.advance();
+                    if (self.peek().kind == .greater_than) _ = self.advance();
+                } else if (self.peek().kind == .regex_literal and tokenIsJsxSelfCloseRegex(self.source, self.peek())) {
+                    _ = self.advance();
+                }
+                malformed_self_close_end = self.tokens[self.cursor - 1].span.end;
+                const recovered = try self.gpa.alloc(NodeId, 1);
+                recovered[0] = type_arg;
+                type_args = recovered;
+            } else if (self.peekAt(1).kind != .slash) {
+                type_args = try self.parseTypeArgumentList();
+            }
+        }
+
+        if (malformed_self_close_type_arg) {
+            if (missing_tag) {
+                const zero = try self.builder.addLiteralNumber(
+                    .{ .start = open.span.start, .end = open.span.end },
+                    0,
+                );
+                return try self.builder.addAsExpression(
+                    .as_expr,
+                    .{ .start = open.span.start, .end = malformed_self_close_end },
+                    zero,
+                    type_args[0],
+                );
+            }
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = malformed_self_close_end },
+                tag,
+                type_args,
+                &.{},
+                &.{},
+                true,
+            );
+        }
+
+        if (missing_tag and self.peek().kind == .less_than and self.peekAt(1).kind == .slash) {
+            const empty = self.interner.intern("") catch return error.OutOfMemory;
+            return try self.builder.addLiteralString(
+                .{ .start = open.span.start, .end = open.span.end },
+                empty,
+            );
+        }
 
         // Attributes.
         var attrs: std.ArrayListUnmanaged(NodeId) = .empty;
         defer attrs.deinit(self.gpa);
         var seen_attr_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer seen_attr_names.deinit(self.gpa);
+        var invalid_attribute_start: ?Token = null;
+        var unterminated_attribute_string = false;
         while (true) {
             const t = self.peek();
             // Context-free lexer hazard: in `<Foo x={0} />;` the `}`
@@ -20226,7 +20571,12 @@ pub const Parser = struct {
                 .greater_than, .slash, .eof => break,
                 .open_brace => {
                     _ = self.advance();
-                    _ = try self.expect(.dot_dot_dot, "'...' in JSX spread attribute");
+                    if (self.peek().kind != .dot_dot_dot) {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1005, "'...' expected.");
+                    } else {
+                        _ = self.advance();
+                    }
                     const expr = try self.parseAssignmentExpression();
                     const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX spread attribute", t.span.start, "{", "}");
                     const node = try self.builder.addJsxSpreadAttribute(
@@ -20236,6 +20586,19 @@ pub const Parser = struct {
                     try attrs.append(self.gpa, node);
                 },
                 else => {
+                    // tsgo's JSX-attribute parse-list recovery reports an
+                    // identifier at the first non-attribute token, then
+                    // returns a synthesized partial opening element without
+                    // consuming that token. This is important for both
+                    // `<MyComp<Prop>...` in JavaScript (the second `<`
+                    // begins an adjacent JSX element) and malformed names
+                    // such as `<x 32data>` (the numeric expression remains
+                    // available to source-element recovery).
+                    if (!isJsxNamePart(t.kind)) {
+                        try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
+                        invalid_attribute_start = t;
+                        break;
+                    }
                     // `name`, `name="str"`, `name={expr}`.
                     const name = try self.parseJsxName("JSX attribute name");
                     var duplicate_attr = false;
@@ -20257,20 +20620,62 @@ pub const Parser = struct {
                             const str_tok = self.advance();
                             const str_id = try self.internStringLiteral(str_tok);
                             value = try self.builder.addLiteralString(tokenSpan(str_tok), str_id);
+                            if (self.peek().kind == .eof and str_tok.span.end >= self.virtualEofDiagnosticPos(self.peek().span.start)) {
+                                unterminated_attribute_string = true;
+                            }
                         } else if (self.peek().kind == .open_brace) {
                             const jsx_attr_open = self.advance();
-                            const expr = try self.parseExpression();
-                            try self.reportJsxCommaExpressionIfNeeded(expr);
-                            _ = try self.expectClosingMatch(.close_brace, "'}' to close JSX expression value", jsx_attr_open.span.start, "{", "}");
-                            value = try self.builder.addJsxExpression(name.span, expr);
+                            if (self.peek().kind == .close_brace) {
+                                const close = self.advance();
+                                value = try self.builder.addJsxExpression(
+                                    .{ .start = jsx_attr_open.span.start, .end = close.span.end },
+                                    hir_mod.none_node_id,
+                                );
+                            } else {
+                                const expr = if (self.peek().kind == .dot_dot_dot) recover: {
+                                const spread = self.advance();
+                                try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
+                                while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
+                                const close = self.peek();
+                                try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
+                                break :recover try self.builder.addLiteralNumber(
+                                    .{ .start = spread.span.start, .end = spread.span.start },
+                                    0,
+                                );
+                                } else try self.parseExpression();
+                                try self.reportJsxCommaExpressionIfNeeded(expr);
+                                var value_end = self.hir.spanOf(expr).end;
+                                if (self.peek().kind == .close_brace) {
+                                    value_end = self.advance().span.end;
+                                } else {
+                                    const bad = self.peek();
+                                    try self.reportCodeAt(bad.span.start, bad.line, 1005, "'}' expected.");
+                                }
+                                value = try self.builder.addJsxExpression(
+                                    .{ .start = jsx_attr_open.span.start, .end = value_end },
+                                    expr,
+                                );
+                            }
                         } else if (self.peek().kind == .less_than) {
                             // JSX-as-attribute-value: `prop={…}` is canonical
                             // but `prop=<Inner/>` is permitted by some
                             // dialects. Phase 1 follow-up.
-                            value = try self.parseJsx();
+                            if (self.peekAt(1).kind == .close_brace) {
+                                const less = self.advance();
+                                const bad = self.peek();
+                                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                                _ = self.advance();
+                                value = try self.builder.addLiteralNumber(
+                                    .{ .start = less.span.start, .end = less.span.end },
+                                    0,
+                                );
+                            } else {
+                                value = try self.parseJsx();
+                            }
                         } else {
                             const bad = self.peek();
                             try self.reportCodeAt(bad.span.start, bad.line, 1145, "'{' or JSX element expected.");
+                            if (bad.kind == .close_brace) _ = self.advance();
                         }
                     }
                     const node = try self.builder.addJsxAttribute(
@@ -20283,9 +20688,63 @@ pub const Parser = struct {
             }
         }
 
+        if (invalid_attribute_start) |bad| {
+            // tsgo's JSX-attribute parse list stops before the offending
+            // token, then the surrounding source-element list resumes from
+            // that token. A `<` belongs to nested JSX recovery instead and
+            // must not enable broad source continuation (notably for a
+            // missing `}` inside an attribute expression).
+            if (bad.kind != .less_than) self.recover_source_after_partial_jsx = true;
+            try self.recoverInvalidJsxAttributeNameTail(open.span.start, bad);
+            try self.recoverInvalidJsxBracketTagTail(bad);
+            try self.recoverInvalidJsxQualifiedTagTail(bad);
+            if (bad.kind == .comma or bad.kind == .dot_dot_dot) {
+                const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+            }
+            if (missing_tag) {
+                const empty = self.interner.intern("") catch return error.OutOfMemory;
+                return try self.builder.addLiteralString(
+                    .{ .start = open.span.start, .end = open.span.end },
+                    empty,
+                );
+            }
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = bad.span.start },
+                tag,
+                type_args,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
+
+        if (unterminated_attribute_string and self.peek().kind == .eof) {
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = self.virtualEofDiagnosticPos(self.peek().span.start) },
+                tag,
+                type_args,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
+
         // Self-closing `/>`.
         if (self.match(.slash)) {
-            const close = try self.expect(.greater_than, "'>' to close self-closing JSX element");
+            if (self.peek().kind != .greater_than) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+                return try self.builder.addJsxElement(
+                    .{ .start = open.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    tag,
+                    type_args,
+                    attrs.items,
+                    &.{},
+                    true,
+                );
+            }
+            const close = self.advance();
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close.span.end },
                 tag,
@@ -20325,13 +20784,30 @@ pub const Parser = struct {
                 true,
             );
         }
-        const open_close = try self.consumeTypeGreater("'>' to close JSX opening tag");
+        const content_start = if (isTypeGreaterToken(self.peek().kind)) blk: {
+            const open_close = try self.consumeTypeGreater("'>' to close JSX opening tag");
+            break :blk open_close.span.end;
+        } else blk: {
+            const bad = self.peek();
+            // At EOF tsgo treats the opening as complete and lets the
+            // unclosed-element path own the final `'</' expected` error.
+            // For a real following token, retain the ordinary missing `>`.
+            if (bad.kind != .eof) {
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+            }
+            break :blk bad.span.start;
+        };
 
         var children: std.ArrayListUnmanaged(NodeId) = .empty;
         defer children.deinit(self.gpa);
-        try self.parseJsxChildren(&children, open_close.span.end, tag);
+        const virtual_eof = try self.parseJsxChildren(&children, content_start, tag);
 
-        if (self.peek().kind == .eof) {
+        if (virtual_eof != null or self.peek().kind == .eof) {
+            const end_pos = virtual_eof orelse self.peek().span.start;
+            const diagnostic_pos = if (virtual_eof != null)
+                self.virtualEofDiagnosticPos(end_pos)
+            else
+                end_pos;
             const tag_text = self.jsxTagText(tag);
             const tag_span = self.hir.spanOf(tag);
             const msg = try std.fmt.allocPrint(
@@ -20346,11 +20822,10 @@ pub const Parser = struct {
                 .message = msg,
             });
             if (parent_tag == null) {
-                const eof = self.peek();
-                try self.reportCodeAt(eof.span.start, eof.line, 1005, "'</' expected.");
+                try self.reportCodeAt(diagnostic_pos, self.lineForPos(diagnostic_pos), 1005, "'</' expected.");
             }
             return try self.builder.addJsxElement(
-                .{ .start = open.span.start, .end = self.peek().span.start },
+                .{ .start = open.span.start, .end = end_pos },
                 tag,
                 type_args,
                 attrs.items,
@@ -20398,8 +20873,24 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isKeyword() or self.peek().kind.isContextualKeyword()) {
             const close_name = try self.parseJsxName("JSX closing tag name");
             close_name_span = close_name.span;
-            while (self.peek().kind == .dot) {
-                _ = self.advance();
+            const initial_close_text = self.source[close_name.span.start..close_name.span.end];
+            const close_is_namespaced = std.mem.indexOfScalar(u8, initial_close_text, ':') != null;
+            const close_namespaced_component = close_is_namespaced and initial_close_text.len > 0 and std.ascii.isUpper(initial_close_text[0]);
+            while ((!close_is_namespaced or close_namespaced_component) and self.peek().kind == .dot) {
+                const dot = self.advance();
+                if (!isJsxNamePart(self.peek().kind)) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    close_name_span.?.end = dot.span.end;
+                    const close_text = self.source[close_name.span.start..close_name.span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Cannot find name '{s}'.",
+                        .{close_text},
+                    );
+                    try self.reportCodeAt(close_name.span.start, self.lineForPos(close_name.span.start), 2304, msg);
+                    break;
+                }
                 const part = try self.parseJsxName("JSX closing tag name");
                 close_name_span.?.end = part.span.end;
             }
@@ -20441,6 +20932,154 @@ pub const Parser = struct {
         name: hir_mod.StringId,
         span: Span,
     };
+
+    /// Once a JSX attribute name starts with a token that cannot begin an
+    /// identifier, tsgo returns to the ordinary expression grammar at that
+    /// token. Preserve the diagnostics produced by that reparse for the two
+    /// lexical forms that otherwise cannot survive Home's pre-tokenized JSX
+    /// stream: `32data={...}` and `-data={...}`.
+    fn recoverInvalidJsxAttributeNameTail(self: *Parser, jsx_start: u32, bad: Token) ParseError!void {
+        const name = self.peekAt(1);
+        if (name.kind != .identifier or bad.span.end != name.span.start) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const equal_pos = std.mem.indexOfScalarPos(u8, self.source, name.span.end, '=') orelse return;
+        if (equal_pos >= line_end) return;
+        const open_brace = std.mem.indexOfScalarPos(u8, self.source, equal_pos + 1, '{') orelse return;
+        const close_brace = std.mem.indexOfScalarPos(u8, self.source, open_brace + 1, '}') orelse return;
+        if (close_brace >= line_end) return;
+        const greater = std.mem.indexOfScalarPos(u8, self.source, close_brace + 1, '>') orelse return;
+        if (greater >= line_end) return;
+
+        const name_text = self.source[name.span.start..name.span.end];
+        const missing_name = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{name_text},
+        );
+        switch (bad.kind) {
+            .number_literal => {
+                try self.reportCodeAt(name.span.start, name.line, 1005, "';' expected.");
+                try self.reportCodeAt(name.span.start, name.line, 2304, missing_name);
+                try self.reportCodeAt(@intCast(open_brace), name.line, 2362, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                try self.reportCodeAt(@intCast(close_brace), name.line, 1005, "':' expected.");
+                try self.reportCodeAt(@intCast(greater), name.line, 1109, "Expression expected.");
+                if (greater + 1 < line_end and self.source[greater + 1] == ';') {
+                    try self.reportCodeAt(@intCast(greater + 1), name.line, 1109, "Expression expected.");
+                }
+            },
+            .minus => {
+                try self.reportCodeAt(jsx_start, bad.line, 2362, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                try self.reportCodeAt(name.span.start, name.line, 2304, missing_name);
+                try self.reportCodeAt(@intCast(equal_pos), name.line, 1005, "';' expected.");
+                const slash = std.mem.lastIndexOfScalar(u8, self.source[close_brace + 1 .. greater], '/') orelse return;
+                try self.reportCodeAt(@intCast(close_brace + 1 + slash), name.line, 1161, "Unterminated regular expression literal.");
+            },
+            else => return,
+        }
+
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn reportCannotFindRawName(self: *Parser, start: usize, end: usize, line: u32) ParseError!void {
+        if (start >= end or end > self.source.len) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{self.source[start..end]},
+        );
+        try self.reportCodeAt(@intCast(start), line, 2304, msg);
+    }
+
+    fn recoverInvalidJsxBracketTagTail(self: *Parser, bad: Token) ParseError!void {
+        if (bad.kind != .open_bracket) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const first_close = std.mem.indexOfScalarPos(u8, self.source, bad.span.end, ']') orelse return;
+        const first_greater = std.mem.indexOfScalarPos(u8, self.source, first_close + 1, '>') orelse return;
+        const closing = std.mem.indexOfPos(u8, self.source, first_greater + 1, "</") orelse return;
+        if (closing >= line_end) return;
+        const second_open = std.mem.indexOfScalarPos(u8, self.source, closing + 2, '[') orelse return;
+        const second_close = std.mem.indexOfScalarPos(u8, self.source, second_open + 1, ']') orelse return;
+        const semicolon = std.mem.indexOfScalarPos(u8, self.source, second_close + 1, ';') orelse return;
+        if (semicolon >= line_end) return;
+
+        if (bad.span.end < first_close and self.source[bad.span.end] != '\'' and self.source[bad.span.end] != '"') {
+            try self.reportCannotFindRawName(bad.span.end, first_close, bad.line);
+        }
+        try self.reportCodeAt(@intCast(closing), bad.line, 1109, "Expression expected.");
+        var close_name_end = closing + 2;
+        while (close_name_end < second_open and
+            (std.ascii.isAlphanumeric(self.source[close_name_end]) or self.source[close_name_end] == '_' or self.source[close_name_end] == '$'))
+        {
+            close_name_end += 1;
+        }
+        try self.reportCannotFindRawName(closing + 2, close_name_end, bad.line);
+        if (second_open + 1 < second_close and self.source[second_open + 1] != '\'' and self.source[second_open + 1] != '"') {
+            try self.reportCannotFindRawName(second_open + 1, second_close, bad.line);
+        }
+        try self.reportCodeAt(@intCast(semicolon), bad.line, 1109, "Expression expected.");
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn recoverInvalidJsxQualifiedTagTail(self: *Parser, bad: Token) ParseError!void {
+        if (bad.kind != .dot and bad.kind != .colon) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const closing = std.mem.indexOfPos(u8, self.source, bad.span.end, "</") orelse return;
+        if (closing >= line_end) return;
+        const tail_separator = std.mem.indexOfScalarPos(
+            u8,
+            self.source,
+            closing + 2,
+            if (bad.kind == .colon) ':' else '.',
+        ) orelse return;
+        const semicolon = std.mem.indexOfScalarPos(u8, self.source, tail_separator + 1, ';') orelse return;
+        if (semicolon >= line_end) return;
+        if (bad.kind == .colon) {
+            var close_root_end = closing + 2;
+            while (close_root_end < tail_separator and
+                (std.ascii.isAlphanumeric(self.source[close_root_end]) or self.source[close_root_end] == '_' or self.source[close_root_end] == '$'))
+            {
+                close_root_end += 1;
+            }
+            try self.reportCannotFindRawName(closing + 2, close_root_end, bad.line);
+        }
+        try self.reportCodeAt(@intCast(tail_separator), bad.line, 1005, "'>' expected.");
+        var member_end = tail_separator + 1;
+        while (member_end < semicolon and
+            (std.ascii.isAlphanumeric(self.source[member_end]) or self.source[member_end] == '_' or self.source[member_end] == '$'))
+        {
+            member_end += 1;
+        }
+        try self.reportCannotFindRawName(tail_separator + 1, member_end, bad.line);
+        try self.reportCodeAt(@intCast(semicolon), bad.line, 1109, "Expression expected.");
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn normalizeJsxClosingSpreadRecovery(self: *Parser) ParseError!void {
+        var search: usize = 0;
+        while (std.mem.indexOfPos(u8, self.source, search, "</")) |closing| {
+            search = closing + 2;
+            const brace = std.mem.indexOfScalarPos(u8, self.source, search, '{') orelse continue;
+            const greater_before = std.mem.indexOfScalarPos(u8, self.source, search, '>') orelse continue;
+            if (greater_before < brace or !std.mem.startsWith(u8, self.source[brace..], "{...")) continue;
+            const close_brace = std.mem.indexOfScalarPos(u8, self.source, brace + 4, '}') orelse continue;
+            const greater = std.mem.indexOfScalarPos(u8, self.source, close_brace + 1, '>') orelse continue;
+            const semicolon = std.mem.indexOfScalarPos(u8, self.source, greater + 1, ';') orelse continue;
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, closing, '\n') orelse self.source.len;
+            if (semicolon >= line_end) continue;
+
+            var i: usize = 0;
+            while (i < self.diagnostics.items.len) {
+                const d = self.diagnostics.items[i];
+                if ((d.pos == brace + 1 and d.code == 1109) or (d.pos == close_brace and d.code == 1128)) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+                i += 1;
+            }
+            try self.reportCodeAt(@intCast(brace + 1), self.lineForPos(@intCast(brace + 1)), 1128, "Declaration or statement expected.");
+            try self.reportCodeAt(@intCast(semicolon), self.lineForPos(@intCast(semicolon)), 1109, "Expression expected.");
+        }
+    }
 
     fn isJsxNamePart(kind: TokenKind) bool {
         return kind == .identifier or kind.isKeyword() or kind.isContextualKeyword();
@@ -20514,15 +21153,22 @@ pub const Parser = struct {
         // here gives the checker exactly that handle.
         while (true) {
             const k = self.peek().kind;
-            if (k == .minus and isJsxNamePart(self.peekAt(1).kind)) {
+            const separator_is_adjacent = self.peek().span.start == parsed_span.end;
+            if (separator_is_adjacent and k == .minus and isJsxNamePart(self.peekAt(1).kind)) {
                 _ = self.advance();
                 const part = self.advance();
                 parsed_span.end = part.span.end;
                 has_escape = has_escape or part.flags.has_escape;
                 continue;
             }
-            if (k == .colon and isJsxNamePart(self.peekAt(1).kind)) {
-                _ = self.advance();
+            if (k == .colon) {
+                const colon = self.advance();
+                if (!isJsxNamePart(self.peek().kind)) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    parsed_span.end = colon.span.end;
+                    break;
+                }
                 const part = self.advance();
                 parsed_span.end = part.span.end;
                 has_escape = has_escape or part.flags.has_escape;
@@ -20567,10 +21213,14 @@ pub const Parser = struct {
         return name_span;
     }
 
-    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32, opening_tag: ?NodeId) ParseError!void {
+    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32, opening_tag: ?NodeId) ParseError!?u32 {
         var last_child_end = content_start;
+        const virtual_end = self.nextVirtualSectionBoundaryAfter(content_start);
         while (true) {
             const t = self.peek();
+            if (virtual_end) |end| {
+                if (t.span.start >= end) return end;
+            }
             if (t.span.start > last_child_end and self.jsxTextShouldBecomeChild(last_child_end, t.span.start)) {
                 try self.reportJsxTextStrayTokens(last_child_end, self.lineAt(last_child_end), t.span.start);
                 const id = self.interner.intern(self.source[last_child_end..t.span.start]) catch return error.OutOfMemory;
@@ -20581,7 +21231,7 @@ pub const Parser = struct {
             }
             switch (t.kind) {
                 .less_than => {
-                    if (self.peekAt(1).kind == .slash) return; // `</Foo>`
+                    if (self.peekAt(1).kind == .slash) return null; // `</Foo>`
                     const child = try self.parseJsxElementOrFragment(opening_tag);
                     try out.append(self.gpa, child);
                     last_child_end = self.hir.spanOf(child).end;
@@ -20624,14 +21274,44 @@ pub const Parser = struct {
                         last_child_end = bad.span.start;
                         continue;
                     }
+                    var recovered_expression_error = false;
                     const expr = if (self.match(.dot_dot_dot)) blk: {
                         const dot_tok = self.tokens[self.cursor - 1];
                         const inner = try self.parseAssignmentExpression();
                         const end = self.hir.spanOf(inner).end;
                         break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
-                    } else try self.parseExpression();
+                    } else self.parseExpression() catch |err| switch (err) {
+                        error.UnexpectedToken, error.UnexpectedEof, error.InvalidLeftHandSide => recover: {
+                            recovered_expression_error = true;
+                            const pos = self.peek().span.start;
+                            break :recover try self.builder.addLiteralNumber(.{ .start = pos, .end = pos }, 0);
+                        },
+                        else => return err,
+                    };
+                    if (recovered_expression_error) {
+                        const expr_end = self.hir.spanOf(expr).end;
+                        const node = try self.builder.addJsxExpression(
+                            .{ .start = t.span.start, .end = expr_end },
+                            expr,
+                        );
+                        try out.append(self.gpa, node);
+                        last_child_end = expr_end;
+                        continue;
+                    }
                     try self.reportJsxCommaExpressionIfNeeded(expr);
-                    const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX child expression", t.span.start, "{", "}");
+                    if (self.peek().kind != .close_brace) {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1005, "'}' expected.");
+                        const expr_end = self.hir.spanOf(expr).end;
+                        const node = try self.builder.addJsxExpression(
+                            .{ .start = t.span.start, .end = expr_end },
+                            expr,
+                        );
+                        try out.append(self.gpa, node);
+                        last_child_end = expr_end;
+                        continue;
+                    }
+                    const close = self.advance();
                     const node = try self.builder.addJsxExpression(
                         .{ .start = t.span.start, .end = close.span.end },
                         expr,
@@ -20639,7 +21319,7 @@ pub const Parser = struct {
                     try out.append(self.gpa, node);
                     last_child_end = close.span.end;
                 },
-                .eof => return,
+                .eof => return null,
                 else => {
                     const text_start = t.span.start;
                     var text_end = t.span.end;
@@ -20657,6 +21337,9 @@ pub const Parser = struct {
                         self.peek().kind != .open_brace and
                         self.peek().kind != .eof)
                     {
+                        if (virtual_end) |end| {
+                            if (self.peek().span.start >= end) break;
+                        }
                         const part = self.advance();
                         try self.reportJsxTextStrayTokens(part.span.start, part.line, part.span.end);
                         text_end = part.span.end;
