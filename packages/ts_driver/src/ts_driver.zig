@@ -2145,6 +2145,7 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
+    checker.setTsx(options.is_tsx);
     checker.setIsDeclarationFile(is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling

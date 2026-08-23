@@ -4580,6 +4580,7 @@ pub const Checker = struct {
     source_has_virtual_sections: bool = false,
     allow_js_enabled: bool = false,
     check_js_enabled: bool = false,
+    is_tsx: bool = false,
     jsx_option_present: bool = true,
     jsx_preserve_option: bool = false,
     jsx_transform_enabled: bool = false,
@@ -4917,6 +4918,10 @@ pub const Checker = struct {
 
     pub fn setAllowJsEnabled(self: *Checker, enabled: bool) void {
         self.allow_js_enabled = enabled;
+    }
+
+    pub fn setTsx(self: *Checker, enabled: bool) void {
+        self.is_tsx = enabled;
     }
 
     pub fn setJsxOptionPresent(self: *Checker, enabled: bool) void {
@@ -5444,6 +5449,7 @@ pub const Checker = struct {
     /// (`a.b`) remain value-space components, and malformed closing tags such
     /// as `</a[foo]>` have already left JSX grammar and are excluded.
     fn restoreRecoveredJsxImplicitAnyDiagnostics(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.is_tsx) return;
         if (!self.has_parse_diagnostics or !self.strict_flags.no_implicit_any) return;
         if (self.sourceHasReactJsxReference()) return;
         if (try self.jsxHasIntrinsicElementsDecl(root)) return;
@@ -180017,6 +180023,7 @@ fn newSetup(source: []const u8) !*TestSetup {
     s.engine.setStringInterner(&s.sint);
     s.checker = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
     s.checker.setSource(source);
+    s.checker.setTsx(true);
     return s;
 }
 
@@ -188549,6 +188556,19 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: recovered JSX fallback ignores TypeScript generic syntax" {
+    const s = try newSetup(
+        \\type Box<T> = T;
+        \\const broken = ;
+    );
+    defer destroySetup(s);
+    s.checker.setHasParseDiagnostics(true);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_element_implicit_any_no_intrinsic));
 }
 
 test "checker: ambient any read only by JSX spreads still reports TS7005" {
