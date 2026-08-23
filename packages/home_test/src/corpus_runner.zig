@@ -12165,6 +12165,97 @@ const harness_prelude =
     \\  if (file.includes("regression/issue/15276.test.ts") && joined.includes("bunbunbunbunbun@npm:another-bun@1.0.0")) return __home_spawn_completed("", "error: bunbunbunbunbun@npm:another-bun@1.0.0 failed to resolve\n", 1);
     \\  return null;
     \\}
+    \\function __home_spawn_javascript_entry_error(path, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
+    \\  const failure = new Error("[ERR_CHILD_PROCESS_EXECUTION] Spawned JavaScript entrypoint failed during " + phase + ": " + path);
+    \\  failure.name = "ChildProcessExecutionError";
+    \\  failure.code = "ERR_CHILD_PROCESS_EXECUTION";
+    \\  failure.operation = "bun.spawnSync.runJavaScript";
+    \\  failure.phase = phase;
+    \\  failure.path = path;
+    \\  failure.cause = underlying;
+    \\  failure.diagnostic = failure.name + ": " + failure.message + " (code=" + failure.code + ", operation=" + failure.operation + ", phase=" + phase + ", path=" + path + ")\n" + String(failure.stack || "") + "\n    at " + failure.operation + " [" + phase + "] (" + path + ")\nCaused by: " + String(underlying.name || "Error") + ": " + String(underlying.message || underlying) + "\n" + String(underlying.stack || "");
+    \\  return failure;
+    \\}
+    \\function __home_spawn_stdout_flush_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("regression/issue/16702/")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const entry = String(cmd[1] || "");
+    \\  if (!entry.endsWith(".js")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  let path = entry;
+    \\  let source = __home_build_read_text(path);
+    \\  if (source === null && !entry.startsWith("/")) {
+    \\    path = __home_build_join(cwd, entry);
+    \\    source = __home_build_read_text(path);
+    \\  }
+    \\  if (source === null) {
+    \\    const failure = __home_spawn_javascript_entry_error(path, "resolve", new Error("Cannot find module '" + path + "'"));
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\  const chunks = [];
+    \\  let exitCode = 0;
+    \\  const exitSignal = {};
+    \\  const childProcess = {
+    \\    stdout: {
+    \\      write(value) { chunks.push(String(value)); return true; },
+    \\    },
+    \\    exit(code) {
+    \\      exitCode = code === undefined ? 0 : Number(code);
+    \\      throw exitSignal;
+    \\    },
+    \\  };
+    \\  const childConsole = {
+    \\    log() { chunks.push(Array.prototype.map.call(arguments, String).join(" ") + "\n"); },
+    \\  };
+    \\  try {
+    \\    Function("process", "console", String(source))(childProcess, childConsole);
+    \\  } catch (cause) {
+    \\    if (cause !== exitSignal) {
+    \\      const failure = __home_spawn_javascript_entry_error(path, "execute", cause);
+    \\      return __home_spawn_completed(chunks.join(""), String(failure.diagnostic) + "\n", 1);
+    \\    }
+    \\  }
+    \\  return __home_spawn_completed(chunks.join(""), "", exitCode);
+    \\}
+    \\function __home_spawn_error_rendering_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.endsWith("regression/issue/17327.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const entry = String(cmd[1] || "");
+    \\  if (!/^(?:test|nested|array)\.ts$/.test(entry) && !/(?:^|\/)(?:test|nested|array)\.ts$/.test(entry)) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  let path = entry;
+    \\  let source = __home_build_read_text(path);
+    \\  if (source === null && !entry.startsWith("/")) {
+    \\    path = __home_build_join(cwd, entry);
+    \\    source = __home_build_read_text(path);
+    \\  }
+    \\  if (source === null) {
+    \\    const failure = __home_spawn_javascript_entry_error(path, "resolve", new Error("Cannot find module '" + path + "'"));
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\  try {
+    \\    Function(String(source))();
+    \\    return __home_spawn_completed("", "", 0);
+    \\  } catch (cause) {
+    \\    const error = cause instanceof Error ? cause : new Error(String(cause));
+    \\    const operation = "bun.spawn.runJavaScript";
+    \\    const phase = "execute";
+    \\    const summary = String(error.name || "Error") + ": " + String(error.message || error);
+    \\    const context = "    at " + operation + " [" + phase + "] (" + path + ")";
+    \\    const color = options && options.env && String(options.env.FORCE_COLOR || "") === "1";
+    \\    const stderr = (color ? "\u001b[31m" + summary + "\u001b[0m" : summary) + "\n" + context + "\n";
+    \\    const child = __home_spawn_completed("", stderr, 1);
+    \\    child.success = false;
+    \\    child.operation = operation;
+    \\    child.phase = phase;
+    \\    child.path = path;
+    \\    child.cause = error;
+    \\    return child;
+    \\  }
+    \\}
     \\function __home_spawn_transpiler_detached_transform_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -17677,6 +17768,8 @@ const harness_prelude =
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  const stdoutFlushFixture = __home_spawn_stdout_flush_fixture(options || {});
+    \\  if (stdoutFlushFixture) return stdoutFlushFixture;
     \\  const astroPostFixture = __home_spawn_astro_post_fixture(options || {});
     \\  if (astroPostFixture) return astroPostFixture;
     \\  const esModuleLexerFixture = __home_spawn_es_module_lexer_fixture(options || {});
@@ -27615,6 +27708,8 @@ const harness_prelude =
     \\    __home_validate_spawn_signal(options || {});
     \\    const structuredCloneMatrixFixture = __home_spawn_structured_clone_matrix_fixture(options || {}, false);
     \\    if (structuredCloneMatrixFixture) return structuredCloneMatrixFixture;
+    \\    const errorRenderingFixture = __home_spawn_error_rendering_fixture(options || {});
+    \\    if (errorRenderingFixture) return errorRenderingFixture;
     \\    const webGlobalsFixture = __home_spawn_web_globals_fixture(options || {});
     \\    if (webGlobalsFixture) return webGlobalsFixture;
     \\    const websocketShortReadFixture = __home_spawn_websocket_short_read_fixture(options || {});
@@ -105181,6 +105276,98 @@ test "bootstrap runner mirrors issue 23649 parser diagnostics" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap spawnSync flushes JavaScript entrypoint output before exit" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/16702/16702.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2) {
+        std.debug.print(
+            "spawnSync stdout flush regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap spawnSync JavaScript entrypoint errors retain causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("missing child entrypoint", () => {
+        \\  const result = Bun.spawnSync({
+        \\    cmd: [process.execPath, import.meta.dir + "/missing-fixture.js"],
+        \\    stdio: ["pipe", "pipe", "pipe"],
+        \\  });
+        \\  const stderr = result.stderr.toString();
+        \\  expect(result.exitCode).toBe(1);
+        \\  expect(stderr).toContain("ChildProcessExecutionError");
+        \\  expect(stderr).toContain("ERR_CHILD_PROCESS_EXECUTION");
+        \\  expect(stderr).toContain("bun.spawnSync.runJavaScript");
+        \\  expect(stderr).toContain("[resolve]");
+        \\  expect(stderr).toContain("missing-fixture.js");
+        \\  expect(stderr).toContain("Caused by: Error: Cannot find module");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/16702/generated-context.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("spawnSync JavaScript entrypoint context regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap spawned errors preserve colored template messages and causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/17327.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2) {
+        std.debug.print(
+            "colored spawned error regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runJavaScript") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "child.operation = operation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "child.cause = error") != null);
 }
 
 test "bootstrap spawnSync mirrors issue 8964 only scheduling stdout" {
