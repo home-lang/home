@@ -2023,7 +2023,9 @@ pub fn compileSource(
         break;
     }
     for (parser.diagnostics.items) |d| {
-        if (has_syntactic_parse_diagnostics and !ts_parser.diagnosticIsSyntacticParseError(d)) continue;
+        if (has_syntactic_parse_diagnostics and
+            !ts_parser.diagnosticIsSyntacticParseError(d) and
+            !parserDiagnosticSurvivesParseErrors(d, source)) continue;
         if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
         // Copy parser-level related-info anchors (TS1007 matched-pair
         // hints, etc.) into the unified driver diagnostic. Parser
@@ -3398,6 +3400,22 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
     return !v;
 }
 
+fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source: []const u8) bool {
+    return switch (diagnostic.code) {
+        1101, 1107, 1210, 1215, 18010, 18019 => true,
+        1212, 1214 => std.mem.indexOf(u8, diagnostic.message, "'yield'") != null,
+        1031, 1042 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos),
+        else => false,
+    };
+}
+
+fn diagnosticLineContainsPrivateIdentifier(source: []const u8, pos: usize) bool {
+    if (pos > source.len) return false;
+    const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..pos], '\n')) |index| index + 1 else 0;
+    const line_end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
+    return std.mem.indexOfScalar(u8, source[line_start..line_end], '#') != null;
+}
+
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source: []const u8) bool {
     if (plainJsGrammarDiagnosticCode(code)) return true;
     if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
@@ -4230,6 +4248,62 @@ test "driver: alwaysStrict enables strict parser early errors" {
         if (d.code == 1100) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: binder grammar diagnostics survive neighboring parse errors" {
+    var c = try compileSource(T.allocator,
+        \\export default 1;
+        \\class C {
+        \\  #constructor = 1;
+        \\  public #field = 1;
+        \\  method() {
+        \\    const eval = 1;
+        \\    with (eval) {}
+        \\  }
+        \\}
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_private_constructor = false;
+    var saw_private_modifier = false;
+    var saw_class_strict = false;
+    var saw_with_strict = false;
+    for (c.diagnostics.items) |d| {
+        switch (d.code) {
+            18012 => saw_private_constructor = true,
+            18010 => saw_private_modifier = true,
+            1210 => saw_class_strict = true,
+            1101 => saw_with_strict = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_private_constructor);
+    try T.expect(saw_private_modifier);
+    try T.expect(saw_class_strict);
+    try T.expect(saw_with_strict);
+}
+
+test "driver: yield binder diagnostic survives an async binding parse error" {
+    var c = try compileSource(T.allocator,
+        \\async function f() { const await = 1; }
+        \\function g() { const yield = 2; }
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_await = false;
+    var saw_yield = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1359) saw_await = true;
+        if (d.code == 1212) saw_yield = true;
+    }
+    try T.expect(saw_await);
+    try T.expect(saw_yield);
 }
 
 test "driver: ts-ignore suppresses next-line parser diagnostics" {

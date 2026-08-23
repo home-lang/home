@@ -7572,7 +7572,7 @@ pub const Parser = struct {
     fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
         if (mods.accessibility_token) |bad| {
             if (!self.hasDiagnosticAt(18010, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18010, "An accessibility modifier cannot be used with a private identifier.");
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18010, "An accessibility modifier cannot be used with a private identifier.");
             }
         }
         if (!is_property) return;
@@ -7580,14 +7580,14 @@ pub const Parser = struct {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
             if (!self.hasDiagnosticAt(18019, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18019, msg);
             }
         }
         if (mods.abstract_token) |bad| {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
             if (!self.hasDiagnosticAt(18019, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18019, msg);
             }
         }
     }
