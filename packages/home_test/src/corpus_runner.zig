@@ -67658,6 +67658,19 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (" + endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\  return failure;
     \\}
+    \\function __home_serve_default_error_response(error, href) {
+    \\  const underlying = error instanceof Error ? error : new Error(String(error || "Bun.serve fetch handler rejected"));
+    \\  const failure = new Error("Bun.serve fetch handler rejected while producing a response: " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.code = "ERR_BUN_SERVE_HANDLER";
+    \\  failure.operation = "bun.serve.fetch";
+    \\  failure.phase = "response";
+    \\  failure.url = String(href || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [response] (" + failure.url + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  const response = new Response("", { status: 500 });
+    \\  Object.defineProperty(response, "__home_server_error", { configurable: true, value: failure });
+    \\  return response;
+    \\}
     \\function __home_fetch_data_url_error(href, phase, cause) {
     \\  const underlying = cause instanceof Error ? cause : new TypeError(String(cause || "Malformed data URL"));
     \\  const failure = new TypeError("failed to fetch the data URL", { cause: underlying });
@@ -67949,6 +67962,7 @@ const harness_prelude =
     \\    __home_fetch_cancel_body(body, reason);
     \\    return Promise.reject(reason);
     \\  }
+    \\  __home_abort_timeout_note_progress(signal);
     \\  return new Promise((resolve, reject) => {
     \\    let settled = false;
     \\    const abort = () => {
@@ -67961,8 +67975,8 @@ const harness_prelude =
     \\    };
     \\    signal.addEventListener("abort", abort, { once: true });
     \\    Promise.resolve(promise).then(
-    \\      value => { if (!settled) { settled = true; signal.removeEventListener("abort", abort); resolve(value); } },
-    \\      error => { if (!settled) { settled = true; signal.removeEventListener("abort", abort); reject(error); } },
+    \\      value => { if (!settled) { settled = true; __home_abort_timeout_note_progress(signal); signal.removeEventListener("abort", abort); resolve(value); } },
+    \\      error => { if (!settled) { settled = true; __home_abort_timeout_note_progress(signal); signal.removeEventListener("abort", abort); reject(error); } },
     \\    );
     \\    if (signal.aborted) abort();
     \\  });
@@ -69128,7 +69142,7 @@ const harness_prelude =
     \\      }
     \\      const responsePromise = Promise.resolve(response).catch(error => {
     \\        if (typeof handle.error === "function") return handle.error(error);
-    \\        throw error;
+    \\        return __home_serve_default_error_response(error, request.url);
     \\      }).then(async result => {
     \\        if (handle.abrupt) {
     \\          const replacement = globalThis.__home_serve_handles_by_origin[origin];
@@ -69195,7 +69209,7 @@ const harness_prelude =
     \\      if (typeof handle.error === "function") {
     \\        try { return __home_fetch_thenable(handle.error(error), null); } catch (handlerError) { return __home_fetch_thenable(null, handlerError); }
     \\      }
-    \\      return __home_fetch_thenable(null, error);
+    \\      return __home_fetch_thenable(__home_serve_default_error_response(error, href), null);
     \\    }
     \\  }
     \\  try {
@@ -77130,6 +77144,12 @@ const harness_prelude =
     \\    Object.defineProperty(signal, "__home_timeout_deadline", { configurable: true, value: delay });
     \\  } catch (error) {}
     \\  return signal;
+    \\}
+    \\function __home_abort_timeout_note_progress(signal) {
+    \\  const handle = signal && signal.__home_timeout_handle;
+    \\  const record = handle && handle.__home_timer_record;
+    \\  if (!record || record.cleared || !record.active || typeof record.schedule !== "function") return;
+    \\  record.schedule();
     \\}
     \\Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: __home_abort_signal_timeout });
     \\function __home_abort_signal_any_error(index, error) {
@@ -105268,6 +105288,81 @@ test "bootstrap node-fetch Request keeps relative URLs without weakening web Req
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.serve rejection responses finalize with causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("rejected and thrown handlers finalize empty responses", async () => {
+        \\  using rejected = Bun.serve({
+        \\    port: 0,
+        \\    fetch() { return Promise.reject(new SyntaxError("invalid json")); },
+        \\  });
+        \\  const rejectedResponse = await fetch(rejected.url);
+        \\  expect(rejectedResponse.status).toBe(500);
+        \\  expect(await rejectedResponse.text()).toBe("");
+        \\  const rejectedFailure = rejectedResponse.__home_server_error;
+        \\  expect(rejectedFailure.code).toBe("ERR_BUN_SERVE_HANDLER");
+        \\  expect(rejectedFailure.operation).toBe("bun.serve.fetch");
+        \\  expect(rejectedFailure.phase).toBe("response");
+        \\  expect(rejectedFailure.url).toBe(rejected.url.href);
+        \\  expect(rejectedFailure.cause).toBeInstanceOf(SyntaxError);
+        \\  expect(rejectedFailure.stack).toContain("Caused by:");
+        \\
+        \\  using thrown = Bun.serve({ port: 0, fetch() { throw new RangeError("sync failure"); } });
+        \\  const thrownResponse = await fetch(thrown.url);
+        \\  expect(thrownResponse.status).toBe(500);
+        \\  expect(thrownResponse.__home_server_error.cause).toBeInstanceOf(RangeError);
+        \\
+        \\  using handled = Bun.serve({
+        \\    port: 0,
+        \\    fetch() { return Promise.reject(new Error("handled")); },
+        \\    error(error) { return new Response(error.message, { status: 418 }); },
+        \\  });
+        \\  const handledResponse = await fetch(handled.url);
+        \\  expect(handledResponse.status).toBe(418);
+        \\  expect(await handledResponse.text()).toBe("handled");
+        \\  expect(handledResponse.__home_server_error).toBeUndefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/02499/serve-rejection-lifecycle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.serve rejection lifecycle failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves rejected-response watchdog progress" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/02499/02499.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print("rejected-response watchdog corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap runner covers Request body text and clone smoke" {
