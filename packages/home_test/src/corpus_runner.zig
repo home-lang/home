@@ -69409,6 +69409,56 @@ const harness_prelude =
     \\  const match = new RegExp("(?:^|\\r\\n)" + escaped + ":\\s*([^\\r\\n]*)", "i").exec(String(headerText || ""));
     \\  return match ? match[1].trim() : null;
     \\}
+    \\function __home_websocket_header_values(headerText, name) {
+    \\  const expected = String(name).toLowerCase();
+    \\  const values = [];
+    \\  for (const line of String(headerText || "").split("\r\n")) {
+    \\    const colon = line.indexOf(":");
+    \\    if (colon < 0 || line.slice(0, colon).trim().toLowerCase() !== expected) continue;
+    \\    values.push(line.slice(colon + 1).trim());
+    \\  }
+    \\  return values;
+    \\}
+    \\function __home_websocket_subprotocol_failure(socket, responseProtocols, offeredProtocols, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new SyntaxError(String(cause || "Invalid Sec-WebSocket-Protocol response"));
+    \\  const failure = new Error("WebSocket subprotocol negotiation failed", { cause: underlying });
+    \\  Object.defineProperty(failure, "name", { configurable: true, writable: true, value: "WebSocketSubprotocolError" });
+    \\  failure.code = "ERR_WEBSOCKET_SUBPROTOCOL";
+    \\  failure.operation = "web.websocket.handshake.subprotocol";
+    \\  failure.phase = "response-validate";
+    \\  failure.closeCode = 1002;
+    \\  failure.closeReason = "Mismatch client protocol";
+    \\  failure.responseProtocols = Array.from(responseProtocols || []);
+    \\  failure.offeredProtocols = Array.from(offeredProtocols || []);
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  socket.__home_last_handshake_error = failure;
+    \\  socket.readyState = WebSocket.CLOSING;
+    \\  socket.__home_pending_open = false;
+    \\  socket.__home_pending_server_open = null;
+    \\  __home_websocket_unsubscribe_client(socket);
+    \\  Promise.resolve().then(() => {
+    \\    socket.readyState = WebSocket.CLOSED;
+    \\    socket.dispatchEvent(__home_websocket_close_event(failure.closeCode, failure.closeReason, true));
+    \\  });
+    \\  return failure;
+    \\}
+    \\function __home_websocket_validate_subprotocol_response(socket, headerText) {
+    \\  const responseProtocols = __home_websocket_header_values(headerText, "Sec-WebSocket-Protocol");
+    \\  const offeredHeader = socket.__home_request_headers && socket.__home_request_headers["sec-websocket-protocol"];
+    \\  const offeredProtocols = offeredHeader === undefined ? [] : String(offeredHeader).split(",").map(value => value.trim()).filter(Boolean);
+    \\  if (responseProtocols.length === 0) {
+    \\    socket.protocol = "";
+    \\    return true;
+    \\  }
+    \\  const selected = responseProtocols.length === 1 ? responseProtocols[0].trim() : "";
+    \\  if (responseProtocols.length !== 1 || selected.length === 0 || selected.includes(",") || !offeredProtocols.includes(selected)) {
+    \\    __home_websocket_subprotocol_failure(socket, responseProtocols, offeredProtocols, new SyntaxError("Server selected an invalid or unoffered WebSocket subprotocol"));
+    \\    return false;
+    \\  }
+    \\  socket.protocol = selected;
+    \\  return true;
+    \\}
     \\function __home_websocket_dispatch_message_frame(socket, opcode, payload, compressed) {
     \\  const maximumMessageBytes = 128 * 1024 * 1024;
     \\  let decoded = Buffer.from(payload || []);
@@ -69505,6 +69555,7 @@ const harness_prelude =
     \\          __home_websocket_fail(socket, __home_websocket_handshake_error("accept", "Invalid Sec-WebSocket-Accept header", { expectedAccept, actualAccept }));
     \\          return;
     \\        }
+    \\        if (!__home_websocket_validate_subprotocol_response(socket, headerText)) return;
     \\        const negotiatedExtensions = __home_websocket_header_value(headerText, "Sec-WebSocket-Extensions");
     \\        socket.extensions = negotiatedExtensions && /(?:^|[,;\s])permessage-deflate(?:$|[,;\s])/i.test(negotiatedExtensions) ? "permessage-deflate" : "";
     \\        opened = true;
@@ -69591,6 +69642,7 @@ const harness_prelude =
     \\      __home_websocket_fail(socket, __home_websocket_handshake_error("accept", "Invalid Sec-WebSocket-Accept header", { expectedAccept, actualAccept }));
     \\      return;
     \\    }
+    \\    if (!__home_websocket_validate_subprotocol_response(socket, headerText)) return;
     \\    const negotiatedExtensions = __home_websocket_header_value(headerText, "Sec-WebSocket-Extensions");
     \\    socket.extensions = negotiatedExtensions && /(?:^|[,;\s])permessage-deflate(?:$|[,;\s])/i.test(negotiatedExtensions) ? "permessage-deflate" : "";
     \\    opened = true;
@@ -69631,6 +69683,7 @@ const harness_prelude =
     \\    if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
     \\  }
     \\  this.url = href;
+    \\  this.protocol = "";
     \\  this.extensions = handle && handle.websocket && handle.websocket.perMessageDeflate && __home_websocket_permessage_deflate_enabled(websocketOptions) ? "permessage-deflate" : "";
     \\  this.readyState = 0;
     \\  this.__home_binary_type = "nodebuffer";
@@ -112305,6 +112358,61 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    var subprotocol_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-subprotocol-strict.test.ts");
+    defer subprotocol_summary.deinit(std.testing.allocator);
+
+    if (subprotocol_summary.failed != 0 or subprotocol_summary.unsupported != 0 or subprotocol_summary.passed != 18 or subprotocol_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket subprotocol corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ subprotocol_summary.passed, subprotocol_summary.failed, subprotocol_summary.todo, subprotocol_summary.unsupported, subprotocol_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), subprotocol_summary.files);
+    try std.testing.expectEqual(@as(usize, 18), subprotocol_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("subprotocol failures retain negotiation and close context", async () => {
+        \\  const socket = Object.create(WebSocket.prototype);
+        \\  socket.__home_listeners = Object.create(null);
+        \\  socket.__home_pending_open = false;
+        \\  socket.__home_pending_server_open = null;
+        \\  socket.readyState = WebSocket.OPEN;
+        \\  const closed = new Promise(resolve => socket.onclose = resolve);
+        \\  const cause = new SyntaxError("server returned duplicate protocol headers");
+        \\  const error = __home_websocket_subprotocol_failure(socket, ["chat", "echo"], ["chat", "echo", "binary"], cause);
+        \\  const close = await closed;
+        \\  expect(error.name).toBe("WebSocketSubprotocolError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_SUBPROTOCOL");
+        \\  expect(error.operation).toBe("web.websocket.handshake.subprotocol");
+        \\  expect(error.phase).toBe("response-validate");
+        \\  expect(error.closeCode).toBe(1002);
+        \\  expect(error.closeReason).toBe("Mismatch client protocol");
+        \\  expect(error.responseProtocols).toEqual(["chat", "echo"]);
+        \\  expect(error.offeredProtocols).toEqual(["chat", "echo", "binary"]);
+        \\  expect(error.cause).toBe(cause);
+        \\  expect(error.stack).toContain("web.websocket.handshake.subprotocol [response-validate]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\  expect(socket.__home_last_handshake_error).toBe(error);
+        \\  expect({ code: close.code, reason: close.reason, wasClean: close.wasClean }).toEqual({ code: 1002, reason: "Mismatch client protocol", wasClean: true });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/subprotocol-error.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured WebSocket subprotocol regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented WebSocket reads" {
