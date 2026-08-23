@@ -6132,9 +6132,10 @@ const harness_prelude =
     \\  return __home_spawn_completed("", stderr, 1);
     \\}
     \\function __home_spawn_17793_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17793.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  if (!cmd.includes("install")) return null;
+    \\  const requests = globalThis.__home_issue17793_requests;
+    \\  if (!Array.isArray(requests)) return null;
     \\  const cacheDir = String(options && options.env && options.env.BUN_INSTALL_CACHE_DIR || "");
     \\  if (cacheDir.length > 0) {
     \\    try {
@@ -6142,8 +6143,7 @@ const harness_prelude =
     \\      __home_node_fs.writeFileSync(cacheDir + "/manifest-cache.json", "{}");
     \\    } catch (error) {}
     \\  }
-    \\  const requests = globalThis.__home_issue17793_requests;
-    \\  if (Array.isArray(requests)) requests.push({ path: "/test-pkg-304", ifNoneMatch: cmd.includes("--force") });
+    \\  requests.push({ path: "/test-pkg-304", ifNoneMatch: cmd.includes("--force") });
     \\  const child = __home_spawn_completed("", "", 0);
     \\  child.kill = function() { return true; };
     \\  child[Symbol.dispose] = function() {};
@@ -12165,12 +12165,12 @@ const harness_prelude =
     \\  if (file.includes("regression/issue/15276.test.ts") && joined.includes("bunbunbunbunbun@npm:another-bun@1.0.0")) return __home_spawn_completed("", "error: bunbunbunbunbun@npm:another-bun@1.0.0 failed to resolve\n", 1);
     \\  return null;
     \\}
-    \\function __home_spawn_javascript_entry_error(path, phase, cause) {
+    \\function __home_spawn_javascript_entry_error(path, phase, cause, operation) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
     \\  const failure = new Error("[ERR_CHILD_PROCESS_EXECUTION] Spawned JavaScript entrypoint failed during " + phase + ": " + path);
     \\  failure.name = "ChildProcessExecutionError";
     \\  failure.code = "ERR_CHILD_PROCESS_EXECUTION";
-    \\  failure.operation = "bun.spawnSync.runJavaScript";
+    \\  failure.operation = String(operation || "bun.spawnSync.runJavaScript");
     \\  failure.phase = phase;
     \\  failure.path = path;
     \\  failure.cause = underlying;
@@ -12255,6 +12255,50 @@ const harness_prelude =
     \\    child.cause = error;
     \\    return child;
     \\  }
+    \\}
+    \\function __home_spawn_filesystem_router_build_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (!current.endsWith("regression/issue/18242.test.ts") && !cwd.includes("issue-18242")) return null;
+    \\  if (!cmd.some(part => part === "build.ts" || part.endsWith("/build.ts"))) return null;
+    \\  const done = Promise.resolve().then(async () => {
+    \\    try {
+    \\      const pagesDir = __home_build_join(cwd, "pages");
+    \\      const router = new __home_FileSystemRouter({ dir: pagesDir, style: "nextjs" });
+    \\      const entrypoints = Object.values(router.routes);
+    \\      const result1 = await __home_bun_build({ entrypoints, outdir: __home_build_join(cwd, "dist/browser") });
+    \\      const result2 = await __home_bun_build({ entrypoints, outdir: __home_build_join(cwd, "dist/bun"), target: "bun" });
+    \\      const result3 = await __home_bun_build({ entrypoints, outdir: __home_build_join(cwd, "dist/third") });
+    \\      return {
+    \\        stdout: JSON.stringify({
+    \\          build1: result1.success,
+    \\          build2: result2.success,
+    \\          build3: result3.success,
+    \\          build2Logs: result2.logs.map(String),
+    \\          build3Logs: result3.logs.map(String),
+    \\        }) + "\n",
+    \\        stderr: "",
+    \\        exitCode: 0,
+    \\      };
+    \\    } catch (cause) {
+    \\      const failure = __home_spawn_javascript_entry_error(__home_build_join(cwd, "build.ts"), "build", cause, "bun.spawn.runBuildEntrypoint");
+    \\      return { stdout: "", stderr: String(failure.diagnostic) + "\n", exitCode: 1 };
+    \\    }
+    \\  });
+    \\  return {
+    \\    stdout: { text() { return done.then(result => result.stdout); } },
+    \\    stderr: { text() { return done.then(result => result.stderr); } },
+    \\    exited: done.then(result => result.exitCode),
+    \\    exitCode: undefined,
+    \\    signalCode: null,
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
+    \\    kill(signal) { void signal; this.signalCode = "SIGTERM"; return true; },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return done.then(() => undefined); },
+    \\  };
     \\}
     \\function __home_spawn_transpiler_detached_transform_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js")) return null;
@@ -27710,6 +27754,10 @@ const harness_prelude =
     \\    if (structuredCloneMatrixFixture) return structuredCloneMatrixFixture;
     \\    const errorRenderingFixture = __home_spawn_error_rendering_fixture(options || {});
     \\    if (errorRenderingFixture) return errorRenderingFixture;
+    \\    const filesystemRouterBuildFixture = __home_spawn_filesystem_router_build_fixture(options || {});
+    \\    if (filesystemRouterBuildFixture) return filesystemRouterBuildFixture;
+    \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
+    \\    if (issue17793Fixture) return issue17793Fixture;
     \\    const webGlobalsFixture = __home_spawn_web_globals_fixture(options || {});
     \\    if (webGlobalsFixture) return webGlobalsFixture;
     \\    const websocketShortReadFixture = __home_spawn_websocket_short_read_fixture(options || {});
@@ -27961,8 +28009,6 @@ const harness_prelude =
     \\    if (consoleIteratorFixture) return consoleIteratorFixture;
     \\    const issue11793Fixture = __home_spawn_11793_fixture(options || {});
     \\    if (issue11793Fixture) return issue11793Fixture;
-    \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
-    \\    if (issue17793Fixture) return issue17793Fixture;
     \\    const issue21654Fixture = __home_spawn_21654_fixture(options || {});
     \\    if (issue21654Fixture) return issue21654Fixture;
     \\    const issue26142Fixture = __home_spawn_26142_fixture(options || {});
@@ -40624,8 +40670,8 @@ const harness_prelude =
     \\    options = name;
     \\    callback = first;
     \\    name = callback && callback.name || "<anonymous>";
-    \\  } else if (first && typeof first === "object") {
-    \\    options = first;
+    \\  } else if (first === null || typeof first === "object") {
+    \\    options = first || {};
     \\    callback = second;
     \\  } else {
     \\    callback = first;
@@ -79775,7 +79821,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "constructor(public name: string) {}", .replacement = "constructor(name) { this.name = name; }" },
         .{ .needle = "constructor(public y: number, a) { super(a); }", .replacement = "constructor(y, a) { super(a); this.y = y; }" },
         .{ .needle = "function createMinimalTarball(pkgJson: object): Buffer", .replacement = "function createMinimalTarball(pkgJson)" },
-        .{ .needle = "const requests: Array<{ path: string; ifNoneMatch: boolean }> = [];", .replacement = "const requests = globalThis.__home_issue17793_requests = [];" },
         .{ .needle = "(socket: tls.TLSSocket) =>", .replacement = "(socket) =>" },
         .{ .needle = "(chunk: Buffer) =>", .replacement = "(chunk) =>" },
         .{ .needle = "(clientSocket: net.Socket) =>", .replacement = "(clientSocket) =>" },
@@ -80792,6 +80837,16 @@ fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const
     ;
     if (std.mem.indexOf(u8, source, shared_buffer_needle) == null) return allocator.dupe(u8, source);
     return std.mem.replaceOwned(u8, allocator, source, shared_buffer_needle, sparse_parts_replacement);
+}
+
+fn rewriteIssue17793ProxyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "const requests: Array<{ path: string; ifNoneMatch: boolean }> = [];",
+        "const requests = globalThis.__home_issue17793_requests = [];",
+    );
 }
 
 fn replaceFirstOwned(
@@ -87056,6 +87111,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "regression/issue/17793.test.ts"))
+        try rewriteIssue17793ProxyCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "internal/sigaction-layout.test.ts"))
         try std.mem.replaceOwned(
             u8,
@@ -105368,6 +105425,129 @@ test "bootstrap spawned errors preserve colored template messages and causal con
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runJavaScript") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "child.operation = operation") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "child.cause = error") != null);
+}
+
+test "bootstrap proxied 304 installs reuse cached manifests without hanging" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const upstream_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/regression/issue/17793.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(upstream_source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, upstream_source, "regression/issue/17793.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const requests = globalThis.__home_issue17793_requests = [];") != null);
+
+    var summary = try runFile(
+        io,
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/17793.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1) {
+        std.debug.print(
+            "proxied 304 install regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap FileSystemRouter keeps repeated Bun.build state isolated" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/18242.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1) {
+        std.debug.print(
+            "FileSystemRouter repeated build regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap FileSystemRouter child build failures retain causal context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("missing router entrypoint", async () => {
+        \\  const proc = Bun.spawn({ cmd: [process.execPath, "build.ts"], cwd: "missing-router-build", stdout: "pipe", stderr: "pipe" });
+        \\  const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+        \\  expect(exitCode).toBe(1);
+        \\  expect(stderr).toContain("ChildProcessExecutionError");
+        \\  expect(stderr).toContain("ERR_CHILD_PROCESS_EXECUTION");
+        \\  expect(stderr).toContain("bun.spawn.runBuildEntrypoint");
+        \\  expect(stderr).toContain("phase=build");
+        \\  expect(stderr).toContain("missing-router-build/build.ts");
+        \\  expect(stderr).toContain("Caused by: TypeError: Bun.build() requires at least one entrypoint");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/18242.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("FileSystemRouter child build context regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap node:test preserves null options callbacks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/19412.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 3) {
+        std.debug.print(
+            "node:test null options regression mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 3), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "first === null || typeof first === \"object\"") != null);
 }
 
 test "bootstrap spawnSync mirrors issue 8964 only scheduling stdout" {
