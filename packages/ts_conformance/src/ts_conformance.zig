@@ -2282,6 +2282,7 @@ const TsconfigResolverOptions = struct {
     import_helpers: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
+    types_configured: bool = false,
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
@@ -2321,6 +2322,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         result.import_helpers = options.import_helpers;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
+        result.types_configured = options.types != null;
         return result;
     }
     return .{};
@@ -3372,10 +3374,16 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
+    const types_directive_present = directiveValue(directive_source, "types") != null;
     const explicit_type_names = if (raw_configured_type_names.len > 0)
         raw_configured_type_names
     else
         tsconfig_options.types;
+    const automatic_type_names = [_][]const u8{"*"};
+    const type_names_to_expand = if (!types_directive_present and !tsconfig_options.types_configured)
+        automatic_type_names[0..]
+    else
+        explicit_type_names;
     const module_kind_label = selectedModuleKind(c, directive_source, tsconfig_options.module);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, module_kind_label))
@@ -3395,7 +3403,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const current_directory = directiveValue(directive_source, "currentDirectory") orelse "/";
     const configured_type_names = try resolver.expandTypeDirectiveNames(
         gpa,
-        explicit_type_names,
+        type_names_to_expand,
         current_directory,
     );
     defer freeStringList(gpa, configured_type_names);

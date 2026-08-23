@@ -80950,7 +80950,9 @@ pub const Checker = struct {
             if (element_index < ri) return try self.lowererLowerWithTypeParams(elems[element_index]);
             if (element_index >= total_count -| suffix_len) {
                 const suffix_i = element_index - (total_count - suffix_len);
-                if (suffix_i < suffix_len) return try self.lowererLowerWithTypeParams(elems[ri + 1 + suffix_i]);
+                if (suffix_i < suffix_len) {
+                    return try self.lowererLowerWithTypeParams(elems[ri + 1 + suffix_i]);
+                }
             }
             const rest_node = elems[ri];
             const rest_operand = hir_mod.restTypeOf(self.hir, rest_node).operand;
@@ -105973,6 +105975,9 @@ pub const Checker = struct {
                             obj_t < self.interner.pool.typeCount() and
                             self.interner.pool.flagsOf(obj_t).is_object_type)
                         {
+                            if (try self.resolveObjectIndexedAccessType(obj_t, idx_t)) |resolved| {
+                                break :blk try self.optionalChainResult(resolved, element_is_optional_chain);
+                            }
                             const symbolic_t = self.interner.internIndexedAccess(obj_t, idx_t) catch return error.OutOfMemory;
                             break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
                         }
@@ -110768,7 +110773,9 @@ pub const Checker = struct {
                 }
                 continue;
             }
-            if (!try self.jsxAnyOverloadDeclaresProperty(overloads, jsx_attr.name)) return attr;
+            if (!try self.jsxAnyOverloadDeclaresProperty(overloads, jsx_attr.name)) {
+                return first_earlier_overload_property orelse attr;
+            }
             if (std.mem.indexOfScalar(u8, self.string_interner.get(jsx_attr.name), '-') != null) return tag;
             if (first_earlier_overload_property == null) first_earlier_overload_property = attr;
         }
@@ -124768,6 +124775,7 @@ pub const Checker = struct {
             // identifier that introduces the name.
             if (!self.isDeclNameSlot(node) and self.isNodeCommonJsGlobalName(id.name)) {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
+                if (self.programHasGlobalVarName(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
                 if (self.sourceHasReferenceTypesDirective("node")) return types.Primitive.any;
@@ -125651,7 +125659,7 @@ pub const Checker = struct {
             // `.cjs` source files don't surface TS2591 for `module` /
             // `require` (implicit CommonJS environment under
             // `--allowJs`).
-            if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
+            if (self.virtualSectionIsJsLike(node) or self.programHasGlobalVarName(id.name)) return types.Primitive.any;
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
                 self.reportCannotFindNodeName(node, id.name) catch {};
             }
@@ -160347,6 +160355,14 @@ pub const Checker = struct {
         return false;
     }
 
+    fn programHasGlobalVarName(self: *Checker, name: hir_mod.StringId) bool {
+        const raw_name = self.string_interner.get(name);
+        for (self.program_global_var_names) |program_name| {
+            if (std.mem.eql(u8, program_name, raw_name)) return true;
+        }
+        return false;
+    }
+
     fn sourceHasLexicalValueDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
         const src = self.source orelse return false;
         return self.sourceRangeHasLexicalValueDeclarationText(src, name);
@@ -179183,7 +179199,8 @@ pub const Checker = struct {
                 continue;
             }
             if (self.hir.kindOf(el) == .arrow_fn or self.hir.kindOf(el) == .fn_expr) {
-                if (self.firstSignatureType(elem_t)) |sig| {
+                const contextual_element_t = (try self.contextualArrayLiteralFunctionElementTarget(el, init_node)) orelse elem_t;
+                if (self.firstSignatureType(contextual_element_t)) |sig| {
                     try self.checkFunctionWithContextualSignature(el, sig);
                     continue;
                 }
@@ -211094,6 +211111,19 @@ test "checker: TS2591 module global fires in external-module JS virtual section"
     try T.expect(found);
 }
 
+test "checker: sibling ambient var suppresses Node-global diagnostics in external JavaScript" {
+    const b = try newBoundSetup(
+        \\// @filename: main.js
+        \\export {};
+        \\require("./a");
+    );
+    defer destroyBoundSetup(b);
+    const names = [_][]const u8{"require"};
+    b.base.checker.setProgramGlobalVarNames(&names);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_node_name));
+}
+
 test "checker: TS2591 module global still fires in `.ts` virtual section" {
     // Negative-control: a `.ts` virtual file (no `--allowJs`
     // implicit env) keeps its TS2591 for missing `module`.
@@ -219453,6 +219483,41 @@ test "checker: tuple-end rest contextually types callback prefix arguments" {
         try T.expect(d.code != TsCodes.parameter_implicitly_any);
     }
     try T.expectEqual(@as(usize, 2), property_count);
+}
+
+test "checker: tuple-end rest contextually types the trailing callback from the end" {
+    const s = try newSetup(
+        \\type Funcs = [...((arg: number) => void)[], (arg: string) => void];
+        \\declare function num(x: number): void;
+        \\declare function str(x: string): void;
+        \\declare function f1(...args: Funcs): void;
+        \\f1(x => str(x));
+        \\f1(x => num(x), x => str(x));
+        \\f1(x => num(x), x => num(x), x => str(x));
+        \\const a1: Funcs = [x => str(x)];
+        \\const a2: Funcs = [x => num(x), x => str(x)];
+        \\const a3: Funcs = [x => num(x), x => num(x), x => str(x)];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: uniform string index access accepts writes through generic keys" {
+    const s = try newSetup(
+        \\function direct<K extends string>(a: { [key: string]: number }[K], b: number) {
+        \\  a = b;
+        \\}
+        \\type Dict = Record<string, number>;
+        \\function element<K extends keyof Dict>(obj: Dict, key: K) {
+        \\  obj[key] = 123;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: variadic tuple contexts reach nested and inferred callbacks" {
@@ -251799,16 +251864,25 @@ test "checker: JSX overloads excess-check explicit attrs beside concrete spreads
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     var attr_anchors: usize = 0;
     var tag_anchors: usize = 0;
+    var extra_anchors: usize = 0;
+    var on_click_anchors: usize = 0;
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.no_overload_matches) continue;
         switch (s.hir.kindOf(diagnostic.node)) {
-            .jsx_attribute => attr_anchors += 1,
+            .jsx_attribute => {
+                attr_anchors += 1;
+                const name = s.sint.get(hir_mod.jsxAttributeOf(&s.hir, diagnostic.node).name);
+                if (std.mem.eql(u8, name, "extra")) extra_anchors += 1;
+                if (std.mem.eql(u8, name, "onClick")) on_click_anchors += 1;
+            },
             .identifier => tag_anchors += 1,
             else => {},
         }
     }
     try T.expectEqual(@as(usize, 4), attr_anchors);
     try T.expectEqual(@as(usize, 0), tag_anchors);
+    try T.expectEqual(@as(usize, 3), extra_anchors);
+    try T.expectEqual(@as(usize, 1), on_click_anchors);
 }
 
 test "checker: JSX inference falls back to an unsatisfied object constraint" {
