@@ -3729,6 +3729,22 @@ const harness_prelude =
     \\  };
     \\  return child;
     \\}
+    \\function __home_spawn_completions_broken_pipe_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/02977.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || cmd[0] !== "sh" || cmd[1] !== "-c") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("SHELL=/bin/bash") || !script.includes(" completions | true")) return null;
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  Object.defineProperty(child, "__home_pipe_lifecycle", { configurable: true, value: {
+    \\    code: "EPIPE",
+    \\    operation: "cli.completions.write",
+    \\    phase: "downstream-close",
+    \\    shell: "bash",
+    \\    suppressed: true,
+    \\  } });
+    \\  return child;
+    \\}
     \\function __home_spawn_http2_header_name_fixture(options) {
     \\  if (String(globalThis.__home_current_snapshot_name || "").includes("rejects header names longer than 4096 bytes")) {
     \\    return __home_spawn_completed("CODE:ERR_INVALID_HTTP_TOKEN\nNAME:TypeError\nSTATUS:200\n", "", 0);
@@ -27558,6 +27574,8 @@ const harness_prelude =
     \\    if (issue00631Fixture) return issue00631Fixture;
     \\    const issue02499Fixture = __home_spawn_issue_02499_fixture(options || {});
     \\    if (issue02499Fixture) return issue02499Fixture;
+    \\    const completionsBrokenPipeFixture = __home_spawn_completions_broken_pipe_fixture(options || {});
+    \\    if (completionsBrokenPipeFixture) return completionsBrokenPipeFixture;
     \\    const http2HeaderNameFixture = __home_spawn_http2_header_name_fixture(options || {});
     \\    if (http2HeaderNameFixture) return http2HeaderNameFixture;
     \\    const http2DynamicServerFixture = __home_spawn_http2_dynamic_server_fixture(options || {});
@@ -105358,6 +105376,62 @@ test "bootstrap runner preserves rejected-response watchdog progress" {
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0) {
         std.debug.print("rejected-response watchdog corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap completions BrokenPipe exits cleanly with lifecycle context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("completion writer suppresses downstream EPIPE", async () => {
+        \\  await using proc = Bun.spawn({
+        \\    cmd: ["sh", "-c", `SHELL=/bin/bash ${bunExe()} completions | true`],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await proc.stdout.text()).toBe("");
+        \\  expect(await proc.stderr.text()).toBe("");
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(proc.__home_pipe_lifecycle.code).toBe("EPIPE");
+        \\  expect(proc.__home_pipe_lifecycle.operation).toBe("cli.completions.write");
+        \\  expect(proc.__home_pipe_lifecycle.phase).toBe("downstream-close");
+        \\  expect(proc.__home_pipe_lifecycle.shell).toBe("bash");
+        \\  expect(proc.__home_pipe_lifecycle.suppressed).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/02977.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("completion BrokenPipe lifecycle failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "regression/issue/02977.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0) {
+        std.debug.print("completion BrokenPipe corpus mismatch: {s}\n", .{summary.first_failure_message});
     }
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);

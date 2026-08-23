@@ -1352,7 +1352,21 @@ fn ciCommand(allocator: std.mem.Allocator, target: []const u8) !void {
 
 fn writeStdout(bytes: []const u8) !void {
     const stdout_file = std.Io.File.stdout();
-    try stdout_file.writeStreamingAll(g_io, bytes);
+    stdout_file.writeStreamingAll(g_io, bytes) catch |err| switch (err) {
+        error.BrokenPipe => return,
+        else => return err,
+    };
+}
+
+fn completionShellName(shell_path: []const u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, shell_path, "/");
+    return std.fs.path.basename(trimmed);
+}
+
+test "completions infer the shell executable from SHELL" {
+    try std.testing.expectEqualStrings("bash", completionShellName("/bin/bash"));
+    try std.testing.expectEqualStrings("zsh", completionShellName("/usr/local/bin/zsh/"));
+    try std.testing.expectEqualStrings("fish", completionShellName("fish"));
 }
 
 fn cleanCommand() !void {
@@ -5361,13 +5375,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, command, "completions")) {
-        if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'completions' requires bash, zsh, or fish\n\n", .{ Color.Red.code(), Color.Reset.code() });
-            printUsage();
-            std.process.exit(1);
-        }
+        const shell_name = if (args.len >= 3)
+            args[2]
+        else blk: {
+            const shell_path = init.environ_map.get("SHELL") orelse {
+                std.debug.print("{s}Error:{s} 'completions' requires bash, zsh, or fish when SHELL is unset\n\n", .{ Color.Red.code(), Color.Reset.code() });
+                printUsage();
+                std.process.exit(1);
+            };
+            break :blk completionShellName(shell_path);
+        };
 
-        try completionsCommand(args[2]);
+        try completionsCommand(shell_name);
         return;
     }
 
