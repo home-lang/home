@@ -2913,6 +2913,31 @@ test "conformance: wildcard configured types expand without a literal missing-ty
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: noImplicitReferences suppresses automatic type directive discovery" {
+    const raw =
+        \\// @module: commonjs
+        \\// @noImplicitReferences: true
+        \\// @currentDirectory: /
+        \\// @filename: /node_modules/@types/lquery/package.json
+        \\{ "typings": "lquery" }
+        \\// @filename: /node_modules/@types/lquery/lquery.ts
+        \\export const value = 1;
+        \\// @filename: /a.ts
+        \\import { value } from "lquery";
+        \\value;
+    ;
+    const result = try runProgram(T.allocator, .{
+        .name = "noImplicitReferencesAutomaticTypes",
+        .source = "",
+        .path = "/a.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    }) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: relative module augmentation virtual fixture routes through program" {
     const raw =
         \\// @filename: map.ts
@@ -3380,7 +3405,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     else
         tsconfig_options.types;
     const automatic_type_names = [_][]const u8{"*"};
-    const type_names_to_expand = if (!types_directive_present and !tsconfig_options.types_configured)
+    const suppress_automatic_types = directiveBool(directive_source, "noImplicitReferences") orelse false;
+    const type_names_to_expand = if (!types_directive_present and
+        !tsconfig_options.types_configured and
+        !suppress_automatic_types)
         automatic_type_names[0..]
     else
         explicit_type_names;
