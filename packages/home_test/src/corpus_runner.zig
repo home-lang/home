@@ -72100,7 +72100,26 @@ const harness_prelude =
     \\  __home_undici_module.FormData = globalThis.FormData;
     \\  __home_undici_module.File = globalThis.File;
     \\}
-    \\globalThis.__home_modules["node-fetch"] = { Request };
+    \\function NodeFetchRequest(input, init) {
+    \\  let relativeUrl = null;
+    \\  if (!(input instanceof Request)) {
+    \\    let text;
+    \\    try { text = input && typeof input.href === "string" ? input.href : String(input); }
+    \\    catch (cause) { throw __home_request_url_error(input, cause); }
+    \\    if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) relativeUrl = text;
+    \\  }
+    \\  Request.call(this, relativeUrl === null ? input : "http://node-fetch.invalid" + (relativeUrl.startsWith("/") ? relativeUrl : "/" + relativeUrl), init);
+    \\  if (relativeUrl !== null) this.url = relativeUrl;
+    \\}
+    \\NodeFetchRequest.prototype = Object.create(Request.prototype);
+    \\Object.defineProperty(NodeFetchRequest.prototype, "constructor", { configurable: true, writable: true, value: NodeFetchRequest });
+    \\Object.defineProperty(NodeFetchRequest, "name", { configurable: true, value: "Request" });
+    \\NodeFetchRequest.prototype.clone = function() {
+    \\  const cloned = Request.prototype.clone.call(this);
+    \\  Object.setPrototypeOf(cloned, NodeFetchRequest.prototype);
+    \\  return cloned;
+    \\};
+    \\globalThis.__home_modules["node-fetch"] = { Request: NodeFetchRequest };
     \\globalThis.__home_modules["./bun-request-fixture.js"] = {
     \\  method: "POST",
     \\  body: JSON.stringify({ hello: "world" }),
@@ -105207,6 +105226,48 @@ test "bootstrap rewrite lowers node-fetch Request imports" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Request } = globalThis.__home_import(\"node-fetch\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node-fetch\"") == null);
+}
+
+test "bootstrap node-fetch Request keeps relative URLs without weakening web Request errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Request } from "node-fetch";
+        \\const NodeFetchRequest = Request;
+        \\
+        \\test("node-fetch and web Request retain distinct URL contracts", () => {
+        \\  expect(NodeFetchRequest.prototype).toBeInstanceOf(globalThis.Request);
+        \\  const relative = new NodeFetchRequest("/");
+        \\  expect(relative.url).toBe("/");
+        \\  expect(relative.clone().url).toBe("/");
+        \\  expect(relative.clone()).toBeInstanceOf(NodeFetchRequest);
+        \\  expect(new NodeFetchRequest("child").url).toBe("child");
+        \\  expect(new NodeFetchRequest(new URL("https://bun.sh/")).url).toBe("https://bun.sh/");
+        \\  let failure;
+        \\  try { new globalThis.Request("/"); } catch (error) { failure = error; }
+        \\  expect(failure).toBeInstanceOf(TypeError);
+        \\  expect(failure.code).toBe("ERR_INVALID_URL");
+        \\  expect(failure.operation).toBe("request.construct.url");
+        \\  expect(failure.phase).toBe("parse");
+        \\  expect(failure.cause).toBeInstanceOf(TypeError);
+        \\  expect(failure.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/014865-node-fetch-contract.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("node-fetch Request URL contract failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers Request body text and clone smoke" {
