@@ -68839,6 +68839,47 @@ const harness_prelude =
     \\  error.readyState = socket && Number(socket.readyState);
     \\  return error;
     \\}
+    \\function __home_websocket_dispatch_cancel_error(socket, failure) {
+    \\  const event = new ErrorEvent("error", { message: failure.message, error: failure });
+    \\  socket.dispatchEvent(event);
+    \\  return event;
+    \\}
+    \\function __home_websocket_cancel_connect(socket, operation) {
+    \\  const method = String(operation || "close");
+    \\  const cause = new Error("The WebSocket connection was not established");
+    \\  const failure = new Error("WebSocket was closed before the connection is established", { cause });
+    \\  failure.name = "WebSocketConnectionClosedError";
+    \\  failure.code = "ERR_WEBSOCKET_CLOSED_BEFORE_OPEN";
+    \\  failure.operation = "web.websocket." + method;
+    \\  failure.phase = "connecting";
+    \\  failure.readyState = WebSocket.CONNECTING;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [connecting] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  socket.readyState = WebSocket.CLOSING;
+    \\  socket.__home_connect_cancelled = true;
+    \\  socket.__home_pending_open = false;
+    \\  socket.__home_pending_server_open = null;
+    \\  socket.__home_pending_error = null;
+    \\  socket.__home_pending_close = false;
+    \\  __home_websocket_unsubscribe_client(socket);
+    \\  Promise.resolve().then(() => {
+    \\    if (socket.__home_connect_cancel_events_dispatched) return;
+    \\    socket.__home_connect_cancel_events_dispatched = true;
+    \\    try {
+    \\      __home_websocket_dispatch_cancel_error(socket, failure);
+    \\    } catch (_) {}
+    \\    socket.readyState = WebSocket.CLOSED;
+    \\    try {
+    \\      socket.dispatchEvent(__home_websocket_close_event(1006, "", false));
+    \\    } catch (_) {}
+    \\    if (socket.__home_ws_server_side && typeof socket.__home_ws_server_side.terminate === "function") socket.__home_ws_server_side.terminate();
+    \\    for (const transport of [socket.__home_bun_socket, socket.__home_raw_socket]) {
+    \\      if (!transport || transport.__home_closed) continue;
+    \\      if (typeof transport.terminate === "function") transport.terminate();
+    \\      else if (typeof transport.destroy === "function") transport.destroy();
+    \\      else if (typeof transport.end === "function") transport.end();
+    \\    }
+    \\  });
+    \\}
     \\function __home_websocket_accept_for_key(key) {
     \\  const text = String(key || "");
     \\  if (!text) throw __home_fetch_websocket_upgrade_error("handshake-key", null, new Error("Missing Sec-WebSocket-Key header"));
@@ -69013,6 +69054,7 @@ const harness_prelude =
     \\  return text + "\r\n";
     \\}
     \\function __home_websocket_fail(socket, cause) {
+    \\  if (socket.__home_connect_cancelled) return;
     \\  const failure = cause instanceof Error ? cause : new Error(String(cause || "WebSocket upgrade failed"));
     \\  if (!failure.code) failure.code = "ERR_WEBSOCKET_CONNECTION";
     \\  if (!failure.operation) failure.operation = "web.websocket.connect";
@@ -69074,6 +69116,7 @@ const harness_prelude =
     \\  return true;
     \\}
     \\function __home_websocket_complete_open(socket) {
+    \\  if (socket.__home_connect_cancelled || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) return;
     \\  socket.__home_pending_open = true;
     \\  __home_websocket_drain_pending(socket, "open");
     \\}
@@ -69156,7 +69199,7 @@ const harness_prelude =
     \\      },
     \\      error(_connection, cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("transport", "WebSocket transport failed", {}, cause)); },
     \\      connectError(_connection, cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("connect", "WebSocket connection failed", {}, cause)); },
-    \\      close() { if (socket.readyState !== 3) __home_websocket_fail(socket, __home_websocket_handshake_error(opened ? "transport-close" : "handshake-close", "WebSocket connection closed unexpectedly")); },
+    \\      close() { if (!socket.__home_connect_cancelled && socket.readyState !== 3) __home_websocket_fail(socket, __home_websocket_handshake_error(opened ? "transport-close" : "handshake-close", "WebSocket connection closed unexpectedly")); },
     \\    },
     \\  }).catch(cause => __home_websocket_fail(socket, __home_websocket_handshake_error("connect", "WebSocket connection failed", {}, cause)));
     \\  return true;
@@ -69181,6 +69224,7 @@ const harness_prelude =
     \\    return false;
     \\  }
     \\  const tcp = __home_net_connect({ port: connectPort, host: connectHost });
+    \\  socket.__home_raw_socket = tcp;
     \\  let responseText = "";
     \\  let stage = proxy ? "connect" : "upgrade";
     \\  function sendUpgrade() {
@@ -69354,6 +69398,7 @@ const harness_prelude =
     \\}
     \\WebSocket.prototype.close = function(code, reason) {
     \\  if (this.readyState === 3) return;
+    \\  if (this.readyState === 0) return __home_websocket_cancel_connect(this, "close");
     \\  this.readyState = 3;
     \\  this.__home_pending_open = false;
     \\  this.__home_pending_server_open = null;
@@ -69369,6 +69414,7 @@ const harness_prelude =
     \\};
     \\WebSocket.prototype.terminate = function() {
     \\  if (this.readyState === 3) return;
+    \\  if (this.readyState === 0) return __home_websocket_cancel_connect(this, "terminate");
     \\  this.readyState = 3;
     \\  this.__home_pending_open = false;
     \\  this.__home_pending_server_open = null;
@@ -69492,6 +69538,7 @@ const harness_prelude =
     \\    }
     \\    if (socket.__home_pending_close) {
     \\      socket.__home_pending_close = false;
+    \\      socket.readyState = WebSocket.CLOSED;
     \\      socket.dispatchEvent(__home_websocket_close_event(1006, "", false));
     \\    }
     \\  });
@@ -77389,6 +77436,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": ChildProcess | null =", .replacement = " =" },
         .{ .needle = ": ServerAddress | null =", .replacement = " =" },
         .{ .needle = ": Error | undefined;", .replacement = ";" },
+        .{ .needle = " as ErrorEvent", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = "(wss.address() as any).port", .replacement = "(wss.address()).port" },
@@ -77848,6 +77896,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as AddressInfo", .replacement = "" },
         .{ .needle = " as net.AddressInfo", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
+        .{ .needle = " as ErrorEvent", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as IncomingMessage", .replacement = "" },
         .{ .needle = " as SourceMap", .replacement = "" },
@@ -105328,6 +105377,92 @@ test "bootstrap rewrite erases as any assertions" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new (BigInt)(1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const invalidValues = [true, false, \"hi\", {}, [], undefined, null];") != null);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts by retaining ErrorEvent assertions" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("ErrorEvent member access", () => {
+        \\  const event = { message: "closed" };
+        \\  expect((event as ErrorEvent).message).toBe("closed");
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/websocket/error-event-assertion.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as ErrorEvent") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "eventEvent") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect((event).message).toBe(\"closed\")") != null);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts while cancelling CONNECTING clients" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-close-connecting.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "WebSocket CONNECTING cancellation corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    const source =
+        \\import { createServer } from "net";
+        \\import { expect, test } from "bun:test";
+        \\for (const method of ["close", "terminate"]) {
+        \\  test(method + " exposes a structured CONNECTING cancellation error", async () => {
+        \\    const listening = Promise.withResolvers();
+        \\    const server = createServer(() => {}).listen(0, "127.0.0.1", listening.resolve);
+        \\    await listening.promise;
+        \\    try {
+        \\      const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}`);
+        \\      const failed = new Promise(resolve => socket.onerror = resolve);
+        \\      const closed = new Promise(resolve => socket.onclose = resolve);
+        \\      socket[method]();
+        \\      const event = await failed;
+        \\      const closeEvent = await closed;
+        \\      expect(event).toBeInstanceOf(ErrorEvent);
+        \\      expect(event.message).toContain("closed before the connection is established");
+        \\      expect(event.error).toBeInstanceOf(Error);
+        \\      expect(event.error.name).toBe("WebSocketConnectionClosedError");
+        \\      expect(event.error.code).toBe("ERR_WEBSOCKET_CLOSED_BEFORE_OPEN");
+        \\      expect(event.error.operation).toBe("web.websocket." + method);
+        \\      expect(event.error.phase).toBe("connecting");
+        \\      expect(event.error.readyState).toBe(WebSocket.CONNECTING);
+        \\      expect(event.error.cause).toBeInstanceOf(Error);
+        \\      expect(event.error.stack).toContain("web.websocket." + method + " [connecting]");
+        \\      expect(event.error.stack).toContain("connect-cancel-error-contract.home-regression.test.js");
+        \\      expect(closeEvent.code).toBe(1006);
+        \\      expect(closeEvent.wasClean).toBe(false);
+        \\    } finally {
+        \\      server.close();
+        \\    }
+        \\  });
+        \\}
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/connect-cancel-error-contract.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured WebSocket CONNECTING cancellation regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors native constructor identity corpus" {
