@@ -22073,7 +22073,11 @@ pub const Checker = struct {
             if (has_sections and self.virtualSectionStartForNode(stmt) != start) continue;
             if (self.topLevelStatementMarksExternalModule(stmt)) return true;
         }
-        return self.sourceTextRangeIsModule(text, start, end);
+        // The parsed top-level statement list is authoritative. The
+        // line fallback exists only for recovered syntax: in a valid
+        // virtual file it would mistake `export` inside a namespace for
+        // a source-file external-module indicator.
+        return self.has_parse_diagnostics and self.sourceTextRangeIsModule(text, start, end);
     }
 
     fn sourceTextRangeIsModule(self: *Checker, text: []const u8, start: usize, end: usize) bool {
@@ -108821,7 +108825,8 @@ pub const Checker = struct {
         const tag_uses_overload_diagnostic = (tag_is_class_component and
             self.jsxTagClassConstructSignatureCount(el.tag) >= 2) or
             self.jsxTagHasVisibleOverloads(el.tag);
-        if (children.len > 0 and props_t != null and !self.jsxTagIsIntrinsic(el.tag) and
+        if (children.len > 0 and props_t != null and
+            (!self.jsxTagIsIntrinsic(el.tag) or self.sourceHasReact18JsxReference()) and
             !self.jsxPropsTargetIsAnyLike(props_t.?) and !saw_children_attr)
         {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
@@ -108860,7 +108865,14 @@ pub const Checker = struct {
                         .message = msg,
                     });
                 }
-                const arraylike_element_t = if (children.len > 1)
+                // A named union children alias is itself the contextual
+                // target for every child. Peeling only its array arm
+                // loses both semantics and tsgo's alias display (React
+                // 18 `ReactNode` would become its fragment element).
+                const has_named_union_alias = children_t < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(children_t).is_union and
+                    self.alias_display_names.get(children_t) != null;
+                const arraylike_element_t = if (children.len > 1 and !has_named_union_alias)
                     try self.jsxArrayLikeChildrenElementType(children_t)
                 else
                     null;
@@ -111590,8 +111602,13 @@ pub const Checker = struct {
                 if (target_t == react_node_t) return false;
             }
         }
-        if (self.engine.isAssignableTo(child_t, target_t) catch false) return false;
-        if (target_t < self.interner.pool.typeCount()) {
+        // The general relation engine intentionally has a permissive
+        // fallback for unresolved `unknown` relations. JSX child
+        // elaboration is concrete: `unknown` is not assignable to a
+        // declared children type such as React 18's `ReactNode`.
+        const child_is_unknown = child_t == types.Primitive.unknown;
+        if (!child_is_unknown and (self.engine.isAssignableTo(child_t, target_t) catch false)) return false;
+        if (!child_is_unknown and target_t < self.interner.pool.typeCount()) {
             const elem_t = self.interner.objectNumberIndex(target_t);
             if (elem_t != types.Primitive.none and (self.engine.isAssignableTo(child_t, elem_t) catch false)) return false;
         }
