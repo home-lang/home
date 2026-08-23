@@ -142316,6 +142316,10 @@ pub const Checker = struct {
         if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
         const local_name = hir_mod.identifierOf(self.hir, object).name;
         const spec = self.requireSpecifierForLocal(local_name, object) orelse return false;
+        // A bare package that resolves to JavaScript without declarations is
+        // reported as TS7016 and its require result is `any`. Its inferred
+        // runtime export table must not reintroduce typed namespace errors.
+        if (try self.bareModuleResolvesToJsImplementation(object, spec)) return false;
         if (try self.programCommonJsModuleHasWholeExport(object, spec)) return false;
         const info = resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name)) orelse return false;
         if (info.module_is_external == false or
@@ -233526,13 +233530,18 @@ test "checker: namespace-scoped classes keep independent instance members" {
 const StubExternalResolver = struct {
     canned_path: []const u8,
     canned_is_declaration: bool,
+    canned_module_name: ?[]const u8 = null,
+    canned_exported_name: []const u8 = "",
     canned_alternate_result: ?[]const u8 = null,
     canned_project_reference_output: ?[]const u8 = null,
     canned_blocked_by_exports_null: bool = false,
     canned_package_json_map: bool = false,
     canned_package_imports_pattern: bool = false,
 
-    pub const vtable = ExternalResolver.VTable{ .resolve = resolveImpl };
+    pub const vtable = ExternalResolver.VTable{
+        .resolve = resolveImpl,
+        .moduleExport = moduleExportImpl,
+    };
 
     fn resolveImpl(
         ptr: *anyopaque,
@@ -233550,6 +233559,23 @@ const StubExternalResolver = struct {
             .blocked_by_exports_null = self.canned_blocked_by_exports_null,
             .package_json_map = self.canned_package_json_map,
             .package_imports_pattern = self.canned_package_imports_pattern,
+        };
+    }
+
+    fn moduleExportImpl(
+        ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?ExternalResolver.ModuleExport {
+        const self: *StubExternalResolver = @ptrCast(@alignCast(ptr));
+        _ = specifier;
+        _ = containing_file;
+        const module_name = self.canned_module_name orelse return null;
+        return .{
+            .module_name = module_name,
+            .exported_type = false,
+            .exported_value = std.mem.eql(u8, name, self.canned_exported_name),
         };
     }
 };
@@ -233900,11 +233926,13 @@ test "checker: bare require call emits TS7016 for untyped resolved module" {
     const s = try newSetup(
         \\const u = require("foo");
         \\u.assignment.nested = true;
+        \\u.noError();
     );
     defer destroySetup(s);
     var stub = StubExternalResolver{
         .canned_path = "node_modules/foo/index.js",
         .canned_is_declaration = false,
+        .canned_module_name = "\"index\"",
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
     s.checker.setImporterPath("main.js");
@@ -233924,6 +233952,7 @@ test "checker: bare require call emits TS7016 for untyped resolved module" {
     }
     try T.expectEqual(@as(usize, 1), ts7016_count);
     try T.expect(!ts2307);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: external resolver declaration result accepts unless exports null blocked" {
