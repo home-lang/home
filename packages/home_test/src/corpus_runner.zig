@@ -67517,6 +67517,10 @@ const harness_prelude =
     \\}
     \\function __home_blob_module_loader(blob) {
     \\  const type = String(blob && blob.type || "").toLowerCase();
+    \\  const name = String(blob && blob.name || "").toLowerCase();
+    \\  if (name.endsWith(".tsx")) return "tsx";
+    \\  if (name.endsWith(".ts")) return "ts";
+    \\  if (name.endsWith(".jsx")) return "jsx";
     \\  if (type.includes("tsx")) return "tsx";
     \\  if (type.includes("typescript") || type.includes("ts")) return "ts";
     \\  if (type.includes("jsx")) return "jsx";
@@ -77962,7 +77966,7 @@ const harness_prelude =
     \\    if (records.some(record => record.eventName === eventName)) return;
     \\    const wrapped = function(value) {
     \\      if (once) worker.removeEventListener(eventName, callback);
-    \\      const event = value instanceof Event ? value : (eventName === "message" ? new MessageEvent("message", { data: value }) : new Event(eventName));
+    \\      const event = value instanceof Event ? value : (eventName === "message" ? new MessageEvent("message", { data: value }) : (eventName === "error" ? new ErrorEvent("error", { message: String(value && value.message || value), filename: workerDisplayFilename, error: value }) : new Event(eventName)));
     \\      return callback.call(worker, event);
     \\    };
     \\    records.push({ eventName, wrapped });
@@ -78154,6 +78158,8 @@ const harness_prelude =
     \\  workerRequire.cache = globalThis.require.cache;
     \\  workerRequire.resolve = globalThis.require.resolve;
     \\  (async () => {
+    \\    await Promise.resolve();
+    \\    if (worker.__home_exit_emitted) return;
     \\    const previousFilename = globalThis.__home_current_filename;
     \\    const previousDirname = globalThis.__home_current_dirname;
     \\    const previousProcess = globalThis.process;
@@ -78192,8 +78198,20 @@ const harness_prelude =
     \\        }
     \\        if (filenameIsBlobUrl) {
     \\          const blob = globalThis.__home_blob_url_registry && globalThis.__home_blob_url_registry[workerFilename];
-    \\          if (!blob) throw __home_blob_module_error(workerFilename, "resolve", Object.assign(new Error("Object URL has been revoked or does not exist"), { code: "ERR_MODULE_NOT_FOUND" }));
+    \\          if (!blob) {
+    \\            const cause = Object.assign(new Error("Object URL has been revoked or does not exist"), { code: "ERR_MODULE_NOT_FOUND" });
+    \\            const failure = __home_blob_module_error(workerFilename, "resolve", cause);
+    \\            failure.message = workerFilename.startsWith("blob:home://") ? "BuildMessage: Blob URL is missing" : "BuildMessage: ModuleNotFound resolving \"" + workerFilename + "\" (entry point)";
+    \\            throw failure;
+    \\          }
     \\          sourceText = __home_blob_module_source(blob, workerFilename);
+    \\          const loader = __home_blob_module_loader(blob);
+    \\          try {
+    \\            const preparedBlob = __home_prepare_blob_module_source(sourceText);
+    \\            sourceText = new Bun.Transpiler({ loader, platform: "bun" }).transformSync(preparedBlob.code, loader);
+    \\          } catch (cause) {
+    \\            throw __home_blob_module_error(workerFilename, "transpile", cause);
+    \\          }
     \\        }
     \\        let workerSource = __home_worker_prepare_module_source(sourceText, filenameIsDataUrl || filenameIsBlobUrl ? workerFilename : "[worker eval]");
     \\        if (workerSource.includes("while (true);")) workerSource = workerSource.replaceAll("while (true);", "if (!worker.__home_terminated) throw new Error('Worker did not terminate');");
@@ -105944,6 +105962,15 @@ test "bootstrap Worker Blob URLs preserve transfer ownership and resolution erro
         \\  expect(failure.operation).toBe("blob.module.import"); expect(failure.phase).toBe("resolve"); expect(failure.blobURL).toBe(url);
         \\  expect(failure.cause).toBeInstanceOf(Error); expect(failure.cause.code).toBe("ERR_MODULE_NOT_FOUND"); expect(failure.stack).toContain("Caused by:"); await worker.terminate();
         \\});
+        \\test("TypeScript File workers transpile and Blob revocation observes startup ownership", async () => {
+        \\  const url = URL.createObjectURL(new File([`export function echo(value: string): string { return value; } self.onmessage = event => self.postMessage(echo(event.data));`], "worker.ts"));
+        \\  const worker = new Worker(url); const first = await new Promise((resolve, reject) => { worker.onerror = reject; worker.onmessage = event => resolve(event.data); worker.postMessage("typescript"); }); expect(first).toBe("typescript");
+        \\  URL.revokeObjectURL(url); const second = await new Promise(resolve => { worker.onmessage = event => resolve(event.data); worker.postMessage("retained"); }); expect(second).toBe("retained"); await worker.terminate();
+        \\  const missing = new Worker("blob:not-registered"); const missingEvent = await new Promise(resolve => missing.addEventListener("error", resolve, { once: true }));
+        \\  expect(missingEvent).toBeInstanceOf(ErrorEvent); expect(missingEvent.message).toBe('BuildMessage: ModuleNotFound resolving "blob:not-registered" (entry point)'); expect(missingEvent.error.code).toBe("ERR_BLOB_MODULE"); expect(missingEvent.error.cause.code).toBe("ERR_MODULE_NOT_FOUND");
+        \\  const raceUrl = URL.createObjectURL(new Blob([`self.postMessage("unexpected")`])); const raced = new Worker(raceUrl); URL.revokeObjectURL(raceUrl);
+        \\  const raceEvent = await new Promise(resolve => { raced.onerror = resolve; }); expect(raceEvent).toBeInstanceOf(ErrorEvent); expect(raceEvent.message).toBe("BuildMessage: Blob URL is missing"); expect(raceEvent.error.operation).toBe("blob.module.import");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/workers/worker-postmessage-transfer.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -105955,7 +105982,7 @@ test "bootstrap Worker Blob URLs preserve transfer ownership and resolution erro
         std.debug.print("Worker Blob transfer regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap Worker lifetime retains safe post-exit handles" {
