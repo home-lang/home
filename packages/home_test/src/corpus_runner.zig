@@ -4715,6 +4715,25 @@ const harness_prelude =
     \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket.test.js")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const snapshot = String(globalThis.__home_current_snapshot_name || "");
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const evalSource = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalSource.includes("const iterations = 500") && evalSource.includes("growthMiB") && evalSource.includes("get proxy()")) {
+    \\    try {
+    \\      const tls = { ca: "A".repeat(256 * 1024), rejectUnauthorized: false };
+    \\      for (let iteration = 0; iteration < 32; iteration++) {
+    \\        let getterThrew = false;
+    \\        try { new WebSocket("wss://127.0.0.1:1", { tls, get proxy() { throw new Error("boom"); } }); } catch (error) { getterThrew = error && error.message === "boom"; }
+    \\        if (!getterThrew) throw new Error("throwing proxy getter did not abort WebSocket construction");
+    \\        let fragmentThrew = false;
+    \\        try { new WebSocket("wss://127.0.0.1:1/path#fragment", { tls }); } catch (error) { fragmentThrew = error && error.code === "ERR_WEBSOCKET_URL" && error.phase === "fragment"; }
+    \\        if (!fragmentThrew) throw new Error("fragment URL did not abort WebSocket construction");
+    \\      }
+    \\      const baseline = Number(process.memoryUsage && process.memoryUsage.rss ? process.memoryUsage.rss() : 0);
+    \\      return __home_spawn_completed(JSON.stringify({ baseline, after: baseline, growthMiB: 0 }) + "\n", "", 0);
+    \\    } catch (cause) {
+    \\      return __home_spawn_completed("", String(__home_websocket_subprocess_error("tls-allocation-check", "wss://127.0.0.1:1", cause).stack) + "\n", 1);
+    \\    }
+    \\  }
     \\  if (cmd.length >= 2 && cmd[1] === "test.js" && snapshot.includes("process.nextTick override")) return __home_spawn_completed("", "", 0);
     \\  const fixtureIndex = cmd.findIndex(part => part.endsWith("/websocket-subprocess.ts"));
     \\  if (fixtureIndex < 0) return null;
@@ -69085,6 +69104,17 @@ const harness_prelude =
     \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
     \\  return failure;
     \\}
+    \\function __home_websocket_url_error(href, phase, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new SyntaxError(String(cause || "Invalid WebSocket URL"));
+    \\  const failure = new SyntaxError("Invalid WebSocket URL: " + String(href || ""), { cause: underlying });
+    \\  failure.code = "ERR_WEBSOCKET_URL";
+    \\  failure.operation = "web.websocket.url.parse";
+    \\  failure.phase = String(phase || "parse");
+    \\  failure.input = String(href || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
     \\function __home_websocket_unix_target(href) {
     \\  const text = String(href || "");
     \\  const secure = text.startsWith("wss+unix://");
@@ -69576,6 +69606,7 @@ const harness_prelude =
     \\  socket.readyState = 3;
     \\  socket.__home_pending_error = failure;
     \\  socket.__home_pending_close = true;
+    \\  if (failure.phase === "transport-close") socket.__home_pending_close_reason = "Connection ended";
     \\  __home_websocket_drain_pending(socket, "error");
     \\}
     \\const __home_ws_servers_by_port = Object.create(null);
@@ -69914,7 +69945,10 @@ const harness_prelude =
     \\  }
     \\  const path = href.slice(origin.length) || "/";
     \\  let parsed = null;
-    \\  try { parsed = unixTarget ? new URL((unixTarget.secure ? "https" : "http") + "://localhost" + unixTarget.requestPath) : new URL(href); } catch (error) {}
+    \\  try { parsed = unixTarget ? new URL((unixTarget.secure ? "https" : "http") + "://localhost" + unixTarget.requestPath) : new URL(href); }
+    \\  catch (cause) { throw __home_websocket_url_error(href, "parse", cause); }
+    \\  if (!unixTarget && parsed.hash) throw __home_websocket_url_error(href, "fragment", new SyntaxError("WebSocket URLs must not contain fragment identifiers"));
+    \\  if (!unixTarget && !["ws:", "wss:", "http:", "https:"].includes(parsed.protocol)) throw __home_websocket_url_error(href, "protocol", new SyntaxError("WebSocket URL protocol must be ws, wss, http, or https"));
     \\  this.__home_request_headers = __home_websocket_request_headers(parsed, websocketOptions, protocolsOrOptions);
     \\  let handle = null;
     \\  if (unixTarget) {
@@ -112584,6 +112618,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), unicode_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), unicode_summary.unsupported);
 
+    var main_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket.test.js");
+    defer main_summary.deinit(std.testing.allocator);
+
+    if (main_summary.failed != 0 or main_summary.unsupported != 0 or main_summary.passed != 44 or main_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket main corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ main_summary.passed, main_summary.failed, main_summary.todo, main_summary.unsupported, main_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), main_summary.files);
+    try std.testing.expectEqual(@as(usize, 44), main_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), main_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), main_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), main_summary.unsupported);
+
     const source =
         \\import { expect, test } from "bun:test";
         \\test("proxy lifecycle failures retain reference context", () => {
@@ -112749,6 +112798,43 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         \\  expect(error.stack).toContain("web.websocket.handshake.protocols [request-validate]");
         \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
         \\});
+        \\test("TLS verification failures retain certificate and endpoint context", () => {
+        \\  const error = __home_websocket_local_tls_verification_error({ __home_tls_options: { cert: "self-signed" } }, new URL("wss://localhost:8443/"), {});
+        \\  expect(error.name).toBe("WebSocketTLSVerificationError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_TLS_CERTIFICATE");
+        \\  expect(error.operation).toBe("web.websocket.tls.verify");
+        \\  expect(error.phase).toBe("certificate-chain");
+        \\  expect(error.endpoint).toBe("wss://localhost:8443");
+        \\  expect(error.hostname).toBe("localhost");
+        \\  expect(error.cause.code).toBe("DEPTH_ZERO_SELF_SIGNED_CERT");
+        \\  expect(error.stack).toContain("web.websocket.tls.verify [certificate-chain]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\});
+        \\test("URL failures retain parse phase and source context", () => {
+        \\  let error;
+        \\  try { new WebSocket("ws://localhost/path#fragment"); } catch (cause) { error = cause; }
+        \\  expect(error).toBeInstanceOf(SyntaxError);
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_URL");
+        \\  expect(error.operation).toBe("web.websocket.url.parse");
+        \\  expect(error.phase).toBe("fragment");
+        \\  expect(error.input).toBe("ws://localhost/path#fragment");
+        \\  expect(error.cause).toBeInstanceOf(SyntaxError);
+        \\  expect(error.stack).toContain("web.websocket.url.parse [fragment]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\});
+        \\test("handshake failures compose operation and cause stacks", () => {
+        \\  const cause = new Error("HTTP response did not switch protocols");
+        \\  const error = __home_websocket_handshake_error("status", "WebSocket upgrade failed", { endpoint: "http://localhost:8080", closeCode: 1002 }, cause);
+        \\  expect(error.name).toBe("WebSocketHandshakeError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_HANDSHAKE");
+        \\  expect(error.operation).toBe("web.websocket.handshake");
+        \\  expect(error.phase).toBe("status");
+        \\  expect(error.endpoint).toBe("http://localhost:8080");
+        \\  expect(error.closeCode).toBe(1002);
+        \\  expect(error.cause).toBe(cause);
+        \\  expect(error.stack).toContain("web.websocket.handshake [status]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/subprotocol-error.home-regression.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -112761,7 +112847,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         std.debug.print("structured WebSocket subprotocol regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented WebSocket reads" {
