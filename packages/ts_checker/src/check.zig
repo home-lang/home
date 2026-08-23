@@ -14710,7 +14710,8 @@ pub const Checker = struct {
                 const gop = try commonjs_whole_exports.getOrPut(self.gpa, section);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(self.gpa, node);
-                try commonjs_export_assignments.put(self.gpa, section, node);
+                const export_gop = try commonjs_export_assignments.getOrPut(self.gpa, section);
+                if (!export_gop.found_existing) export_gop.value_ptr.* = node;
             } else if (self.commonJsExportsAssignmentName(node) != null) {
                 try commonjs_property_sections.put(self.gpa, section, {});
             }
@@ -44533,7 +44534,9 @@ pub const Checker = struct {
                 if (left.section == right.section and
                     !self.jsGlobalSectionParticipates(stmts, left.section))
                 {
-                    continue;
+                    const typedef_class_collision = (left.is_typedef and right.is_lexical_value and !right.is_var_like) or
+                        (right.is_typedef and left.is_lexical_value and !left.is_var_like);
+                    if (!typedef_class_collision) continue;
                 }
                 if (self.jsGlobalValuesMergeAcrossFiles(left, right)) continue;
                 if (left.section == right.section and left.is_value and right.is_value) continue;
@@ -60747,39 +60750,45 @@ pub const Checker = struct {
             }
         }
 
-        const MergedMember = struct {
-            member: types.ObjectMember,
-            present_in: usize = 1,
-        };
-        var merged: std.ArrayListUnmanaged(MergedMember) = .empty;
-        defer merged.deinit(self.gpa);
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
         for (candidates) |candidate| {
-            const object_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(candidate));
-            defer self.gpa.free(object_members);
-            for (object_members) |member| {
+            for (self.interner.objectMembers(candidate)) |member| {
                 var found = false;
-                for (merged.items) |*existing| {
-                    if (existing.member.name != member.name) continue;
-                    existing.member.type = self.interner.internUnion(&.{ existing.member.type, member.type }) catch return error.OutOfMemory;
-                    existing.member.is_optional = existing.member.is_optional or member.is_optional;
-                    existing.member.is_readonly = existing.member.is_readonly and member.is_readonly;
-                    existing.member.is_method = existing.member.is_method and member.is_method;
-                    existing.present_in += 1;
-                    found = true;
-                    break;
+                for (names.items) |name| {
+                    if (name == member.name) {
+                        found = true;
+                        break;
+                    }
                 }
-                if (!found) try merged.append(self.gpa, .{ .member = member });
+                if (!found) try names.append(self.gpa, member.name);
             }
         }
 
-        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer members.deinit(self.gpa);
-        for (merged.items) |entry| {
-            var member = entry.member;
-            member.is_optional = member.is_optional or entry.present_in < candidates.len;
-            try members.append(self.gpa, member);
+        var normalized: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer normalized.deinit(self.gpa);
+        for (candidates) |candidate| {
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            for (names.items) |name| {
+                var found: ?types.ObjectMember = null;
+                for (self.interner.objectMembers(candidate)) |member| {
+                    if (member.name == name) {
+                        found = member;
+                        break;
+                    }
+                }
+                try members.append(self.gpa, found orelse .{
+                    .name = name,
+                    .type = types.Primitive.undefined_t,
+                    .is_optional = true,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            }
+            try normalized.append(self.gpa, self.interner.internObjectType(members.items) catch return error.OutOfMemory);
         }
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        return self.interner.internUnion(normalized.items) catch return error.OutOfMemory;
     }
 
     fn upsertObjectMember(
@@ -103550,7 +103559,15 @@ pub const Checker = struct {
             },
             .new_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
-                var callee_t = try self.checkExpression(c.callee);
+                const raw_callee_t = try self.checkExpression(c.callee);
+                var callee_t = raw_callee_t;
+                if (self.strict_flags.strict_null_checks and
+                    !self.typeIsAnyLike(raw_callee_t) and
+                    self.typeIsPossiblyNullishStrict(raw_callee_t))
+                {
+                    try self.reportPossiblyNullishMember(c.callee, raw_callee_t);
+                    callee_t = self.subtractNullUndefined(raw_callee_t) catch raw_callee_t;
+                }
                 var checked_js_cross_virtual_function_class = false;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
@@ -107787,6 +107804,14 @@ pub const Checker = struct {
                         }
                     }
                     var vt = try self.objectAccessorPropertyType(op.value, jsdoc_t orelse raw_vt);
+                    if ((value_kind == .class_decl or value_kind == .class_expr) and
+                        hir_mod.classOf(self.hir, op.value).name == hir_mod.none_node_id)
+                    {
+                        try self.class_name_by_static.put(self.gpa, vt, k.name);
+                        if (!self.class_static_types.contains(k.name)) {
+                            try self.class_static_types.put(self.gpa, k.name, vt);
+                        }
+                    }
                     if ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                         hir_mod.fnDeclOf(self.hir, op.value).flags.is_setter and
                         self.objectLiteralHasGetterForName(node, k.name))
@@ -174668,6 +174693,13 @@ pub const Checker = struct {
                     }
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
+                if (self.class_name_by_static.get(t)) |class_name| {
+                    break :blk try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "typeof {s}",
+                        .{self.string_interner.get(class_name)},
+                    );
+                }
                 // Anonymous class expressions retain a nominal static-side
                 // identity in diagnostics instead of exposing their
                 // structural construct signature.
@@ -223801,6 +223833,39 @@ test "checker: checkjs JSDoc typedef merges with CommonJS export object key" {
         }
     }
     try T.expectEqual(@as(usize, 0), duplicate_count);
+}
+
+test "checker: repeated CommonJS object exports preserve typedef and union semantics" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: mod.js
+        \\/** @typedef {number} Foo */
+        \\class Foo {}
+        \\/** @typedef {number} Bar */
+        \\exports.Bar = class {}
+        \\module.exports = { Baz: class {} };
+        \\/** @typedef {number} Quid */
+        \\exports.Quid = 2;
+        \\module.exports = { Quack: 2 };
+        \\// @filename: use.js
+        \\const mod = require("./mod");
+        \\new mod.Baz();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_assignment_with_other_exports));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'Bar' does not exist on type '{ Baz: typeof Baz; Quack?: undefined; } | { Baz?: undefined; Quack: number; }'.",
+    ));
 }
 
 test "checker: tsgo current direct default class conflicts with JSDoc default typedef" {
