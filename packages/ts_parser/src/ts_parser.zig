@@ -1901,6 +1901,7 @@ pub const Parser = struct {
         // Pre-scan: a `@typedef`/`@callback` comment routes duplicate
         // `@type` tags through TS8033, so suppress the `@type` arm here.
         var has_typedef_like = false;
+        var has_overload = false;
         {
             var j = start;
             while (j < end) {
@@ -1911,14 +1912,15 @@ pub const Parser = struct {
                 const nm = self.source[ns..ne];
                 if (std.mem.eql(u8, nm, "typedef") or std.mem.eql(u8, nm, "callback")) {
                     has_typedef_like = true;
-                    break;
                 }
+                if (std.mem.eql(u8, nm, "overload")) has_overload = true;
                 j = ne;
             }
         }
 
         var seen_return = false;
         var seen_type = false;
+        var last_return_end: ?usize = null;
         var i = start;
         while (i < end) {
             const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
@@ -1938,8 +1940,15 @@ pub const Parser = struct {
             const is_type = !has_typedef_like and std.mem.eql(u8, tag_name, "type");
             if (!is_return and !is_type) continue;
 
-            const already = if (is_return) seen_return else seen_type;
+            var already = if (is_return) seen_return else seen_type;
+            if (is_return and already and has_overload and last_return_end != null and
+                self.jsDocRangeHasBlankCommentLine(last_return_end.?, tag_pos))
+            {
+                seen_return = false;
+                already = false;
+            }
             if (is_return) seen_return = true else seen_type = true;
+            if (is_return) last_return_end = tag_name_end;
             if (!already) continue;
 
             const msg = try std.fmt.allocPrint(
@@ -1955,6 +1964,25 @@ pub const Parser = struct {
                 msg,
             );
         }
+    }
+
+    fn jsDocRangeHasBlankCommentLine(self: *const Parser, start: usize, end: usize) bool {
+        var line_start = std.mem.indexOfScalarPos(u8, self.source, start, '\n') orelse return false;
+        line_start += 1;
+        var saw_blank = false;
+        while (line_start < end) {
+            const line_end = @min(std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse end, end);
+            var line = std.mem.trim(u8, self.source[line_start..line_end], " \t\r");
+            if (line.len > 0 and line[0] == '*') line = std.mem.trim(u8, line[1..], " \t\r");
+            if (line.len == 0) {
+                saw_blank = true;
+            } else if (saw_blank) {
+                return std.mem.startsWith(u8, line, "@param") or std.mem.startsWith(u8, line, "@return");
+            }
+            if (line_end >= end) break;
+            line_start = line_end + 1;
+        }
+        return saw_blank;
     }
 
     fn scanJSDocTemplateAfterTypeAliasLikeTags(self: *Parser, start: usize, end: usize) ParseError!void {

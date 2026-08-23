@@ -16207,7 +16207,8 @@ pub const Checker = struct {
             &[_]NodeId{};
         const last_idx = overload_list.items.len - 1;
         for (overload_list.items[0..last_idx], 0..) |overload_sig, idx| {
-            if (try self.overloadSignatureCompatibleWithImplementation(overload_sig, impl_sig)) continue;
+            const is_jsdoc_overload = idx < ovl_decls_slice.len and ovl_decls_slice[idx] == node;
+            if (try self.overloadSignatureCompatibleWithImplementation(overload_sig, impl_sig, is_jsdoc_overload)) continue;
             const anchor: NodeId = blk: {
                 if (idx < ovl_decls_slice.len) {
                     const ovl_node = ovl_decls_slice[idx];
@@ -16219,7 +16220,15 @@ pub const Checker = struct {
                 }
                 break :blk node;
             };
-            try self.report(anchor, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+            if (anchor == node) {
+                if (self.jsDocOverloadPositionAt(node, idx)) |pos| {
+                    try self.reportOverloadNotCompatibleAt(node, pos, node);
+                } else {
+                    try self.report(anchor, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+                }
+            } else {
+                try self.report(anchor, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+            }
             return;
         }
     }
@@ -16259,7 +16268,12 @@ pub const Checker = struct {
         return params.len;
     }
 
-    fn overloadSignatureCompatibleWithImplementation(self: *Checker, overload_sig: TypeId, impl_sig: TypeId) CheckError!bool {
+    fn overloadSignatureCompatibleWithImplementation(
+        self: *Checker,
+        overload_sig: TypeId,
+        impl_sig: TypeId,
+        allow_complex_params: bool,
+    ) CheckError!bool {
         const overload_params = self.interner.signatureParams(overload_sig);
         const impl_params = self.interner.signatureParams(impl_sig);
         const overload_min = self.signature_min_args.get(overload_sig) orelse overload_params.len;
@@ -16274,8 +16288,9 @@ pub const Checker = struct {
         const shared = @min(overload_params.len, impl_params.len);
         var i: usize = 0;
         while (i < shared) : (i += 1) {
-            if (!self.typeIsSimpleOverloadCompatibilityOperand(overload_params[i]) or
-                !self.typeIsSimpleOverloadCompatibilityOperand(impl_params[i])) return true;
+            if (!allow_complex_params and
+                (!self.typeIsSimpleOverloadCompatibilityOperand(overload_params[i]) or
+                    !self.typeIsSimpleOverloadCompatibilityOperand(impl_params[i]))) return true;
             if (impl_params[i] == types.Primitive.any or impl_params[i] == types.Primitive.unknown) continue;
             if (overload_params[i] == types.Primitive.any or overload_params[i] == types.Primitive.unknown) continue;
             if (!(self.engine.isAssignableTo(overload_params[i], impl_params[i]) catch return error.OutOfMemory)) return false;
@@ -18117,6 +18132,14 @@ pub const Checker = struct {
             self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, node) orelse return null;
         const body = jsdoc.body;
         if (std.mem.indexOf(u8, body, "@callback") != null) return null;
+        if (std.mem.indexOf(u8, body, "@overload") != null) {
+            const implementation = (try self.jsDocOverloadImplementationSignature(node, body)) orelse return null;
+            return .{
+                .type = self.interner.signatureReturn(implementation) orelse types.Primitive.any,
+                .pos = span.start,
+                .origin = .contextual_type,
+            };
+        }
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
         const raw_return_type = jsDocBlockTagBracedTypeText(body, "@returns") orelse
@@ -35454,6 +35477,7 @@ pub const Checker = struct {
         if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
             const has_body = f.body != hir_mod.none_node_id;
+            if (has_body) try self.registerJsDocFunctionOverloads(node, fn_name);
             const gop = try self.overloads.getOrPut(self.gpa, fn_name);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             const dop = try self.overload_decls.getOrPut(self.gpa, fn_name);
@@ -41514,7 +41538,7 @@ pub const Checker = struct {
                     }
                     break;
                 }
-                if (try self.overloadSignatureCompatibleWithImplementation(ovl_sig, ctor_sig)) continue;
+                if (try self.overloadSignatureCompatibleWithImplementation(ovl_sig, ctor_sig, false)) continue;
                 // Anchor at the overload ctor decl itself; its span
                 // starts at the `constructor` keyword (matching tsc).
                 if (pos) |p| {
@@ -87256,6 +87280,118 @@ pub const Checker = struct {
         return false;
     }
 
+    fn jsDocOverloadLineContent(line: []const u8) []const u8 {
+        var text = std.mem.trim(u8, line, " \t\r");
+        if (text.len > 0 and text[0] == '*') text = std.mem.trim(u8, text[1..], " \t\r");
+        return text;
+    }
+
+    fn jsDocOverloadImplementationStart(body: []const u8) ?usize {
+        const last_overload = std.mem.lastIndexOf(u8, body, "@overload") orelse return null;
+        var line_start = last_overload + "@overload".len;
+        var saw_signature_tag = false;
+        while (line_start <= body.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, body, line_start, '\n') orelse body.len;
+            const content = jsDocOverloadLineContent(body[line_start..line_end]);
+            if (std.mem.startsWith(u8, content, "@param") or
+                std.mem.startsWith(u8, content, "@return"))
+            {
+                saw_signature_tag = true;
+            } else if (content.len == 0 and saw_signature_tag) {
+                var next_start = if (line_end < body.len) line_end + 1 else body.len;
+                while (next_start < body.len) {
+                    const next_end = std.mem.indexOfScalarPos(u8, body, next_start, '\n') orelse body.len;
+                    const next = jsDocOverloadLineContent(body[next_start..next_end]);
+                    if (next.len == 0) {
+                        next_start = if (next_end < body.len) next_end + 1 else body.len;
+                        continue;
+                    }
+                    if (std.mem.startsWith(u8, next, "@param") or
+                        std.mem.startsWith(u8, next, "@return")) return next_start;
+                    break;
+                }
+            }
+            if (line_end >= body.len) break;
+            line_start = line_end + 1;
+        }
+        return null;
+    }
+
+    fn jsDocFunctionSignatureFromBody(self: *Checker, fn_node: NodeId, body: []const u8) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+        var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer param_types.deinit(self.gpa);
+        var omittable: std.ArrayListUnmanaged(bool) = .empty;
+        defer omittable.deinit(self.gpa);
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        var return_type = types.Primitive.any;
+        for (tags) |tag| {
+            if (tag.kind == .param_tag) {
+                const param_t = (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, fn_node, tag.name)) orelse types.Primitive.any;
+                const effective_t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
+                try param_types.append(self.gpa, effective_t);
+                try omittable.append(self.gpa, tag.optional or self.parameterTypeAllowsVoidOmission(effective_t));
+                if (tag.name.len > 0) try names.append(self.gpa, self.string_interner.intern(tag.name) catch return error.OutOfMemory);
+            } else if (tag.kind == .returns_tag) {
+                return_type = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node)) orelse types.Primitive.any;
+            }
+        }
+        const sig = self.interner.internSignature(param_types.items, return_type, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig, omittable.items);
+        if (names.items.len == param_types.items.len and names.items.len > 0) {
+            const owned = names.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+            if (self.signature_param_names.fetchRemove(sig)) |old| self.gpa.free(old.value);
+            try self.signature_param_names.put(self.gpa, sig, owned);
+        }
+        return sig;
+    }
+
+    fn jsDocOverloadImplementationSignature(self: *Checker, fn_node: NodeId, body: []const u8) CheckError!?TypeId {
+        const implementation_start = jsDocOverloadImplementationStart(body) orelse return null;
+        return try self.jsDocFunctionSignatureFromBody(fn_node, body[implementation_start..]);
+    }
+
+    fn registerJsDocFunctionOverloads(self: *Checker, fn_node: NodeId, fn_name: hir_mod.StringId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(fn_node)) return;
+        if (self.overload_decls.get(fn_name)) |decls| {
+            for (decls.items) |decl| if (decl == fn_node) return;
+        }
+        const src = self.source orelse return;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return;
+        var at = std.mem.indexOf(u8, body, "@overload") orelse return;
+        const implementation_start = jsDocOverloadImplementationStart(body);
+        const gop = try self.overloads.getOrPut(self.gpa, fn_name);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        const dop = try self.overload_decls.getOrPut(self.gpa, fn_name);
+        if (!dop.found_existing) dop.value_ptr.* = .empty;
+        while (true) {
+            const signature_start = at + "@overload".len;
+            const next_overload = std.mem.indexOfPos(u8, body, signature_start, "@overload");
+            const signature_end = next_overload orelse implementation_start orelse body.len;
+            if (try self.jsDocFunctionSignatureFromBody(fn_node, body[signature_start..signature_end])) |sig| {
+                try gop.value_ptr.*.append(self.gpa, sig);
+                try dop.value_ptr.*.append(self.gpa, fn_node);
+            }
+            at = next_overload orelse break;
+        }
+    }
+
+    fn jsDocOverloadPositionAt(self: *Checker, fn_node: NodeId, wanted_index: usize) ?u32 {
+        const src = self.source orelse return null;
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return null;
+        var search: usize = 0;
+        var index: usize = 0;
+        while (std.mem.indexOfPos(u8, jsdoc.body, search, "@overload")) |at| {
+            if (index == wanted_index) return @intCast(jsdoc.start + at + 1);
+            index += 1;
+            search = at + "@overload".len;
+        }
+        return null;
+    }
+
     fn checkJsDocOverloadImplicitAnyReturns(self: *Checker, fn_node: NodeId) CheckError!void {
         if (!self.strict_flags.no_implicit_any) return;
         if (!self.sourceHasCheckJsDirective()) return;
@@ -90500,6 +90636,9 @@ pub const Checker = struct {
         if (self.source_has_virtual_sections and !self.virtualSectionIsJsLike(node)) return null;
         const src = self.source orelse return null;
         if (self.leadingJsDocBodyForFunctionOrOwner(src, node)) |body| {
+            if (std.mem.indexOf(u8, body, "@overload") != null) {
+                return try self.jsDocOverloadImplementationSignature(node, body);
+            }
             const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
             defer self.gpa.free(tags);
             if (jsDocHasTemplateTypeTagCombination(tags)) return null;
@@ -224046,6 +224185,7 @@ test "checker: checkjs JSDoc @overload declares overload signatures" {
     // declare multiple call signatures for the next function.
     const s = try newSetup(
         \\// @checkjs: true
+        \\// @filename: overload.js
         \\/**
         \\ * @overload
         \\ * @param {string} x
