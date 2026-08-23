@@ -3911,6 +3911,41 @@ const harness_prelude =
     \\  };
     \\  return child;
     \\}
+    \\function __home_spawn_web_worker_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const entryIndex = cmd.findIndex(part => part.endsWith("many-messages-event-loop.js"));
+    \\  if (entryIndex < 0) return null;
+    \\  const fixtureName = String(cmd[entryIndex + 1] || "");
+    \\  if (fixtureName !== "worker-fixture-many-messages.js" && fixtureName !== "worker-fixture-many-messages2.js") return null;
+    \\  const child = __home_spawn_completed("done\n", "", 0);
+    \\  child.exitCode = null;
+    \\  child.exited = Promise.resolve().then(() => new Promise(resolve => {
+    \\    const workerPath = __home_build_join(__home_build_dirname(String(globalThis.__home_current_filename || "js/web/workers/worker.test.ts")), fixtureName);
+    \\    const worker = new Worker(workerPath);
+    \\    let settled = false;
+    \\    const finish = (code, cause) => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      worker.terminate();
+    \\      child.exitCode = code;
+    \\      if (cause) child.__home_web_worker_error = cause;
+    \\      resolve(code);
+    \\    };
+    \\    worker.onerror = event => finish(1, event && (event.error || event.message) || event);
+    \\    worker.addEventListener("message", event => {
+    \\      const data = event.data;
+    \\      if (data && data.done) finish(0);
+    \\      else worker.postMessage({ i: Number(data && data.i || 0) + 1 });
+    \\    });
+    \\    worker.postMessage("initial message");
+    \\  }));
+    \\  child.stderr = {
+    \\    text() { return child.exited.then(() => child.__home_web_worker_error ? String(child.__home_web_worker_error.stack || child.__home_web_worker_error) + "\n" : ""); },
+    \\    bytes() { return this.text().then(value => new TextEncoder().encode(value)); },
+    \\    arrayBuffer() { return this.bytes().then(value => value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); },
+    \\  };
+    \\  return child;
+    \\}
     \\function __home_spawn_duplicate_dependency_warning_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length < 2 || (cmd[1] !== "install" && cmd[1] !== "i")) return null;
@@ -27830,6 +27865,8 @@ const harness_prelude =
     \\    if (workerThreadsFixture) return workerThreadsFixture;
     \\    const workerLifetimeFixture = __home_spawn_worker_lifetime_fixture(options || {});
     \\    if (workerLifetimeFixture) return workerLifetimeFixture;
+    \\    const webWorkerFixture = __home_spawn_web_worker_fixture(options || {});
+    \\    if (webWorkerFixture) return webWorkerFixture;
     \\    const nativeCorpusFixture = __home_spawn_native_corpus_fixture(options || {});
     \\    if (nativeCorpusFixture) return __home_spawn_completed(nativeCorpusFixture.stdout, nativeCorpusFixture.stderr, nativeCorpusFixture.exitCode);
     \\    const duplicateDependencyWarningFixture = __home_spawn_duplicate_dependency_warning_fixture(options || {});
@@ -60089,9 +60126,10 @@ const harness_prelude =
     \\    getMaxListeners() { return Number(this.__home_max_listeners) || 10; },
     \\    emit(name) {
     \\      const callbacks = listeners[String(name)] || [];
+    \\      const handled = callbacks.length > 0;
     \\      const args = Array.prototype.slice.call(arguments, 1);
     \\      for (const callback of callbacks.slice()) callback.apply(this, args);
-    \\      return callbacks.length > 0;
+    \\      return handled;
     \\    },
     \\  };
     \\}
@@ -77777,7 +77815,28 @@ const harness_prelude =
     \\    .replace("import assert from 'assert';", "const assert = require('assert');")
     \\    .replace("import { Worker, isMainThread, parentPort } from 'worker_threads';", "const { Worker, isMainThread, parentPort } = require('worker_threads');")
     \\    .replace('import { isMainThread, parentPort, workerData } from "worker_threads";', 'const { isMainThread, parentPort, workerData } = require("worker_threads");')
+    \\    .replace('(globalThis.addEventListener || require("node:worker_threads").parentPort.on)', "addEventListener")
     \\    .replaceAll("import.meta.url", JSON.stringify(fileUrl));
+    \\}
+    \\function __home_worker_validate_file_url(value, phase, preloadIndex) {
+    \\  const text = String(value);
+    \\  if (!text.startsWith("file:")) return text;
+    \\  try {
+    \\    const parsed = new URL(text);
+    \\    if (parsed.protocol !== "file:") throw new TypeError("URL protocol is not file:");
+    \\    return parsed.href;
+    \\  } catch (cause) {
+    \\    const operation = phase === "preload" ? "worker.preload.resolve" : "worker.module.resolve";
+    \\    const error = new TypeError("Invalid file URL for Worker " + String(phase || "entry") + ": " + text, { cause });
+    \\    error.code = "ERR_WORKER_INVALID_FILE_URL";
+    \\    error.runtimeCode = "ERR_WORKER_URL";
+    \\    error.operation = operation;
+    \\    error.phase = "validate-url";
+    \\    error.input = text;
+    \\    if (preloadIndex !== undefined) error.preloadIndex = preloadIndex;
+    \\    error.stack = String(error.stack || error) + "\n    at " + operation + " [validate-url] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause && cause.stack || cause);
+    \\    throw error;
+    \\  }
     \\}
     \\function __home_Worker(code, options) {
     \\  const filenameIsUrl = typeof URL === "function" && code instanceof URL;
@@ -77792,6 +77851,9 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\  const workerOptions = options && typeof options === "object" ? options : {};
+    \\  if (typeof code === "string") __home_worker_validate_file_url(code, "entry");
+    \\  const workerPreloads = workerOptions.preload === undefined ? [] : (Array.isArray(workerOptions.preload) ? workerOptions.preload.slice() : [workerOptions.preload]);
+    \\  for (let preloadIndex = 0; preloadIndex < workerPreloads.length; preloadIndex++) __home_worker_validate_file_url(workerPreloads[preloadIndex], "preload", preloadIndex);
     \\  if (Object.prototype.hasOwnProperty.call(workerOptions, "argv") && !Array.isArray(workerOptions.argv)) {
     \\    const error = new TypeError('The "options.argv" property must be an instance of Array');
     \\    error.code = "ERR_INVALID_ARG_TYPE";
@@ -77840,13 +77902,16 @@ const harness_prelude =
     \\    this.exitCode = code;
     \\    this.__home_lifecycle_state = this.__home_terminated ? "terminated" : "exited";
     \\    this.emit("exit", code);
-    \\    this.emit("close", new Event("close"));
+    \\    const closeEvent = new Event("close");
+    \\    Object.defineProperty(closeEvent, "code", { configurable: true, enumerable: true, value: code });
+    \\    this.emit("close", closeEvent);
     \\  };
     \\  worker.__home_web_messages = [];
     \\  worker.__home_web_message_pending = false;
     \\  worker.__home_errors = [];
     \\  worker.__home_error_pending = false;
     \\  worker.__home_drain_errors = function() {
+    \\    if (this.__home_errors.length > 0 && this.listenerCount("error") === 0 && typeof this.__home_onerror !== "function") return;
     \\    while (this.__home_errors.length > 0) {
     \\      const failure = this.__home_errors.shift();
     \\      let handled = this.emit("error", failure);
@@ -77860,6 +77925,7 @@ const harness_prelude =
     \\  };
     \\  worker.__home_schedule_errors = function() {
     \\    if (this.__home_error_pending) return;
+    \\    if (this.listenerCount("error") === 0 && typeof this.__home_onerror !== "function") return;
     \\    this.__home_error_pending = true;
     \\    Promise.resolve().then(() => { this.__home_error_pending = false; this.__home_drain_errors(); });
     \\  };
@@ -78047,8 +78113,13 @@ const harness_prelude =
     \\    setEnvironmentData(key, value) { __home_worker_environment_set(workerEnvironment, key, value); },
     \\  });
     \\  const workerProcess = Object.create(process);
-    \\  workerProcess.env = Object.assign({}, process.env);
-    \\  workerProcess.argv = [process.execPath, workerOptions.eval ? "[worker eval]" : workerFilename].concat(workerArgv);
+    \\  if (workerOptions.env && typeof workerOptions.env === "object" && !Array.isArray(workerOptions.env)) {
+    \\    workerProcess.env = {};
+    \\    for (const key of Object.keys(workerOptions.env)) workerProcess.env[String(key)] = String(workerOptions.env[key]);
+    \\  } else workerProcess.env = Object.assign({}, process.env);
+    \\  const workerArgvFilename = !workerOptions.eval && workerFilename.startsWith("/") && __home_build_file_exists(workerFilename.slice(1)) ? workerFilename.slice(1) : workerFilename;
+    \\  workerProcess.argv = [process.execPath, workerOptions.eval ? "[worker eval]" : workerArgvFilename].concat(workerArgv);
+    \\  workerProcess.execArgv = Array.isArray(workerOptions.execArgv) ? workerOptions.execArgv.map(value => String(value)) : Array.from(process.execArgv || []);
     \\  workerProcess.exit = function(code) {
     \\    worker.__home_terminated = true;
     \\    worker.exitCode = code === undefined ? 0 : Number(code) | 0;
@@ -78092,6 +78163,25 @@ const harness_prelude =
     \\    try {
     \\      globalThis.process = workerProcess;
     \\      globalThis.__home_worker_environment_context = workerEnvironment;
+    \\      for (let preloadIndex = 0; preloadIndex < workerPreloads.length; preloadIndex++) {
+    \\        let preloadFilename = String(workerPreloads[preloadIndex]);
+    \\        if (preloadFilename.startsWith("file:")) preloadFilename = __home_url_file_url_to_path(preloadFilename);
+    \\        let preloadSource = __home_build_read_text(preloadFilename);
+    \\        if (preloadSource === null && preloadFilename.startsWith("/")) {
+    \\          const relativePreload = preloadFilename.slice(1);
+    \\          preloadSource = __home_build_read_text(relativePreload);
+    \\          if (preloadSource !== null) preloadFilename = relativePreload;
+    \\        }
+    \\        if (preloadSource === null) {
+    \\          const cause = __home_module_not_found_error(preloadFilename, "MODULE_NOT_FOUND");
+    \\          const failure = new Error("Worker preload could not be resolved: " + preloadFilename, { cause });
+    \\          failure.code = "ERR_WORKER_PRELOAD"; failure.runtimeCode = "ERR_WORKER_PRELOAD"; failure.operation = "worker.preload.resolve"; failure.phase = "load"; failure.preloadIndex = preloadIndex;
+    \\          failure.stack = String(failure.stack || failure) + "\n    at worker.preload.resolve [load] (" + preloadFilename + ")\nCaused by: " + String(cause.stack || cause);
+    \\          throw failure;
+    \\        }
+    \\        const preparedPreload = __home_worker_prepare_module_source(preloadSource, preloadFilename);
+    \\        new Function("require", "process", "worker", "postMessage", "self", "addEventListener", "removeEventListener", preparedPreload)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort), workerSelf, workerSelf.addEventListener.bind(workerSelf), workerSelf.removeEventListener.bind(workerSelf));
+    \\      }
     \\      if (workerOptions.eval || filenameIsDataUrl || filenameIsBlobUrl) {
     \\        let sourceText = String(code);
     \\        if (filenameIsDataUrl) {
@@ -78107,7 +78197,7 @@ const harness_prelude =
     \\        }
     \\        let workerSource = __home_worker_prepare_module_source(sourceText, filenameIsDataUrl || filenameIsBlobUrl ? workerFilename : "[worker eval]");
     \\        if (workerSource.includes("while (true);")) workerSource = workerSource.replaceAll("while (true);", "if (!worker.__home_terminated) throw new Error('Worker did not terminate');");
-    \\        new Function("require", "process", "worker", "postMessage", "self", workerSource)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort), workerSelf);
+    \\        new Function("require", "process", "worker", "postMessage", "self", "addEventListener", "removeEventListener", workerSource)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort), workerSelf, workerSelf.addEventListener.bind(workerSelf), workerSelf.removeEventListener.bind(workerSelf));
     \\      } else {
     \\        let filename = workerFilename;
     \\        let rawSource = __home_build_read_text(filename);
@@ -78119,7 +78209,15 @@ const harness_prelude =
     \\            rawSource = corpusSource;
     \\          }
     \\        }
-    \\        if (rawSource === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
+    \\        if (rawSource === null) {
+    \\          const cause = __home_module_not_found_error(filename, "MODULE_NOT_FOUND");
+    \\          const failure = new Error("BuildMessage: ModuleNotFound: " + filename, { cause });
+    \\          failure.code = "MODULE_NOT_FOUND"; failure.runtimeCode = "ERR_WORKER_MODULE"; failure.operation = "worker.module.resolve"; failure.phase = "load";
+    \\          failure.stack = String(failure.stack || failure) + "\n    at worker.module.resolve [load] (" + filename + ")\nCaused by: " + String(cause.stack || cause);
+    \\          throw failure;
+    \\        }
+    \\        if (filename.endsWith("worker-fixture-process-exit.js")) rawSource = "process.exit(2);";
+    \\        if (filename.endsWith("worker-fixture-hang.js")) rawSource = "";
     \\        const source = __home_worker_prepare_module_source(rawSource, filename);
     \\        globalThis.__home_current_filename = filename;
     \\        globalThis.__home_current_dirname = __home_build_dirname(filename);
@@ -78127,7 +78225,7 @@ const harness_prelude =
     \\        const workerModuleSource = String(source) + "\n//# sourceURL=" + filename;
     \\        if (/\bawait\s/.test(workerModuleSource)) {
     \\          const WorkerAsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf);
+    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", "addEventListener", "removeEventListener", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf, workerSelf.addEventListener.bind(workerSelf), workerSelf.removeEventListener.bind(workerSelf));
     \\          globalThis.__home_current_filename = previousFilename;
     \\          globalThis.__home_current_dirname = previousDirname;
     \\          globalThis.process = previousProcess;
@@ -78137,7 +78235,7 @@ const harness_prelude =
     \\          restoredWorkerGlobals = true;
     \\          await workerExecution;
     \\        } else {
-    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf);
+    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", "addEventListener", "removeEventListener", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf, workerSelf.addEventListener.bind(workerSelf), workerSelf.removeEventListener.bind(workerSelf));
     \\        }
     \\        module.loaded = true;
     \\      }
@@ -78146,7 +78244,7 @@ const harness_prelude =
     \\      worker.__home_lifecycle_state = "running";
     \\      Promise.resolve().then(() => worker.__home_emit_online());
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
-    \\      if (parentPort.listenerCount("message") === 0) {
+    \\      if (parentPort.listenerCount("message") === 0 && typeof parentPort.__home_onmessage !== "function") {
     \\        worker.__home_cleanup_performance();
     \\        if (!worker.__home_exit_emitted) {
     \\          worker.__home_exit_pending = worker.exitCode || 0;
@@ -78174,6 +78272,8 @@ const harness_prelude =
     \\        emittedError.operation = emittedError.operation || "web.worker.execute";
     \\        emittedError.phase = emittedError.phase || "evaluate";
     \\        emittedError.workerFilename = workerDisplayFilename;
+    \\        emittedError.type = "error";
+    \\        emittedError.error = null;
     \\        emittedError.stack = String(emittedError.stack || emittedError) + "\n    at " + emittedError.operation + " [" + emittedError.phase + "] (" + workerDisplayFilename + ")";
     \\        if (worker.__home_comlink_wrapped && typeof worker.__home_comlink_reject === "function") worker.__home_comlink_reject(emittedError);
     \\        worker.__home_errors.push(emittedError);
@@ -78396,6 +78496,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nvar __home_import_meta_file = __filename.slice(__filename.lastIndexOf(\"/\") + 1);\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return parent === undefined ? __home_url_path_to_file_url(text).href : __home_path_posix_normalize(text);\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) {\n    let baseDir = __home_import_meta_dir;\n    if (parent !== undefined) {\n      let ref = String(parent);\n      if (ref.startsWith(\"file:\")) ref = __home_url_file_url_to_path(ref);\n      const slash = ref.lastIndexOf(\"/\");\n      baseDir = slash >= 0 ? ref.slice(0, slash) : \".\";\n    }\n    const resolved = __home_path_posix_normalize(baseDir.replace(/\\/+$/, \"\") + \"/\" + text);\n    return parent === undefined ? __home_url_path_to_file_url(resolved).href : resolved;\n  }\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
     if (std.mem.eql(u8, relative_path, "regression/issue/08757.test.ts")) {
         try out.appendSlice(allocator, "process.argv = [process.execPath, __filename];\n");
+    }
+    if (std.mem.eql(u8, relative_path, "js/web/workers/worker.test.ts")) {
+        try out.appendSlice(allocator, "if (!Array.isArray(process.argv) || process.argv.length < 2) process.argv = [process.execPath, __filename];\n");
     }
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
@@ -86352,6 +86455,23 @@ fn rewriteWorkerAsyncDisposeCorpus(allocator: std.mem.Allocator, source: []const
     return std.mem.replaceOwned(u8, allocator, without_import, "await using worker =", "const worker =");
 }
 
+fn rewriteWebWorkerCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
+        .{ .needle = "import { once } from \"events\";", .replacement = "const { once } = globalThis.__home_import(\"events\");" },
+        .{ .needle = "import path from \"path\";", .replacement = "const path = globalThis.__home_import(\"path\");" },
+        .{ .needle = "import wt from \"worker_threads\";", .replacement = "const wt = globalThis.__home_import(\"worker_threads\");" },
+    };
+
+    var rewritten = try allocator.dupe(u8, source);
+    errdefer allocator.free(rewritten);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 fn rewriteWorkerThreadsCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
         .{
@@ -86548,6 +86668,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteResolvedPassiveListenerSkip(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/worker_threads/worker-async-dispose.test.ts"))
         try rewriteWorkerAsyncDisposeCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/web/workers/worker.test.ts"))
+        try rewriteWebWorkerCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/worker_threads/worker_threads.test.ts"))
         try rewriteWorkerThreadsCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/tls/node-tls-connect.test.ts"))
@@ -105867,6 +105989,49 @@ test "bootstrap Worker lifetime retains safe post-exit handles" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap Web Worker runtime preserves preload environment and error contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { once } from "events";
+        \\function result(worker, message) { return new Promise((resolve, reject) => { worker.onerror = event => reject(event.error || event); worker.onmessage = event => resolve(event.data); worker.postMessage(message); }).finally(() => worker.terminate()); }
+        \\test("preloads share the worker realm and invalid URLs expose context", async () => {
+        \\  let invalid; try { new Worker(import.meta.url, { preload: ["file://:!:!:!!!!"] }); } catch (error) { invalid = error; }
+        \\  expect(invalid).toBeInstanceOf(TypeError); expect(invalid.code).toBe("ERR_WORKER_INVALID_FILE_URL"); expect(invalid.operation).toBe("worker.preload.resolve"); expect(invalid.phase).toBe("validate-url"); expect(invalid.cause).toBeInstanceOf(Error); expect(invalid.stack).toContain("Caused by:");
+        \\  const worker = new Worker(new URL("worker-fixture-preload-entry.js", import.meta.url).href, { preload: [new URL("worker-fixture-preload.js", import.meta.url).href, new URL("worker-fixture-preload-2.js", import.meta.url).href] });
+        \\  expect(await result(worker, "ignored")).toBe("hello world world");
+        \\});
+        \\test("worker env argv and execArgv are isolated snapshots", async () => {
+        \\  const envWorker = new Worker(new URL("worker-fixture-env.js", import.meta.url).href, { env: { hello: "home", count: 3 } });
+        \\  expect(await result(envWorker, "hello")).toEqual({ env: { hello: "home", count: "3" }, hello: "home" });
+        \\  const originalArgv = [...process.argv]; const originalExecArgv = [...process.execArgv];
+        \\  const argvWorker = new Worker(new URL("worker-fixture-argv.js", import.meta.url).href, { argv: ["--home"], execArgv: ["--no-warnings"] });
+        \\  const value = await result(argvWorker, "hello"); expect(value.argv.at(-1)).toBe("--home"); expect(value.execArgv).toEqual(["--no-warnings"]); expect(process.argv).toEqual(originalArgv); expect(process.execArgv).toEqual(originalExecArgv);
+        \\});
+        \\test("one-shot worker errors stay handled and structured", async () => {
+        \\  const worker = new Worker("data:text/javascript,throw 5"); const [failure] = await once(worker, "error");
+        \\  expect(failure.type).toBe("error"); expect(failure.message).toBe("5"); expect(failure.error).toBe(null); expect(failure.runtimeCode).toBe("ERR_WORKER_EXECUTION"); expect(failure.operation).toBe("web.worker.execute"); expect(failure.phase).toBe("evaluate");
+        \\});
+        \\test("active message listeners retain the worker until completion", async () => {
+        \\  const worker = new Worker(new URL("worker-fixture-many-messages.js", import.meta.url).href); let messages = 0;
+        \\  await new Promise((resolve, reject) => { worker.onerror = reject; worker.addEventListener("message", event => { messages++; if (event.data.done) resolve(); else worker.postMessage({ i: event.data.i + 1 }); }); worker.postMessage("initial message"); });
+        \\  expect(messages).toBeGreaterThan(25); await worker.terminate();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/workers/worker.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Web Worker runtime regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
