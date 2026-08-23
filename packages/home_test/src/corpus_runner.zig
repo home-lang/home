@@ -77728,6 +77728,7 @@ const harness_prelude =
     \\function __home_Worker(code, options) {
     \\  const filenameIsUrl = typeof URL === "function" && code instanceof URL;
     \\  const filenameIsDataUrl = filenameIsUrl && code.protocol === "data:";
+    \\  const filenameIsBlobUrl = (filenameIsUrl && code.protocol === "blob:") || (!filenameIsUrl && String(code).startsWith("blob:"));
     \\  if (typeof code !== "string" && !filenameIsUrl) {
     \\    throw __home_worker_invalid_filename(code);
     \\  }
@@ -77742,7 +77743,7 @@ const harness_prelude =
     \\    error.code = "ERR_INVALID_ARG_TYPE";
     \\    throw error;
     \\  }
-    \\  const workerFilename = filenameIsDataUrl ? code.href : (filenameIsUrl || (!workerOptions.eval && String(code).startsWith("file:")) ? __home_url_file_url_to_path(code) : String(code));
+    \\  const workerFilename = filenameIsDataUrl || filenameIsBlobUrl ? String(filenameIsUrl ? code.href : code) : (filenameIsUrl || (!workerOptions.eval && String(code).startsWith("file:")) ? __home_url_file_url_to_path(code) : String(code));
     \\  const workerDisplayFilename = workerOptions.eval ? "[worker eval]" : workerFilename;
     \\  const workerArgv = Array.isArray(workerOptions.argv) ? workerOptions.argv.map(value => String(value)) : [];
     \\  const transferList = __home_message_transfer_list(workerOptions.transferList);
@@ -77898,16 +77899,36 @@ const harness_prelude =
     \\  parentPort.postMessage = function(data, transferList) {
     \\    __home_worker_message_trace_event("worker.post-parent:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
     \\    const transfers = __home_message_transfer_list(transferList);
+    \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
     \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
-    \\    const payload = __home_message_clone(data);
+    \\    const payload = buffers.length > 0 && ports.length === 0 ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
     \\    worker.__home_web_messages.push({ data: payload, ports });
     \\    if (worker.listenerCount("message") > 0 || typeof worker.__home_onmessage === "function") worker.__home_schedule_web_messages();
     \\  };
+    \\  const workerSelf = Object.create(globalThis);
+    \\  const workerSelfListeners = new Map();
+    \\  workerSelf.self = workerSelf;
+    \\  workerSelf.postMessage = parentPort.postMessage.bind(parentPort);
+    \\  workerSelf.addEventListener = function(name, callback) {
+    \\    if (typeof callback !== "function") return;
+    \\    const eventName = String(name);
+    \\    const wrapped = eventName === "message" ? data => callback.call(workerSelf, new MessageEvent("message", { data })) : callback.bind(workerSelf);
+    \\    workerSelfListeners.set(callback, { eventName, wrapped });
+    \\    parentPort.on(eventName, wrapped);
+    \\  };
+    \\  workerSelf.removeEventListener = function(name, callback) {
+    \\    const entry = workerSelfListeners.get(callback);
+    \\    if (!entry || entry.eventName !== String(name)) return;
+    \\    workerSelfListeners.delete(callback);
+    \\    parentPort.off(entry.eventName, entry.wrapped);
+    \\  };
+    \\  Object.defineProperty(workerSelf, "onmessage", { configurable: true, get() { return parentPort.__home_onmessage || null; }, set(callback) { parentPort.__home_onmessage = typeof callback === "function" ? callback : null; } });
     \\  worker.postMessage = function(data, transferList) {
     \\    __home_worker_message_trace_event("worker.post-child:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
     \\    const transfers = __home_message_transfer_list(transferList);
+    \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
     \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
-    \\    const payload = __home_message_clone(data);
+    \\    const payload = buffers.length > 0 && ports.length === 0 ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
     \\    Promise.resolve().then(() => {
     \\      parentPort.emit("message", payload);
     \\      if (typeof parentPort.__home_onmessage === "function") parentPort.__home_onmessage(new MessageEvent("message", { data: payload, ports }));
@@ -77982,7 +78003,7 @@ const harness_prelude =
     \\    try {
     \\      globalThis.process = workerProcess;
     \\      globalThis.__home_worker_environment_context = workerEnvironment;
-    \\      if (workerOptions.eval || filenameIsDataUrl) {
+    \\      if (workerOptions.eval || filenameIsDataUrl || filenameIsBlobUrl) {
     \\        let sourceText = String(code);
     \\        if (filenameIsDataUrl) {
     \\          const comma = sourceText.indexOf(",");
@@ -77990,9 +78011,14 @@ const harness_prelude =
     \\          const payload = comma >= 0 ? sourceText.slice(comma + 1) : "";
     \\          sourceText = /;base64(?:;|$)/i.test(metadata) ? Buffer.from(payload, "base64").toString() : decodeURIComponent(payload);
     \\        }
-    \\        let workerSource = __home_worker_prepare_module_source(sourceText, filenameIsDataUrl ? workerFilename : "[worker eval]");
+    \\        if (filenameIsBlobUrl) {
+    \\          const blob = globalThis.__home_blob_url_registry && globalThis.__home_blob_url_registry[workerFilename];
+    \\          if (!blob) throw __home_blob_module_error(workerFilename, "resolve", Object.assign(new Error("Object URL has been revoked or does not exist"), { code: "ERR_MODULE_NOT_FOUND" }));
+    \\          sourceText = __home_blob_module_source(blob, workerFilename);
+    \\        }
+    \\        let workerSource = __home_worker_prepare_module_source(sourceText, filenameIsDataUrl || filenameIsBlobUrl ? workerFilename : "[worker eval]");
     \\        if (workerSource.includes("while (true);")) workerSource = workerSource.replaceAll("while (true);", "if (!worker.__home_terminated) throw new Error('Worker did not terminate');");
-    \\        new Function("require", "process", "worker", "postMessage", workerSource)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort));
+    \\        new Function("require", "process", "worker", "postMessage", "self", workerSource)(workerRequire, workerProcess, worker, parentPort.postMessage.bind(parentPort), workerSelf);
     \\      } else {
     \\        let filename = workerFilename;
     \\        let rawSource = __home_build_read_text(filename);
@@ -78012,7 +78038,7 @@ const harness_prelude =
     \\        const workerModuleSource = String(source) + "\n//# sourceURL=" + filename;
     \\        if (/\bawait\s/.test(workerModuleSource)) {
     \\          const WorkerAsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort));
+    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf);
     \\          globalThis.__home_current_filename = previousFilename;
     \\          globalThis.__home_current_dirname = previousDirname;
     \\          globalThis.process = previousProcess;
@@ -78022,7 +78048,7 @@ const harness_prelude =
     \\          restoredWorkerGlobals = true;
     \\          await workerExecution;
     \\        } else {
-    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort));
+    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", "self", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort), workerSelf);
     \\        }
     \\        module.loaded = true;
     \\      }
@@ -87303,7 +87329,7 @@ fn envVariablePresent(name: [:0]const u8) bool {
 fn envVariableAlloc(allocator: std.mem.Allocator, name: [:0]const u8) !?[]u8 {
     if (builtin.is_test) return std.testing.environ.getAlloc(allocator, name) catch null;
     const value = std.c.getenv(name) orelse return null;
-    return allocator.dupe(u8, std.mem.span(value));
+    return try allocator.dupe(u8, std.mem.span(value));
 }
 
 fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
@@ -105672,6 +105698,52 @@ test "bootstrap structured clone preserves BunFile lineage and capacity failures
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap Worker Blob URLs preserve transfer ownership and resolution errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\async function roundtrip(body, expectedMessages) {
+        \\  const url = URL.createObjectURL(new Blob([body])); const worker = new Worker(url);
+        \\  try {
+        \\    const results = []; const state = Promise.withResolvers();
+        \\    worker.onerror = event => state.reject(event.error || event.message || event);
+        \\    worker.onmessage = event => { results.push(event.data); if (results.length === expectedMessages) state.resolve(results); };
+        \\    return await state.promise;
+        \\  } finally { worker.terminate(); URL.revokeObjectURL(url); }
+        \\}
+        \\test("Blob workers support array/options ArrayBuffer transfer and queued MessagePorts", async () => {
+        \\  const array = await roundtrip(`const value = new ArrayBuffer(16); new Uint8Array(value).fill(7); self.postMessage(value, [value]); self.postMessage({ detached: value.byteLength === 0 });`, 2);
+        \\  expect(array[0]).toBeInstanceOf(ArrayBuffer); expect(array[0].byteLength).toBe(16); expect(new Uint8Array(array[0])[0]).toBe(7); expect(array[1]).toEqual({ detached: true });
+        \\  const options = await roundtrip(`const value = new ArrayBuffer(8); self.postMessage(value, { transfer: [value] }); self.postMessage({ detached: value.byteLength === 0 });`, 2);
+        \\  expect(options[0].byteLength).toBe(8); expect(options[1]).toEqual({ detached: true });
+        \\  const url = URL.createObjectURL(new Blob([`const { port1, port2 } = new MessageChannel(); port2.postMessage("via-port"); self.postMessage(port1, [port1]);`])); const worker = new Worker(url);
+        \\  try {
+        \\    const first = await new Promise((resolve, reject) => { worker.onerror = event => reject(event.error || event); worker.onmessage = event => resolve(event.data); });
+        \\    expect(first).toBeInstanceOf(MessagePort); const received = await new Promise(resolve => { first.onmessage = event => resolve(event.data); }); expect(received).toBe("via-port"); first.close();
+        \\  } finally { worker.terminate(); URL.revokeObjectURL(url); }
+        \\});
+        \\test("revoked Blob worker URLs expose causal resolution context", async () => {
+        \\  const url = URL.createObjectURL(new Blob([`self.postMessage("unexpected")`])); URL.revokeObjectURL(url); const worker = new Worker(url);
+        \\  const failure = await new Promise(resolve => { worker.onerror = event => resolve(event.error); });
+        \\  expect(failure).toBeInstanceOf(Error); expect(failure.code).toBe("ERR_BLOB_MODULE"); expect(failure.runtimeCode).toBe("ERR_WORKER_EXECUTION");
+        \\  expect(failure.operation).toBe("blob.module.import"); expect(failure.phase).toBe("resolve"); expect(failure.blobURL).toBe(url);
+        \\  expect(failure.cause).toBeInstanceOf(Error); expect(failure.cause.code).toBe("ERR_MODULE_NOT_FOUND"); expect(failure.stack).toContain("Caused by:"); await worker.terminate();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/workers/worker-postmessage-transfer.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Worker Blob transfer regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
