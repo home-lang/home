@@ -4682,6 +4682,23 @@ const harness_prelude =
     \\  if (cmd.length >= 3 && cmd[1] === "run" && cmd[2] === "index.js") return __home_spawn_completed("hi\n", "error: expected string\n", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_websocket_unix_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-unix.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  const href = evalIndex >= 0 ? String(cmd[evalIndex + 2] || "") : "";
+    \\  if (!script.includes("new WebSocket(process.argv[1])") || !script.includes("from-child") || !href.startsWith("ws+unix://")) return null;
+    \\  try {
+    \\    const target = __home_websocket_unix_target(href);
+    \\    const handle = target && globalThis.__home_serve_handles_by_unix[target.unix];
+    \\    if (!handle || handle.stopped || !handle.websocket) throw new Error("WebSocket unix server is not listening");
+    \\    return __home_spawn_completed("pong:from-child\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_WEBSOCKET_UNIX_URL" ? cause : __home_websocket_unix_url_error(href, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_websocket_proxy_close_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/websocket/websocket-proxy-close-reentrancy.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -27172,6 +27189,8 @@ const harness_prelude =
     \\    if (websocketProxyTunnelLeakFixture) return websocketProxyTunnelLeakFixture;
     \\    const websocketProxyUpgradeLeakFixture = __home_spawn_websocket_proxy_upgrade_leak_fixture(options || {});
     \\    if (websocketProxyUpgradeLeakFixture) return websocketProxyUpgradeLeakFixture;
+    \\    const websocketUnixFixture = __home_spawn_websocket_unix_fixture(options || {});
+    \\    if (websocketUnixFixture) return websocketUnixFixture;
     \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
     \\    if (consoleConstructorExceptionFixture) return consoleConstructorExceptionFixture;
     \\    const cryptoRandomFixture = __home_spawn_crypto_random_fixture(options || {});
@@ -68905,6 +68924,30 @@ const harness_prelude =
     \\  if (protocolsOrOptions && typeof protocolsOrOptions === "object" && !Array.isArray(protocolsOrOptions)) return protocolsOrOptions;
     \\  return {};
     \\}
+    \\function __home_websocket_unix_url_error(href, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new SyntaxError(String(cause || "Unix socket path is required"));
+    \\  const failure = new SyntaxError("Invalid WebSocket unix URL: " + String(href || ""), { cause: underlying });
+    \\  failure.code = "ERR_WEBSOCKET_UNIX_URL";
+    \\  failure.operation = "web.websocket.unix.parse";
+    \\  failure.phase = "url";
+    \\  failure.input = String(href || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_websocket_unix_target(href) {
+    \\  const text = String(href || "");
+    \\  const secure = text.startsWith("wss+unix://");
+    \\  if (!secure && !text.startsWith("ws+unix://")) return null;
+    \\  const prefix = secure ? "wss+unix://" : "ws+unix://";
+    \\  const remainder = text.slice(prefix.length);
+    \\  if (!remainder || remainder[0] !== "/") throw __home_websocket_unix_url_error(text, new SyntaxError("Unix socket path is required"));
+    \\  const pathDelimiter = remainder.indexOf(":/");
+    \\  const unix = pathDelimiter < 0 ? remainder : remainder.slice(0, pathDelimiter);
+    \\  const requestPath = pathDelimiter < 0 ? "/" : remainder.slice(pathDelimiter + 1);
+    \\  if (!unix || unix === "/" || !requestPath.startsWith("/")) throw __home_websocket_unix_url_error(text, new SyntaxError("Invalid unix socket or request path"));
+    \\  return { href: text, unix, requestPath, secure };
+    \\}
     \\function __home_websocket_proxy_value(options) {
     \\  if (!options || typeof options !== "object") return null;
     \\  if (options.proxy !== undefined && options.proxy !== null) return typeof options.proxy === "object" && options.proxy.url !== undefined ? options.proxy.url : options.proxy;
@@ -69265,6 +69308,11 @@ const harness_prelude =
     \\    },
     \\    send(value) {
     \\      setTimeout(() => client.dispatchEvent(new MessageEvent("message", { data: value })), 0);
+    \\      return __home_websocket_payload_size(value);
+    \\    },
+    \\    sendBinary(value) {
+    \\      const payload = __home_websocket_binary_payload(client, value);
+    \\      setTimeout(() => client.dispatchEvent(new MessageEvent("message", { data: payload })), 0);
     \\      return __home_websocket_payload_size(value);
     \\    },
     \\    ping(value) {
@@ -69660,6 +69708,7 @@ const harness_prelude =
     \\  const proxy = __home_websocket_proxy_url(websocketOptions);
     \\  this.__home_listeners = Object.create(null);
     \\  let href = String(url);
+    \\  const unixTarget = __home_websocket_unix_target(href);
     \\  if (/^wss?:\/\/[^\/?#]+$/.test(href)) href += "/";
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
@@ -69669,10 +69718,12 @@ const harness_prelude =
     \\  }
     \\  const path = href.slice(origin.length) || "/";
     \\  let parsed = null;
-    \\  try { parsed = new URL(href); } catch (error) {}
+    \\  try { parsed = unixTarget ? new URL((unixTarget.secure ? "https" : "http") + "://localhost" + unixTarget.requestPath) : new URL(href); } catch (error) {}
     \\  this.__home_request_headers = __home_websocket_request_headers(parsed, websocketOptions, protocolsOrOptions);
     \\  let handle = null;
-    \\  if (parsed && (parsed.protocol === "ws:" || parsed.protocol === "wss:")) {
+    \\  if (unixTarget) {
+    \\    handle = globalThis.__home_serve_handles_by_unix[unixTarget.unix] || null;
+    \\  } else if (parsed && (parsed.protocol === "ws:" || parsed.protocol === "wss:")) {
     \\    href = parsed.href;
     \\    const wsOrigin = parsed.protocol + "//" + parsed.host;
     \\    const serverOrigin = (parsed.protocol === "wss:" ? "https://" : "http://") + parsed.host;
@@ -69684,6 +69735,7 @@ const harness_prelude =
     \\  }
     \\  this.url = href;
     \\  this.protocol = "";
+    \\  this.__home_unix = unixTarget ? unixTarget.unix : null;
     \\  this.extensions = handle && handle.websocket && handle.websocket.perMessageDeflate && __home_websocket_permessage_deflate_enabled(websocketOptions) ? "permessage-deflate" : "";
     \\  this.readyState = 0;
     \\  this.__home_binary_type = "nodebuffer";
@@ -74350,8 +74402,6 @@ const harness_prelude =
     \\    }
     \\    const stream = Object.setPrototypeOf({
     \\      locked: false,
-    \\      __home_chunks: chunks,
-    \\      __home_all_chunks: allChunks,
     \\      __home_closed: false,
     \\      __home_errored: null,
     \\      __home_underlying_source: underlyingSource,
@@ -74373,7 +74423,15 @@ const harness_prelude =
     \\                if (closed) return { done: true, value: undefined };
     \\                return reader.read();
     \\              },
-    \\              cause => { stream.__home_errored = cause; stream.__home_closed = true; throw cause; },
+    \\              cause => {
+    \\                // A pull that enqueues and then throws must still deliver
+    \\                // the enqueued chunks before the stream surfaces its error
+    \\                // (WHATWG: enqueue fulfills pending reads immediately).
+    \\                if (chunks.length > 0) return reader.read();
+    \\                stream.__home_errored = cause;
+    \\                stream.__home_closed = true;
+    \\                throw cause;
+    \\              },
     \\            );
     \\          },
     \\          cancel(reason) { return stream.cancel(reason); },
@@ -112374,6 +112432,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.unsupported);
 
+    var unix_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-unix.test.ts");
+    defer unix_summary.deinit(std.testing.allocator);
+
+    if (unix_summary.failed != 0 or unix_summary.unsupported != 0 or unix_summary.passed != 7 or unix_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket unix corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ unix_summary.passed, unix_summary.failed, unix_summary.todo, unix_summary.unsupported, unix_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), unix_summary.files);
+    try std.testing.expectEqual(@as(usize, 7), unix_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), unix_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), unix_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), unix_summary.unsupported);
+
     const source =
         \\import { expect, test } from "bun:test";
         \\test("subprotocol failures retain negotiation and close context", async () => {
@@ -112400,6 +112473,18 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         \\  expect(socket.__home_last_handshake_error).toBe(error);
         \\  expect({ code: close.code, reason: close.reason, wasClean: close.wasClean }).toEqual({ code: 1002, reason: "Mismatch client protocol", wasClean: true });
         \\});
+        \\test("unix URL failures retain parse and source context", () => {
+        \\  let error;
+        \\  try { new WebSocket("ws+unix://"); } catch (cause) { error = cause; }
+        \\  expect(error).toBeInstanceOf(SyntaxError);
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_UNIX_URL");
+        \\  expect(error.operation).toBe("web.websocket.unix.parse");
+        \\  expect(error.phase).toBe("url");
+        \\  expect(error.input).toBe("ws+unix://");
+        \\  expect(error.cause).toBeInstanceOf(SyntaxError);
+        \\  expect(error.stack).toContain("web.websocket.unix.parse [url]");
+        \\  expect(error.stack).toContain("subprotocol-error.home-regression.test.js");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/subprotocol-error.home-regression.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -112412,7 +112497,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
         std.debug.print("structured WebSocket subprotocol regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented WebSocket reads" {
