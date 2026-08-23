@@ -188504,6 +188504,20 @@ test "checker: tsgo fallback batch uses block JSX pragma after compiler option" 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
 }
 
+test "checker: reopened namespace exports satisfy classic JSX factory scope" {
+    const s = try newTsxSetup(
+        \\namespace M { export var React: any; }
+        \\namespace M {
+        \\  const a = <div />;
+        \\  const b = <div>text</div>;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setJsxClassicRuntime(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
+}
+
 test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
     const s = try newTsxSetup(
         \\declare namespace JSX { interface Element {} }
@@ -188518,6 +188532,48 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: ambient any read only by JSX spreads still reports TS7005" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\declare var props;
+        \\const element = <div {...props} />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.spread_types_object_only));
+}
+
+test "checker: TSX comparison in a derived class preserves JSX body diagnostics" {
+    const s = try newTsxSetup("\xEF\xBB\xBF" ++
+        \\declare namespace JSX { interface Element { div: string; } }
+    ++
+        \\declare namespace React {
+    ++
+        \\  class Component<P, S> { constructor(props: P, context?: any); props: P; }
+    ++
+        \\}
+    ++
+        \\export class ShortDetails extends React.Component<{ id: number }, {}> {
+    ++
+        \\  public render(): JSX.Element {
+    ++
+        \\    if (this.props.id < 1) { return (<div></div>); }
+    ++
+        \\  }
+    ++
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.fn_lacks_ending_return));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.jsx_element_implicit_any_no_intrinsic));
 }
 
 test "checker: inline JSX pragmas are scoped to each virtual file" {
@@ -188741,11 +188797,11 @@ test "checker: JSX function component rejects undefined return" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsx_element_no_construct_or_call) found = true;
-    }
-    try T.expect(found);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.jsx_component_not_valid,
+        "'Foo' cannot be used as a JSX component.",
+    ));
 }
 
 test "checker: namespace expression statements report comma left unused" {
@@ -188798,6 +188854,91 @@ test "checker: object literal bool discriminant satisfies union annotation" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: JSX class props accept attributes from one union constituent" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface Canadian { street: string; country: string; postalCode: string; }
+        \\interface American { street: string; country: string; zipCode: string; }
+        \\type Address = Canadian | American;
+        \\class AddressComp extends React.Component<Address, {}> {}
+        \\const value = <AddressComp postalCode="T1B" street="Main" country="CA" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: JSX spread preserves const discriminated union initializer" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\type TextProps = { editable: false } | { editable: true, onEdit: (value: string) => void };
+        \\class TextComponent extends React.Component<TextProps, {}> {}
+        \\const disabled: TextProps = { editable: false };
+        \\const enabled: TextProps = { editable: true, onEdit: () => {} };
+        \\const a = <TextComponent {...disabled} />;
+        \\const b = <TextComponent {...enabled} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
+}
+
+test "checker: empty JSX attributes infer empty generic props before defaults" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface DefaultProps { a: number; b: string; }
+        \\declare class Generic<P = DefaultProps> extends React.Component<P, {}> {}
+        \\const value = <Generic />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_missing_properties));
+}
+
+test "checker: constrained empty JSX props preserve the constraint name" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface Prop { a: number; b: string; }
+        \\declare class MyComp<P extends Prop> extends React.Component<P, {}> {}
+        \\const value = <MyComp />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_missing_properties and
+            std.mem.eql(u8, d.message, "Type '{}' is missing the following properties from type 'Prop': a, b"))
+        {
+            saw = true;
+        }
+    }
+    try T.expect(saw);
+}
+
+test "checker: JSX class type arguments enforce arity constraints and props" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface Prop { a: number; b: string; }
+        \\declare class MyComp<P> extends React.Component<P, {}> {}
+        \\const badValue = <MyComp<Prop> a={10} b={20} />;
+        \\const badArity = <MyComp<Prop, Prop> a={10} b="hi" />;
+        \\declare class MyComp2<P extends { a: string }, P2 = {}> extends React.Component<P & P2, {}> {}
+        \\const badConstraint = <MyComp2<Prop> a={10} b="hi" />;
+        \\const badDefault = <MyComp2<{ a: string }, { b: number }> a="hi" b="hi" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: JSX spread attributes must be object-like" {
@@ -189192,6 +189333,7 @@ test "checker: JSX parity class spreads elaborate missing and weak managed props
         \\const unrelated = { prop1: false };
         \\<Required {...empty} />;
         \\<Weak {...unrelated} />;
+        \\<Weak {...{ "data-prop": true }} />;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -189206,6 +189348,7 @@ test "checker: JSX parity class spreads elaborate missing and weak managed props
         TsCodes.no_properties_in_common,
         "Type '{ prop1: boolean; }' has no properties in common with type 'IntrinsicAttributes & IntrinsicClassAttributes<Weak> & { children?: ReactNode | undefined; }'.",
     ));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
 }
 
 test "checker: JSX parity union class props retain managed intersection grouping" {
@@ -193331,6 +193474,22 @@ test "checker: non-strict top-level arrow this.name reports globalThis property"
     try T.expect(saw_name);
 }
 
+test "checker: external module arrow this member is possibly undefined without strict null checks" {
+    const s = try newSetup(
+        \\import React = require("react");
+        \\declare function use(options: { callback: () => void }): void;
+        \\use({ callback: () => this.value });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined));
+    try T.expectEqualStrings(
+        "Object is possibly 'undefined'.",
+        checkerFirstMessageForCode(s, TsCodes.object_possibly_undefined) orelse return error.MissingDiagnostic,
+    );
+}
+
 test "checker: contextual top-level arrow this captures globalThis" {
     const s = try newSetup(
         \\// @strict: false
@@ -197103,6 +197262,25 @@ test "checker: noImplicitAny emits TS7034 for bare `let x` declaration" {
     try T.expect(found);
 }
 
+test "checker: captured top-level evolving any reports every nested read" {
+    const s = try newTsxSetup(
+        \\var p;
+        \\class C {
+        \\  f() {
+        \\    const a = <div>{p}</div>;
+        \\    const b = <div>{[p, ...p]}</div>;
+        \\    const c = <div a={{p}} />;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
 test "checker: parity batch recovered invalid labeled var suppresses TS7034" {
     const s = try newSetup("label: var y;");
     defer destroySetup(s);
@@ -199283,18 +199461,22 @@ test "checker: TS2608 reports multiple JSX ElementAttributesProperty members" {
         \\declare namespace JSX {
         \\  interface Element { }
         \\  interface ElementAttributesProperty { props: {}; attrs: {}; }
-        \\  interface IntrinsicElements { div: any }
         \\}
-        \\class Button { props!: {}; }
-        \\let k = <Button />;
+        \\interface ObjType { new(n: string): {}; }
+        \\declare const Obj: ObjType;
+        \\const value = <Obj x={10} />;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_global_type_multiple_properties));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.jsx_global_type_multiple_properties) {
             try T.expectEqualStrings("The global type 'JSX.ElementAttributesProperty' may not have more than one property.", d.message);
+        }
+        if (d.code == TsCodes.type_not_assignable) {
+            try T.expectEqualStrings("Type '{ x: number; }' is not assignable to type 'string'.", d.message);
         }
     }
 }
@@ -200381,6 +200563,19 @@ test "checker: noUncheckedIndexedAccess off keeps arr[i] as T" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: noUncheckedIndexedAccess widens open array destructuring positions" {
+    const s = try newSetup(
+        \\declare const strArray: string[];
+        \\const [s1] = strArray;
+        \\s1.toString();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unchecked_indexed_access = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
 test "checker: `as const` on a string literal types as the literal" {
@@ -203089,6 +203284,22 @@ test "checker: ambient module class merges with sibling namespace types" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
+}
+
+test "checker: namespace import resolves direct ambient module class type" {
+    const s = try newSetup(
+        \\import * as React from "react";
+        \\class App extends React.Component<any, any> {}
+    );
+    defer destroySetup(s);
+    const classes = [_]ProgramExportedClass{.{
+        .target_path = "/react.d.ts",
+        .ambient_module_name = "react",
+        .class_name = "Component",
+    }};
+    s.checker.setProgramExportedClasses(&classes);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: TS1340 not emitted for missing module (TS2307 wins)" {
@@ -251495,6 +251706,38 @@ test "checker: JSX overloads accept ignored zero-arg bags and defer spread value
             s.sint.get(hir_mod.jsxAttributeOf(&s.hir, diagnostic.node).name),
         );
     }
+}
+
+test "checker: JSX overload anchors follow last-signature applicability" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\declare function Earlier(props: { "extra-data": string }): JSX.Element;
+        \\declare function Earlier(props: { yy: string }): JSX.Element;
+        \\const earlierOnly = <Earlier extra-data />;
+        \\declare function Child(props: { y1?: string; y2?: number }): JSX.Element;
+        \\declare function Child(props: { y1?: string; y2?: number; children: JSX.Element }): JSX.Element;
+        \\declare function Child(props: { y1: boolean; y2?: number; y3: boolean }): JSX.Element;
+        \\const explicit = <Child y1="hello" y2={1000} children="hi" />;
+        \\const nested = <Child y1="hello" y2={1000}>Hi</Child>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_text_child_not_accepted));
+    var tag_anchors: usize = 0;
+    var y1_anchors: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.no_overload_matches) continue;
+        if (s.hir.kindOf(diagnostic.node) == .identifier) tag_anchors += 1;
+        if (s.hir.kindOf(diagnostic.node) == .jsx_attribute and
+            std.mem.eql(u8, s.sint.get(hir_mod.jsxAttributeOf(&s.hir, diagnostic.node).name), "y1"))
+        {
+            y1_anchors += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), tag_anchors);
+    try T.expectEqual(@as(usize, 2), y1_anchors);
 }
 
 test "checker: JSX overloads excess-check explicit attrs beside concrete spreads" {
