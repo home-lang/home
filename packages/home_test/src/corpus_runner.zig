@@ -264,6 +264,7 @@ const harness_prelude =
     \\  globalThis.__home_current_test_concurrent = false;
     \\  globalThis.__home_current_snapshot_name = null;
     \\  globalThis.__home_current_assertion_state = null;
+    \\  globalThis.__home_worker_message_trace = [];
     \\  globalThis.__home_snapshot_values = Object.create(null);
     \\  globalThis.__home_snapshot_counts = Object.create(null);
     \\  globalThis.__home_mocked_modules = Object.create(null);
@@ -27646,7 +27647,7 @@ const harness_prelude =
     \\        return Promise.reject(error);
     \\      }
     \\    }
-    \\    return {
+    \\    const bunFile = {
     \\      __home_file_ref: true,
     \\      fd: typeof path === "number" ? path : null,
     \\      path: filePath,
@@ -27828,6 +27829,8 @@ const harness_prelude =
     \\        return __home_file_slice_blob(filePath, first, last, contentType === undefined ? this.type : contentType);
     \\      },
     \\    };
+    \\    if (typeof Blob === "function") Object.setPrototypeOf(bunFile, Blob.prototype);
+    \\    return bunFile;
     \\  },
     \\  Glob: function(pattern) {
     \\    this.pattern = String(pattern || "");
@@ -31526,6 +31529,7 @@ const harness_prelude =
     \\}
     \\const __home_structured_clone_without_blob = structuredClone;
     \\structuredClone = globalThis.structuredClone = function(value, options) {
+    \\  if (value && value.__home_block_list === true && (!options || !Array.isArray(options.transfer) || options.transfer.length === 0)) return value;
     \\  if (__home_contains_blob(value, new Set())) return __home_deserialize_value(__home_serialize_value(value, { binaryType: "nodebuffer" }, "structuredClone.serialize"), "structuredClone.deserialize");
     \\  return __home_structured_clone_without_blob(value, options);
     \\};
@@ -32567,7 +32571,8 @@ const harness_prelude =
     \\function __home_track_test_thenable(result, parsed) {
     \\  __home_bun_tests.pending++;
     \\  const pendingTrace = Array.isArray(globalThis.__home_grpc_async_trace) && globalThis.__home_grpc_async_trace.length > 0 ? " | gRPC lifecycle: " + globalThis.__home_grpc_async_trace.join(" -> ") : "";
-    \\  const pendingMessage = (parsed && parsed.name ? "pending async test promise in " + String(parsed.name) + " requires event-loop support" : "pending async test promise requires event-loop support") + pendingTrace;
+    \\  const messageTrace = Array.isArray(globalThis.__home_worker_message_trace) && globalThis.__home_worker_message_trace.length > 0 ? " | message lifecycle: " + globalThis.__home_worker_message_trace.slice(-12).join(" -> ") : "";
+    \\  const pendingMessage = (parsed && parsed.name ? "pending async test promise in " + String(parsed.name) + " requires event-loop support" : "pending async test promise requires event-loop support") + messageTrace + pendingTrace;
     \\  if (Array.isArray(__home_bun_tests.pendingMessages)) __home_bun_tests.pendingMessages.push(pendingMessage);
     \\  function clearPendingMessage() {
     \\    if (!Array.isArray(__home_bun_tests.pendingMessages)) return;
@@ -57668,20 +57673,108 @@ const harness_prelude =
     \\  return socket;
     \\}
     \\function __home_net_is_ipv4(value) {
-    \\  const parts = String(value || "").split(".");
-    \\  return parts.length === 4 && parts.every(part => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+    \\  return __home_net_ipv4_value(value) !== null;
     \\}
     \\function __home_net_is_ipv6(value) {
-    \\  const text = String(value || "");
-    \\  return text.includes(":") && /^[0-9a-f:.]+$/i.test(text);
+    \\  return __home_net_ipv6_value(value) !== null;
     \\}
     \\function __home_net_is_ip(value) {
     \\  if (__home_net_is_ipv4(value)) return 4;
     \\  if (__home_net_is_ipv6(value)) return 6;
     \\  return 0;
     \\}
+    \\function __home_net_ipv4_value(address) {
+    \\  const parts = String(address).split(".");
+    \\  if (parts.length !== 4 || parts.some(part => part === "" || String(Number(part)) !== part || Number(part) < 0 || Number(part) > 255)) return null;
+    \\  return parts.reduce((value, part) => (value << 8n) | BigInt(Number(part)), 0n);
+    \\}
+    \\function __home_net_ipv6_value(address) {
+    \\  let text = String(address).toLowerCase();
+    \\  if (!text.includes(":")) return null;
+    \\  const halves = text.split("::");
+    \\  if (halves.length > 2) return null;
+    \\  function words(part) {
+    \\    if (!part) return [];
+    \\    const entries = part.split(":");
+    \\    const out = [];
+    \\    for (const entry of entries) {
+    \\      if (entry.includes(".")) {
+    \\        const ipv4 = __home_net_ipv4_value(entry);
+    \\        if (ipv4 === null) return null;
+    \\        out.push(Number((ipv4 >> 16n) & 65535n), Number(ipv4 & 65535n));
+    \\      } else {
+    \\        if (!/^[0-9a-f]{1,4}$/.test(entry)) return null;
+    \\        out.push(parseInt(entry, 16));
+    \\      }
+    \\    }
+    \\    return out;
+    \\  }
+    \\  const left = words(halves[0]);
+    \\  const right = words(halves.length === 2 ? halves[1] : "");
+    \\  if (!left || !right) return null;
+    \\  const missing = 8 - left.length - right.length;
+    \\  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+    \\  const all = left.concat(new Array(Math.max(0, missing)).fill(0), right);
+    \\  if (all.length !== 8) return null;
+    \\  return all.reduce((value, word) => (value << 16n) | BigInt(word), 0n);
+    \\}
+    \\const __home_net_ipv4_mapped_prefix = 65535n << 32n;
+    \\function __home_net_block_address(address, type) {
+    \\  const family = type === undefined ? (__home_net_ipv4_value(address) === null ? "ipv6" : "ipv4") : String(type).toLowerCase();
+    \\  if (family === "ipv4") {
+    \\    const value = __home_net_ipv4_value(address);
+    \\    if (value === null) throw new TypeError("Invalid IPv4 address: " + String(address));
+    \\    return { family: 4, value };
+    \\  }
+    \\  if (family !== "ipv6") throw new TypeError("Address type must be 'ipv4' or 'ipv6'");
+    \\  const value = __home_net_ipv6_value(address);
+    \\  if (value === null) throw new TypeError("Invalid IPv6 address: " + String(address));
+    \\  if ((value >> 32n) === 65535n) return { family: 4, value: value & 4294967295n, mapped: true };
+    \\  return { family: 6, value };
+    \\}
+    \\function __home_net_block_mask(bits, prefix) {
+    \\  if (prefix === 0) return 0n;
+    \\  return ((1n << BigInt(prefix)) - 1n) << BigInt(bits - prefix);
+    \\}
+    \\function __home_net_BlockList() {
+    \\  if (!new.target) return new __home_net_BlockList();
+    \\  Object.defineProperty(this, "__home_block_list", { value: true });
+    \\  Object.defineProperty(this, "__home_block_list_rules", { value: [], writable: true });
+    \\}
+    \\__home_net_BlockList.prototype.addAddress = function(address, type) {
+    \\  const parsed = __home_net_block_address(address, type);
+    \\  this.__home_block_list_rules.unshift({ kind: "address", family: parsed.family, first: parsed.value, last: parsed.value, text: "Address: " + String(address) });
+    \\};
+    \\__home_net_BlockList.prototype.addRange = function(start, end, type) {
+    \\  const first = __home_net_block_address(start, type);
+    \\  const last = __home_net_block_address(end, type);
+    \\  if (first.family !== last.family || first.value > last.value) throw new TypeError("Invalid BlockList address range");
+    \\  this.__home_block_list_rules.unshift({ kind: "range", family: first.family, first: first.value, last: last.value, text: "Range: " + String(start) + "-" + String(end) });
+    \\};
+    \\__home_net_BlockList.prototype.addSubnet = function(network, prefix, type) {
+    \\  const parsed = __home_net_block_address(network, type);
+    \\  let bits = parsed.family === 4 ? 32 : 128;
+    \\  let length = Number(prefix);
+    \\  if (parsed.mapped) length -= 96;
+    \\  if (!Number.isInteger(length) || length < 0 || length > bits) throw new TypeError("Invalid subnet prefix");
+    \\  const mask = __home_net_block_mask(bits, length);
+    \\  const first = parsed.value & mask;
+    \\  const last = first | (((1n << BigInt(bits)) - 1n) ^ mask);
+    \\  this.__home_block_list_rules.unshift({ kind: "subnet", family: parsed.family, first, last, text: "Subnet: " + String(network) + "/" + String(prefix) });
+    \\};
+    \\__home_net_BlockList.prototype.check = function(address, type) {
+    \\  const parsed = __home_net_block_address(address, type);
+    \\  for (const rule of this.__home_block_list_rules) {
+    \\    let value = parsed.value;
+    \\    if (rule.family === 4 && parsed.family !== 4) continue;
+    \\    if (rule.family === 6 && parsed.family === 4) value = __home_net_ipv4_mapped_prefix | parsed.value;
+    \\    if (value >= rule.first && value <= rule.last) return true;
+    \\  }
+    \\  return false;
+    \\};
+    \\Object.defineProperty(__home_net_BlockList.prototype, "rules", { configurable: true, enumerable: true, get() { return this.__home_block_list_rules.map(rule => rule.text); } });
     \\let __home_net_default_auto_select_family_attempt_timeout = 250;
-    \\const __home_node_net = { Socket: __home_net_Socket, connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server, isIP: __home_net_is_ip, isIPv4: __home_net_is_ipv4, isIPv6: __home_net_is_ipv6, getDefaultAutoSelectFamilyAttemptTimeout() { return __home_net_default_auto_select_family_attempt_timeout; }, setDefaultAutoSelectFamilyAttemptTimeout(value) { __home_net_default_auto_select_family_attempt_timeout = Number(value) || 0; } };
+    \\const __home_node_net = { BlockList: __home_net_BlockList, Socket: __home_net_Socket, Stream: __home_net_Socket, connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server, isIP: __home_net_is_ip, isIPv4: __home_net_is_ipv4, isIPv6: __home_net_is_ipv6, getDefaultAutoSelectFamilyAttemptTimeout() { return __home_net_default_auto_select_family_attempt_timeout; }, setDefaultAutoSelectFamilyAttemptTimeout(value) { __home_net_default_auto_select_family_attempt_timeout = Number(value) || 0; } };
     \\const __home_http_spec_cases = [
     \\  ["G", true, [[-1, -1]]],
     \\  ["GET ", true, [[-1, -1]]],
@@ -76910,9 +77003,22 @@ const harness_prelude =
     \\}
     \\function __home_message_clone(data, seen) {
     \\  if (data === null || typeof data !== "object") return data;
+    \\  if (data instanceof __home_MessagePort) return data;
+    \\  if (data.__home_file_ref === true) return data;
+    \\  if (data.__home_block_list === true) return data;
     \\  if (typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(data)) return data;
     \\  const references = seen || new WeakMap();
     \\  if (references.has(data)) return references.get(data);
+    \\  if (data instanceof Error) {
+    \\    let clone;
+    \\    try { clone = new data.constructor(String(data.message || ""), data.cause === undefined ? undefined : { cause: __home_message_clone(data.cause, references) }); }
+    \\    catch (ignored) { clone = new Error(String(data.message || "")); }
+    \\    references.set(data, clone);
+    \\    clone.name = String(data.name || "Error");
+    \\    if (data.stack !== undefined) clone.stack = String(data.stack);
+    \\    for (const key of Object.keys(data)) clone[key] = __home_message_clone(data[key], references);
+    \\    return clone;
+    \\  }
     \\  if (Array.isArray(data)) {
     \\    const clone = [];
     \\    references.set(data, clone);
@@ -76936,67 +77042,155 @@ const harness_prelude =
     \\  throw error;
     \\}
     \\Object.defineProperty(__home_MessagePort.prototype, Symbol.toStringTag, { configurable: true, value: "MessagePort" });
-    \\function __home_message_transfer_error(message) {
-    \\  const error = new Error(message);
+    \\function __home_message_transfer_error(message, phase, transferIndex, transferValue, cause) {
+    \\  const error = new Error(message, cause === undefined ? undefined : { cause });
     \\  error.name = "DataCloneError";
     \\  error.code = 25;
+    \\  error.runtimeCode = "ERR_MESSAGE_PORT_TRANSFER";
+    \\  error.operation = "web.message_port.transfer";
+    \\  error.phase = phase || "validate";
+    \\  if (transferIndex !== undefined) error.transferIndex = transferIndex;
+    \\  if (transferValue !== undefined) error.transferType = transferValue === null ? "null" : Object.prototype.toString.call(transferValue).slice(8, -1);
+    \\  if (cause !== undefined) error.cause = cause;
+    \\  if (typeof Error.captureStackTrace === "function") Error.captureStackTrace(error, __home_message_transfer_error);
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + error.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
     \\  return error;
     \\}
-    \\function __home_message_transfer_list(transferList) {
+    \\function __home_message_transfer_list(transferList, sender) {
     \\  if (transferList === undefined) return [];
+    \\  if (!Array.isArray(transferList) && transferList !== null && typeof transferList === "object" && Object.prototype.hasOwnProperty.call(transferList, "transfer")) transferList = transferList.transfer;
     \\  if (!Array.isArray(transferList)) throw new TypeError("Transfer list must be an Array");
+    \\  if (transferList.length > 65535) throw __home_message_transfer_error("Transfer list is too large or sparse", "validate", transferList.length, transferList);
     \\  const seen = new Set();
-    \\  for (const item of transferList) {
+    \\  for (let index = 0; index < transferList.length; index++) {
+    \\    if (!Object.prototype.hasOwnProperty.call(transferList, index)) throw __home_message_transfer_error("Transfer list contains an empty entry", "validate", index, undefined);
+    \\    const item = transferList[index];
     \\    if (seen.has(item)) {
     \\      const kind = item instanceof ArrayBuffer ? "ArrayBuffer" : (item instanceof __home_MessagePort ? "MessagePort" : "transferable");
-    \\      throw __home_message_transfer_error("Transfer list contains duplicate " + kind);
+    \\      throw __home_message_transfer_error("Transfer list contains duplicate " + kind, "validate", index, item);
     \\    }
+    \\    if (!(item instanceof ArrayBuffer) && !(item instanceof __home_MessagePort) && !(item && item.__home_file_handle === true)) throw __home_message_transfer_error("Transfer list contains a non-transferable value", "validate", index, item);
+    \\    if (sender && (item === sender || item === sender.__home_peer)) throw __home_message_transfer_error("Source or entangled MessagePort cannot be transferred", "validate", index, item);
+    \\    if (item instanceof __home_MessagePort && item.__home_closed) throw __home_message_transfer_error("Closed MessagePort cannot be transferred", "validate", index, item);
     \\    seen.add(item);
     \\  }
     \\  return transferList;
     \\}
+    \\function __home_message_assert_cloneable(value, transferredPorts, seen) {
+    \\  if (typeof value === "function" || typeof value === "symbol") throw __home_message_transfer_error("Message payload contains a non-cloneable " + typeof value, "clone", undefined, value);
+    \\  if (value === null || typeof value !== "object") return;
+    \\  if (value instanceof __home_MessagePort) {
+    \\    if (!transferredPorts.has(value)) throw __home_message_transfer_error("MessagePort in the payload is missing from the transfer list", "validate", undefined, value);
+    \\    return;
+    \\  }
+    \\  if (value.__home_file_ref === true) return;
+    \\  if (value instanceof __home_MessageChannel) throw __home_message_transfer_error("MessageChannel is a non-cloneable host object", "clone", undefined, value);
+    \\  if (seen.has(value)) return;
+    \\  seen.add(value);
+    \\  if (value instanceof Map) {
+    \\    for (const [key, entry] of value) { __home_message_assert_cloneable(key, transferredPorts, seen); __home_message_assert_cloneable(entry, transferredPorts, seen); }
+    \\    return;
+    \\  }
+    \\  if (value instanceof Set) {
+    \\    for (const entry of value) __home_message_assert_cloneable(entry, transferredPorts, seen);
+    \\    return;
+    \\  }
+    \\  if (value instanceof Date || value instanceof RegExp || value instanceof Error || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
+    \\  for (const key of Object.keys(value)) __home_message_assert_cloneable(value[key], transferredPorts, seen);
+    \\}
     \\globalThis.__home_transferred_array_buffers = globalThis.__home_transferred_array_buffers || new WeakSet();
+    \\function __home_worker_message_trace_event(event) {
+    \\  const trace = globalThis.__home_worker_message_trace || (globalThis.__home_worker_message_trace = []);
+    \\  trace.push(String(event).slice(0, 240));
+    \\  if (trace.length > 64) trace.splice(0, trace.length - 64);
+    \\}
+    \\function __home_worker_message_trace_value(value) {
+    \\  if (value === null) return "null";
+    \\  if (typeof value === "string") return "string(bytes=" + String(__home_utf8_byte_length(value)) + ")";
+    \\  if (value instanceof __home_MessagePort) return "MessagePort";
+    \\  if (value instanceof ArrayBuffer) return "ArrayBuffer(bytes=" + String(value.byteLength) + ")";
+    \\  if (ArrayBuffer.isView(value)) return (value.constructor && value.constructor.name || "ArrayBufferView") + "(bytes=" + String(value.byteLength) + ")";
+    \\  return value && value.constructor && value.constructor.name ? value.constructor.name : typeof value;
+    \\}
+    \\const __home_message_ready_ports = [];
+    \\let __home_message_scheduler_pending = false;
+    \\function __home_message_port_drain(readyPort) {
+    \\  readyPort.__home_message_drain_pending = false;
+    \\  while (!readyPort.__home_closed && readyPort.__home_messages.length > 0) {
+    \\    const envelope = readyPort.__home_messages.shift();
+    \\    __home_worker_message_trace_event("port.deliver:" + __home_worker_message_trace_value(envelope.data));
+    \\    readyPort.emit("message", envelope.data);
+    \\    const event = new MessageEvent("message", { data: envelope.data, ports: envelope.ports });
+    \\    if (typeof readyPort.__home_onmessage === "function") readyPort.__home_onmessage(event);
+    \\    readyPort.emit("messageevent", event);
+    \\  }
+    \\}
     \\function __home_message_port_schedule_drain(port) {
     \\  if (port.__home_message_drain_pending) return;
     \\  port.__home_message_drain_pending = true;
+    \\  __home_message_ready_ports.push(port);
+    \\  if (__home_message_scheduler_pending) return;
+    \\  __home_message_scheduler_pending = true;
     \\  Promise.resolve().then(() => {
-    \\    port.__home_message_drain_pending = false;
-    \\    while (!port.__home_closed && port.__home_messages.length > 0) {
-    \\      const payload = port.__home_messages.shift();
-    \\      port.emit("message", payload);
-    \\      if (typeof port.onmessage === "function") port.onmessage(new MessageEvent("message", { data: payload }));
-    \\    }
+    \\    try {
+    \\      while (__home_message_ready_ports.length > 0) {
+    \\        const readyPort = __home_message_ready_ports.shift();
+    \\        __home_message_port_drain(readyPort);
+    \\      }
+    \\    } finally { __home_message_scheduler_pending = false; }
     \\  });
     \\}
     \\function __home_message_port() {
     \\  const port = __home_http_event_target();
     \\  Object.setPrototypeOf(port, __home_MessagePort.prototype);
     \\  port.__home_messages = [];
+    \\  port.__home_transfer_epoch = 0;
+    \\  Object.defineProperty(port, "onmessage", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return this.__home_onmessage || null; },
+    \\    set(callback) {
+    \\      this.__home_onmessage = typeof callback === "function" ? callback : null;
+    \\      if (this.__home_onmessage && this.__home_messages.length > 0) __home_message_port_drain(this);
+    \\    },
+    \\  });
     \\  const addPortListener = port.on;
     \\  port.on = function(name, callback) {
     \\    addPortListener.call(this, name, callback);
-    \\    if (String(name) === "message" && this.__home_messages.length > 0) __home_message_port_schedule_drain(this);
+    \\    if (String(name) === "message" && this.__home_messages.length > 0) __home_message_port_drain(this);
     \\    return this;
     \\  };
     \\  port.addListener = port.on;
     \\  port.postMessage = function(data, transferList) {
-    \\    const transfers = __home_message_transfer_list(transferList);
-    \\    if (Array.isArray(transferList) && transferList.some(value => value && value.__home_napi_external_arraybuffer)) {
+    \\    __home_worker_message_trace_event("port.post:" + __home_worker_message_trace_value(data));
+    \\    const transfers = __home_message_transfer_list(transferList, this);
+    \\    if (transfers.some(value => value && value.__home_napi_external_arraybuffer)) {
     \\      const error = new Error("An ArrayBuffer with an external finalizer cannot be transferred");
     \\      error.name = "DataCloneError";
     \\      error.code = 25;
     \\      throw error;
     \\    }
     \\    const buffers = transfers.filter(value => value instanceof ArrayBuffer);
-    \\    for (const buffer of buffers) globalThis.__home_transferred_array_buffers.add(buffer);
+    \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
+    \\    __home_message_assert_cloneable(data, new Set(ports), new Set());
     \\    const peer = this.__home_peer;
     \\    if (!peer || peer.__home_closed) return;
-    \\    const payload = buffers.length > 0 && typeof structuredClone === "function" ? structuredClone(data, { transfer: buffers }) : __home_message_clone(data);
-    \\    peer.__home_messages.push(payload);
-    \\    if (peer.listenerCount("message") > 0 || typeof peer.onmessage === "function") __home_message_port_schedule_drain(peer);
+    \\    let payload;
+    \\    try {
+    \\      if (ports.length === 0 && buffers.length > 0 && typeof structuredClone === "function") payload = structuredClone(data, { transfer: buffers });
+    \\      else payload = __home_message_clone(data);
+    \\    } catch (cause) {
+    \\      throw __home_message_transfer_error("Message payload could not be cloned", "clone", undefined, data, cause);
+    \\    }
+    \\    for (const buffer of buffers) globalThis.__home_transferred_array_buffers.add(buffer);
+    \\    for (const transferredPort of ports) transferredPort.__home_transfer_epoch++;
+    \\    peer.__home_messages.push({ data: payload, ports: ports.slice() });
+    \\    if (peer.listenerCount("message") > 0 || typeof peer.__home_onmessage === "function") __home_message_port_schedule_drain(peer);
     \\  };
     \\  port.close = function() { this.__home_closed = true; this.__home_messages.length = 0; };
-    \\  port.start = function() {};
+    \\  port.start = function() { if (this.__home_messages.length > 0) __home_message_port_schedule_drain(this); };
+    \\  port.addEventListener = function(name, callback) { if (String(name) === "message") return this.on("messageevent", callback); return this.on(name, callback); };
+    \\  port.removeEventListener = function(name, callback) { if (String(name) === "message") return this.off("messageevent", callback); return this.off(name, callback); };
     \\  port.ref = function() { this.__home_unrefed = false; return this; };
     \\  port.unref = function() { this.__home_unrefed = true; return this; };
     \\  port.hasRef = function() { return !this.__home_unrefed; };
@@ -77020,7 +77214,7 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\  if (port.__home_messages.length === 0) return undefined;
-    \\  return { message: port.__home_messages.shift() };
+    \\  return { message: port.__home_messages.shift().data };
     \\}
     \\globalThis.MessagePort = __home_MessagePort;
     \\globalThis.MessageChannel = __home_MessageChannel;
@@ -77162,6 +77356,7 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\  const workerFilename = filenameIsDataUrl ? code.href : (filenameIsUrl || (!workerOptions.eval && String(code).startsWith("file:")) ? __home_url_file_url_to_path(code) : String(code));
+    \\  const workerDisplayFilename = workerOptions.eval ? "[worker eval]" : workerFilename;
     \\  const workerArgv = Array.isArray(workerOptions.argv) ? workerOptions.argv.map(value => String(value)) : [];
     \\  const transferList = __home_message_transfer_list(workerOptions.transferList);
     \\  const fileTransfers = new Map();
@@ -77181,7 +77376,88 @@ const harness_prelude =
     \\  const workerThreadId = __home_worker_next_thread_id++;
     \\  const parentProcess = process;
     \\  const worker = __home_http_event_target();
+    \\  __home_worker_message_trace_event("worker.construct:" + workerDisplayFilename);
     \\  worker.threadId = workerThreadId;
+    \\  worker.__home_online = false;
+    \\  worker.__home_online_emitted = false;
+    \\  worker.__home_exit_pending = null;
+    \\  worker.__home_emit_online = function() {
+    \\    if (!this.__home_online || this.__home_online_emitted) return;
+    \\    this.__home_online_emitted = true;
+    \\    this.emit("online");
+    \\  };
+    \\  worker.__home_emit_pending_exit = function() {
+    \\    if (this.__home_exit_pending === null || this.__home_exit_emitted) return;
+    \\    const code = this.__home_exit_pending;
+    \\    this.__home_exit_pending = null;
+    \\    this.__home_exit_emitted = true;
+    \\    this.emit("exit", code);
+    \\  };
+    \\  worker.__home_web_messages = [];
+    \\  worker.__home_web_message_pending = false;
+    \\  worker.__home_errors = [];
+    \\  worker.__home_error_pending = false;
+    \\  worker.__home_drain_errors = function() {
+    \\    while (this.__home_errors.length > 0) {
+    \\      const failure = this.__home_errors.shift();
+    \\      let handled = this.emit("error", failure);
+    \\      if (typeof this.__home_onerror === "function") {
+    \\        handled = true;
+    \\        try { this.__home_onerror(new ErrorEvent("error", { message: String(failure.message || failure), filename: workerDisplayFilename, error: failure })); }
+    \\        catch (handlerError) { __home_record_async_failure(handlerError, { name: "Worker error handler" }); }
+    \\      }
+    \\      if (!handled) __home_record_async_failure(failure, { name: "Worker " + workerDisplayFilename });
+    \\    }
+    \\  };
+    \\  worker.__home_schedule_errors = function() {
+    \\    if (this.__home_error_pending) return;
+    \\    this.__home_error_pending = true;
+    \\    Promise.resolve().then(() => { this.__home_error_pending = false; this.__home_drain_errors(); });
+    \\  };
+    \\  worker.__home_drain_web_messages = function() {
+    \\    while (this.__home_web_messages.length > 0) {
+    \\      const envelope = this.__home_web_messages.shift();
+    \\      __home_worker_message_trace_event("worker.deliver:" + workerDisplayFilename + ":port=" + String(envelope.data instanceof __home_MessagePort));
+    \\      this.emit("message", envelope.data);
+    \\      if (typeof this.__home_onmessage === "function") this.__home_onmessage(new MessageEvent("message", { data: envelope.data, ports: envelope.ports }));
+    \\    }
+    \\  };
+    \\  worker.__home_schedule_web_messages = function() {
+    \\    if (this.__home_web_message_pending) return;
+    \\    this.__home_web_message_pending = true;
+    \\    Promise.resolve().then(() => {
+    \\      this.__home_web_message_pending = false;
+    \\      this.__home_drain_web_messages();
+    \\    });
+    \\  };
+    \\  const addWorkerListener = worker.on;
+    \\  worker.on = function(name, callback) {
+    \\    addWorkerListener.call(this, name, callback);
+    \\    if (String(name) === "message" && this.__home_web_messages.length > 0) this.__home_drain_web_messages();
+    \\    if (String(name) === "error" && this.__home_errors.length > 0) this.__home_drain_errors();
+    \\    if (String(name) === "online" && this.__home_online) this.__home_emit_online();
+    \\    if (String(name) === "exit" && this.__home_exit_pending !== null) this.__home_emit_pending_exit();
+    \\    return this;
+    \\  };
+    \\  worker.addListener = worker.on;
+    \\  Object.defineProperty(worker, "onmessage", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return this.__home_onmessage || null; },
+    \\    set(callback) {
+    \\      this.__home_onmessage = typeof callback === "function" ? callback : null;
+    \\      if (this.__home_onmessage && this.__home_web_messages.length > 0) this.__home_drain_web_messages();
+    \\    },
+    \\  });
+    \\  Object.defineProperty(worker, "onerror", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return this.__home_onerror || null; },
+    \\    set(callback) {
+    \\      this.__home_onerror = typeof callback === "function" ? callback : null;
+    \\      if (this.__home_onerror && this.__home_errors.length > 0) this.__home_drain_errors();
+    \\    },
+    \\  });
     \\  worker.__home_comlink_ready = new Promise((resolve, reject) => { worker.__home_comlink_resolve = resolve; worker.__home_comlink_reject = reject; });
     \\  worker.stdin = null;
     \\  worker.stdout = null;
@@ -77213,13 +77489,23 @@ const harness_prelude =
     \\  Promise.resolve().then(() => parentProcess.emit("worker", worker));
     \\  const environmentFinalizers = [];
     \\  const parentPort = __home_http_event_target();
-    \\  parentPort.postMessage = function(data) {
-    \\    worker.emit("message", __home_message_clone(data));
+    \\  parentPort.postMessage = function(data, transferList) {
+    \\    __home_worker_message_trace_event("worker.post-parent:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
+    \\    const transfers = __home_message_transfer_list(transferList);
+    \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
+    \\    const payload = __home_message_clone(data);
+    \\    worker.__home_web_messages.push({ data: payload, ports });
+    \\    worker.__home_schedule_web_messages();
     \\  };
     \\  worker.postMessage = function(data, transferList) {
-    \\    __home_message_transfer_list(transferList);
+    \\    __home_worker_message_trace_event("worker.post-child:" + workerDisplayFilename + ":port=" + String(data instanceof __home_MessagePort));
+    \\    const transfers = __home_message_transfer_list(transferList);
+    \\    const ports = transfers.filter(value => value instanceof __home_MessagePort);
     \\    const payload = __home_message_clone(data);
-    \\    Promise.resolve().then(() => parentPort.emit("message", payload));
+    \\    Promise.resolve().then(() => {
+    \\      parentPort.emit("message", payload);
+    \\      if (typeof parentPort.__home_onmessage === "function") parentPort.__home_onmessage(new MessageEvent("message", { data: payload, ports }));
+    \\    });
     \\  };
     \\  worker.ref = function() { worker.__home_unrefed = false; return worker; };
     \\  worker.unref = function() { worker.__home_unrefed = true; return worker; };
@@ -77227,8 +77513,8 @@ const harness_prelude =
     \\  worker.terminate = function() {
     \\    worker.__home_terminated = true;
     \\    if (!worker.__home_exit_emitted) {
-    \\      worker.__home_exit_emitted = true;
-    \\      this.emit("exit", 0);
+    \\      worker.__home_exit_pending = 0;
+    \\      this.__home_emit_pending_exit();
     \\    }
     \\    return Promise.resolve(0);
     \\  };
@@ -77279,10 +77565,11 @@ const harness_prelude =
     \\  };
     \\  workerRequire.cache = globalThis.require.cache;
     \\  workerRequire.resolve = globalThis.require.resolve;
-    \\  Promise.resolve().then(async () => {
+    \\  (async () => {
     \\    const previousFilename = globalThis.__home_current_filename;
     \\    const previousDirname = globalThis.__home_current_dirname;
     \\    const previousProcess = globalThis.process;
+    \\    const previousOnmessage = globalThis.onmessage;
     \\    const previousEnvironmentContext = globalThis.__home_worker_environment_context;
     \\    let restoredWorkerGlobals = false;
     \\    try {
@@ -77318,53 +77605,64 @@ const harness_prelude =
     \\        const workerModuleSource = String(source) + "\n//# sourceURL=" + filename;
     \\        if (/\bawait\s/.test(workerModuleSource)) {
     \\          const WorkerAsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\          const workerExecution = new WorkerAsyncFunction("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort));
     \\          globalThis.__home_current_filename = previousFilename;
     \\          globalThis.__home_current_dirname = previousDirname;
     \\          globalThis.process = previousProcess;
+    \\          globalThis.onmessage = previousOnmessage;
     \\          if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
     \\          else globalThis.__home_worker_environment_context = previousEnvironmentContext;
     \\          restoredWorkerGlobals = true;
     \\          await workerExecution;
     \\        } else {
-    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess);
+    \\          new Function("module", "exports", "require", "__filename", "__dirname", "process", "postMessage", workerModuleSource)(module, module.exports, workerRequire, filename, globalThis.__home_current_dirname, workerProcess, parentPort.postMessage.bind(parentPort));
     \\        }
     \\        module.loaded = true;
     \\      }
-    \\      worker.emit("online");
+    \\      if (typeof globalThis.onmessage === "function" && globalThis.onmessage !== previousOnmessage) parentPort.__home_onmessage = globalThis.onmessage;
+    \\      worker.__home_online = true;
+    \\      Promise.resolve().then(() => worker.__home_emit_online());
     \\      for (const finalize of environmentFinalizers.splice(0)) finalize();
     \\      if (!worker.__home_unrefed && !worker.__home_exit_emitted && parentPort.listenerCount("message") === 0) {
-    \\        worker.__home_exit_emitted = true;
-    \\        worker.emit("exit", worker.exitCode || 0);
+    \\        worker.__home_exit_pending = worker.exitCode || 0;
+    \\        Promise.resolve().then(() => worker.__home_emit_pending_exit());
     \\      }
     \\    } catch (error) {
     \\      if (error && error.__home_worker_termination) {
     \\        for (const finalize of environmentFinalizers.splice(0)) finalize();
     \\        if (!worker.__home_unrefed && !worker.__home_exit_emitted) {
-    \\          worker.__home_exit_emitted = true;
-    \\          worker.emit("exit", worker.exitCode || 0);
+    \\          worker.__home_exit_pending = worker.exitCode || 0;
+    \\          Promise.resolve().then(() => worker.__home_emit_pending_exit());
     \\        }
     \\      } else {
     \\        let emittedError = error;
+    \\        __home_worker_message_trace_event("worker.error:" + workerDisplayFilename + ":" + String(error && error.message || error));
     \\        if (workerOptions.eval && String(code).includes("postMessage(throw")) {
     \\          emittedError = new SyntaxError("Unexpected throw");
     \\          emittedError.toString = function() { return "error: Unexpected throw"; };
     \\        } else if (!(emittedError instanceof Error)) {
     \\          emittedError = new Error(emittedError instanceof __home_MessagePort ? "MessagePort { ... }" : String(emittedError));
     \\        }
+    \\        emittedError.runtimeCode = emittedError.runtimeCode || "ERR_WORKER_EXECUTION";
+    \\        emittedError.operation = emittedError.operation || "web.worker.execute";
+    \\        emittedError.phase = emittedError.phase || "evaluate";
+    \\        emittedError.workerFilename = workerDisplayFilename;
+    \\        emittedError.stack = String(emittedError.stack || emittedError) + "\n    at " + emittedError.operation + " [" + emittedError.phase + "] (" + workerDisplayFilename + ")";
     \\        if (worker.__home_comlink_wrapped && typeof worker.__home_comlink_reject === "function") worker.__home_comlink_reject(emittedError);
-    \\        if (!worker.emit("error", emittedError)) throw emittedError;
+    \\        worker.__home_errors.push(emittedError);
+    \\        worker.__home_schedule_errors();
     \\      }
     \\    } finally {
     \\      if (!restoredWorkerGlobals) {
     \\        globalThis.__home_current_filename = previousFilename;
     \\        globalThis.__home_current_dirname = previousDirname;
     \\        globalThis.process = previousProcess;
+    \\        globalThis.onmessage = previousOnmessage;
     \\        if (previousEnvironmentContext === undefined) delete globalThis.__home_worker_environment_context;
     \\        else globalThis.__home_worker_environment_context = previousEnvironmentContext;
     \\      }
     \\    }
-    \\  });
+    \\  })();
     \\  return worker;
     \\}
     \\globalThis.Worker = __home_Worker;
@@ -101471,14 +101769,40 @@ test "bootstrap runner preserves worker message port and argv contracts" {
         \\  assert.throws(() => port1.postMessage(transferred, [transferred, transferred]), /DataCloneError: Transfer list contains duplicate MessagePort/);
         \\  const buffer = new ArrayBuffer(8);
         \\  assert.throws(() => port1.postMessage(buffer, [buffer, buffer]), /DataCloneError: Transfer list contains duplicate ArrayBuffer/);
+        \\  let transferError;
+        \\  try { port1.postMessage('invalid', [null]); } catch (error) { transferError = error; }
+        \\  assert(transferError);
+        \\  assert.strictEqual(transferError.name, 'DataCloneError');
+        \\  assert.strictEqual(transferError.code, 25);
+        \\  assert.strictEqual(transferError.runtimeCode, 'ERR_MESSAGE_PORT_TRANSFER');
+        \\  assert.strictEqual(transferError.operation, 'web.message_port.transfer');
+        \\  assert.strictEqual(transferError.phase, 'validate');
+        \\  assert.strictEqual(transferError.transferIndex, 0);
+        \\  assert.strictEqual(transferError.transferType, 'null');
+        \\  assert.match(transferError.stack, /web\.message_port\.transfer \[validate\].*test-worker-message-boundaries\.js/);
         \\  const event = new MessageEvent('message', { data: undefined, origin: 'foo' });
         \\  assert.deepStrictEqual({ type: event.type, data: event.data, origin: event.origin, lastEventId: event.lastEventId, source: event.source, ports: event.ports }, { type: 'message', data: null, origin: 'foo', lastEventId: '', source: null, ports: [] });
         \\  assert(event instanceof Event);
         \\  assert.throws(() => new Worker('', { eval: true, argv: 'bad' }), { code: 'ERR_INVALID_ARG_TYPE' });
         \\  const worker = new Worker('', { eval: true });
         \\  assert.strictEqual(worker.hasRef(), true);
+        \\  let onlineSeen = false;
+        \\  let exitSeen = null;
+        \\  worker.once('online', () => { onlineSeen = true; });
+        \\  worker.once('exit', code => { exitSeen = code; });
+        \\  assert.strictEqual(onlineSeen, true);
+        \\  assert.strictEqual(exitSeen, 0);
         \\  worker.unref();
         \\  assert.strictEqual(worker.hasRef(), false);
+        \\  let workerErrorEvent;
+        \\  const failingWorker = new Worker('throw new Error("structured worker boom")', { eval: true });
+        \\  failingWorker.onerror = event => { workerErrorEvent = event; };
+        \\  assert(workerErrorEvent instanceof ErrorEvent);
+        \\  assert.strictEqual(workerErrorEvent.error.runtimeCode, 'ERR_WORKER_EXECUTION');
+        \\  assert.strictEqual(workerErrorEvent.error.operation, 'web.worker.execute');
+        \\  assert.strictEqual(workerErrorEvent.error.phase, 'evaluate');
+        \\  assert.strictEqual(workerErrorEvent.error.workerFilename, '[worker eval]');
+        \\  assert.match(workerErrorEvent.error.stack, /web\.worker\.execute \[evaluate\] \(\[worker eval\]\)/);
         \\  assert.throws(() => new Worker(null), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' });
         \\  assert.strictEqual(Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1), 'timed-out');
         \\  const module = new WebAssembly.Module(fixtures.readSync('simple.wasm'));
@@ -101493,6 +101817,19 @@ test "bootstrap runner preserves worker message port and argv contracts" {
         \\  const sharedClone = receiveMessageOnPort(sharedChannel.port2).message;
         \\  Buffer.from(sharedBuffer).write('shared');
         \\  assert.strictEqual(Buffer.from(sharedClone).toString('utf8', 0, 6), 'shared');
+        \\  const { BlockList } = require('node:net');
+        \\  const ipv4BlockList = new BlockList();
+        \\  ipv4BlockList.addSubnet('1.1.1.0', 24, 'ipv4');
+        \\  assert.strictEqual(ipv4BlockList.check('1.1.1.255', 'ipv4'), true);
+        \\  assert.strictEqual(ipv4BlockList.check('::ffff:1.1.1.1', 'ipv6'), true);
+        \\  assert.strictEqual(ipv4BlockList.check('1.1.2.0', 'ipv4'), false);
+        \\  const ipv6BlockList = new BlockList();
+        \\  ipv6BlockList.addSubnet('8592:757c:efae:4e45::', 64, 'ipv6');
+        \\  assert.strictEqual(ipv6BlockList.check('8592:757c:efae:4e45::f', 'ipv6'), true);
+        \\  assert.strictEqual(ipv6BlockList.check('8592:757c:efaf:4e45::f', 'ipv6'), false);
+        \\  const sharedBlockList = structuredClone(ipv4BlockList);
+        \\  sharedBlockList.addAddress('123.123.123.123');
+        \\  assert.strictEqual(ipv4BlockList.check('123.123.123.123'), true);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-worker-message-boundaries.js");
@@ -101509,6 +101846,32 @@ test "bootstrap runner preserves worker message port and argv contracts" {
     if (file_run.result.status() != .passed) std.debug.print("worker message boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves worker message port and argv contracts across exact web MessageChannel corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source_path = "packages/runtime/test/bun-corpus/js/web/workers/message-channel.test.ts";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, source_path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("exact web MessageChannel corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "bootstrap runner preserves worker termination and module lifecycle" {
