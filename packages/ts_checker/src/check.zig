@@ -15287,7 +15287,7 @@ pub const Checker = struct {
                 else => {},
             }
         }
-        if (is_isolated_like) {
+        if (is_isolated_like and !self.typeOnlyImportLocal(id.name, node)) {
             switch (try self.importedExportAssignmentRuntimeStatus(node, id.name)) {
                 .type_only_decl => try self.reportImportedExportAssignmentMustBeTypeOnly(ex.decl, id.name, ex.is_default, false),
                 .type_only_alias => try self.reportImportedExportAssignmentMustBeTypeOnly(ex.decl, id.name, ex.is_default, true),
@@ -237957,6 +237957,7 @@ test "checker: TS1283 for verbatim export assignment through type-only import" {
         if (d.code == TsCodes.export_assignment_type_only_required_verbatim) found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.export_assignment_imported_type_only_must_be_marked_type_only));
 }
 
 test "checker: TS1284 for verbatim default export of direct type" {
