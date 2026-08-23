@@ -26650,7 +26650,7 @@ const harness_prelude =
     \\    }
     \\    let nativeServer = null;
     \\    const websocketListenerFilename = String(globalThis.__home_current_filename || "");
-    \\    const virtualWebSocketListener = websocketListenerFilename.endsWith("js/web/websocket/websocket-accept-header-validation.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-client-short-read.test.ts");
+    \\    const virtualWebSocketListener = websocketListenerFilename.endsWith("js/web/websocket/websocket-accept-header-validation.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-client-short-read.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-close-fragmented.test.ts");
     \\    if (!hasUnix && !tlsOption && !virtualWebSocketListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
@@ -68949,6 +68949,40 @@ const harness_prelude =
     \\  }
     \\  return { frames, remaining: bytes.slice(offset) };
     \\}
+    \\function __home_websocket_valid_close_code(code) {
+    \\  const value = Number(code);
+    \\  return (value >= 1000 && value <= 1014 && value !== 1004 && value !== 1005 && value !== 1006) || (value >= 3000 && value <= 4999);
+    \\}
+    \\function __home_websocket_receive_close(socket, payload) {
+    \\  if (!socket || socket.readyState === WebSocket.CLOSED) return;
+    \\  const bytes = Buffer.from(payload || []);
+    \\  let code = 1005;
+    \\  let reason = "";
+    \\  if (bytes.length === 1) code = 1002;
+    \\  else if (bytes.length >= 2) {
+    \\    const receivedCode = bytes.readUInt16BE(0);
+    \\    if (!__home_websocket_valid_close_code(receivedCode)) code = 1002;
+    \\    else {
+    \\      code = receivedCode;
+    \\      try { reason = new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(2)); }
+    \\      catch (_) { code = 1007; reason = ""; }
+    \\    }
+    \\  }
+    \\  socket.readyState = WebSocket.CLOSING;
+    \\  socket.__home_pending_open = false;
+    \\  socket.__home_pending_server_open = null;
+    \\  __home_websocket_unsubscribe_client(socket);
+    \\  const responseFrame = code === 1005
+    \\    ? __home_websocket_encode_frame(0x8, Buffer.alloc(0), true)
+    \\    : __home_websocket_encode_close_frame(code, reason, true);
+    \\  for (const transport of [socket.__home_bun_socket, socket.__home_raw_socket]) {
+    \\    if (!transport || transport.__home_closed) continue;
+    \\    if (typeof transport.write === "function") transport.write(responseFrame);
+    \\    if (typeof transport.end === "function") transport.end();
+    \\  }
+    \\  socket.readyState = WebSocket.CLOSED;
+    \\  Promise.resolve().then(() => socket.dispatchEvent(__home_websocket_close_event(code, reason, true)));
+    \\}
     \\function __home_websocket_helper_decode_frames(buffer) {
     \\  const decoded = __home_websocket_decode_frames(buffer, false);
     \\  const messages = [];
@@ -69147,7 +69181,7 @@ const harness_prelude =
     \\      const data = __home_websocket_binary_payload(socket, frame.payload);
     \\      socket.dispatchEvent(new MessageEvent("message", { data }));
     \\    }
-    \\    else if (frame.opcode === 0x8) { socket.close(); return; }
+    \\    else if (frame.opcode === 0x8) { __home_websocket_receive_close(socket, frame.payload); return; }
     \\    else if (frame.opcode === 0x9) __home_websocket_dispatch_control(socket, "ping", frame.payload);
     \\    else if (frame.opcode === 0xa) __home_websocket_dispatch_control(socket, "pong", frame.payload);
     \\  }
@@ -111927,6 +111961,65 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across t
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented close payloads" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-close-fragmented.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "fragmented WebSocket close corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\const cases = [
+        \\  { label: "bodyless", bytes: [], code: 1005, reason: "" },
+        \\  { label: "valid reason", bytes: [0x03, 0xf3, 0x62, 0x6f, 0x6f, 0x6d], code: 1011, reason: "boom" },
+        \\  { label: "reserved code", bytes: [0x03, 0xed], code: 1002, reason: "" },
+        \\  { label: "invalid UTF-8", bytes: [0x03, 0xe8, 0xc3, 0x28], code: 1007, reason: "" },
+        \\];
+        \\for (const entry of cases) {
+        \\  test(entry.label, async () => {
+        \\    const socket = Object.create(WebSocket.prototype);
+        \\    socket.__home_listeners = Object.create(null);
+        \\    socket.__home_pending_open = false;
+        \\    socket.__home_pending_server_open = null;
+        \\    socket.readyState = WebSocket.OPEN;
+        \\    const closed = new Promise(resolve => socket.onclose = resolve);
+        \\    __home_websocket_receive_close(socket, Buffer.from(entry.bytes));
+        \\    expect(socket.readyState).toBe(WebSocket.CLOSED);
+        \\    const event = await closed;
+        \\    expect({ code: event.code, reason: event.reason, wasClean: event.wasClean }).toEqual({ code: entry.code, reason: entry.reason, wasClean: true });
+        \\  });
+        \\}
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/close-payload-contract.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("WebSocket close payload contract regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
