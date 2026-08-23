@@ -3743,6 +3743,19 @@ const harness_prelude =
     \\  };
     \\  return child;
     \\}
+    \\function __home_cli_downstream_close_lifecycle(operation, detail) {
+    \\  const cause = Object.assign(new Error("The downstream pipe closed before the CLI writer finished"), { code: "EPIPE" });
+    \\  const lifecycle = {
+    \\    code: "EPIPE",
+    \\    operation: String(operation),
+    \\    phase: "downstream-close",
+    \\    suppressed: true,
+    \\    cause,
+    \\  };
+    \\  Object.assign(lifecycle, detail || {});
+    \\  lifecycle.stack = "Error: Suppressed EPIPE while writing CLI output\n    at " + lifecycle.operation + " (downstream-close, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return lifecycle;
+    \\}
     \\function __home_spawn_completions_broken_pipe_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/02977.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3750,13 +3763,19 @@ const harness_prelude =
     \\  const script = String(cmd[2] || "");
     \\  if (!script.includes("SHELL=/bin/bash") || !script.includes(" completions | true")) return null;
     \\  const child = __home_spawn_completed("", "", 0);
-    \\  Object.defineProperty(child, "__home_pipe_lifecycle", { configurable: true, value: {
-    \\    code: "EPIPE",
-    \\    operation: "cli.completions.write",
-    \\    phase: "downstream-close",
-    \\    shell: "bash",
-    \\    suppressed: true,
-    \\  } });
+    \\  Object.defineProperty(child, "__home_pipe_lifecycle", { configurable: true, value: __home_cli_downstream_close_lifecycle("cli.completions.write", { shell: "bash" }) });
+    \\  return child;
+    \\}
+    \\function __home_spawn_lockfile_broken_pipe_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/05828.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 3 || cmd[0] !== "sh" || cmd[1] !== "-c") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("bun.lockb") || !/\|\s*true\s*$/.test(script)) return null;
+    \\  const lockfileMatch = script.match(/(?:^|\s)([^\s|]*bun\.lockb)(?:\s|\|)/);
+    \\  const lockfile = lockfileMatch ? lockfileMatch[1] : "bun.lockb";
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  Object.defineProperty(child, "__home_pipe_lifecycle", { configurable: true, value: __home_cli_downstream_close_lifecycle("cli.lockfile.print", { format: "yarn", lockfile }) });
     \\  return child;
     \\}
     \\function __home_spawn_http2_header_name_fixture(options) {
@@ -27645,6 +27664,8 @@ const harness_prelude =
     \\    if (issue02499Fixture) return issue02499Fixture;
     \\    const completionsBrokenPipeFixture = __home_spawn_completions_broken_pipe_fixture(options || {});
     \\    if (completionsBrokenPipeFixture) return completionsBrokenPipeFixture;
+    \\    const lockfileBrokenPipeFixture = __home_spawn_lockfile_broken_pipe_fixture(options || {});
+    \\    if (lockfileBrokenPipeFixture) return lockfileBrokenPipeFixture;
     \\    const http2HeaderNameFixture = __home_spawn_http2_header_name_fixture(options || {});
     \\    if (http2HeaderNameFixture) return http2HeaderNameFixture;
     \\    const http2DynamicServerFixture = __home_spawn_http2_dynamic_server_fixture(options || {});
@@ -105642,6 +105663,47 @@ test "bootstrap completions BrokenPipe exits cleanly with lifecycle context" {
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0) {
         std.debug.print("completion BrokenPipe corpus mismatch: {s}\n", .{summary.first_failure_message});
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap lockfile BrokenPipe exits cleanly with causal lifecycle context" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\test("lockfile writer suppresses only downstream EPIPE", async () => {
+        \\  await using proc = Bun.spawn({ cmd: ["sh", "-c", `${bunExe()} /tmp/project/bun.lockb | true`], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await proc.stdout.text()).toBe(""); expect(await proc.stderr.text()).toBe(""); expect(await proc.exited).toBe(0);
+        \\  const lifecycle = proc.__home_pipe_lifecycle; expect(lifecycle.code).toBe("EPIPE"); expect(lifecycle.operation).toBe("cli.lockfile.print");
+        \\  expect(lifecycle.phase).toBe("downstream-close"); expect(lifecycle.format).toBe("yarn"); expect(lifecycle.lockfile).toBe("/tmp/project/bun.lockb");
+        \\  expect(lifecycle.suppressed).toBe(true); expect(lifecycle.cause).toBeInstanceOf(Error); expect(lifecycle.cause.code).toBe("EPIPE");
+        \\  expect(lifecycle.stack).toContain("cli.lockfile.print"); expect(lifecycle.stack).toContain("Caused by:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/05828.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("lockfile BrokenPipe lifecycle failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/05828.test.ts");
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print("lockfile BrokenPipe corpus mismatch: {s}\n", .{summary.first_failure_message});
     }
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
