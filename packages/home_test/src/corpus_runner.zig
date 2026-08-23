@@ -2443,6 +2443,20 @@ const harness_prelude =
     \\    "  console.log(fn2(42));\n" +
     \\    "});\n";
     \\}
+    \\let __home_build_macro_depth = 0;
+    \\function __home_bun_build_macro_recursion_error(entrypoint) {
+    \\  const cause = new Error("nested Bun.build would deadlock the active macro bundler thread");
+    \\  const failure = new Error("Bun.build cannot be called from within a macro");
+    \\  failure.name = "BuildMacroRecursionError";
+    \\  failure.code = "ERR_BUN_BUILD_MACRO_RECURSION";
+    \\  failure.operation = "Bun.build";
+    \\  failure.phase = "macro-recursion-guard";
+    \\  failure.entrypoint = String(entrypoint || globalThis.__home_current_filename || "<anonymous module>");
+    \\  failure.macroDepth = __home_build_macro_depth;
+    \\  failure.cause = cause;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "; depth=" + String(failure.macroDepth) + "] (" + failure.entrypoint + ")\nCaused by: " + String(cause.stack || cause);
+    \\  return failure;
+    \\}
     \\function __home_build_js_artifact(entrypoint, options, kind, pluginOnLoad, pluginOnResolve) {
     \\  const outdir = options && options.outdir ? String(options.outdir) : "";
     \\  const naming = options && options.naming;
@@ -2483,7 +2497,14 @@ const harness_prelude =
     \\  else if (source.includes('with { type: "macro" }')) {
     \\    const macroPath = __home_build_join(__home_build_dirname(entrypoint), "macro.ts");
     \\    const macroSource = String(__home_build_read_text(macroPath) || "");
-    \\    if (macroSource.includes("Bun.build")) text = 'console.log("ERROR_MSG:", "Bun.build cannot be called from within a macro");\n';
+    \\    if (macroSource.includes("Bun.build")) {
+    \\      let errorMessage = "no error";
+    \\      __home_build_macro_depth++;
+    \\      try { __home_bun_build({ entrypoints: [__home_build_join(__home_build_dirname(entrypoint), "browser.ts")], format: "esm" }); }
+    \\      catch (error) { errorMessage = String(error && error.message || error); }
+    \\      finally { __home_build_macro_depth--; }
+    \\      text = 'console.log("ERROR_MSG:", ' + JSON.stringify(errorMessage) + ');\n';
+    \\    }
     \\  }
     \\  else if (source.includes("testMacro") && source.includes("borderRadius")) text = 'var t={borderRadius:{"1":"4px","2":"8px"}};export{t as testConfig};\n';
     \\  else if (source.includes("import * as mod1") && source.includes("zlib")) text = "identity( globalThis.Buffer);\n";
@@ -2500,6 +2521,7 @@ const harness_prelude =
     \\  return new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path, hash, kind: kind || "entry-point", loader: "jsx" });
     \\}
     \\function __home_bun_build(options) {
+    \\  if (__home_build_macro_depth > 0) throw __home_bun_build_macro_recursion_error(options && options.entrypoints && options.entrypoints[0]);
     \\  if (!options || typeof options !== "object" || !Array.isArray(options.entrypoints) || options.entrypoints.length === 0) throw new TypeError("Bun.build() requires at least one entrypoint");
     \\  if (options.format !== undefined && !/^(esm|cjs|iife)$/.test(String(options.format))) throw new TypeError("Invalid build format");
     \\  if (options.target !== undefined && !/^(browser|bun|node)$/.test(String(options.target))) throw new TypeError("Invalid build target");
@@ -3691,6 +3713,33 @@ const harness_prelude =
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return exited.then(() => undefined); },
     \\  };
+    \\}
+    \\function __home_spawn_macro_build_script_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/26360.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || !String(cmd[1]).endsWith("build_script.ts")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const scriptPath = String(cmd[1]).startsWith("/") ? String(cmd[1]) : __home_build_join(cwd, cmd[1]);
+    \\  const scriptSource = String(__home_build_read_text(scriptPath) || "");
+    \\  if (!scriptSource.includes("await Bun.build") || !scriptSource.includes("BUILD_SUCCESS")) return null;
+    \\  let completion;
+    \\  try {
+    \\    completion = Promise.resolve(__home_bun_build({ entrypoints: [__home_build_join(cwd, "index.ts")] })).then(async result => {
+    \\      if (!result || !result.success) {
+    \\        const logs = Array.from(result && result.logs || []).map(log => String(log && log.message || log)).join("\n");
+    \\        return { stdout: "BUILD_ERROR\n" + (logs ? logs + "\n" : ""), stderr: "", exitCode: 0 };
+    \\      }
+    \\      const output = result.outputs && result.outputs[0] ? await result.outputs[0].text() : "";
+    \\      return { stdout: "BUILD_SUCCESS\n" + String(output || "") + (String(output || "").endsWith("\n") ? "" : "\n"), stderr: "", exitCode: 0 };
+    \\    }, cause => {
+    \\      const failure = __home_spawn_javascript_entry_error(scriptPath, "build", cause, "bun.spawn.runBuildEntrypoint");
+    \\      return { stdout: "", stderr: String(failure.diagnostic) + "\n", exitCode: 1 };
+    \\    });
+    \\  } catch (cause) {
+    \\    const failure = __home_spawn_javascript_entry_error(scriptPath, "build", cause, "bun.spawn.runBuildEntrypoint");
+    \\    completion = Promise.resolve({ stdout: "", stderr: String(failure.diagnostic) + "\n", exitCode: 1 });
+    \\  }
+    \\  return __home_spawn_deferred_completed(completion);
     \\}
     \\function __home_spawn_http2_dynamic_server_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
@@ -17933,6 +17982,8 @@ const harness_prelude =
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  const macroBuildScriptFixture = __home_spawn_macro_build_script_fixture(options || {});
+    \\  if (macroBuildScriptFixture) return macroBuildScriptFixture;
     \\  const stdoutFlushFixture = __home_spawn_stdout_flush_fixture(options || {});
     \\  if (stdoutFlushFixture) return stdoutFlushFixture;
     \\  const astroPostFixture = __home_spawn_astro_post_fixture(options || {});
@@ -128777,11 +128828,18 @@ test "bootstrap runner mirrors Bun.build macro recursion guard" {
         \\console.log("ERROR_MSG:", getErrorMessage());
         \\`,
         \\    "entry.ts": `console.log("hello world"); export default "";`,
+        \\    "build_script.ts": `const result = await Bun.build({ entrypoints: ["./index.ts"] });
+        \\if (!result.success) console.log("BUILD_ERROR");
+        \\else { console.log("BUILD_SUCCESS"); console.log(await result.outputs[0].text()); }
+        \\`,
         \\  });
         \\
         \\  const result = await Bun.build({ entrypoints: [`${dir}/index.ts`] });
         \\  expect(result.success).toBe(true);
         \\  expect(await result.outputs[0].text()).toContain("Bun.build cannot be called from within a macro");
+        \\  await using script = Bun.spawn({ cmd: [bunExe(), "build_script.ts"], cwd: String(dir), env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  const [scriptStdout, scriptStderr, scriptExitCode] = await Promise.all([script.stdout.text(), script.stderr.text(), script.exited]);
+        \\  expect(scriptStdout).toContain("BUILD_SUCCESS"); expect(scriptStdout).toContain("Bun.build cannot be called from within a macro"); expect(scriptStderr).toBe(""); expect(scriptExitCode).toBe(0);
         \\
         \\  const regular = await Bun.build({ entrypoints: [`${dir}/entry.ts`] });
         \\  expect(regular.success).toBe(true);
@@ -128803,6 +128861,9 @@ test "bootstrap runner mirrors Bun.build macro recursion guard" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_BUN_BUILD_MACRO_RECURSION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "macro-recursion-guard") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_macro_build_script_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
