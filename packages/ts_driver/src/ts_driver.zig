@@ -3402,7 +3402,23 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
 
 fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source: []const u8) bool {
     return switch (diagnostic.code) {
-        1101, 1107, 1210, 1215, 18010, 18019 => true,
+        1036,
+        1048,
+        1101,
+        1104,
+        1105,
+        1107,
+        1115,
+        1116,
+        1123,
+        1184,
+        1210,
+        1215,
+        17012,
+        18010,
+        18019,
+        => true,
+        1155 => diagnosticLineContainsText(source, diagnostic.pos, "export const"),
         1212, 1214 => std.mem.indexOf(u8, diagnostic.message, "'yield'") != null,
         1031 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos) or
             std.mem.indexOf(u8, diagnostic.message, "'declare' modifier") != null,
@@ -3411,11 +3427,15 @@ fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source:
     };
 }
 
-fn diagnosticLineContainsPrivateIdentifier(source: []const u8, pos: usize) bool {
+fn diagnosticLineContainsText(source: []const u8, pos: usize, needle: []const u8) bool {
     if (pos > source.len) return false;
     const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..pos], '\n')) |index| index + 1 else 0;
     const line_end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
-    return std.mem.indexOfScalar(u8, source[line_start..line_end], '#') != null;
+    return std.mem.indexOf(u8, source[line_start..line_end], needle) != null;
+}
+
+fn diagnosticLineContainsPrivateIdentifier(source: []const u8, pos: usize) bool {
+    return diagnosticLineContainsText(source, pos, "#");
 }
 
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source: []const u8) bool {
@@ -4286,6 +4306,40 @@ test "driver: binder grammar diagnostics survive neighboring parse errors" {
     try T.expect(saw_private_modifier);
     try T.expect(saw_class_strict);
     try T.expect(saw_with_strict);
+}
+
+test "driver: jump target diagnostics survive neighboring parse errors" {
+    var c = try compileSource(T.allocator,
+        \\break;
+        \\continue;
+        \\while (false) {
+        \\  break missingBreak;
+        \\  continue missingContinue;
+        \\}
+        \\const;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_break_outside = false;
+    var saw_continue_outside = false;
+    var saw_missing_break_label = false;
+    var saw_missing_continue_label = false;
+    for (c.diagnostics.items) |d| {
+        switch (d.code) {
+            1105 => saw_break_outside = true,
+            1104 => saw_continue_outside = true,
+            1116 => saw_missing_break_label = true,
+            1115 => saw_missing_continue_label = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_break_outside);
+    try T.expect(saw_continue_outside);
+    try T.expect(saw_missing_break_label);
+    try T.expect(saw_missing_continue_label);
 }
 
 test "driver: declare method grammar diagnostic survives ambient implementation error" {
