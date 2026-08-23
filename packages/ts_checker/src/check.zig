@@ -86980,23 +86980,38 @@ pub const Checker = struct {
         return suffix[0..end];
     }
 
+    fn jsDocParamTagStartsNestedPath(tag: ts_parser.jsdoc.Tag) bool {
+        return jsDocParamTagNamesNestedProperty(tag.name) or
+            std.mem.startsWith(u8, tag.description, ".") or
+            std.mem.startsWith(u8, tag.description, "[]");
+    }
+
     /// Reconstruct a `@param` tag's full dotted path into `buf`. The JSDoc
     /// parser splits a dotted name into `tag.name` (head) plus a leading dotted
     /// run in `tag.description` (`@param {number} xyz.bar.p` → name `xyz`,
     /// description `.bar.p`), so the full path is the head followed by that run.
     /// Returns null if it does not fit in `buf`.
     fn jsDocParamTagFullPath(tag: ts_parser.jsdoc.Tag, buf: []u8) ?[]const u8 {
-        if (tag.name.len > buf.len) return null;
-        @memcpy(buf[0..tag.name.len], tag.name);
-        var len = tag.name.len;
-        if (tag.description.len > 0 and tag.description[0] == '.') {
-            var end: usize = 0;
-            while (end < tag.description.len and (tag.description[end] == '.' or isJsDocIdentChar(tag.description[end]))) : (end += 1) {}
-            if (len + end > buf.len) return null;
-            @memcpy(buf[len .. len + end], tag.description[0..end]);
-            len += end;
+        var len: usize = 0;
+        const pieces = [_][]const u8{ tag.name, tag.description };
+        for (pieces, 0..) |piece, piece_index| {
+            if (piece_index == 1 and
+                (piece.len == 0 or (piece[0] != '.' and piece[0] != '['))) continue;
+            var index: usize = 0;
+            while (index < piece.len) {
+                if (index + 1 < piece.len and piece[index] == '[' and piece[index + 1] == ']') {
+                    index += 2;
+                    continue;
+                }
+                const c = piece[index];
+                if (c != '.' and !isJsDocIdentChar(c)) break;
+                if (len >= buf.len) return null;
+                buf[len] = c;
+                len += 1;
+                index += 1;
+            }
         }
-        return buf[0..len];
+        return if (len > 0) buf[0..len] else null;
     }
 
     /// The type declared by a `@param` tag whose full dotted path equals
@@ -87077,7 +87092,10 @@ pub const Checker = struct {
             const direct = (try self.jsDocLeafTypeForFullPath(src, tags, fn_node, child_full)) orelse continue;
             const nested = try self.jsDocObjectParamTypeFromDottedTagsDepth(src, tags, fn_node, child_full, depth + 1);
             const member_t = if (nested) |n|
-                n
+                if ((try self.arrayElementType(direct)) != types.Primitive.none)
+                    self.interner.internArrayType(self.string_interner, n) catch return error.OutOfMemory
+                else
+                    n
             else
                 direct;
             const leaf_optional = if (nested == null) blk: {
@@ -87124,7 +87142,8 @@ pub const Checker = struct {
             // still matches the top-level tag and gathers the children via
             // jsDocObjectParamTypeFromDottedTags. Pins
             // paramTagNestedWithoutTopLevelObject2/3/4.
-            if (std.mem.startsWith(u8, tag.description, ".")) continue;
+            if (std.mem.startsWith(u8, tag.description, ".") or
+                std.mem.startsWith(u8, tag.description, "[]")) continue;
             var t: ?TypeId = null;
             if (tag.type_text.len > 0) {
                 if (try self.jsDocParamTypeTextToTypeAt(src, tag.type_text, fn_node, tag.name)) |param_t| {
@@ -87133,7 +87152,10 @@ pub const Checker = struct {
             }
             if (!tag.optional) {
                 if (try self.jsDocObjectParamTypeFromDottedTags(src, tags, fn_node, tag.name)) |object_t| {
-                    t = object_t;
+                    t = if (t != null and (try self.arrayElementType(t.?)) != types.Primitive.none)
+                        self.interner.internArrayType(self.string_interner, object_t) catch return error.OutOfMemory
+                    else
+                        object_t;
                 }
             }
             found = .{
@@ -87161,7 +87183,7 @@ pub const Checker = struct {
             // and the body spuriously trips TS2339 (the missing top-level
             // object param is already TS8032; tsc leaves the parameter `any`).
             // Mirrors the by-name path. Pins paramTagNestedWithoutTopLevelObject2/3/4.
-            if (std.mem.startsWith(u8, tag.description, ".")) continue;
+            if (jsDocParamTagStartsNestedPath(tag)) continue;
             if (current == param_index) {
                 var t: ?TypeId = null;
                 if (tag.type_text.len > 0) {
@@ -87171,7 +87193,10 @@ pub const Checker = struct {
                 }
                 if (!tag.optional) {
                     if (try self.jsDocObjectParamTypeFromDottedTags(src, tags, fn_node, tag.name)) |object_t| {
-                        t = object_t;
+                        t = if (t != null and (try self.arrayElementType(t.?)) != types.Primitive.none)
+                            self.interner.internArrayType(self.string_interner, object_t) catch return error.OutOfMemory
+                        else
+                            object_t;
                     }
                 }
                 return .{
