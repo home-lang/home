@@ -1933,7 +1933,7 @@ pub fn compileSource(
             c.tokens = .empty;
             errdefer c.tokens.deinit(gpa);
             for (scanner.diagnostics.items) |d| {
-                if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
+                if (options.is_tsx and scannerDiagnosticIsSuppressedInJsxText(d.message) and
                     isDiagnosticInsideJsxText(source, d.pos))
                 {
                     continue;
@@ -1946,7 +1946,7 @@ pub fn compileSource(
                 }
                 try c.diagnostics.append(gpa, .{
                     .phase = .lex,
-                    .pos = d.pos,
+                    .pos = tsxScannerDiagnosticPos(source, options.is_tsx, normalized.code, d.pos),
                     .line = d.line,
                     .code = normalized.code,
                     .message = try gpa.dupe(u8, normalized.message),
@@ -1972,7 +1972,7 @@ pub fn compileSource(
 
     // Drain scanner diagnostics.
     for (scanner.diagnostics.items) |d| {
-        if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
+        if (options.is_tsx and scannerDiagnosticIsSuppressedInJsxText(d.message) and
             isDiagnosticInsideJsxText(source, d.pos))
         {
             continue;
@@ -1985,7 +1985,7 @@ pub fn compileSource(
         }
         try c.diagnostics.append(gpa, .{
             .phase = .lex,
-            .pos = d.pos,
+            .pos = tsxScannerDiagnosticPos(source, options.is_tsx, normalized.code, d.pos),
             .line = d.line,
             .code = normalized.code,
             .message = try gpa.dupe(u8, normalized.message),
@@ -2016,7 +2016,14 @@ pub fn compileSource(
             break :blk b.addBlock(.{ .start = 0, .end = 0 }, &.{}) catch hir_mod.none_node_id;
         },
     };
+    var has_syntactic_parse_diagnostics = false;
     for (parser.diagnostics.items) |d| {
+        if (!ts_parser.diagnosticIsSyntacticParseError(d)) continue;
+        has_syntactic_parse_diagnostics = true;
+        break;
+    }
+    for (parser.diagnostics.items) |d| {
+        if (has_syntactic_parse_diagnostics and !ts_parser.diagnosticIsSyntacticParseError(d)) continue;
         if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
         // Copy parser-level related-info anchors (TS1007 matched-pair
         // hints, etc.) into the unified driver diagnostic. Parser
@@ -2146,12 +2153,6 @@ pub fn compileSource(
     // (private names below ES2015) from the parser, but upstream emits both
     // as grammar errors. They therefore must not populate
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
-    var has_syntactic_parse_diagnostics = false;
-    for (parser.diagnostics.items) |d| {
-        if (!ts_parser.diagnosticIsSyntacticParseError(d)) continue;
-        has_syntactic_parse_diagnostics = true;
-        break;
-    }
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
     checker.setJsxCommaRecoverySpans(parser.jsx_comma_recovery_spans.items);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
@@ -3184,6 +3185,11 @@ fn scannerDiagnosticIsUnexpectedCharacter(message: []const u8) bool {
         std.mem.eql(u8, message, "Invalid character.");
 }
 
+fn scannerDiagnosticIsSuppressedInJsxText(message: []const u8) bool {
+    return scannerDiagnosticIsUnexpectedCharacter(message) or
+        std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.");
+}
+
 fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (scannerDiagnosticIsUnexpectedCharacter(message)) {
         return .{ .code = 1127, .message = "Invalid character." };
@@ -3300,6 +3306,14 @@ fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic
         1125, 1127, 1160, 1199, 1487, 1488 => true,
         else => false,
     };
+}
+
+fn tsxScannerDiagnosticPos(source: []const u8, is_tsx: bool, code: u32, original: u32) u32 {
+    if (!is_tsx or code != 1002 or original == 0) return original;
+    var pos: usize = @min(@as(usize, original), source.len);
+    if (pos > 0 and source[pos - 1] == '\n') pos -= 1;
+    if (pos > 0 and source[pos - 1] == '\r') pos -= 1;
+    return @intCast(pos);
 }
 
 fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -5893,6 +5907,43 @@ test "driver: tsx jsx text entities do not surface lex diagnostics" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.phase != .lex);
     }
+}
+
+test "driver: TSX child text does not retain numeric identifier diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\const value = <div>7x invalid-js-identifier</div>;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1351);
+    }
+}
+
+test "driver: TSX parse errors suppress const grammar diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare const React: any;
+        \\declare namespace JSX { interface IntrinsicElements { [name: string]: any; } }
+        \\const X: any
+        \\const a: any
+        \\<X a={...a} />
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var count_1109: usize = 0;
+    var count_1003: usize = 0;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1155);
+        if (d.code == 1109) count_1109 += 1;
+        if (d.code == 1003) count_1003 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1109);
+    try T.expectEqual(@as(usize, 1), count_1003);
 }
 
 test "driver: tsx multiline string attribute parses before JSX intrinsic diagnostics" {

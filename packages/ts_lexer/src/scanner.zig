@@ -1432,9 +1432,10 @@ pub const Scanner = struct {
                 // into a bogus regex_literal and cascade into spurious
                 // TS2657 "one parent element" wraps, cf.
                 // `tsxAttributeResolution1`, `tsxFragmentErrors`).
-                if (self.jsx_context and
-                    self.last_significant_kind == .close_brace)
-                {
+                if (self.jsx_context) {
+                    if (self.last_significant_kind == .less_than) {
+                        return self.tok(start, .slash, flags, line);
+                    }
                     var p = self.pos;
                     while (p < self.source.len and
                         (self.source[p] == ' ' or self.source[p] == '\t')) p += 1;
