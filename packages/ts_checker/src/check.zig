@@ -112173,6 +112173,284 @@ pub const Checker = struct {
         return null;
     }
 
+    fn jsxClassConstructorPropsType(self: *Checker, tag: NodeId) CheckError!?TypeId {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return null;
+        const class_name = hir_mod.identifierOf(self.hir, tag).name;
+        const static_t = self.class_static_types.get(class_name) orelse return null;
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectConstructSignatures(static_t, &signatures);
+        for (signatures.items) |sig| {
+            const params = self.interner.signatureParams(sig);
+            if (params.len > 0) return try self.jsxApplyLibraryManagedAttributes(tag, class_name, static_t, params[0]);
+        }
+        return null;
+    }
+
+    fn jsxApplyLibraryManagedAttributes(
+        self: *Checker,
+        tag: NodeId,
+        class_name: hir_mod.StringId,
+        static_t: TypeId,
+        raw_props_t: TypeId,
+    ) CheckError!TypeId {
+        if (!try self.jsxHasLibraryManagedAttributesDecl(tag)) return raw_props_t;
+        const prop_types_name = self.string_interner.intern("propTypes") catch return error.OutOfMemory;
+        const defaults_name = self.string_interner.intern("defaultProps") catch return error.OutOfMemory;
+        const prop_types_t = try self.lookupObjectMember(static_t, prop_types_name);
+        const defaults_t = try self.lookupObjectMember(static_t, defaults_name);
+        if (prop_types_t == null and defaults_t == null) return raw_props_t;
+
+        const effective_raw_props_t = if (raw_props_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(raw_props_t).is_type_parameter)
+        blk: {
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(raw_props_t)];
+            break :blk if (payload.default != types.Primitive.none) payload.default else raw_props_t;
+        } else raw_props_t;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        if (effective_raw_props_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(effective_raw_props_t).is_object_type) {
+            try members.appendSlice(self.gpa, self.interner.objectMembers(effective_raw_props_t));
+        }
+
+        var inferred_display: ?[]const u8 = null;
+        if (prop_types_t) |validators_t| {
+            var validator_buf: std.ArrayListUnmanaged(u8) = .empty;
+            var validators: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer validators.deinit(self.gpa);
+            try validators.appendSlice(self.gpa, self.interner.objectMembers(validators_t));
+            const arena = self.diag_arena.allocator();
+            try validator_buf.appendSlice(arena, "{ ");
+            for (validators.items, 0..) |validator, index| {
+                const alias_args = self.alias_type_args.get(validator.type) orelse &[_]TypeId{};
+                const required = alias_args.len > 1 and alias_args[1] == types.Primitive.true_lit;
+                var checked_t = if (alias_args.len > 0) alias_args[0] else types.Primitive.unknown;
+                if (checked_t == types.Primitive.unknown) {
+                    checked_t = (try self.jsxValidatorDeclaredPayloadType(class_name, validator.name)) orelse checked_t;
+                }
+                const inferred_t = if (required)
+                    checked_t
+                else
+                    self.interner.internUnion(&.{ checked_t, types.Primitive.null_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+                var merged = false;
+                for (members.items) |*member| {
+                    if (member.name != validator.name) continue;
+                    member.type = self.interner.internIntersection(&.{ member.type, inferred_t }) catch return error.OutOfMemory;
+                    member.is_optional = false;
+                    merged = true;
+                    break;
+                }
+                if (!merged) try members.append(self.gpa, .{
+                    .name = validator.name,
+                    .type = inferred_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+
+                if (index > 0) try validator_buf.append(arena, ' ');
+                const checked_name = (try self.allocSimpleTypeName(checked_t)) orelse "unknown";
+                const validator_text = try std.fmt.allocPrint(
+                    arena,
+                    "{s}: PropTypeChecker<{s}, {s}>;",
+                    .{ self.string_interner.get(validator.name), checked_name, if (required) "true" else "false" },
+                );
+                try validator_buf.appendSlice(arena, validator_text);
+            }
+            try validator_buf.appendSlice(arena, " }");
+            inferred_display = try std.fmt.allocPrint(arena, "InferredPropTypes<{s}>", .{validator_buf.items});
+        }
+
+        if (defaults_t) |defaults| {
+            if (defaults < self.interner.pool.typeCount() and self.interner.pool.flagsOf(defaults).is_object_type) {
+                for (self.interner.objectMembers(defaults)) |default_member| {
+                    var merged = false;
+                    for (members.items) |*member| {
+                        if (member.name != default_member.name) continue;
+                        member.is_optional = true;
+                        merged = true;
+                        break;
+                    }
+                    if (!merged) try members.append(self.gpa, .{
+                        .name = default_member.name,
+                        .type = default_member.type,
+                        .is_optional = true,
+                        .is_readonly = default_member.is_readonly,
+                        .is_method = false,
+                    });
+                }
+            }
+        }
+
+        const managed_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const raw_name = (try self.allocSimpleTypeName(effective_raw_props_t)) orelse
+            (try self.allocAnonymousObjectName(effective_raw_props_t)) orelse "{}";
+        const combined_name = if (inferred_display) |inferred|
+            if (std.mem.eql(u8, raw_name, "{}"))
+                inferred
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} & {s}", .{ raw_name, inferred })
+        else
+            raw_name;
+        const managed_name = if (defaults_t) |defaults|
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Defaultize<{s}, {s}>",
+                .{ combined_name, (try self.allocAnonymousObjectName(defaults)) orelse "{}" },
+            )
+        else
+            combined_name;
+        if (managed_t >= types.Primitive.first_dynamic and managed_t < self.interner.pool.typeCount()) {
+            _ = self.alias_display_names.remove(managed_t);
+            const stored = try self.diag_arena.allocator().dupe(u8, managed_name);
+            try self.alias_display_names.put(self.gpa, managed_t, stored);
+        }
+        return managed_t;
+    }
+
+    fn jsxHasLibraryManagedAttributesDecl(self: *Checker, anchor: NodeId) CheckError!bool {
+        const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
+        const managed_name = self.string_interner.intern("LibraryManagedAttributes") catch return error.OutOfMemory;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const namespace = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &.{jsx_name}) orelse return false;
+        return self.findNamedTypeDeclInNamespace(namespace, managed_name) != null;
+    }
+
+    fn jsxTargetIsLibraryManaged(self: *Checker, target: TypeId) bool {
+        const display = self.alias_display_names.get(target) orelse return false;
+        return std.mem.startsWith(u8, display, "Defaultize<") or
+            std.mem.indexOf(u8, display, "InferredPropTypes<") != null;
+    }
+
+    fn jsxValidatorDeclaredPayloadType(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const instance_t = self.class_instance_types.get(class_name) orelse return null;
+        const class_decl = self.class_decl_by_instance.get(instance_t) orelse return null;
+        const prop_types_name = self.string_interner.intern("propTypes") catch return error.OutOfMemory;
+        var validator_expr = hir_mod.none_node_id;
+        for (hir_mod.classMembers(self.hir, class_decl)) |member_node| {
+            if (self.hir.kindOf(member_node) != .object_property) continue;
+            const member = hir_mod.objectPropertyOf(self.hir, member_node);
+            if (!member.is_static or
+                (try self.classMemberNameFromPropertyKey(member.key, member.is_computed)) != prop_types_name or
+                self.hir.kindOf(member.value) != .object_literal) continue;
+            for (hir_mod.objectLiteralProps(self.hir, member.value)) |property_node| {
+                if (self.hir.kindOf(property_node) != .object_property) continue;
+                const property = hir_mod.objectPropertyOf(self.hir, property_node);
+                if ((try self.classMemberNameFromPropertyKey(property.key, property.is_computed)) == prop_name) {
+                    validator_expr = property.value;
+                    break;
+                }
+            }
+        }
+        if (validator_expr == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(validator_expr) == .member_access) {
+            const outer = hir_mod.memberOf(self.hir, validator_expr);
+            if (std.mem.eql(u8, self.string_interner.get(outer.name), "isRequired")) validator_expr = outer.object;
+        }
+        if (self.hir.kindOf(validator_expr) != .member_access) return null;
+        const access = hir_mod.memberOf(self.hir, validator_expr);
+        if (self.hir.kindOf(access.object) != .identifier) return null;
+        const namespace_name = hir_mod.identifierOf(self.hir, access.object).name;
+        const root = self.rootBlockFor(class_decl);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const namespace = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &.{namespace_name}) orelse return null;
+        const declaration = self.findExportedValueDeclInNamespace(namespace, access.name) orelse return null;
+        const kind = self.hir.kindOf(declaration);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const annotation = hir_mod.varDeclOf(self.hir, declaration).type_annotation;
+        if (annotation == hir_mod.none_node_id) return null;
+        const declared_t = try self.lowererLowerWithTypeParams(annotation);
+        const args = self.alias_type_args.get(declared_t) orelse return null;
+        return if (args.len > 0) args[0] else null;
+    }
+
+    fn jsxInstantiateClassTypeArguments(
+        self: *Checker,
+        element: NodeId,
+        tag: NodeId,
+        raw_instance_t: TypeId,
+    ) CheckError!TypeId {
+        const type_args = hir_mod.jsxTypeArgs(self.hir, element);
+        if (type_args.len == 0 or self.hir.kindOf(tag) != .identifier) return raw_instance_t;
+        const class_name = hir_mod.identifierOf(self.hir, tag).name;
+        const info = self.generic_aliases.get(class_name) orelse {
+            for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected 0 type arguments, but got {d}.",
+                .{type_args.len},
+            );
+            try self.reportOnce(type_args[0], TsCodes.expected_n_type_arguments, msg);
+            return types.Primitive.any;
+        };
+
+        const min_args = self.genericAliasMinTypeArgCount(info);
+        if (type_args.len < min_args or type_args.len > info.params.len) {
+            const expected = if (min_args == info.params.len)
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{info.params.len})
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}-{d}", .{ min_args, info.params.len });
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected {s} type arguments, but got {d}.",
+                .{ expected, type_args.len },
+            );
+            try self.reportOnce(type_args[0], TsCodes.expected_n_type_arguments, msg);
+            for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
+            return types.Primitive.any;
+        }
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        const class_decl = self.class_decl_by_instance.get(raw_instance_t) orelse
+            self.findVisibleNamedClassDecl(tag, class_name) orelse
+            self.findClassDeclByName(tag, class_name);
+        const declared_params = if (class_decl != hir_mod.none_node_id)
+            self.typeParamNodesOfDecl(class_decl)
+        else
+            &[_]NodeId{};
+        if (declared_params.len > 0) try self.pushNarrowScope();
+        defer if (declared_params.len > 0) self.popNarrowScope();
+
+        var constraint_failed = false;
+        for (type_args, 0..) |type_arg, i| {
+            const explicit_t = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
+            try subs.put(self.gpa, info.params[i], explicit_t);
+            if (i >= declared_params.len or self.hir.kindOf(declared_params[i]) != .type_parameter) continue;
+            const declared_param = hir_mod.typeParameterOf(self.hir, declared_params[i]);
+            try self.recordNarrow(declared_param.name, explicit_t);
+            if (declared_param.constraint == hir_mod.none_node_id) continue;
+            const constraint = self.lowererLowerWithTypeParams(declared_param.constraint) catch types.Primitive.unknown;
+            if (try self.jsxRequiredPropsAssignable(constraint, explicit_t) and
+                try self.jsxAttributeBagValuesAssignable(explicit_t, constraint))
+            {
+                continue;
+            }
+            const arg_text = (try self.typeArgConstraintTypeNameAtNode(type_arg, explicit_t, false)) orelse
+                (try self.allocSimpleTypeName(explicit_t)) orelse continue;
+            const constraint_text = (try self.typeArgConstraintTypeName(constraint, false)) orelse
+                (try self.allocSimpleTypeName(constraint)) orelse continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' does not satisfy the constraint '{s}'.",
+                .{ arg_text, constraint_text },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = type_arg,
+                .code = TsCodes.type_does_not_satisfy_constraint,
+                .message = msg,
+            });
+            constraint_failed = true;
+        }
+        if (constraint_failed) return types.Primitive.any;
+        return try self.instantiateGenericClassWithSubstitutions(class_name, info, &subs);
+    }
+
     /// Locate the `JSX.ElementAttributesProperty` interface declaration
     /// visible from `anchor`, or null when the JSX namespace or the
     /// interface is absent. tsgo distinguishes "interface missing"
@@ -112184,10 +112462,23 @@ pub const Checker = struct {
         const attrs_name = self.string_interner.intern("ElementAttributesProperty") catch return error.OutOfMemory;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return null;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse
+            return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, attrs_name) orelse return null;
         if (self.hir.kindOf(decl) != .interface_decl) return null;
         return decl;
+    }
+
+    fn jsxElementAttributesPropertyMemberCount(self: *Checker, decl: NodeId) usize {
+        var count: usize = 0;
+        for (hir_mod.interfaceMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .interface_member) continue;
+            if (hir_mod.interfaceMemberOf(self.hir, member).name != 0) count += 1;
+        }
+        return count;
     }
 
     fn jsxElementAttributesPropertyName(self: *Checker, anchor: NodeId) CheckError!?hir_mod.StringId {
@@ -112269,8 +112560,14 @@ pub const Checker = struct {
             defer prop_types.deinit(self.gpa);
             try self.collectJsxLogicalComponentProps(anchor, v.init, &prop_types);
             if (prop_types.items.len == 0) return null;
-            if (prop_types.items.len == 1) return prop_types.items[0];
-            return self.interner.internIntersection(prop_types.items) catch return error.OutOfMemory;
+            const props_t = if (prop_types.items.len == 1)
+                prop_types.items[0]
+            else
+                self.interner.internIntersection(prop_types.items) catch return error.OutOfMemory;
+            if (self.jsxLogicalFirstClassInstance(v.init)) |instance_t| {
+                return try self.jsxComposeIntrinsicClassAttributes(anchor, instance_t, props_t);
+            }
+            return props_t;
         }
         return null;
     }
@@ -112293,7 +112590,119 @@ pub const Checker = struct {
         const props_t = (try self.jsxNamedFunctionPropsType(anchor, id.name)) orelse
             self.jsxClassPropsTypeForName(id.name) orelse
             return;
+        try self.appendJsxLogicalPropsConstituents(props_t, out);
+    }
+
+    fn appendJsxLogicalPropsConstituents(
+        self: *Checker,
+        props_t: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (props_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(props_t).is_intersection) {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(props_t));
+            defer self.gpa.free(members);
+            for (members) |member| try self.appendJsxLogicalPropsConstituents(member, out);
+            return;
+        }
+        for (out.items) |existing| {
+            if (existing == props_t or (self.engine.isIdenticalTo(existing, props_t) catch false)) return;
+        }
         try out.append(self.gpa, props_t);
+    }
+
+    fn jsxLogicalFirstClassInstance(self: *Checker, node: NodeId) ?TypeId {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) == .logical_op) {
+            const logical = hir_mod.logicalOf(self.hir, node);
+            return self.jsxLogicalFirstClassInstance(logical.lhs) orelse
+                self.jsxLogicalFirstClassInstance(logical.rhs);
+        }
+        if (self.hir.kindOf(node) != .identifier) return null;
+        return self.class_instance_types.get(hir_mod.identifierOf(self.hir, node).name);
+    }
+
+    fn jsxLogicalComponentFirstPropType(
+        self: *Checker,
+        tag: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return null;
+        const tag_name = hir_mod.identifierOf(self.hir, tag).name;
+        const root = self.rootBlockFor(tag);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != tag_name) continue;
+            return try self.jsxLogicalNodeFirstPropType(tag, variable.init, prop_name);
+        }
+        return null;
+    }
+
+    fn jsxLogicalNodeFirstPropType(
+        self: *Checker,
+        anchor: NodeId,
+        node: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) == .logical_op) {
+            const logical = hir_mod.logicalOf(self.hir, node);
+            return (try self.jsxLogicalNodeFirstPropType(anchor, logical.lhs, prop_name)) orelse
+                try self.jsxLogicalNodeFirstPropType(anchor, logical.rhs, prop_name);
+        }
+        if (self.hir.kindOf(node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        const props_t = (try self.jsxNamedFunctionPropsType(anchor, name)) orelse
+            self.jsxClassPropsTypeForName(name) orelse
+            return null;
+        return try self.jsxTargetPropType(props_t, prop_name);
+    }
+
+    fn jsxLogicalComponentFirstMissingPropsType(
+        self: *Checker,
+        tag: NodeId,
+        attrs_t: TypeId,
+    ) CheckError!?TypeId {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return null;
+        const tag_name = hir_mod.identifierOf(self.hir, tag).name;
+        const root = self.rootBlockFor(tag);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != tag_name) continue;
+            return try self.jsxLogicalNodeFirstMissingPropsType(tag, variable.init, attrs_t);
+        }
+        return null;
+    }
+
+    fn jsxLogicalNodeFirstMissingPropsType(
+        self: *Checker,
+        anchor: NodeId,
+        node: NodeId,
+        attrs_t: TypeId,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) == .logical_op) {
+            const logical = hir_mod.logicalOf(self.hir, node);
+            return (try self.jsxLogicalNodeFirstMissingPropsType(anchor, logical.lhs, attrs_t)) orelse
+                try self.jsxLogicalNodeFirstMissingPropsType(anchor, logical.rhs, attrs_t);
+        }
+        if (self.hir.kindOf(node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        const props_t = (try self.jsxNamedFunctionPropsType(anchor, name)) orelse
+            self.jsxClassPropsTypeForName(name) orelse
+            return null;
+        return try self.jsxFirstMissingAttrsConstituent(attrs_t, props_t);
     }
 
     fn jsxClassPropsTypeForName(self: *Checker, tag_name: hir_mod.StringId) ?TypeId {
@@ -112439,12 +112848,6 @@ pub const Checker = struct {
             return false;
         }
         if (flags.is_signature) {
-            const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
-            if (self.strict_flags.strict_null_checks and
-                (ret == types.Primitive.undefined_t or ret == types.Primitive.void_t))
-            {
-                return false;
-            }
             return true;
         }
         if (!flags.is_object_type) return false;
@@ -113145,6 +113548,17 @@ pub const Checker = struct {
             if (try self.overloadedFunctionValueType(name)) |overloaded_t| return overloaded_t;
             if (self.class_static_types.get(name)) |static_t| return static_t;
         }
+        // `resolveName` sees exported values contributed by every reopened
+        // part of the current namespace. This is what lets a later
+        // `namespace M { <div/> }` use `M.React` exported by an earlier
+        // `namespace M` declaration as the classic JSX factory.
+        if (self.visibleValueOnlyDeclarationExistsAt(anchor, name)) return types.Primitive.any;
+        var lexical = self.hir.parentOf(anchor);
+        while (lexical != hir_mod.none_node_id) : (lexical = self.hir.parentOf(lexical)) {
+            if (self.hir.kindOf(lexical) != .namespace_decl) continue;
+            const namespace_name = self.declarationName(lexical) orelse continue;
+            if (try self.mergedNamespaceValueMemberType(namespace_name, name, anchor)) |member_t| return member_t;
+        }
 
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -113233,7 +113647,7 @@ pub const Checker = struct {
         const jsx_path = [_]hir_mod.StringId{jsx_name};
         const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
             self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse {
-            if (self.sourceHasReactJsxReference()) return try self.jsxReactIntrinsicPropsType();
+            if (self.sourceHasReactJsxReference()) return try self.jsxReactIntrinsicPropsType(tag_name);
             return null;
         };
         const decl = self.findNamedTypeDeclInNamespace(ns_node, intrinsic_name) orelse return null;
@@ -113262,15 +113676,18 @@ pub const Checker = struct {
         return null;
     }
 
-    fn jsxReactIntrinsicPropsType(self: *Checker) CheckError!TypeId {
+    fn jsxReactIntrinsicPropsType(self: *Checker, tag_name: hir_mod.StringId) CheckError!TypeId {
         const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
         const class_name = self.string_interner.intern("className") catch return error.OutOfMemory;
         const key_name = self.string_interner.intern("key") catch return error.OutOfMemory;
+        const ref_name = self.string_interner.intern("ref") catch return error.OutOfMemory;
         const react_node_t = try self.jsxReactNodeSyntheticType();
         const key_t = self.interner.internUnion(&[_]TypeId{
             types.Primitive.string_t,
             types.Primitive.number_t,
         }) catch return error.OutOfMemory;
+        const instance_t = try self.jsxReactIntrinsicInstanceType(tag_name);
+        const ref_t = try self.jsxReactRefType(instance_t);
         const members = [_]types.ObjectMember{
             .{
                 .name = children_name,
@@ -113293,8 +113710,38 @@ pub const Checker = struct {
                 .is_readonly = false,
                 .is_method = false,
             },
+            .{
+                .name = ref_name,
+                .type = ref_t,
+                .is_optional = true,
+                .is_readonly = false,
+                .is_method = false,
+            },
         };
         return self.interner.internObjectTypeWithIndex(&members, types.Primitive.any, types.Primitive.none) catch return error.OutOfMemory;
+    }
+
+    fn jsxReactIntrinsicInstanceType(self: *Checker, tag_name: hir_mod.StringId) CheckError!TypeId {
+        const tag_text = self.string_interner.get(tag_name);
+        const instance_name_text: []const u8 = if (std.mem.eql(u8, tag_text, "div"))
+            "HTMLDivElement"
+        else
+            "HTMLElement";
+        const instance_name = self.string_interner.intern(instance_name_text) catch return error.OutOfMemory;
+        if (self.type_names.get(instance_name)) |existing| return existing;
+        const instance_t = try self.htmlElementType();
+        try self.type_names.put(self.gpa, instance_name, instance_t);
+        try self.registerAliasDisplayText(instance_t, instance_name_text);
+        return instance_t;
+    }
+
+    fn jsxReactRefType(self: *Checker, instance_t: TypeId) CheckError!TypeId {
+        const ref_params = [_]TypeId{instance_t};
+        const callback_t = self.interner.internSignature(&ref_params, types.Primitive.any, false) catch return error.OutOfMemory;
+        return self.interner.internUnion(&[_]TypeId{
+            types.Primitive.string_t,
+            callback_t,
+        }) catch return error.OutOfMemory;
     }
 
     fn jsxReactNodeSyntheticType(self: *Checker) CheckError!TypeId {
@@ -113302,12 +113749,25 @@ pub const Checker = struct {
         if (self.type_names.get(name)) |existing| return existing;
         const element_t = (try self.jsxLibElementSyntheticType()) orelse
             (self.interner.internObjectType(&.{}) catch return error.OutOfMemory);
+        const react_child_t = self.interner.internUnion(&[_]TypeId{
+            element_t,
+            types.Primitive.string_t,
+            types.Primitive.number_t,
+        }) catch return error.OutOfMemory;
+        try self.registerAliasDisplayText(react_child_t, "ReactChild");
+        const react_child_name = self.string_interner.intern("ReactChild") catch return error.OutOfMemory;
+        try self.type_names.put(self.gpa, react_child_name, react_child_t);
+        const nested_array_t = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
+        const fragment_element_t = self.interner.internUnion(&[_]TypeId{
+            react_child_t,
+            nested_array_t,
+            types.Primitive.boolean_t,
+        }) catch return error.OutOfMemory;
+        try self.registerAliasDisplayText(fragment_element_t, "boolean | any[] | ReactChild");
         // The legacy fixture lib types `ReactFragment = {} |
-        // Array<...>`, while React 18 removed the broad `{}` arm.
-        // Preserve the legacy arm so function children remain valid
-        // there, but do not make React 18's `ReactNode` an
-        // unknown-like union.
-        const fragment_array_t = self.interner.internObjectTypeWithIndex(&.{}, types.Primitive.none, element_t) catch return error.OutOfMemory;
+        // Array<ReactChild | any[] | boolean>`, while React 18 removed
+        // the broad `{}` arm.
+        const fragment_array_t = self.interner.internArrayType(self.string_interner, fragment_element_t) catch return error.OutOfMemory;
         const fragment_t = if (self.sourceHasReact18JsxReference())
             fragment_array_t
         else blk: {
