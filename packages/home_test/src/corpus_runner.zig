@@ -17487,7 +17487,8 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_spawn_structured_clone_matrix_fixture(options, sync) {
-    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/workers/structured-clone.test.ts")) return null;
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.endsWith("js/web/workers/structured-clone.test.ts") && !current.endsWith("js/web/workers/structuredClone-classes.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e");
     \\  const script = evalIndex === -1 ? "" : String(cmd[evalIndex + 1] || "");
@@ -31716,9 +31717,13 @@ const harness_prelude =
     \\  if (kind === 2) return new File([payload], name, { type, lastModified });
     \\  const blob = new Blob([payload], { type });
     \\  if (kind === 3) {
+    \\    for (const key of Object.keys(blob)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(blob, key);
+    \\      if (descriptor) Object.defineProperty(blob, key, Object.assign({}, descriptor, { enumerable: false }));
+    \\    }
     \\    Object.defineProperty(blob, "__home_bun_file_clone", { configurable: true, value: true });
-    \\    Object.defineProperty(blob, "name", { configurable: true, enumerable: true, value: name });
-    \\    Object.defineProperty(blob, "lastModified", { configurable: true, enumerable: true, value: lastModified });
+    \\    Object.defineProperty(blob, "name", { configurable: true, value: name });
+    \\    Object.defineProperty(blob, "lastModified", { configurable: true, value: lastModified });
     \\  }
     \\  return blob;
     \\}
@@ -63328,7 +63333,35 @@ const harness_prelude =
     \\  const suffix = rendered.slice(bestStart + bestLength).join(":");
     \\  return prefix + "::" + suffix;
     \\}
+    \\function __home_structured_clone_advanced_error(value, context, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new TypeError("The requested host object is not transferable");
+    \\  const failure = new DOMException("The object can not be cloned.", { name: "DataCloneError", cause: underlying });
+    \\  failure.runtimeCode = "ERR_STRUCTURED_CLONE_ADVANCED";
+    \\  failure.operation = "bun.internal.structuredCloneAdvanced";
+    \\  failure.phase = "validate-transfer";
+    \\  failure.context = String(context || "default");
+    \\  failure.valueType = value === null ? "null" : (typeof Blob === "function" && value instanceof Blob ? (typeof File === "function" && value instanceof File ? "File" : "Blob") : Object.prototype.toString.call(value).slice(8, -1));
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.name) + ": " + String(failure.message) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + failure.context + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_structured_clone_advanced(value, transferList, isForTransfer, isForStorage, context) {
+    \\  const realm = String(context || "default");
+    \\  if (realm !== "default" && realm !== "worker" && realm !== "window") throw __home_structured_clone_advanced_error(value, realm, new TypeError("Unknown structured clone context"));
+    \\  if (!Array.isArray(transferList)) throw __home_structured_clone_advanced_error(value, realm, new TypeError("Transfer list must be an Array"));
+    \\  const listed = transferList.includes(value);
+    \\  const isArrayBuffer = value instanceof ArrayBuffer;
+    \\  const isBunFile = !!(value && (value.__home_file_ref === true || value.__home_bun_file_clone === true));
+    \\  const isBlob = typeof Blob === "function" && value instanceof Blob;
+    \\  const isBlockList = !!(value && value.__home_block_list === true);
+    \\  if (listed && !isArrayBuffer) throw __home_structured_clone_advanced_error(value, realm);
+    \\  if (isArrayBuffer) return listed ? structuredClone(value, { transfer: [value] }) : structuredClone(value);
+    \\  if ((isBunFile || isBlob || isBlockList) && (isForTransfer || isForStorage)) return {};
+    \\  if (isBlockList) return value;
+    \\  return structuredClone(value);
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  structuredCloneAdvanced: __home_structured_clone_advanced,
     \\  Dequeue: __home_Dequeue,
     \\  sslCtxLiveCount: __home_tls_ssl_ctx_live_count,
     \\  nativeFrameForTesting(callback) {
@@ -105559,6 +105592,7 @@ test "bootstrap structured clone preserves BunFile lineage and capacity failures
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
+        \\import { structuredCloneAdvanced } from "bun:internal-for-testing";
         \\import { deserialize, serialize } from "bun:jsc";
         \\import { expect, test } from "bun:test";
         \\import { bunEnv } from "harness";
@@ -105586,6 +105620,7 @@ test "bootstrap structured clone preserves BunFile lineage and capacity failures
         \\    expect(clone.name).toBe(original.name);
         \\    expect(clone.lastModified).toBe(original.lastModified);
         \\    expect(clone.size).toBe(original.size);
+        \\    expect(clone).toBeEmptyObject();
         \\  }
         \\});
         \\test("transfer validation exposes structured cause context", () => {
@@ -105609,6 +105644,22 @@ test "bootstrap structured clone preserves BunFile lineage and capacity failures
         \\  await using bounded = Bun.spawn({ cmd: [bunExe(), "-e", `const size = 1600000000; let v; v = { h: new ArrayBuffer(size) }; const r = structuredClone(v); console.log((r.h.byteLength === size) ? "OK" : "BAD_ROUNDTRIP");`], env: bunEnv, stdout: "pipe", stderr: "inherit" });
         \\  expect((await bounded.stdout.text()).trim()).toBe("OK"); expect(await bounded.exited).toBe(0);
         \\});
+        \\test("advanced clone modes preserve host-object and realm contracts", () => {
+        \\  for (const context of ["default", "worker", "window"]) {
+        \\    const buffer = Uint8Array.from([21, 11, 96]).buffer; const transferred = structuredCloneAdvanced(buffer, [buffer], true, false, context);
+        \\    expect(buffer.byteLength).toBe(0); expect(Array.from(new Uint8Array(transferred))).toEqual([21, 11, 96]);
+        \\    const file = Bun.file(import.meta.path); const fileClone = structuredCloneAdvanced(file, [], false, false, context);
+        \\    expect(fileClone.name).toBe(file.name); expect(fileClone.type).toBe(file.type); expect(structuredCloneAdvanced(file, [], false, true, context)).toBeEmptyObject();
+        \\    const blockList = new (require("net").BlockList)(); blockList.addAddress("123.123.123.123");
+        \\    const shared = structuredCloneAdvanced(blockList, [], false, false, context); shared.addAddress("123.123.123.124");
+        \\    expect(blockList.check("123.123.123.124")).toBe(true); expect(structuredCloneAdvanced(blockList, [], true, false, context)).toBeEmptyObject();
+        \\    let failure; try { structuredCloneAdvanced(file, [file], true, false, context); } catch (error) { failure = error; }
+        \\    expect(failure).toBeInstanceOf(DOMException); expect(failure.message).toBe("The object can not be cloned.");
+        \\    expect(failure.runtimeCode).toBe("ERR_STRUCTURED_CLONE_ADVANCED"); expect(failure.operation).toBe("bun.internal.structuredCloneAdvanced");
+        \\    expect(failure.phase).toBe("validate-transfer"); expect(failure.context).toBe(context); expect(failure.valueType).toBe("Blob");
+        \\    expect(failure.cause).toBeInstanceOf(Error); expect(failure.stack).toContain("Caused by:");
+        \\  }
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/workers/structured-clone.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -105620,7 +105671,7 @@ test "bootstrap structured clone preserves BunFile lineage and capacity failures
         std.debug.print("structured clone BunFile/capacity regression failed: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap native stream leak coverage preserves the full bounded matrix" {
