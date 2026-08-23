@@ -26668,7 +26668,7 @@ const harness_prelude =
     \\    }
     \\    let nativeServer = null;
     \\    const websocketListenerFilename = String(globalThis.__home_current_filename || "");
-    \\    const virtualWebSocketListener = websocketListenerFilename.endsWith("js/web/websocket/websocket-accept-header-validation.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-client-short-read.test.ts") || websocketListenerFilename.endsWith("js/web/websocket/websocket-close-fragmented.test.ts");
+    \\    const virtualWebSocketListener = websocketListenerFilename.includes("js/web/websocket/");
     \\    if (!hasUnix && !tlsOption && !virtualWebSocketListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
@@ -68999,6 +68999,18 @@ const harness_prelude =
     \\  reasonBytes.copy(payload, 2);
     \\  return __home_websocket_encode_frame(0x8, payload, !!masked);
     \\}
+    \\function __home_websocket_protocol_error(phase, message, details, cause) {
+    \\  const underlying = cause instanceof Error ? cause : null;
+    \\  const error = new Error(String(message || "Invalid WebSocket frame"), underlying ? { cause: underlying } : undefined);
+    \\  Object.defineProperty(error, "name", { configurable: true, writable: true, value: "WebSocketProtocolError" });
+    \\  error.code = "ERR_WEBSOCKET_PROTOCOL";
+    \\  error.operation = "web.websocket.frame.decode";
+    \\  error.phase = String(phase || "frame");
+    \\  error.closeCode = 1002;
+    \\  if (details && typeof details === "object") Object.assign(error, details);
+    \\  error.stack = String(error.stack || error) + "\n    at " + error.operation + " [" + error.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")" + (underlying ? "\nCaused by: " + String(underlying.stack || underlying) : "");
+    \\  return error;
+    \\}
     \\function __home_websocket_decode_frames(buffer, requireMasked) {
     \\  const bytes = Buffer.from(buffer || []);
     \\  const frames = [];
@@ -69013,6 +69025,7 @@ const harness_prelude =
     \\    const masked = !!(second & 0x80);
     \\    let length = second & 0x7f;
     \\    if (!fin && opcode >= 0x8) throw new Error("WebSocket control frames cannot be fragmented");
+    \\    if (opcode >= 0x8 && (rsv1 || length > 125)) throw __home_websocket_protocol_error("control-frame", "WebSocket control frame payload cannot exceed 125 bytes or use RSV1", { opcode, payloadLength: length, fin, rsv1 });
     \\    if (requireMasked && !masked) throw new Error("Client WebSocket frames must be masked");
     \\    if (length === 126) {
     \\      if (offset + 2 > bytes.length) { offset = start; break; }
@@ -69327,7 +69340,7 @@ const harness_prelude =
     \\  const combined = Buffer.concat([socket.__home_frame_buffer || Buffer.alloc(0), Buffer.from(bytes || [])]);
     \\  let decoded;
     \\  try { decoded = __home_websocket_decode_frames(combined, false); }
-    \\  catch (cause) { __home_websocket_fail(socket, __home_websocket_handshake_error("frame-decode", "Invalid WebSocket frame", {}, cause)); return; }
+    \\  catch (cause) { __home_websocket_message_failure(socket, 1002, "Invalid WebSocket frame", "frame-decode", cause, { frameOpcode: cause && cause.opcode, framePayloadLength: cause && cause.payloadLength }); return; }
     \\  socket.__home_frame_buffer = decoded.remaining;
     \\  for (const frame of decoded.frames) {
     \\    if (frame.opcode === 0x1 || frame.opcode === 0x2) {
@@ -112365,6 +112378,81 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across fragmented pong frames" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-pong-fragmented.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
+        std.debug.print(
+            "fragmented pong corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("oversized control frames retain decoder context", async () => {
+        \\  const socket = Object.create(WebSocket.prototype);
+        \\  socket.__home_listeners = Object.create(null);
+        \\  socket.__home_pending_open = false;
+        \\  socket.__home_pending_error = null;
+        \\  socket.__home_pending_close = false;
+        \\  socket.__home_pending_flush = false;
+        \\  socket.__home_pending_server_open = null;
+        \\  socket.__home_frame_buffer = Buffer.alloc(0);
+        \\  socket.__home_fragmented_message = null;
+        \\  socket.readyState = WebSocket.OPEN;
+        \\  const failed = new Promise(resolve => socket.onerror = resolve);
+        \\  const closed = new Promise(resolve => socket.onclose = resolve);
+        \\  const frame = Buffer.alloc(4 + 126, 0x42);
+        \\  frame[0] = 0x8a;
+        \\  frame[1] = 126;
+        \\  frame[2] = 0;
+        \\  frame[3] = 126;
+        \\  __home_websocket_dispatch_decoded_frames(socket, frame);
+        \\  const errorEvent = await failed;
+        \\  const closeEvent = await closed;
+        \\  const error = errorEvent.error;
+        \\  expect(error.name).toBe("WebSocketMessageError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_MESSAGE_DATA");
+        \\  expect(error.operation).toBe("web.websocket.receive");
+        \\  expect(error.phase).toBe("frame-decode");
+        \\  expect(error.closeCode).toBe(1002);
+        \\  expect(error.frameOpcode).toBe(10);
+        \\  expect(error.framePayloadLength).toBe(126);
+        \\  expect(error.cause.name).toBe("WebSocketProtocolError");
+        \\  expect(error.cause.code).toBe("ERR_WEBSOCKET_PROTOCOL");
+        \\  expect(error.cause.operation).toBe("web.websocket.frame.decode");
+        \\  expect(error.cause.phase).toBe("control-frame");
+        \\  expect(error.cause.stack).toContain("fragmented-pong-error.home-regression.test.js");
+        \\  expect({ code: closeEvent.code, reason: closeEvent.reason }).toEqual({ code: 1002, reason: "Invalid WebSocket frame" });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/fragmented-pong-error.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured fragmented-pong error regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
