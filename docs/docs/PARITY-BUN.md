@@ -383,6 +383,26 @@ has a `src/install/` shim that delegates to Pantry; the Bun
 `install/` source IS NOT vendored — Pantry is Home's package
 manager.
 
+## Publish / pack (native Bun commands)
+
+🟡 **Activated 2026-08-22 (issue #186, first slice).** The copied
+native Bun `PublishCommand` / `PackCommand`
+(`packages/runtime/src/runtime/cli/{publish,pack}_command.zig`) are
+routed from Home's top-level CLI as `home publish` and `home pack`
+via new `execStandalone(ctx, sub_args)` entries that re-point clap's
+process args at a synthetic `[prog, subcommand, ...]` argv before
+running Bun's own parser. Both are fully Zig 0.17-clean: pack walks
+the project tree with Home FDs (ignore-stack, bundled deps, bin dirs,
+tarball streaming + sha1/sha512 integrity), publish builds request
+bodies/headers through `Writer.Allocating` with explicit
+WriteFailed→OOM translation. Verified locally: `home pack` packs a
+fixture (ignores node_modules/`.gitignore`, writes `.tgz`, prints
+Bun-format summary) and `home publish` reaches the registry flow with
+Bun-shaped 404 diagnostics. Remaining for full #186 acceptance:
+publish against a real local registry (auth/OTP/republish paths),
+workspace/tarball publication coverage, and keeping #185's 34/34
+publish corpus green.
+
 ## Test runner (`home test`)
 
 🔴 **Blocked on Phase 12.8 + 12.2.** Substrate at
