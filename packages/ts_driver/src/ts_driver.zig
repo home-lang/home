@@ -3404,7 +3404,9 @@ fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source:
     return switch (diagnostic.code) {
         1101, 1107, 1210, 1215, 18010, 18019 => true,
         1212, 1214 => std.mem.indexOf(u8, diagnostic.message, "'yield'") != null,
-        1031, 1042 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos),
+        1031 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos) or
+            std.mem.indexOf(u8, diagnostic.message, "'declare' modifier") != null,
+        1042 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos),
         else => false,
     };
 }
@@ -4284,6 +4286,27 @@ test "driver: binder grammar diagnostics survive neighboring parse errors" {
     try T.expect(saw_private_modifier);
     try T.expect(saw_class_strict);
     try T.expect(saw_with_strict);
+}
+
+test "driver: declare method grammar diagnostic survives ambient implementation error" {
+    var c = try compileSource(T.allocator,
+        \\class C {
+        \\    declare Foo() { }
+        \\}
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var declare_modifier_errors: usize = 0;
+    var ambient_implementation_errors: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1031) declare_modifier_errors += 1;
+        if (d.code == 1183) ambient_implementation_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), declare_modifier_errors);
+    try T.expectEqual(@as(usize, 1), ambient_implementation_errors);
 }
 
 test "driver: yield binder diagnostic survives an async binding parse error" {
