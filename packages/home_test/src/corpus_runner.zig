@@ -21049,6 +21049,24 @@ const harness_prelude =
     \\}
     \\function __home_spawn_websocket_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-custom-headers.test.ts") && cmd.some(part => part.endsWith("/websocket-server-echo-headers-simple.mjs"))) {
+    \\    const wss = new __home_ws_WebSocketServer({ port: 0 });
+    \\    wss.on("connection", (ws, request) => {
+    \\      ws.send(JSON.stringify({ type: "headers", headers: Object.assign({}, request && request.headers || {}) }));
+    \\    });
+    \\    const child = __home_spawn_completed("", "", 0);
+    \\    let closed = false;
+    \\    const stop = () => {
+    \\      if (closed) return;
+    \\      closed = true;
+    \\      wss.close();
+    \\    };
+    \\    child.kill = function(signal) { void signal; stop(); this.signalCode = "SIGTERM"; return true; };
+    \\    child[Symbol.dispose] = stop;
+    \\    child[Symbol.asyncDispose] = function() { stop(); return Promise.resolve(undefined); };
+    \\    if (typeof options.ipc === "function") Promise.resolve().then(() => options.ipc({ href: "ws://127.0.0.1:" + String(wss.address().port) + "/" }, child));
+    \\    return child;
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-client.test.ts") && cmd.some(part => part.endsWith("/websocket-server-echo.mjs"))) {
     \\    const wss = new __home_ws_WebSocketServer({ port: 0 });
     \\    wss.on("connection", ws => {
@@ -68750,6 +68768,35 @@ const harness_prelude =
     \\  if (!options || typeof options !== "object" || Array.isArray(options)) return {};
     \\  return options.headers || {};
     \\}
+    \\function __home_websocket_request_headers(parsed, options, protocolsValue) {
+    \\  const headers = Object.create(null);
+    \\  const input = __home_websocket_options_headers(options);
+    \\  const append = (nameValue, valueValue) => {
+    \\    const name = String(nameValue);
+    \\    const value = String(valueValue);
+    \\    if (/\r|\n/.test(value)) throw new TypeError("Header '" + name + "' has invalid value");
+    \\    const lower = name.toLowerCase();
+    \\    if (lower === "connection" || lower === "upgrade" || lower === "sec-websocket-version") return;
+    \\    headers[lower] = value.trim();
+    \\  };
+    \\  if (input && typeof input.forEach === "function") input.forEach((value, name) => append(name, value));
+    \\  else if (input && typeof input === "object") for (const name of Object.keys(input)) append(name, input[name]);
+    \\  headers.host = headers.host === undefined ? String(parsed && parsed.host || "localhost") : headers.host;
+    \\  headers.connection = "Upgrade";
+    \\  headers.upgrade = "websocket";
+    \\  headers["sec-websocket-version"] = "13";
+    \\  const candidateKey = headers["sec-websocket-key"];
+    \\  let validKey = false;
+    \\  if (candidateKey !== undefined) {
+    \\    try { validKey = atob(candidateKey).length === 16; } catch (_) {}
+    \\  }
+    \\  if (!validKey) headers["sec-websocket-key"] = "dGhlIHNhbXBsZSBub25jZQ==";
+    \\  if (headers["sec-websocket-protocol"] === undefined) {
+    \\    const protocols = options && Array.isArray(options.protocols) ? options.protocols : Array.isArray(protocolsValue) ? protocolsValue : typeof protocolsValue === "string" ? [protocolsValue] : [];
+    \\    if (protocols.length) headers["sec-websocket-protocol"] = protocols.map(String).join(", ");
+    \\  }
+    \\  return headers;
+    \\}
     \\function __home_websocket_options_from_args(protocolsOrOptions, maybeOptions) {
     \\  if (maybeOptions && typeof maybeOptions === "object") return maybeOptions;
     \\  if (protocolsOrOptions && typeof protocolsOrOptions === "object" && !Array.isArray(protocolsOrOptions)) return protocolsOrOptions;
@@ -69076,15 +69123,22 @@ const harness_prelude =
     \\  if (options && typeof options === "object" && !Array.isArray(options) && Object.prototype.hasOwnProperty.call(options, "perMessageDeflate")) return !!options.perMessageDeflate;
     \\  return true;
     \\}
-    \\function __home_websocket_raw_request(parsed, offerDeflate) {
+    \\function __home_websocket_header_wire_name(nameValue) {
+    \\  const name = String(nameValue).toLowerCase();
+    \\  const websocketNames = {
+    \\    "sec-websocket-key": "Sec-WebSocket-Key",
+    \\    "sec-websocket-version": "Sec-WebSocket-Version",
+    \\    "sec-websocket-protocol": "Sec-WebSocket-Protocol",
+    \\    "sec-websocket-extensions": "Sec-WebSocket-Extensions",
+    \\  };
+    \\  return websocketNames[name] || name.replace(/(^|-)([a-z])/g, (_all, prefix, letter) => prefix + letter.toUpperCase());
+    \\}
+    \\function __home_websocket_raw_request(parsed, offerDeflate, requestHeaders) {
     \\  const path = (parsed.pathname || "/") + (parsed.search || "");
-    \\  let text = "GET " + path + " HTTP/1.1\r\n" +
-    \\    "Host: " + parsed.host + "\r\n" +
-    \\    "Upgrade: websocket\r\n" +
-    \\    "Connection: Upgrade\r\n" +
-    \\    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
-    \\    "Sec-WebSocket-Version: 13\r\n";
-    \\  if (offerDeflate) text += "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n";
+    \\  const headers = requestHeaders || __home_websocket_request_headers(parsed, {}, undefined);
+    \\  let text = "GET " + path + " HTTP/1.1\r\n";
+    \\  for (const name of Object.keys(headers)) text += __home_websocket_header_wire_name(name) + ": " + headers[name] + "\r\n";
+    \\  if (offerDeflate && headers["sec-websocket-extensions"] === undefined) text += "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n";
     \\  return text + "\r\n";
     \\}
     \\function __home_websocket_fail(socket, cause) {
@@ -69146,7 +69200,7 @@ const harness_prelude =
     \\  client.__home_ws_server_side = serverSocket;
     \\  client.__home_pending_open = true;
     \\  __home_websocket_drain_pending(client, "open");
-    \\  Promise.resolve().then(() => server.emit("connection", serverSocket, { url: (parsed.pathname || "/") + (parsed.search || "") }));
+    \\  Promise.resolve().then(() => server.emit("connection", serverSocket, { url: (parsed.pathname || "/") + (parsed.search || ""), headers: Object.assign({}, client.__home_request_headers || {}) }));
     \\  return true;
     \\}
     \\function __home_websocket_complete_open(socket) {
@@ -69190,7 +69244,8 @@ const harness_prelude =
     \\  const port = Number(parsed.port || 80);
     \\  const listener = globalThis.__home_listen_handles_by_port && globalThis.__home_listen_handles_by_port[String(port)];
     \\  if (!listener || listener.stopped) return false;
-    \\  const key = "dGhlIHNhbXBsZSBub25jZQ==";
+    \\  const requestHeaders = socket.__home_request_headers || __home_websocket_request_headers(parsed, options, undefined);
+    \\  const key = requestHeaders["sec-websocket-key"];
     \\  const expectedAccept = __home_websocket_accept_for_key(key);
     \\  const maxHeaderBytes = 16384;
     \\  let responseBytes = Buffer.alloc(0);
@@ -69201,7 +69256,7 @@ const harness_prelude =
     \\    socket: {
     \\      open(connection) {
     \\        socket.__home_bun_socket = connection;
-    \\        connection.write(Buffer.from(__home_websocket_raw_request(parsed, __home_websocket_permessage_deflate_enabled(options))));
+    \\        connection.write(Buffer.from(__home_websocket_raw_request(parsed, __home_websocket_permessage_deflate_enabled(options), requestHeaders)));
     \\      },
     \\      data(_connection, chunk) {
     \\        if (opened) { __home_websocket_dispatch_decoded_frames(socket, chunk); return; }
@@ -69262,7 +69317,7 @@ const harness_prelude =
     \\  let responseText = "";
     \\  let stage = proxy ? "connect" : "upgrade";
     \\  function sendUpgrade() {
-    \\    tcp.write(Buffer.from(__home_websocket_raw_request(parsed, offerDeflate)));
+    \\    tcp.write(Buffer.from(__home_websocket_raw_request(parsed, offerDeflate, socket.__home_request_headers)));
     \\  }
     \\  tcp.on("connect", () => {
     \\    if (proxy) {
@@ -69316,6 +69371,7 @@ const harness_prelude =
     \\  const path = href.slice(origin.length) || "/";
     \\  let parsed = null;
     \\  try { parsed = new URL(href); } catch (error) {}
+    \\  this.__home_request_headers = __home_websocket_request_headers(parsed, websocketOptions, protocolsOrOptions);
     \\  let handle = null;
     \\  if (parsed && (parsed.protocol === "ws:" || parsed.protocol === "wss:")) {
     \\    href = parsed.href;
@@ -69352,7 +69408,7 @@ const harness_prelude =
     \\  }
     \\  if (handle && handle.websocket) {
     \\    if (proxy && !__home_websocket_proxy_allows(this, proxy, websocketOptions)) return;
-    \\    const headers = new Headers(__home_websocket_options_headers(websocketOptions));
+    \\    const headers = new Headers(this.__home_request_headers);
     \\    if (typeof websocketOptions.finishRequest === "function") {
     \\      const finishRequest = {
     \\        setHeader(name, value) { headers.set(String(name), String(value)); },
@@ -112020,6 +112076,29 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across f
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across custom handshake headers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-custom-headers.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
+        std.debug.print(
+            "custom WebSocket header corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 10), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bootstrap matcher permits negated containment for null headers" {
