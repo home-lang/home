@@ -69770,7 +69770,7 @@ const harness_prelude =
     \\      websocketOptions.finishRequest(finishRequest);
     \\    }
     \\    headers.set("upgrade", "websocket");
-    \\    headers.set("connection", "Upgrade");
+    \\    headers.set("connection", "upgrade");
     \\    if (!headers.has("sec-websocket-key")) headers.set("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
     \\    if (!headers.has("sec-websocket-version")) headers.set("sec-websocket-version", "13");
     \\    if (!headers.has("authorization")) {
@@ -112446,6 +112446,21 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), unix_summary.failed);
     try std.testing.expectEqual(@as(usize, 0), unix_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), unix_summary.unsupported);
+
+    var upgrade_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-upgrade.test.ts");
+    defer upgrade_summary.deinit(std.testing.allocator);
+
+    if (upgrade_summary.failed != 0 or upgrade_summary.unsupported != 0 or upgrade_summary.passed != 1 or upgrade_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket upgrade-header corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ upgrade_summary.passed, upgrade_summary.failed, upgrade_summary.todo, upgrade_summary.unsupported, upgrade_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), upgrade_summary.files);
+    try std.testing.expectEqual(@as(usize, 1), upgrade_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), upgrade_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), upgrade_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), upgrade_summary.unsupported);
 
     const source =
         \\import { expect, test } from "bun:test";
