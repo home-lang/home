@@ -23,7 +23,7 @@ pub const InitCommand = struct {
         };
 
         var input: std.array_list.Managed(u8) = .init(alloc);
-        try bun.Output.buffered_stdin.reader().readUntilDelimiterArrayList(&input, '\n', 1024);
+        _ = try bun.Output.buffered_stdin.reader().readUntilDelimiterArrayList(&input, '\n', 1024);
 
         if (strings.endsWithChar(input.items, '\r')) {
             _ = input.pop();
