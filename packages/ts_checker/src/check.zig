@@ -7776,9 +7776,33 @@ pub const Checker = struct {
         const extends_name = self.string_interner.get(extends_name_id);
         const jsdoc_extends = jsDocFirstExtendsOrAugmentsType(jsdoc.body, jsdoc.start) orelse return;
         if (std.mem.eql(u8, jsdoc_extends.name, extends_name)) return;
-        if (self.source) |src| {
-            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.type_text, class_node);
+        if (jsdoc_extends.name.len > 0) {
+            if (std.mem.indexOfScalar(u8, jsdoc_extends.type_text, '.') == null) {
+                const name = self.string_interner.intern(jsdoc_extends.name) catch return error.OutOfMemory;
+                if (self.visibleTypeDeclarationExistsAt(class_node, name) or
+                    self.visibleJsDocTypedefNameExistsAt(class_node, name)) return;
+            } else {
+                const previous_anchor = self.jsdoc_diagnostic_anchor;
+                self.jsdoc_diagnostic_anchor = class_node;
+                defer self.jsdoc_diagnostic_anchor = previous_anchor;
+                if (try self.jsDocVisibleNamespaceMemberType(jsdoc_extends.type_text)) |_| return;
+            }
         }
+        var unresolved = jsdoc_extends.name.len == 0;
+        if (self.source) |src| {
+            const diagnostics_before = self.diagnostics.items.len;
+            _ = try self.jsDocTypeTextToTypeAt(src, jsdoc_extends.type_text, class_node);
+            for (self.diagnostics.items[diagnostics_before..]) |diagnostic| {
+                if (diagnostic.code == TsCodes.cannot_find_name or
+                    diagnostic.code == TsCodes.cannot_find_name_did_you_mean or
+                    diagnostic.code == TsCodes.cannot_find_namespace)
+                {
+                    unresolved = true;
+                    break;
+                }
+            }
+        }
+        if (!unresolved) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "JSDoc '@{s} {s}' does not match the 'extends {s}' clause.",
@@ -222856,7 +222880,7 @@ test "checker: checkjs class JSDoc @extends mismatch reports TS8023" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
-test "checker: checkjs class JSDoc @augments mismatch reports TS8023" {
+test "checker: checkjs class resolved JSDoc @augments mismatch follows tsgo" {
     const source =
         \\// @checkjs: true
         \\class A {}
@@ -222867,15 +222891,9 @@ test "checker: checkjs class JSDoc @augments mismatch reports TS8023" {
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsdoc_extends_clause_mismatch) {
-            found = true;
-            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "@augments A") orelse unreachable)) + "@augments ".len, d.pos.?);
-            try T.expectEqualStrings("JSDoc '@augments A' does not match the 'extends B' clause.", d.message);
-        }
+        try T.expect(d.code != TsCodes.jsdoc_extends_clause_mismatch);
     }
-    try T.expect(found);
 }
 
 test "checker: checkjs class JSDoc @extends matching extends clause is clean" {
@@ -255852,7 +255870,7 @@ test "checker: TS2725 follows class-like, target-default, and ambient semantics"
     try T.expectEqual(@as(usize, 0), checkerCountCode(ambient.base, TsCodes.class_name_object_es5_module));
 }
 
-test "checker: parity batch qualified JSDoc extends mismatches resolve the full type name" {
+test "checker: parity batch qualified resolved JSDoc extends mismatches follow tsgo" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -255866,7 +255884,7 @@ test "checker: parity batch qualified JSDoc extends mismatches resolve the full 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsdoc_extends_clause_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsdoc_extends_clause_mismatch));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
 }
 
