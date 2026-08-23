@@ -21049,6 +21049,26 @@ const harness_prelude =
     \\}
     \\function __home_spawn_websocket_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-client.test.ts") && cmd.some(part => part.endsWith("/websocket-server-echo.mjs"))) {
+    \\    const wss = new __home_ws_WebSocketServer({ port: 0 });
+    \\    wss.on("connection", ws => {
+    \\      ws.on("message", message => ws.send(message));
+    \\      ws.on("ping", data => ws.ping(data));
+    \\      ws.on("pong", data => ws.pong(data));
+    \\    });
+    \\    const child = __home_spawn_completed("", "", 0);
+    \\    let closed = false;
+    \\    const stop = () => {
+    \\      if (closed) return;
+    \\      closed = true;
+    \\      wss.close();
+    \\    };
+    \\    child.kill = function(signal) { void signal; stop(); this.signalCode = "SIGTERM"; return true; };
+    \\    child[Symbol.dispose] = stop;
+    \\    child[Symbol.asyncDispose] = function() { stop(); return Promise.resolve(undefined); };
+    \\    if (typeof options.ipc === "function") Promise.resolve().then(() => options.ipc({ href: "ws://127.0.0.1:" + String(wss.address().port) + "/" }, child));
+    \\    return child;
+    \\  }
     \\  if (cmd.some(part => part.endsWith("/websocket-server-fixture.js"))) return __home_spawn_completed("", "", 0);
     \\  return null;
     \\}
@@ -68797,9 +68817,19 @@ const harness_prelude =
     \\  if (typeof Blob === "function" && value instanceof Blob) return value;
     \\  return typeof value === "string" ? Buffer.from(value) : value;
     \\}
+    \\function __home_websocket_binary_payload(socket, value) {
+    \\  if (typeof Blob === "function" && value instanceof Blob) {
+    \\    if (socket && socket.binaryType === "blob") return value;
+    \\    return value;
+    \\  }
+    \\  const buffer = Buffer.from(value === undefined || value === null ? [] : value);
+    \\  if (socket && socket.binaryType === "arraybuffer") return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    \\  if (socket && socket.binaryType === "blob") return new Blob([buffer]);
+    \\  return buffer;
+    \\}
     \\function __home_websocket_dispatch_control(socket, type, value) {
     \\  if (!socket || socket.readyState !== 1) return;
-    \\  const payload = __home_websocket_control_payload(value);
+    \\  const payload = __home_websocket_binary_payload(socket, __home_websocket_control_payload(value));
     \\  socket.dispatchEvent(new MessageEvent(type, { data: payload }));
     \\}
     \\function __home_websocket_state_error(operation, socket) {
@@ -69071,9 +69101,7 @@ const harness_prelude =
     \\  for (const frame of decoded.frames) {
     \\    if (frame.opcode === 0x1) socket.dispatchEvent(new MessageEvent("message", { data: frame.payload.toString("utf8") }));
     \\    else if (frame.opcode === 0x2) {
-    \\      let data = frame.payload;
-    \\      if (socket.binaryType === "arraybuffer") data = frame.payload.buffer.slice(frame.payload.byteOffset, frame.payload.byteOffset + frame.payload.byteLength);
-    \\      else if (socket.binaryType === "blob") data = new Blob([frame.payload]);
+    \\      const data = __home_websocket_binary_payload(socket, frame.payload);
     \\      socket.dispatchEvent(new MessageEvent("message", { data }));
     \\    }
     \\    else if (frame.opcode === 0x8) { socket.close(); return; }
@@ -69327,6 +69355,8 @@ const harness_prelude =
     \\WebSocket.prototype.close = function(code, reason) {
     \\  if (this.readyState === 3) return;
     \\  this.readyState = 3;
+    \\  this.__home_pending_open = false;
+    \\  this.__home_pending_server_open = null;
     \\  __home_websocket_unsubscribe_client(this);
     \\  if (this.__home_ws_server_side && typeof this.__home_ws_server_side.__home_client_close === "function") this.__home_ws_server_side.__home_client_close();
     \\  if (this.__home_bun_socket && !this.__home_bun_socket.__home_closed && typeof this.__home_bun_socket.end === "function") this.__home_bun_socket.end();
@@ -69340,6 +69370,8 @@ const harness_prelude =
     \\WebSocket.prototype.terminate = function() {
     \\  if (this.readyState === 3) return;
     \\  this.readyState = 3;
+    \\  this.__home_pending_open = false;
+    \\  this.__home_pending_server_open = null;
     \\  __home_websocket_unsubscribe_client(this);
     \\  if (this.__home_ws_server_side && typeof this.__home_ws_server_side.terminate === "function") this.__home_ws_server_side.terminate();
     \\  if (this.__home_bun_socket && !this.__home_bun_socket.__home_closed) {
@@ -69575,7 +69607,8 @@ const harness_prelude =
     \\    const client = this.__home_client;
     \\    if (!client || client.readyState === WebSocket.CLOSED) return 0;
     \\    Promise.resolve().then(() => {
-    \\      client.dispatchEvent(new MessageEvent("message", { data }));
+    \\      const payload = typeof data === "string" ? data : __home_websocket_binary_payload(client, data);
+    \\      client.dispatchEvent(new MessageEvent("message", { data: payload }));
     \\      if (typeof callback === "function") callback();
     \\    });
     \\    return __home_websocket_payload_size(data);
@@ -69598,14 +69631,18 @@ const harness_prelude =
     \\      this.__home_raw_socket.write(__home_ws_control_frame(0x09, data));
     \\      return;
     \\    }
-    \\    Promise.resolve().then(() => this.emit("ping", data === undefined ? Buffer.alloc(0) : data));
+    \\    const client = this.__home_client;
+    \\    if (client) Promise.resolve().then(() => __home_websocket_dispatch_control(client, "ping", data));
+    \\    else Promise.resolve().then(() => this.emit("ping", data === undefined ? Buffer.alloc(0) : data));
     \\  }
     \\  pong(data) {
     \\    if (this.__home_raw_socket && typeof this.__home_raw_socket.write === "function") {
     \\      this.__home_raw_socket.write(__home_ws_control_frame(0x0a, data));
     \\      return;
     \\    }
-    \\    Promise.resolve().then(() => this.emit("pong", data === undefined ? Buffer.alloc(0) : data));
+    \\    const client = this.__home_client;
+    \\    if (client) Promise.resolve().then(() => __home_websocket_dispatch_control(client, "pong", data));
+    \\    else Promise.resolve().then(() => this.emit("pong", data === undefined ? Buffer.alloc(0) : data));
     \\  }
     \\  addEventListener(type, callback) { return __home_ws_add_event_listener.call(this, type, callback); }
     \\  removeEventListener(type, callback) { return __home_ws_remove_event_listener.call(this, type, callback); }
@@ -111729,6 +111766,29 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across f
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 4), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts across the WebSocket client echo matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-client.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 29 or summary.todo != 0) {
+        std.debug.print(
+            "WebSocket client echo corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 29), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
