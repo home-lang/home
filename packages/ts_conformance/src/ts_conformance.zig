@@ -242,6 +242,7 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported or if (ambient) |query| query.facts.exported_type else false,
             .exported_value = exported_value or if (ambient) |query| query.facts.exported_value else false,
+            .exported_value_readonly = resolved_facts.exported_value_readonly,
             .ambient_const_enum = ambient_const_enum or if (ambient) |query| query.facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
             .type_only_export = effective_type_only_pos != null,

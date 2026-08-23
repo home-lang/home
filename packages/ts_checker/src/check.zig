@@ -249,6 +249,9 @@ pub const ExternalResolver = struct {
         // and enums are both type/value exports; interfaces and type
         // aliases are type-only declarations.
         exported_value: bool = false,
+        /// True when the queried CommonJS value export was declared by a
+        /// getter-only or non-writable `Object.defineProperty` descriptor.
+        exported_value_readonly: bool = false,
         // True when the bare name is NOT a direct top-level export but is
         // reachable only as a type-space member nested inside one of the
         // resolved module's exported namespaces (e.g.
@@ -46734,6 +46737,10 @@ pub const Checker = struct {
     fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!bool {
         if (self.hir.kindOf(target) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, target);
+        if (try self.importedRequireMemberIsReadonly(m.object, m.name)) {
+            try self.reportReadonlyMemberAssignment(target, m.name);
+            return true;
+        }
         if (self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
         if (try self.importedDefaultMemberIsReadonly(m.object, m.name)) {
             try self.reportReadonlyMemberAssignment(target, m.name);
@@ -46766,6 +46773,24 @@ pub const Checker = struct {
         }
         try self.reportReadonlyMemberAssignment(target, m.name);
         return true;
+    }
+
+    fn importedRequireMemberIsReadonly(
+        self: *Checker,
+        object: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
+        const local_name = hir_mod.identifierOf(self.hir, object).name;
+        const spec = self.requireSpecifierForLocal(local_name, object) orelse return false;
+        if (self.external_resolver) |resolver| {
+            const info = resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name)) orelse return false;
+            return info.exported_value_readonly;
+        }
+        const module_t = (try self.moduleNamespaceTypeForLocalImport(local_name, object)) orelse
+            (try self.commonJsWholeExportTypeForRequireVariable(object)) orelse return false;
+        const info = self.interner.objectMemberInfo(module_t, member_name) orelse return false;
+        return info.is_readonly;
     }
 
     fn memberAccessReceiverIsWritableModuleAlias(self: *Checker, object: NodeId) bool {
@@ -226332,6 +226357,8 @@ test "checker: checkjs Object.defineProperty exports retain assignment types" {
         \\// @filename: mod.js
         \\Object.defineProperty(exports, "thing", { value: 42, writable: true });
         \\Object.defineProperty(exports, "rw", { get() { return 98122; }, set(_) {} });
+        \\Object.defineProperty(exports, "readonlyProp", { value: "Smith", writable: false });
+        \\Object.defineProperty(exports, "readonlyAccessor", { get() { return 21.75; } });
         \\Object.defineProperty(exports, "setonly", {
         \\  /** @param {string} value */
         \\  set(value) { this.rw = Number(value); }
@@ -226340,11 +226367,14 @@ test "checker: checkjs Object.defineProperty exports retain assignment types" {
         \\import mod = require("./mod");
         \\mod.thing = "no";
         \\mod.rw = "no";
+        \\mod.readonlyProp = "name";
+        \\mod.readonlyAccessor = 12;
         \\mod.setonly = 0;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.readonly_property));
 }
 
 test "checker: checkjs local defineProperty shape survives whole CommonJS export" {
@@ -233532,6 +233562,7 @@ const StubExternalResolver = struct {
     canned_is_declaration: bool,
     canned_module_name: ?[]const u8 = null,
     canned_exported_name: []const u8 = "",
+    canned_exported_value_readonly: bool = false,
     canned_alternate_result: ?[]const u8 = null,
     canned_project_reference_output: ?[]const u8 = null,
     canned_blocked_by_exports_null: bool = false,
@@ -233576,6 +233607,8 @@ const StubExternalResolver = struct {
             .module_name = module_name,
             .exported_type = false,
             .exported_value = std.mem.eql(u8, name, self.canned_exported_name),
+            .exported_value_readonly = self.canned_exported_value_readonly and
+                std.mem.eql(u8, name, self.canned_exported_name),
         };
     }
 };
@@ -233953,6 +233986,27 @@ test "checker: bare require call emits TS7016 for untyped resolved module" {
     try T.expectEqual(@as(usize, 1), ts7016_count);
     try T.expect(!ts2307);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: program require members preserve defineProperty readonly" {
+    const s = try newSetup(
+        \\const mod = require("./mod");
+        \\mod.readonlyProp = "name";
+        \\mod.writableProp = "name";
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/mod.d.ts",
+        .canned_is_declaration = true,
+        .canned_module_name = "\"mod\"",
+        .canned_exported_name = "readonlyProp",
+        .canned_exported_value_readonly = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/validator.ts");
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_property));
 }
 
 test "checker: external resolver declaration result accepts unless exports null blocked" {

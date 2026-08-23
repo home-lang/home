@@ -3842,10 +3842,123 @@ pub fn moduleExportsValueSpaceName(
         gpa.destroy(compilation);
     }
     const id = compilation.interner.lookup(name) orelse return false;
+    if (moduleRootCommonJsDefinePropertyReadonlyStatus(
+        &compilation.hir,
+        &compilation.interner,
+        compilation.root,
+        id,
+    ) != null) return true;
     if (moduleRootHasCommonJsExportedRuntimeValue(&compilation.hir, &compilation.interner, compilation.root, id)) return true;
     const sym = compilation.module.root.values.get(id) orelse return false;
     if (sym.flags.is_type) return false;
     return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
+}
+
+const CommonJsDefinePropertyExport = struct {
+    name: hir_mod_ns.StringId,
+    is_readonly: bool,
+};
+
+fn moduleRootCommonJsDefinePropertyReadonlyStatus(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    wanted_name: hir_mod_ns.StringId,
+) ?bool {
+    if (hir.kindOf(root) != .block_stmt) return null;
+    var found = false;
+    var is_readonly = true;
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        const defined = moduleCommonJsDefinePropertyExport(hir, interner, root, stmt) orelse continue;
+        if (defined.name != wanted_name) continue;
+        found = true;
+        is_readonly = is_readonly and defined.is_readonly;
+    }
+    return if (found) is_readonly else null;
+}
+
+fn moduleCommonJsDefinePropertyExport(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    stmt: hir_mod_ns.NodeId,
+) ?CommonJsDefinePropertyExport {
+    if (hir.kindOf(stmt) != .call_expr) return null;
+    const call = hir_mod_ns.callOf(hir, stmt);
+    const callee_name = commonJsPropertyAccessName(hir, call.callee) orelse return null;
+    if (!std.mem.eql(u8, interner.get(callee_name), "defineProperty")) return null;
+    const callee_object = commonJsPropertyAccessObject(hir, call.callee) orelse return null;
+    if (hir.kindOf(callee_object) != .identifier or
+        !std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, callee_object).name), "Object")) return null;
+    const args = hir_mod_ns.callArgs(hir, stmt);
+    if (args.len < 3 or hir.kindOf(args[1]) != .literal_string) return null;
+    const target_is_exports = if (hir.kindOf(args[0]) == .identifier)
+        std.mem.eql(u8, interner.get(hir_mod_ns.identifierOf(hir, args[0]).name), "exports")
+    else
+        commonJsModuleExportsAccess(hir, interner, args[0]);
+    if (!target_is_exports) return null;
+    const descriptor = moduleDefinePropertyDescriptorObject(hir, root, args[2]) orelse return null;
+
+    var has_value = false;
+    var has_getter = false;
+    var has_setter = false;
+    var writable = false;
+    for (hir_mod_ns.objectLiteralProps(hir, descriptor)) |prop_node| {
+        if (hir.kindOf(prop_node) != .object_property) continue;
+        const property = hir_mod_ns.objectPropertyOf(hir, prop_node);
+        const property_name = moduleObjectPropertyName(hir, property.key) orelse continue;
+        const text = interner.get(property_name);
+        if (std.mem.eql(u8, text, "value")) {
+            has_value = true;
+        } else if (std.mem.eql(u8, text, "get")) {
+            has_getter = true;
+        } else if (std.mem.eql(u8, text, "set")) {
+            has_setter = true;
+        } else if (std.mem.eql(u8, text, "writable") and
+            property.value != hir_mod_ns.none_node_id and
+            hir.kindOf(property.value) == .literal_bool)
+        {
+            writable = hir_mod_ns.literalBoolOf(hir, property.value);
+        }
+    }
+    const has_accessor = has_getter or has_setter;
+    return .{
+        .name = hir_mod_ns.literalStringOf(hir, args[1]).value,
+        .is_readonly = if (has_accessor) !has_setter else !has_value or !writable,
+    };
+}
+
+fn moduleDefinePropertyDescriptorObject(
+    hir: *const hir_mod_ns.Hir,
+    root: hir_mod_ns.NodeId,
+    node: hir_mod_ns.NodeId,
+) ?hir_mod_ns.NodeId {
+    if (node == hir_mod_ns.none_node_id) return null;
+    if (hir.kindOf(node) == .object_literal) return node;
+    if (hir.kindOf(node) != .identifier or hir.kindOf(root) != .block_stmt) return null;
+    const name = hir_mod_ns.identifierOf(hir, node).name;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (decl == hir_mod_ns.none_node_id) continue;
+        const kind = hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+        const variable = hir_mod_ns.varDeclOf(hir, decl);
+        if (variable.name == hir_mod_ns.none_node_id or hir.kindOf(variable.name) != .identifier or
+            hir_mod_ns.identifierOf(hir, variable.name).name != name) continue;
+        if (variable.init != hir_mod_ns.none_node_id and hir.kindOf(variable.init) == .object_literal) return variable.init;
+    }
+    return null;
+}
+
+fn moduleObjectPropertyName(
+    hir: *const hir_mod_ns.Hir,
+    key: hir_mod_ns.NodeId,
+) ?hir_mod_ns.StringId {
+    return switch (hir.kindOf(key)) {
+        .identifier => hir_mod_ns.identifierOf(hir, key).name,
+        .literal_string => hir_mod_ns.literalStringOf(hir, key).value,
+        else => null,
+    };
 }
 
 fn moduleRootHasCommonJsExportedRuntimeValue(
@@ -4017,6 +4130,7 @@ pub fn moduleExportsTypeOnlyNamespaceName(
 pub const ModuleExportFacts = struct {
     exported_type: bool = false,
     exported_value: bool = false,
+    exported_value_readonly: bool = false,
     ambient_const_enum: bool = false,
     type_only_pos: ?u32 = null,
     export_assignment_type_only: bool = false,
@@ -4232,6 +4346,14 @@ fn moduleExportFactsFromResolvedModuleDepth(
         compilation.root,
         name,
     );
+    if (compilation.interner.lookup(name)) |name_id| {
+        facts.exported_value_readonly = moduleRootCommonJsDefinePropertyReadonlyStatus(
+            &compilation.hir,
+            &compilation.interner,
+            compilation.root,
+            name_id,
+        ) orelse false;
+    }
     if (name.len == 0) {
         for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
             if (compilation.hir.kindOf(stmt) != .export_decl) continue;
@@ -4313,6 +4435,7 @@ fn moduleExportFactsFromResolvedModuleDepth(
                     facts.exported_type = facts.exported_type or nested.exported_type;
                     facts.exported_value = facts.exported_value or nested.exported_value;
                     facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+                    facts.exported_value_readonly = facts.exported_value_readonly or nested.exported_value_readonly;
                     facts.generic_function = facts.generic_function or nested.generic_function;
                     facts.call_only_function = facts.call_only_function or nested.call_only_function;
                 }
@@ -4333,6 +4456,7 @@ fn moduleExportFactsFromResolvedModuleDepth(
         facts.exported_type = facts.exported_type or nested.exported_type;
         facts.exported_value = facts.exported_value or nested.exported_value;
         facts.ambient_const_enum = facts.ambient_const_enum or nested.ambient_const_enum;
+        facts.exported_value_readonly = facts.exported_value_readonly or nested.exported_value_readonly;
         facts.generic_function = facts.generic_function or nested.generic_function;
         facts.call_only_function = facts.call_only_function or nested.call_only_function;
     }
@@ -4466,6 +4590,7 @@ fn moduleRootIsExternalOrCommonJsModule(
 ) bool {
     if (hir.kindOf(root) != .block_stmt) return false;
     for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        if (moduleCommonJsDefinePropertyExport(hir, interner, root, stmt) != null) return true;
         switch (hir.kindOf(stmt)) {
             .import_decl, .export_decl => return true,
             .assignment => {
@@ -6802,6 +6927,31 @@ test "module export facts expose non-void CommonJS properties" {
     );
     try T.expect(exported.exported_value);
     try T.expect(!absent.exported_value);
+}
+
+test "module export facts preserve CommonJS defineProperty readonly descriptors" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/mod.js",
+        \\Object.defineProperty(exports, "writable", { value: 1, writable: true });
+        \\Object.defineProperty(exports, "fixed", { value: 1, writable: false });
+        \\Object.defineProperty(module.exports, "getter", { get() { return 1; } });
+        \\Object.defineProperty(module.exports, "setter", { set(value) {} });
+        \\Object.defineProperty(module.exports, "invalid", { writable: true });
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const writable = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/mod.js", "writable");
+    const fixed = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/mod.js", "fixed");
+    const getter = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/mod.js", "getter");
+    const setter = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/mod.js", "setter");
+    const invalid = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/mod.js", "invalid");
+    try T.expect(writable.exported_value and !writable.exported_value_readonly);
+    try T.expect(fixed.exported_value and fixed.exported_value_readonly);
+    try T.expect(getter.exported_value and getter.exported_value_readonly);
+    try T.expect(setter.exported_value and !setter.exported_value_readonly);
+    try T.expect(invalid.exported_value and invalid.exported_value_readonly);
 }
 
 test "module export facts distinguish scripts from external modules" {
