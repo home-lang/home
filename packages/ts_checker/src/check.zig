@@ -6600,14 +6600,40 @@ pub const Checker = struct {
                 const tail = tag_body[tail_start..];
                 const attr = jsDocImportAttributeKeywordWithoutObject(tail) orelse continue;
                 const attr_abs = tag_name_end + tail_start + attr;
-                const open_pos: u32 = @intCast(body_start + attr_abs);
-                if (self.hasDiagnosticAtPosition(TsCodes.expected_open_brace, open_pos)) continue;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = root,
-                    .pos = open_pos,
-                    .code = TsCodes.expected_open_brace,
-                    .message = "'{' expected.",
-                });
+                const attr_text = if (std.mem.startsWith(u8, tail[attr..], "with")) "with" else "assert";
+                var open_abs = attr_abs + attr_text.len;
+                while (open_abs < body.len and std.ascii.isWhitespace(body[open_abs])) : (open_abs += 1) {}
+                const attr_pos: u32 = @intCast(body_start + attr_abs);
+                const open_pos: u32 = @intCast(body_start + open_abs);
+                if (!self.hasDiagnosticAtPosition(TsCodes.type_import_attributes_exactly_one_resolution_mode, attr_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = attr_pos,
+                        .code = TsCodes.type_import_attributes_exactly_one_resolution_mode,
+                        .message = "Type import attributes should have exactly one key - 'resolution-mode' - with value 'import' or 'require'.",
+                    });
+                }
+                if (!self.moduleSupportsImportAttributes() and
+                    !self.hasDiagnosticAtPosition(TsCodes.import_attributes_module_unsupported, attr_pos))
+                {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = attr_pos,
+                        .code = TsCodes.import_attributes_module_unsupported,
+                        .message = "Import attributes are only supported when the '--module' option is set to 'esnext', 'node18', 'node20', 'nodenext', or 'preserve'.",
+                    });
+                }
+                if (!self.hasDiagnosticAtPosition(TsCodes.expected_open_brace, open_pos)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = root,
+                        .pos = open_pos,
+                        .code = TsCodes.expected_open_brace,
+                        .message = "'{' expected.",
+                    });
+                }
+                if (jsDocImportSpec(tag_body)) |spec| {
+                    _ = try self.reportJsDocImportFileIsNotModule(src, root, spec);
+                }
             }
         }
     }
@@ -222014,6 +222040,21 @@ test "checker: checkjs JSDoc import tag rejects require alias syntax" {
     }
     try T.expect(saw_expected_from);
     try T.expect(saw_string_literal);
+}
+
+test "checker: malformed JSDoc import attributes retain companion diagnostics" {
+    const b = try newBoundSetup(
+        \\// @checkjs: true
+        \\// @filename: /foo.js
+        \\/** @import * as f from "./foo" with */
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.file_is_not_a_module));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_import_attributes_exactly_one_resolution_mode));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.import_attributes_module_unsupported));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.expected_open_brace));
 }
 
 test "checker: checkjs duplicate JSDoc import locals report both declarations without use cascade" {
