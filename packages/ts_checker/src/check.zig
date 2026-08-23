@@ -59858,6 +59858,34 @@ pub const Checker = struct {
         return null;
     }
 
+    fn relativeDefaultImportIsValueOnly(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!bool {
+        const module = self.defaultImportModuleForLocalBinding(local_name, anchor) orelse return false;
+        const spec = self.string_interner.get(module);
+        if (!std.mem.startsWith(u8, spec, ".")) return false;
+        const resolved = try self.resolveVirtualRelativePath(
+            self.relativeModuleFilenameForNode(anchor) orelse return false,
+            stripJsOutputExtension(spec),
+        );
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec) or
+                self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            if (!ex.is_default) continue;
+            var decl = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(decl) == .identifier) {
+                decl = self.findNamedDeclInVirtualSection(raw, hir_mod.identifierOf(self.hir, decl).name) orelse decl;
+            }
+            return switch (self.hir.kindOf(decl)) {
+                .class_decl, .class_expr, .enum_decl, .interface_decl, .type_alias_decl, .namespace_decl => false,
+                else => true,
+            };
+        }
+        return false;
+    }
+
     fn instantiateVirtualImportedGenericTypeRef(
         self: *Checker,
         type_node: NodeId,
@@ -91317,6 +91345,10 @@ pub const Checker = struct {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor != hir_mod.none_node_id) {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
+            if (try self.relativeDefaultImportIsValueOnly(name, anchor)) {
+                try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
+                return types.Primitive.any;
+            }
             if (try self.importedTypeRefForLocal(name, anchor)) |t| return t;
             if (self.type_names.get(name)) |t| {
                 if (self.genericTypeAliasVisibleAt(anchor, name)) return t;
@@ -203408,6 +203440,24 @@ test "checker: JSDoc enum bare import keeps type-alias semantics" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.module_does_not_refer_to_type));
+}
+
+test "checker: default-imported JSDoc enum remains value-only" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: def.js
+        \\/** @enum {number} */
+        \\const MyEnum = { a: 1, b: 2 };
+        \\export default MyEnum;
+        \\// @filename: use.js
+        \\import MyEnum from "./def";
+        \\/** @type {MyEnum} */
+        \\const value = MyEnum.b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: TS1340 suppressed when module uses export assignment" {
