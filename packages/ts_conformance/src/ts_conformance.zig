@@ -1362,6 +1362,7 @@ fn freeStringSet(gpa: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void))
 fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
     if (caseNeedsProgramRouteByName(c.name)) return true;
+    if (rawSourceHasShadowedDeclarationRoot(c.raw_source)) return true;
     // Only route fixtures with explicit expected diagnostics. Fixtures
     // upstream treats as clean (no `.errors.txt` baseline) work today
     // via the legacy concatenated source — the checker sees all
@@ -1777,6 +1778,39 @@ fn splitVirtualFiles(
     return out;
 }
 
+fn declarationFileShadowedByImplementation(files: []const VirtualFile, path: []const u8) bool {
+    const Substitution = struct {
+        stem: []const u8,
+        extensions: []const []const u8,
+    };
+    const substitution: Substitution = if (std.mem.endsWith(u8, path, ".d.ts"))
+        .{ .stem = path[0 .. path.len - ".d.ts".len], .extensions = &.{ ".ts", ".tsx" } }
+    else if (std.mem.endsWith(u8, path, ".d.mts"))
+        .{ .stem = path[0 .. path.len - ".d.mts".len], .extensions = &.{".mts"} }
+    else if (std.mem.endsWith(u8, path, ".d.cts"))
+        .{ .stem = path[0 .. path.len - ".d.cts".len], .extensions = &.{".cts"} }
+    else
+        return false;
+
+    for (substitution.extensions) |extension| {
+        for (files) |candidate| {
+            if (candidate.path.len != substitution.stem.len + extension.len) continue;
+            if (!std.mem.eql(u8, candidate.path[0..substitution.stem.len], substitution.stem)) continue;
+            if (std.mem.eql(u8, candidate.path[substitution.stem.len..], extension)) return true;
+        }
+    }
+    return false;
+}
+
+fn rawSourceHasShadowedDeclarationRoot(raw: []const u8) bool {
+    var files = splitVirtualFiles(std.heap.page_allocator, raw) catch return false;
+    defer files.deinit(std.heap.page_allocator);
+    for (files.items) |file| {
+        if (declarationFileShadowedByImplementation(files.items, file.path)) return true;
+    }
+    return false;
+}
+
 test "conformance: duplicate virtual filenames keep the final section" {
     const raw =
         \\// @filename: repeated.ts
@@ -1797,6 +1831,26 @@ test "conformance: duplicate virtual filenames keep the final section" {
     defer T.allocator.free(stripped);
     try T.expect(std.mem.indexOf(u8, stripped, "class Final") != null);
     try T.expect(std.mem.indexOf(u8, stripped, "class First") == null);
+}
+
+test "conformance: implementation source shadows same-stem declaration root" {
+    const files = [_]VirtualFile{
+        .{ .path = "foo.d.ts", .source = "export declare const x: number;", .extra_strip = 0 },
+        .{ .path = "foo.ts", .source = "export const y = 1;", .extra_strip = 0 },
+        .{ .path = "types.d.ts", .source = "export declare const z: number;", .extra_strip = 0 },
+    };
+
+    try T.expect(declarationFileShadowedByImplementation(&files, "foo.d.ts"));
+    try T.expect(!declarationFileShadowedByImplementation(&files, "foo.ts"));
+    try T.expect(!declarationFileShadowedByImplementation(&files, "types.d.ts"));
+
+    const raw =
+        \\// @filename: foo.d.ts
+        \\export declare const x: number;
+        \\// @filename: foo.ts
+        \\export const y = 1;
+    ;
+    try T.expect(rawSourceHasShadowedDeclarationRoot(raw));
 }
 
 fn lineEndOffset(raw: []const u8, start: usize) usize {
@@ -3167,6 +3221,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     for (virtual_files.items) |f| {
         if (!isCodeVirtualFile(f.path)) continue;
         if (isNodeModulesVirtualPath(f.path)) continue;
+        if (declarationFileShadowedByImplementation(virtual_files.items, f.path)) continue;
         if (configured_type_names.len != 0 and virtualFileIsUnderAnyTypeRoot(f.path, tsconfig_options.type_roots)) continue;
         const canon = try canonicalVfsPath(gpa, f.path);
         _ = program.add(canon, f.source) catch |err| switch (err) {

@@ -2139,11 +2139,36 @@ pub const Parser = struct {
     /// (`Global module exports may only appear in module files.`): a
     /// `.d.ts` file whose only top-level export is `export as namespace`
     /// is still a script file under TypeScript's rules.
-    fn hasNonNamespaceExportModuleIndicator(self: *const Parser) bool {
+    fn hasNonNamespaceExportModuleIndicator(self: *const Parser, pos: u32) bool {
+        var sec_start: u32 = 0;
+        var sec_end: u32 = @intCast(self.source.len);
+        if (std.mem.indexOf(u8, self.source, "@filename:") != null or
+            std.mem.indexOf(u8, self.source, "@Filename:") != null)
+        {
+            var line_start: usize = 0;
+            while (line_start < self.source.len) {
+                const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+                const line = self.source[line_start..line_end];
+                if (std.mem.indexOf(u8, line, "@filename:") != null or
+                    std.mem.indexOf(u8, line, "@Filename:") != null)
+                {
+                    if (line_start <= pos) {
+                        sec_start = @intCast(@min(line_end + 1, self.source.len));
+                    } else {
+                        sec_end = @intCast(line_start);
+                        break;
+                    }
+                }
+                if (line_end >= self.source.len) break;
+                line_start = line_end + 1;
+            }
+        }
         var depth: u32 = 0;
         var i: usize = 0;
         while (i < self.tokens.len) : (i += 1) {
             const tok = self.tokens[i];
+            if (tok.span.start < sec_start) continue;
+            if (tok.span.start >= sec_end) break;
             switch (tok.kind) {
                 .open_brace, .open_paren, .open_bracket => depth += 1,
                 .close_brace, .close_paren, .close_bracket => if (depth > 0) {
@@ -2274,11 +2299,17 @@ pub const Parser = struct {
                     (self.tokens[self.cursor - 1].kind == .identifier or
                         self.tokens[self.cursor - 1].kind.isContextualKeyword()) and
                     !t.flags.preceded_by_newline));
+        const is_invalid_global_module_export_modifier =
+            (t.kind == .kw_static or t.kind == .kw_public or t.kind == .kw_declare) and
+            self.peekAt(1).kind == .kw_export and
+            self.peekAt(2).kind == .kw_as and
+            self.peekAt(3).kind == .kw_namespace;
         if (self.block_depth == 0 and
             self.nested_statement_depth == 0 and
             self.isAmbientContextAt(t.span.start) and
             !is_await_using_in_ambient and
             !is_ambient_identifier_chain and
+            !is_invalid_global_module_export_modifier and
             self.statementIsDisallowedInAmbientContext(t.kind))
         {
             try self.reportCodeAt(t.span.start, t.line, 1036, "Statements are not allowed in ambient contexts.");
@@ -2700,7 +2731,12 @@ pub const Parser = struct {
                     next == .kw_async or next == .kw_abstract or next == .kw_export)
                 {
                     const modifier = self.advance();
-                    if (self.moduleElementContextIsIllegal()) {
+                    if (next == .kw_export and
+                        self.peekAt(1).kind == .kw_as and
+                        self.peekAt(2).kind == .kw_namespace)
+                    {
+                        try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
+                    } else if (self.moduleElementContextIsIllegal()) {
                         try self.reportGrammarCodeAt(modifier.span.start, modifier.line, 1184, "Modifiers cannot appear here.");
                     } else {
                         try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
@@ -2749,6 +2785,14 @@ pub const Parser = struct {
             },
             .kw_declare => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind == .kw_export and
+                    self.peekAt(2).kind == .kw_as and
+                    self.peekAt(3).kind == .kw_namespace)
+                {
+                    const declare_tok = self.advance();
+                    try self.reportGrammarCodeAt(declare_tok.span.start, declare_tok.line, 1184, "Modifiers cannot appear here.");
+                    break :blk try self.parseStatement();
+                }
                 if (self.peekAt(1).kind == .kw_module and
                     (self.peekAt(2).kind == .no_substitution_template or self.peekAt(2).kind == .template_head))
                 {
@@ -8989,7 +9033,15 @@ pub const Parser = struct {
                     local_tok_for_diag.span.start,
                 );
                 try named.append(self.gpa, spec);
-                if (!self.match(.comma)) break;
+                if (!self.match(.comma)) {
+                    if (self.peek().kind == .close_brace or self.peek().kind == .eof) break;
+                    if (self.tokenCanStartModuleExportName(self.peek())) {
+                        const missing_comma = self.peek();
+                        try self.reportCodeAt(missing_comma.span.start, missing_comma.line, 1005, "',' expected.");
+                        continue;
+                    }
+                    break;
+                }
             }
             _ = try self.expectClosingMatch(.close_brace, "'}' to close named imports", named_imports_open.span.start, "{", "}");
         }
@@ -9521,7 +9573,7 @@ pub const Parser = struct {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1316, "Global module exports may only appear at top level.");
             } else if (!self.isAmbientContextAt(start.span.start)) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1315, "Global module exports may only appear in declaration files.");
-            } else if (!self.hasNonNamespaceExportModuleIndicator()) {
+            } else if (!self.hasNonNamespaceExportModuleIndicator(start.span.start)) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1314, "Global module exports may only appear in module files.");
             }
             return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
@@ -9673,6 +9725,8 @@ pub const Parser = struct {
             }
             var named: std.ArrayListUnmanaged(NodeId) = .empty;
             defer named.deinit(self.gpa);
+            var string_literal_local_exports: std.ArrayListUnmanaged(Token) = .empty;
+            defer string_literal_local_exports.deinit(self.gpa);
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const parsed_spec = try self.parseImportOrExportSpecifier(false);
@@ -9687,6 +9741,7 @@ pub const Parser = struct {
                 const imported_tok = parsed_spec.imported;
                 const imported_id = try self.internModuleExportName(imported_tok);
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
+                if (imported_is_string_literal) try string_literal_local_exports.append(self.gpa, imported_tok);
                 const local_tok = parsed_spec.local;
                 const local_id = try self.internModuleExportName(local_tok);
                 const local_is_string_literal = local_tok.kind == .string_literal;
@@ -9701,7 +9756,15 @@ pub const Parser = struct {
                     local_tok.span.start,
                 );
                 try named.append(self.gpa, spec);
-                if (!self.match(.comma)) break;
+                if (!self.match(.comma)) {
+                    if (self.peek().kind == .close_brace or self.peek().kind == .eof) break;
+                    if (self.tokenCanStartModuleExportName(self.peek())) {
+                        const missing_comma = self.peek();
+                        try self.reportCodeAt(missing_comma.span.start, missing_comma.line, 1005, "',' expected.");
+                        continue;
+                    }
+                    break;
+                }
             }
             _ = try self.expectClosingMatch(.close_brace, "'}' to close named exports", named_exports_open.span.start, "{", "}");
             var module_id = empty_string;
@@ -9716,6 +9779,11 @@ pub const Parser = struct {
                 has_module_specifier = true;
                 try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
                 try self.skipImportAttributesClause();
+            }
+            if (!has_module_specifier) {
+                for (string_literal_local_exports.items) |tok| {
+                    try self.reportCodeAt(tok.span.start, tok.line, 1003, "Identifier expected.");
+                }
             }
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -10137,6 +10205,9 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
+        const recovers_global_module_export_name = self.peek().kind == .kw_export and
+            self.peekAt(1).kind == .kw_as and
+            self.peekAt(2).kind == .kw_namespace;
         if (start.kind == .kw_let or start.kind == .kw_const) {
             if (self.unbraced_statement_block_depth) |depth| {
                 if (self.block_depth == depth and
@@ -10157,7 +10228,8 @@ pub const Parser = struct {
             self.block_depth == 0 and
             self.namespace_depth == 0 and
             self.ambient_depth == 0 and
-            !self.in_export_declaration)
+            !self.in_export_declaration and
+            !recovers_global_module_export_name)
         {
             try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
         }
@@ -10243,6 +10315,22 @@ pub const Parser = struct {
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         };
+
+        if (recovers_global_module_export_name) {
+            while (self.peek().kind != .semicolon and self.peek().kind != .eof) _ = self.advance();
+            try self.consumeStatementTerminator();
+            const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(name_node).end;
+            return try self.builder.addVarDeclEx(
+                decl_kind,
+                .{ .start = start.span.start, .end = end },
+                name_node,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                false,
+                false,
+                self.isAmbientContextAt(start.span.start),
+            );
+        }
 
         // Definite-assignment assertion in declarations: `let x!: T`.
         // It affects TS control-flow checks only; HIR keeps the same
@@ -25854,6 +25942,27 @@ test "parser: export named string-literal module export names" {
     try T.expectEqualStrings("ns-name", s.interner.get(third.namespace_alias));
 }
 
+test "parser: string-literal local export names require a module specifier" {
+    var s = try newTestSetup(
+        \\export { "bad" as local };
+        \\export type { "bad type" as LocalType };
+        \\export { type "bad clause" as LocalClause };
+        \\export { "valid" as "renamed" } from "./m";
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var identifier_expected: usize = 0;
+    var expected_line: u32 = 1;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != 1003) continue;
+        identifier_expected += 1;
+        try T.expectEqual(expected_line, diagnostic.line);
+        expected_line += 1;
+    }
+    try T.expectEqual(@as(usize, 3), identifier_expected);
+}
+
 test "parser: namespace export assignment forms report diagnostics" {
     const src =
         \\namespace M { export = A; }
@@ -30417,6 +30526,34 @@ test "parser: export as namespace respects virtual declaration filename" {
     }
 }
 
+test "parser: export as namespace scopes and recovers invalid modifiers" {
+    var s = try newTestSetup(
+        \\// @filename: err1.d.ts
+        \\export as namespace Foo;
+        \\// @filename: err2.d.ts
+        \\declare module "Foo" { export as namespace Bar; }
+        \\// @filename: err3.d.ts
+        \\export var p;
+        \\static export as namespace oo1;
+        \\declare export as namespace oo2;
+        \\public export as namespace oo3;
+        \\const export as namespace oo4;
+        \\// @filename: err4.d.ts
+        \\export namespace B { export as namespace C1; }
+        \\// @filename: err5.ts
+        \\export var v;
+        \\export as namespace C2;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const expected = [_]u32{ 1314, 1316, 1184, 1184, 1184, 1389, 1316, 1315 };
+    try T.expectEqual(expected.len, s.parser.diagnostics.items.len);
+    for (expected, s.parser.diagnostics.items) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
+}
+
 test "parser: invalid class-body var reports TS1068" {
     var s = try newTestSetup("class Foo { var icecream = \"chocolate\"; }");
     defer destroyTestSetup(s);
@@ -34610,6 +34747,20 @@ test "parser: TS2206 stays clean for a plain import type" {
         _ = s.parser.parseSourceFile() catch {};
         try T.expectEqual(@as(u32, 0), countDiag(s, 2206));
     }
+}
+
+test "parser: named import specifiers recover across a missing comma" {
+    var s = try newTestSetup(
+        \\import { type as as as as } from "mod";
+        \\const after = 1;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    const missing_comma = findDiag(s, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("',' expected.", missing_comma.message);
+    try T.expectEqual(@as(usize, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
 }
 
 test "parser: TS2207 fires for a type-modified specifier under export type" {
