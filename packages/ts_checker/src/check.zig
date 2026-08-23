@@ -82580,6 +82580,7 @@ pub const Checker = struct {
         const dk = self.hir.kindOf(decl);
         if (dk != .var_decl and dk != .let_decl) return false;
         const v = hir_mod.varDeclOf(self.hir, decl);
+        if (v.is_ambient) return false;
         if (v.type_annotation != hir_mod.none_node_id) return false;
         if (self.varDeclHasJsDocTypeTag(decl)) return false;
         if (v.init == hir_mod.none_node_id) return true;
@@ -106224,6 +106225,11 @@ pub const Checker = struct {
                 } else resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
+                if (self.hir.kindOf(e.object) == .identifier and
+                    self.visibleAnnotatedIdentifierType(e.object) == types.Primitive.any)
+                {
+                    break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
+                }
                 if (self.sourceHasCheckJsDirective() and
                     self.nodeIsThisReferenceOrLocalAlias(e.object) and
                     self.interner.pool.flagsOf(idx_t).is_symbol)
@@ -197849,7 +197855,12 @@ test "checker: parity batch recovered invalid labeled var suppresses TS7034" {
 }
 
 test "checker: noImplicitAny emits TS7005 for ambient bare var declaration" {
-    const s = try newSetup("declare var it;");
+    const s = try newSetup(
+        \\declare var it;
+        \\function register() {
+        \\    it("works", () => {});
+        \\}
+    );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
@@ -197863,6 +197874,26 @@ test "checker: noImplicitAny emits TS7005 for ambient bare var declaration" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: explicit any annotations govern nested element access" {
+    const s = try newSetup(
+        \\function preserveGlobals() {
+        \\    var dangerNames: any = ["Array"];
+        \\    var globalBackup: any = {};
+        \\    var n: string = null;
+        \\    for (n in dangerNames) {
+        \\        globalBackup[dangerNames[n]] = globalBackup[dangerNames[n]];
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any_index_not_number));
 }
 
 test "checker: malformed variable declaration lists suppress follow-on TS7005" {
