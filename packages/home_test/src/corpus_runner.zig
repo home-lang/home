@@ -68757,6 +68757,23 @@ const harness_prelude =
     \\  if (value && typeof value.length === "number") return Number(value.length) || 0;
     \\  return Buffer.byteLength(String(value));
     \\}
+    \\function __home_websocket_control_payload(value) {
+    \\  if (value === undefined || value === null) return Buffer.alloc(0);
+    \\  if (typeof Blob === "function" && value instanceof Blob) return value;
+    \\  return typeof value === "string" ? Buffer.from(value) : value;
+    \\}
+    \\function __home_websocket_dispatch_control(socket, type, value) {
+    \\  if (!socket || socket.readyState !== 1) return;
+    \\  const payload = __home_websocket_control_payload(value);
+    \\  socket.dispatchEvent(new MessageEvent(type, { data: payload }));
+    \\}
+    \\function __home_websocket_state_error(operation, socket) {
+    \\  const error = new Error("WebSocket is not open");
+    \\  error.code = "ERR_WEBSOCKET_NOT_OPEN";
+    \\  error.operation = "web.websocket." + String(operation);
+    \\  error.readyState = socket && Number(socket.readyState);
+    \\  return error;
+    \\}
     \\function __home_websocket_accept_for_key(key) {
     \\  const text = String(key || "");
     \\  if (!text) throw __home_fetch_websocket_upgrade_error("handshake-key", null, new Error("Missing Sec-WebSocket-Key header"));
@@ -68867,6 +68884,7 @@ const harness_prelude =
     \\function __home_websocket_server_peer(client, data, handle) {
     \\  return {
     \\    data,
+    \\    __home_pong_generation: 0,
     \\    close(code, reason) {
     \\      const websocket = handle && handle.websocket;
     \\      if (websocket && typeof websocket.close === "function") websocket.close(this, code === undefined ? 1000 : code, reason === undefined ? "" : reason);
@@ -68875,6 +68893,15 @@ const harness_prelude =
     \\    send(value) {
     \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
     \\      return __home_websocket_payload_size(value);
+    \\    },
+    \\    ping(value) {
+    \\      __home_websocket_dispatch_control(client, "ping", value);
+    \\      return __home_websocket_payload_size(value === undefined ? Buffer.alloc(0) : value);
+    \\    },
+    \\    pong(value) {
+    \\      this.__home_pong_generation++;
+    \\      __home_websocket_dispatch_control(client, "pong", value);
+    \\      return __home_websocket_payload_size(value === undefined ? Buffer.alloc(0) : value);
     \\    },
     \\    subscribe(topic) {
     \\      const key = String(topic);
@@ -69175,7 +69202,7 @@ const harness_prelude =
     \\  Promise.resolve().then(() => this.dispatchEvent(new Event("close")));
     \\};
     \\WebSocket.prototype.send = function(message) {
-    \\  if (this.readyState !== 1) throw new Error("WebSocket is not open");
+    \\  if (this.readyState !== 1) throw __home_websocket_state_error("send", this);
     \\  if (this.__home_inspector_21654) {
     \\    let parsed = null;
     \\    try { parsed = JSON.parse(String(message)); } catch (error) {}
@@ -69214,6 +69241,43 @@ const harness_prelude =
     \\  if (!websocket || typeof websocket.message !== "function") return;
     \\  const serverSide = this.__home_server_side || __home_websocket_server_peer(this, undefined, handle);
     \\  websocket.message(serverSide, message);
+    \\};
+    \\WebSocket.prototype.ping = function(value) {
+    \\  if (this.readyState !== 1) throw __home_websocket_state_error("ping", this);
+    \\  const payload = __home_websocket_control_payload(value);
+    \\  const serverSide = this.__home_server_side;
+    \\  const websocket = this.__home_handle && this.__home_handle.websocket;
+    \\  if (serverSide && websocket) {
+    \\    if (typeof websocket.ping !== "function") {
+    \\      serverSide.pong(payload);
+    \\      return;
+    \\    }
+    \\    const generation = serverSide.__home_pong_generation;
+    \\    Promise.resolve().then(() => websocket.ping(serverSide, payload)).then(() => {
+    \\      if (serverSide.__home_pong_generation === generation) serverSide.pong(payload);
+    \\    }, error => {
+    \\      this.dispatchEvent(new ErrorEvent("error", { message: String(error && error.message || error), error }));
+    \\    });
+    \\    return;
+    \\  }
+    \\  if (this.__home_ws_server_side) {
+    \\    Promise.resolve().then(() => this.__home_ws_server_side.emit("ping", payload));
+    \\    return;
+    \\  }
+    \\  __home_websocket_dispatch_control(this, "pong", payload);
+    \\};
+    \\WebSocket.prototype.pong = function(value) {
+    \\  if (this.readyState !== 1) throw __home_websocket_state_error("pong", this);
+    \\  const payload = __home_websocket_control_payload(value);
+    \\  const serverSide = this.__home_server_side;
+    \\  const websocket = this.__home_handle && this.__home_handle.websocket;
+    \\  if (serverSide && websocket && typeof websocket.pong === "function") {
+    \\    Promise.resolve().then(() => websocket.pong(serverSide, payload)).catch(error => {
+    \\      this.dispatchEvent(new ErrorEvent("error", { message: String(error && error.message || error), error }));
+    \\    });
+    \\    return;
+    \\  }
+    \\  if (this.__home_ws_server_side) Promise.resolve().then(() => this.__home_ws_server_side.emit("pong", payload));
     \\};
     \\function __home_websocket_drain_pending(socket, type) {
     \\  if (socket.__home_pending_flush) return;
@@ -69295,6 +69359,8 @@ const harness_prelude =
     \\__home_websocket_event_property("error");
     \\__home_websocket_event_property("close");
     \\__home_websocket_event_property("message");
+    \\__home_websocket_event_property("ping");
+    \\__home_websocket_event_property("pong");
     \\WebSocket.CONNECTING = 0;
     \\WebSocket.OPEN = 1;
     \\WebSocket.CLOSING = 2;
@@ -111435,6 +111501,29 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 21), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap web globals preserve Bun realm and subprocess contracts over WebSocket TLS proxy" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/test-ws-bidir-proxy.test.ts");
+    defer summary.deinit(std.testing.allocator);
+
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "WebSocket TLS proxy corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
