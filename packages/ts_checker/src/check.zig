@@ -90827,7 +90827,9 @@ pub const Checker = struct {
                 return try self.unionWithUndefined(inner_t);
             }
         }
-        if (jsDocClosureFunctionOpen(trimmed) != null) return types.Primitive.any;
+        if (jsDocClosureFunctionOpen(trimmed) != null) {
+            return self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
+        }
         if (std.mem.eql(u8, trimmed, "this") and self.jsDocTypeTextIsInCheckedJsContext()) {
             if (self.jsDocThisTypeComesFromReturnTag(src, trimmed)) {
                 try self.reportJsDocThisTypeOutsideClass(src, trimmed);
@@ -90851,6 +90853,10 @@ pub const Checker = struct {
                 const inner_t = (try self.jsDocTypeTextToType(src, inner_text)) orelse return null;
                 return try self.unionWithNull(inner_t);
             }
+        }
+        if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '!') {
+            const inner_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+            if (inner_text.len > 0) return try self.jsDocTypeTextToType(src, inner_text);
         }
         if (trimmed[0] == '!' and trimmed.len > 1) {
             const inner_text = std.mem.trim(u8, trimmed[1..], " \t\r\n");
@@ -92171,10 +92177,16 @@ pub const Checker = struct {
             const key_t = (try self.jsDocTypeTextToType(src, key_text)) orelse return types.Primitive.any;
             const value_t = (try self.jsDocTypeTextToType(src, value_text)) orelse types.Primitive.any;
             if (key_t == types.Primitive.string_t) {
-                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+                const record_t = self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+                const record_name = self.string_interner.intern("Record") catch return error.OutOfMemory;
+                try self.registerAliasDisplayName(record_t, record_name, &.{ key_t, value_t });
+                return record_t;
             }
             if (key_t == types.Primitive.number_t) {
-                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, value_t, types.Primitive.none) catch return error.OutOfMemory;
+                const record_t = self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, value_t, types.Primitive.none) catch return error.OutOfMemory;
+                const record_name = self.string_interner.intern("Record") catch return error.OutOfMemory;
+                try self.registerAliasDisplayName(record_t, record_name, &.{ key_t, value_t });
+                return record_t;
             }
             return types.Primitive.any;
         }
@@ -231673,6 +231685,33 @@ test "checker: JSDoc redirected type tags merge with native annotations" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: JSDoc nonnullable Closure and record mappings reject null" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @type {string!} */
+        \\const nonnullable = null;
+        \\/** @type {function(string, number): object} */
+        \\const callable = null;
+        \\/** @type {function(new: object, string, number)} */
+        \\const constructor = null;
+        \\/** @type {Object.<string, number>} */
+        \\const record = null;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    var saw_record_name = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, diagnostic.message, "Record<string, number>") != null)
+        {
+            saw_record_name = true;
+        }
+    }
+    try T.expect(saw_record_name);
 }
 
 test "checker: recovered nested var initializer retains TS2403 binding" {
