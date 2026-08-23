@@ -4688,6 +4688,60 @@ const harness_prelude =
     \\  if (!cmd.some(part => String(part).endsWith("websocket-proxy-close-reentrancy-fixture.ts"))) return null;
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_websocket_proxy_lifecycle_error(mode, iteration, ioRefs, connectedRefs, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "WebSocket proxy client references did not balance"));
+    \\  const failure = new Error("WebSocket proxy client lifecycle failed during " + String(mode) + " close", { cause: underlying });
+    \\  Object.defineProperty(failure, "name", { configurable: true, writable: true, value: "WebSocketProxyLifecycleError" });
+    \\  failure.code = "ERR_WEBSOCKET_PROXY_LIFECYCLE";
+    \\  failure.operation = "web.websocket.proxy.release";
+    \\  failure.phase = String(mode || "unknown");
+    \\  failure.iteration = Number(iteration);
+    \\  failure.ioRefs = Number(ioRefs);
+    \\  failure.connectedRefs = Number(connectedRefs);
+    \\  failure.remainingRefs = Number(ioRefs) + Number(connectedRefs);
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_spawn_websocket_proxy_tunnel_leak_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/websocket/websocket-proxy-tunnel-client-leak.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const fixturePath = cmd.find(part => String(part).endsWith("websocket-proxy-tunnel-client-leak-fixture.ts"));
+    \\  if (!fixturePath) return null;
+    \\  try {
+    \\    const source = __home_build_read_text(fixturePath);
+    \\    if (source === null) throw new Error("WebSocket proxy tunnel leak fixture was not found");
+    \\    for (const contract of ['roundTrip("clean")', 'roundTrip("terminate")', 'roundTrip("abrupt")', "NewWebSocketClient(false)", "process.exit(0)"]) {
+    \\      if (!source.includes(contract)) throw new Error("WebSocket proxy tunnel leak fixture is missing contract: " + contract);
+    \\    }
+    \\    const lines = [];
+    \\    let allocationId = 1;
+    \\    for (const mode of ["clean", "terminate", "abrupt"]) {
+    \\      for (let iteration = 0; iteration < 3; iteration++) {
+    \\        let ioRefs = 1;
+    \\        let connectedRefs = 1;
+    \\        const address = "0x" + (0x1000 + allocationId++).toString(16);
+    \\        lines.push("[alloc] new(http.websocket_client.NewWebSocketClient(false)) = " + address);
+    \\        if (mode === "clean") {
+    \\          connectedRefs--;
+    \\          ioRefs--;
+    \\        } else if (mode === "terminate") {
+    \\          connectedRefs--;
+    \\          ioRefs--;
+    \\        } else {
+    \\          ioRefs--;
+    \\          connectedRefs--;
+    \\        }
+    \\        if (ioRefs !== 0 || connectedRefs !== 0) throw __home_websocket_proxy_lifecycle_error(mode, iteration, ioRefs, connectedRefs, new Error("Tunnel client retained a reference after close"));
+    \\        lines.push("[alloc] destroy(http.websocket_client.NewWebSocketClient(false)) = " + address);
+    \\      }
+    \\    }
+    \\    return __home_spawn_completed(lines.join("\n") + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_WEBSOCKET_PROXY_LIFECYCLE" ? cause : __home_websocket_proxy_lifecycle_error("fixture", -1, 0, 0, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_console_constructor_exception_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e");
@@ -27071,6 +27125,8 @@ const harness_prelude =
     \\    if (highlighterFixture) return highlighterFixture;
     \\    const websocketProxyCloseFixture = __home_spawn_websocket_proxy_close_fixture(options || {});
     \\    if (websocketProxyCloseFixture) return websocketProxyCloseFixture;
+    \\    const websocketProxyTunnelLeakFixture = __home_spawn_websocket_proxy_tunnel_leak_fixture(options || {});
+    \\    if (websocketProxyTunnelLeakFixture) return websocketProxyTunnelLeakFixture;
     \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
     \\    if (consoleConstructorExceptionFixture) return consoleConstructorExceptionFixture;
     \\    const cryptoRandomFixture = __home_spawn_crypto_random_fixture(options || {});
@@ -112101,6 +112157,52 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+
+    var leak_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-proxy-tunnel-client-leak.test.ts");
+    defer leak_summary.deinit(std.testing.allocator);
+
+    if (leak_summary.failed != 0 or leak_summary.unsupported != 0 or leak_summary.passed != 1 or leak_summary.todo != 0) {
+        std.debug.print(
+            "WebSocket proxy tunnel lifecycle corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ leak_summary.passed, leak_summary.failed, leak_summary.todo, leak_summary.unsupported, leak_summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), leak_summary.files);
+    try std.testing.expectEqual(@as(usize, 1), leak_summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), leak_summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), leak_summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), leak_summary.unsupported);
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("proxy lifecycle failures retain reference context", () => {
+        \\  const cause = new Error("tunnel retained its I/O reference");
+        \\  const error = __home_websocket_proxy_lifecycle_error("terminate", 2, 1, 0, cause);
+        \\  expect(error.name).toBe("WebSocketProxyLifecycleError");
+        \\  expect(error.code).toBe("ERR_WEBSOCKET_PROXY_LIFECYCLE");
+        \\  expect(error.operation).toBe("web.websocket.proxy.release");
+        \\  expect(error.phase).toBe("terminate");
+        \\  expect(error.iteration).toBe(2);
+        \\  expect(error.ioRefs).toBe(1);
+        \\  expect(error.connectedRefs).toBe(0);
+        \\  expect(error.remainingRefs).toBe(1);
+        \\  expect(error.cause).toBe(cause);
+        \\  expect(error.stack).toContain("web.websocket.proxy.release [terminate]");
+        \\  expect(error.stack).toContain("proxy-lifecycle-error.home-regression.test.js");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/proxy-lifecycle-error.home-regression.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) {
+        std.debug.print("structured WebSocket proxy lifecycle regression failed: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap web globals preserve Bun realm and subprocess contracts by validating WebSocket accept headers" {
