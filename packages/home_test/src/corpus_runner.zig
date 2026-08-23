@@ -271,6 +271,10 @@ const harness_prelude =
     \\  globalThis.__home_mocked_module_values = Object.create(null);
     \\  globalThis.__home_live_module_namespaces = Object.create(null);
     \\  globalThis.__home_mocks = [];
+    \\  for (const registryName of ["__home_net_servers", "__home_tls_servers", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
+    \\    const registry = globalThis[registryName];
+    \\    if (registry) for (const key of Object.keys(registry)) delete registry[key];
+    \\  }
     \\};
     \\globalThis.__home_reset_tests();
     \\const __home_native_weak_map_set = WeakMap.prototype.set;
@@ -36709,7 +36713,7 @@ const harness_prelude =
     \\  const compositeMatch = String(text || "").match(/\bPRIMARY\s+KEY\s*\(([^)]*,[^)]*)\)/i);
     \\  const compositeUnique = compositeMatch ? compositeMatch[1].split(",").map(column => column.trim().replace(/^[`\"]|[`\"]$/g, "")) : [];
     \\  const generated = /\btotal_price\b[\s\S]*\bGENERATED\s+ALWAYS\b/i.test(text) ? "product_prices" : /\barea\b[\s\S]*\bperimeter\b[\s\S]*\bGENERATED\s+ALWAYS\b/i.test(text) ? "rectangle_metrics" : "";
-    \\  return { kind, columns, defaults, types, strict: /\)\s*STRICT\b/i.test(text), notNull, unique, compositeUnique, noCase, foreignKeys, generated, autoIncrement: /\bAUTOINCREMENT\b/i.test(text) || /\bINTEGER\s+PRIMARY\s+KEY\b/i.test(text) };
+    \\  return { kind, columns, defaults, types, strict: /\)\s*STRICT\b/i.test(text), notNull, unique, compositeUnique, noCase, foreignKeys, generated, autoIncrement: /\bAUTO_?INCREMENT\b/i.test(text) || /\bINTEGER\s+PRIMARY\s+KEY\b/i.test(text) };
     \\}
     \\function __home_bun_sql_apply_generated(schema, row) {
     \\  if (schema.generated === "product_prices") { row.total_price = Number(row.price) * (1 + Number(row.tax_rate)); row.price_category = Number(row.price) < 10 ? "cheap" : Number(row.price) < 100 ? "moderate" : "expensive"; }
@@ -36889,6 +36893,15 @@ const harness_prelude =
     \\  sql.__home_sequences = snapshot.sequences;
     \\  sql.__home_last_insert_id = snapshot.lastInsertId;
     \\  sql.__home_row_count = snapshot.rowCount;
+    \\}
+    \\function __home_bun_sql_transaction_error(error, phase, transactionId) {
+    \\  const failure = error instanceof Error ? error : new Error(String(error));
+    \\  if (failure.operation === undefined) failure.operation = "sql.begin";
+    \\  if (failure.phase === undefined) failure.phase = String(phase || "execute");
+    \\  if (failure.transactionId === undefined) failure.transactionId = Number(transactionId) || 0;
+    \\  const frame = "    at " + failure.operation + " [" + failure.phase + "; transaction=" + String(failure.transactionId) + "] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")";
+    \\  if (!String(failure.stack || "").includes(frame)) failure.stack = String(failure.stack || failure) + "\n" + frame;
+    \\  return failure;
     \\}
     \\function __home_bun_sql_has_null_byte(value) {
     \\  return typeof value === "string" && value.includes("\0");
@@ -37448,6 +37461,8 @@ const harness_prelude =
     \\  sql.__home_attached = Object.create(null);
     \\  sql.__home_named_savepoints = Object.create(null);
     \\  sql.__home_pending = [];
+    \\  sql.__home_transaction_tail = Promise.resolve(undefined);
+    \\  sql.__home_transaction_sequence = 0;
     \\  sql.__home_pool_started = false;
     \\  if (sql.options.adapter === "sqlite") {
     \\    const filename = String(sql.options.filename || "");
@@ -37501,15 +37516,28 @@ const harness_prelude =
     \\    const handler = typeof mode === "function" ? mode : callback;
     \\    if (sql.options.adapter === "sqlite" && typeof mode === "string" && mode.toLowerCase() === "readonly") return Promise.reject(new Error("SQLite doesn't support 'readonly' transaction mode. Use DEFERRED, IMMEDIATE, or EXCLUSIVE."));
     \\    if (typeof handler !== "function") return Promise.resolve(undefined);
-    \\    const snapshot = __home_bun_sql_snapshot(sql);
-    \\    sql.__home_in_transaction = true;
-    \\    let output;
-    \\    try { output = handler(sql); } catch (error) { sql.__home_in_transaction = false; __home_bun_sql_restore(sql, snapshot); return Promise.reject(error); }
-    \\    return Promise.resolve(output).then(result => Array.isArray(result) ? Promise.all(result.map(item => Promise.resolve(item))) : result).then(result => { sql.__home_in_transaction = false; return result; }).catch(error => {
-    \\      sql.__home_in_transaction = false;
-    \\      __home_bun_sql_restore(sql, snapshot);
-    \\      throw error;
-    \\    });
+    \\    const transactionId = ++sql.__home_transaction_sequence;
+    \\    const execute = function() {
+    \\      const snapshot = __home_bun_sql_snapshot(sql);
+    \\      sql.__home_in_transaction = true;
+    \\      let output;
+    \\      try { output = handler(sql); } catch (error) {
+    \\        sql.__home_in_transaction = false;
+    \\        __home_bun_sql_restore(sql, snapshot);
+    \\        throw __home_bun_sql_transaction_error(error, "callback", transactionId);
+    \\      }
+    \\      return Promise.resolve(output)
+    \\        .then(result => Array.isArray(result) ? Promise.all(result.map(item => Promise.resolve(item))) : result, error => { throw __home_bun_sql_transaction_error(error, "callback", transactionId); })
+    \\        .then(result => { sql.__home_in_transaction = false; return result; })
+    \\        .catch(error => {
+    \\          sql.__home_in_transaction = false;
+    \\          __home_bun_sql_restore(sql, snapshot);
+    \\          throw __home_bun_sql_transaction_error(error, error && error.phase || "settle-returned-queries", transactionId);
+    \\        });
+    \\    };
+    \\    const completion = sql.__home_transaction_tail.then(execute, execute);
+    \\    sql.__home_transaction_tail = completion.then(() => undefined, () => undefined);
+    \\    return completion;
     \\  };
     \\  sql.savepoint = function(name, callback) {
     \\    const handler = typeof name === "function" ? name : callback;
@@ -58487,7 +58515,7 @@ const harness_prelude =
     \\  });
     \\}
     \\let __home_net_next_server_port = 44200;
-    \\const __home_net_servers = Object.create(null);
+    \\const __home_net_servers = globalThis.__home_net_servers || (globalThis.__home_net_servers = Object.create(null));
     \\function __home_net_create_server(handler) {
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
@@ -59922,7 +59950,7 @@ const harness_prelude =
     \\  }
     \\}
     \\let __home_tls_next_port = 44100;
-    \\const __home_tls_servers = Object.create(null);
+    \\const __home_tls_servers = globalThis.__home_tls_servers || (globalThis.__home_tls_servers = Object.create(null));
     \\function __home_tls_create_socket(rawSocket) {
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
@@ -69307,6 +69335,23 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_fetch_tls_client_identity(fetchOptions, href) {
+    \\  const tls = fetchOptions && fetchOptions.tls && typeof fetchOptions.tls === "object" ? fetchOptions.tls : {};
+    \\  const hasCertificate = tls.cert !== undefined && tls.cert !== null && String(tls.cert) !== "";
+    \\  const hasKey = tls.key !== undefined && tls.key !== null && String(tls.key) !== "";
+    \\  if (hasCertificate !== hasKey) {
+    \\    const cause = new Error(hasCertificate ? "client certificate has no private key" : "client private key has no certificate");
+    \\    const failure = new TypeError("fetch mTLS client credentials require both cert and key");
+    \\    failure.code = "ERR_TLS_CERT_OR_KEY_MISSING";
+    \\    failure.operation = "fetch.tls.client-certificate";
+    \\    failure.phase = "credentials";
+    \\    failure.endpoint = String(href || "");
+    \\    failure.cause = cause;
+    \\    failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + failure.endpoint + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause.stack || cause);
+    \\    return { error: failure, commonName: "unknown", poolKey: "" };
+    \\  }
+    \\  return { error: null, commonName: hasCertificate ? __home_tls_client_common_name(tls) : "", poolKey: __home_fetch_tls_keepalive_key(href, fetchOptions) };
+    \\}
     \\function __home_fetch_via_tls_server(href, fetchOptions, fetchMethod, tlsServer) {
     \\  const parsed = new URL(href);
     \\  const body = __home_fetch_proxy_request_body(fetchOptions);
@@ -69316,11 +69361,14 @@ const harness_prelude =
     \\  const request = new Request(href, requestInit);
     \\  const verificationError = __home_fetch_verify_local_tls({ __home_tls_options: tlsServer.__home_options || {} }, request, fetchOptions, href);
     \\  if (verificationError) return __home_fetch_thenable(null, verificationError);
+    \\  const clientIdentity = __home_fetch_tls_client_identity(fetchOptions, href);
+    \\  if (clientIdentity.error) return __home_fetch_thenable(null, clientIdentity.error);
     \\  return new Promise((resolve, reject) => {
     \\    let responseText = "";
     \\    let settled = false;
     \\    const socket = __home_tls_create_socket();
-    \\    socket.__home_peer_server_bun = true;
+    \\    socket.__home_peer_cn = clientIdentity.commonName;
+    \\    socket.__home_tls_client_identity = { commonName: clientIdentity.commonName, poolKey: clientIdentity.poolKey };
     \\    const finish = terminal => {
     \\      if (settled) return;
     \\      try {
@@ -98568,7 +98616,9 @@ test "bootstrap runner mirrors SQL transaction returned query corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const contractIds: number[]") == null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sql.begin = function(callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sql.begin = function(mode, callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sql.__home_transaction_tail.then(execute, execute)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_sql_transaction_error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "LAST_INSERT_ID") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -98579,6 +98629,37 @@ test "bootstrap runner mirrors SQL transaction returned query corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+
+    const diagnostic_source =
+        \\import { SQL } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\test("transaction failures preserve identity, phase, stack, rollback, and queue progress", async () => {
+        \\  const sql = new SQL("mysql://root@127.0.0.1:35430/home_transaction_diagnostics");
+        \\  await sql`CREATE TABLE events (id INT AUTO_INCREMENT PRIMARY KEY, value INT)`;
+        \\  const original = new Error("transaction callback failed");
+        \\  let failure;
+        \\  try { await sql.begin(async tx => { await tx`INSERT INTO events (value) VALUES (${1})`; throw original; }); } catch (error) { failure = error; }
+        \\  expect(failure).toBe(original); expect(failure.operation).toBe("sql.begin"); expect(failure.phase).toBe("callback"); expect(failure.transactionId).toBe(1);
+        \\  expect(String(failure.stack)).toContain("sql.begin [callback; transaction=1]");
+        \\  expect(Number((await sql`SELECT COUNT(*) as count FROM events`)[0].count)).toBe(0);
+        \\  const [[row]] = await sql.begin(async tx => { await tx`INSERT INTO events (value) VALUES (${2})`; return [tx`SELECT LAST_INSERT_ID() as id`]; });
+        \\  expect(Number(row.id)).toBe(1); expect(Number((await sql`SELECT COUNT(*) as count FROM events`)[0].count)).toBe(1);
+        \\});
+    ;
+    var diagnostic_prepared = try prepareCorpusModule(std.testing.allocator, diagnostic_source, "internal/sql-transaction-diagnostics.test.ts");
+    defer diagnostic_prepared.deinit(std.testing.allocator);
+    try std.testing.expect(diagnostic_prepared.unsupported_reason == null);
+
+    var diagnostic_runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer diagnostic_runtime.deinit();
+    var diagnostic_run = try diagnostic_runtime.runFile(std.testing.allocator, diagnostic_prepared.fileSpec());
+    defer diagnostic_run.deinit(std.testing.allocator);
+
+    if (diagnostic_run.result.status() != .passed) {
+        std.debug.print("SQL transaction diagnostics regression failed: {s}\n", .{diagnostic_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, diagnostic_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), diagnostic_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun repl corpus" {
@@ -98713,7 +98794,9 @@ test "bootstrap runner mirrors mTLS client certificate switching corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import tls from \"tls\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as AddressInfo") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_tls_client_common_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_tls_client_identity") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "socket.__home_peer_cn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetch.tls.client-certificate") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -98723,6 +98806,35 @@ test "bootstrap runner mirrors mTLS client certificate switching corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+
+    const diagnostic_source =
+        \\import { expect, test } from "bun:test";
+        \\import tls from "node:tls";
+        \\test("incomplete mTLS credentials retain causal operation context", async () => {
+        \\  const server = tls.createServer({ key: "server-key", cert: "server-cert" }, () => {});
+        \\  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        \\  const endpoint = "https://127.0.0.1:" + String(server.address().port) + "/";
+        \\  let failure; try { await fetch(endpoint, { tls: { cert: "client-cert", rejectUnauthorized: false } }); } catch (error) { failure = error; }
+        \\  expect(failure).toBeInstanceOf(TypeError); expect(failure.code).toBe("ERR_TLS_CERT_OR_KEY_MISSING");
+        \\  expect(failure.operation).toBe("fetch.tls.client-certificate"); expect(failure.phase).toBe("credentials"); expect(failure.endpoint).toBe(endpoint);
+        \\  expect(failure.cause).toBeInstanceOf(Error); expect(String(failure.stack)).toContain("fetch.tls.client-certificate [credentials]"); expect(String(failure.stack)).toContain("Caused by:");
+        \\  server.close();
+        \\});
+    ;
+    var diagnostic_prepared = try prepareCorpusModule(std.testing.allocator, diagnostic_source, "internal/fetch-mtls-client-identity-diagnostics.test.ts");
+    defer diagnostic_prepared.deinit(std.testing.allocator);
+    try std.testing.expect(diagnostic_prepared.unsupported_reason == null);
+
+    var diagnostic_runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer diagnostic_runtime.deinit();
+    var diagnostic_run = try diagnostic_runtime.runFile(std.testing.allocator, diagnostic_prepared.fileSpec());
+    defer diagnostic_run.deinit(std.testing.allocator);
+
+    if (diagnostic_run.result.status() != .passed) {
+        std.debug.print("mTLS client identity diagnostics regression failed: {s}\n", .{diagnostic_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, diagnostic_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), diagnostic_run.result.passed);
 }
 
 test "bootstrap runner mirrors terminal async local storage corpus" {
