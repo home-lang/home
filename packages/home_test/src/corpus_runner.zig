@@ -81675,6 +81675,12 @@ fn rewriteInvalidEscapeSequencesCorpus(allocator: std.mem.Allocator, source: []c
     return std.mem.replaceOwned(u8, allocator, source, "join(dir, ", "join(String(dir), ");
 }
 
+fn rewriteMinifyNewArrayCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // Keep node:path strict: unwrap the disposable tempDir String only at the
+    // upstream fixture boundary where it is consumed as a path.
+    return std.mem.replaceOwned(u8, allocator, source, "join(testDir, ", "join(String(testDir), ");
+}
+
 fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const old_needle =
         \\    const chunk = new Uint8Array(CHUNK_SIZE);
@@ -88018,6 +88024,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "regression/issue/invalid-escape-sequences.test.ts"))
         try rewriteInvalidEscapeSequencesCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "regression/issue/minify-new-array-with-if.test.ts"))
+        try rewriteMinifyNewArrayCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/17793.test.ts"))
@@ -127363,6 +127371,8 @@ test "bootstrap runner mirrors minify new Array corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(String(testDir), \"entry.js\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(testDir, ") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "build(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.log(Array(Math.random()>-1?1:2));") != null);
 
