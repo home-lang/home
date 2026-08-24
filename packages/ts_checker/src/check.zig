@@ -154975,6 +154975,7 @@ pub const Checker = struct {
                 }
                 if (try self.literalSatisfiesRecursiveTemplatePathConstraint(raw_constraint, candidate_t, subs)) continue;
                 if (self.functionObjectTargetAcceptsArgument(candidate_t, constraint, 0)) continue;
+                if ((try self.constructSignatureArgumentAssignableToParam(candidate_t, constraint)) orelse false) continue;
                 if (!self.builtinFunctionSourceCannotSatisfyCallTarget(candidate_t, constraint) and
                     (try self.genericConstraintAssignable(candidate_t, constraint)))
                 {
@@ -154998,6 +154999,7 @@ pub const Checker = struct {
             }
             if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) continue;
             if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) continue;
+            if ((try self.constructSignatureArgumentAssignableToParam(arg_t, constraint)) orelse false) continue;
             if (!self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint) and
                 (try self.genericConstraintAssignable(arg_t, constraint)))
             {
@@ -216617,6 +216619,22 @@ test "checker: constructor-constrained mixin bases allow constructor super calls
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.super_not_derived);
     }
+}
+
+test "checker: intersected constructor constraints satisfy nested mixin calls" {
+    const s = try newSetup(
+        \\type Constructor<T extends object = object> = new (...args: any[]) => T;
+        \\interface Initable { init(...args: any[]): void; }
+        \\const Serializable = <K extends Constructor<Initable> & Initable>(SuperClass: K) => {
+        \\  const LocalMixin = (InnerSuperClass: K) => class extends InnerSuperClass {};
+        \\  return LocalMixin(SuperClass);
+        \\};
+        \\const AMixin = <K extends Constructor<Initable> & Initable>(SuperClass: K) =>
+        \\  class extends Serializable(SuperClass) {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: TS2545 mixin class constructor must be single any rest" {
