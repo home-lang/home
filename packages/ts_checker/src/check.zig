@@ -153255,7 +153255,8 @@ pub const Checker = struct {
             const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
             const structurally_assignable = if (imported_class_parameter_match)
                 true
-            else if (loose_nullish_callback_return)
+            else if (loose_nullish_callback_return and
+                !self.functionExpressionHasAnnotatedValueParameter(args[i]))
                 true
             else if (inferred_generic_callback_identity)
                 true
@@ -162993,6 +162994,15 @@ pub const Checker = struct {
         return count;
     }
 
+    fn functionExpressionHasAnnotatedValueParameter(self: *Checker, fn_node: NodeId) bool {
+        if (!self.isContextualFunctionExpressionLike(fn_node)) return false;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param| {
+            if (self.hir.kindOf(param) != .parameter or self.isThisParameter(param)) continue;
+            if (hir_mod.parameterOf(self.hir, param).type_annotation != hir_mod.none_node_id) return true;
+        }
+        return false;
+    }
+
     fn identifierFunctionReferenceHasTooManyRequiredParams(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
         const init_node = self.visibleFunctionInitializerForIdentifier(arg_node) orelse return false;
         const count = self.functionExpressionRequiredValueParamCount(init_node);
@@ -163764,13 +163774,29 @@ pub const Checker = struct {
         {
             return null;
         }
-        if (source_fixed.items.len != target_fixed.items.len) return null;
-        for (source_fixed.items, target_fixed.items) |source_param, target_param| {
+        if (source_fixed.items.len != target_fixed.items.len and
+            (self.isTupleLikeUnionType(source_tail) or self.isTupleLikeUnionType(target_tail)))
+        {
+            return null;
+        }
+        const shared_fixed = @min(source_fixed.items.len, target_fixed.items.len);
+        for (source_fixed.items[0..shared_fixed], target_fixed.items[0..shared_fixed]) |source_param, target_param| {
             if (!try self.contextualTargetParamAssignableToSource(target_param, source_param)) return false;
         }
-        if (source_tail == target_tail) return true;
         const source_element = self.interner.objectNumberIndex(source_tail);
         const target_element = self.interner.objectNumberIndex(target_tail);
+        const effective_source_element = if (source_element != types.Primitive.none) source_element else source_tail;
+        const effective_target_element = if (target_element != types.Primitive.none) target_element else target_tail;
+        if (source_fixed.items.len < target_fixed.items.len) {
+            for (target_fixed.items[shared_fixed..]) |target_param| {
+                if (!try self.contextualTargetParamAssignableToSource(target_param, effective_source_element)) return false;
+            }
+        } else if (source_fixed.items.len > target_fixed.items.len) {
+            for (source_fixed.items[shared_fixed..]) |source_param| {
+                if (!try self.contextualTargetParamAssignableToSource(effective_target_element, source_param)) return false;
+            }
+        }
+        if (source_tail == target_tail) return true;
         if (source_element != types.Primitive.none and target_element != types.Primitive.none) {
             return try self.contextualTargetParamAssignableToSource(target_element, source_element);
         }
