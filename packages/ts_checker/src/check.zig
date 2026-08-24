@@ -114034,6 +114034,7 @@ pub const Checker = struct {
     fn checkJsxFunctionReturnElementBound(self: *Checker, tag: NodeId) CheckError!void {
         if (tag == hir_mod.none_node_id or self.jsxTagIsIntrinsic(tag)) return;
         const element_t = (try self.jsxElementConstraint(tag)) orelse return;
+        const stateless_element_t = self.interner.internUnion(&.{ element_t, types.Primitive.null_t }) catch return error.OutOfMemory;
 
         var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer call_sigs.deinit(self.gpa);
@@ -114043,7 +114044,7 @@ pub const Checker = struct {
         for (call_sigs.items) |sig| {
             const ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
             if (self.typeIsAnyLike(ret_t)) return;
-            if (self.engine.isAssignableTo(ret_t, element_t) catch true) return;
+            if (self.engine.isAssignableTo(ret_t, stateless_element_t) catch true) return;
         }
 
         const tag_text = self.nodeSourceTextOrEmpty(tag);
@@ -114648,6 +114649,7 @@ pub const Checker = struct {
         if (string_idx != types.Primitive.none) return string_idx;
         const number_idx = self.interner.objectNumberIndex(intrinsic_t);
         if (number_idx != types.Primitive.none and self.isNumericStringId(tag_name)) return number_idx;
+        if (self.sourceHasReactJsxReference()) return try self.jsxReactIntrinsicPropsType(tag_name);
         return null;
     }
 
@@ -191366,6 +191368,40 @@ test "checker: JSX.Element resolves to a named synthetic when only /.lib/react.d
     try T.expect(found);
 }
 
+test "checker: React intrinsics merge with local JSX augmentations" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\declare global { namespace JSX { interface IntrinsicElements { "a-b": any; } } }
+        \\const custom = <a-b />;
+        \\const builtin = <div />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: escaped JSX member tags resolve their decoded value" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import * as React from "react";
+        \\declare global {
+        \\  namespace JSX { interface IntrinsicElements { "a-b": any; "a-c": any; } }
+        \\}
+        \\const Compa = (value: { x: number }) => <div>{"" + value}</div>;
+        \\const x = { video: () => null };
+        \\; <\u0061></a>;
+        \\; <\u0061-b></a-b>;
+        \\; <a-\u0063></a-c>;
+        \\; <Comp\u0061 x={12} />;
+        \\const element = <x.\u0076ideo />;
+    );
+    defer destroySetup(s);
+    try T.expect(s.parser.diagnostics.items.len > 0);
+    s.checker.setHasParseDiagnostics(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_component_not_valid));
+}
+
 test "checker: JSX fragments carry Element through children bags" {
     const s = try newTsxSetup(
         \\/// <reference path="/.lib/react.d.ts" />
@@ -191396,6 +191432,21 @@ test "checker: React JSX nullish returns render the Element leaf name" {
         TsCodes.type_not_assignable,
         "Type 'undefined' is not assignable to type 'Element'.",
     ));
+}
+
+test "checker: JSX function components may return null" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element { brand: true; }
+        \\  interface IntrinsicElements { div: any; }
+        \\}
+        \\const Nil = () => null;
+        \\const element = <Nil />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_component_not_valid));
 }
 
 test "checker: JSX logical class component unions use class props" {

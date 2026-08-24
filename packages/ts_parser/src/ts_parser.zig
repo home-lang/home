@@ -20522,7 +20522,15 @@ pub const Parser = struct {
     /// still corresponds to `<A.B.C>`. Identifier runs themselves cannot
     /// contain interior whitespace, so dropping all whitespace yields the
     /// canonical comparison form without conflating distinct names.
-    fn jsxTagNamesEqualIgnoringWhitespace(a: []const u8, b: []const u8) bool {
+    fn jsxTagNamesEqualIgnoringWhitespace(self: *Parser, raw_a: []const u8, raw_b: []const u8) bool {
+        const a = if (std.mem.indexOfScalar(u8, raw_a, '\\') != null)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_a) catch raw_a
+        else
+            raw_a;
+        const b = if (std.mem.indexOfScalar(u8, raw_b, '\\') != null)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_b) catch raw_b
+        else
+            raw_b;
         var i: usize = 0;
         var j: usize = 0;
         while (true) {
@@ -21103,8 +21111,8 @@ pub const Parser = struct {
                 const open_text = self.jsxTagText(tag);
                 const parent_text = self.jsxTagText(parent);
                 const close_text = self.source[close_span.start..close_span.end];
-                if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text) and
-                    jsxTagNamesEqualIgnoringWhitespace(parent_text, close_text))
+                if (!self.jsxTagNamesEqualIgnoringWhitespace(open_text, close_text) and
+                    self.jsxTagNamesEqualIgnoringWhitespace(parent_text, close_text))
                 {
                     const tag_span = self.hir.spanOf(tag);
                     const msg = try std.fmt.allocPrint(
@@ -21167,7 +21175,7 @@ pub const Parser = struct {
             // so compare ignoring insignificant whitespace rather than by
             // raw source slice — otherwise `tsxOpeningClosingNames` false-
             // fires TS17002 on `<A.B.C.D>…</A . B . C.D>`.
-            if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text)) {
+            if (!self.jsxTagNamesEqualIgnoringWhitespace(open_text, close_text)) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected corresponding JSX closing tag for '{s}'.",
@@ -21443,7 +21451,11 @@ pub const Parser = struct {
         if (has_escape) {
             try self.reportCodeAt(parsed_span.start, first.line, 17021, "Unicode escape sequence cannot appear here.");
         }
-        const text = self.source[parsed_span.start..parsed_span.end];
+        const raw_text = self.source[parsed_span.start..parsed_span.end];
+        const text = if (has_escape)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_text) catch raw_text
+        else
+            raw_text;
         const id = self.interner.intern(text) catch return error.OutOfMemory;
         return .{ .name = id, .span = parsed_span };
     }
@@ -29122,6 +29134,7 @@ test "parser: jsx unicode escapes in tag and attribute names report TS17021" {
         }
     }
     try T.expectEqual(@as(usize, 7), count);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 17002));
 }
 
 test "parser: jsx grammar diagnostics report duplicate attrs comma expressions and closing tags" {
