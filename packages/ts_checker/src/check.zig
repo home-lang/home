@@ -28969,6 +28969,9 @@ pub const Checker = struct {
     }
 
     fn exportedValueTypeForNamespaceMember(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!TypeId {
+        if (hir_mod.NodeKind.isExpression(self.hir.kindOf(decl))) {
+            return try self.checkExpression(decl);
+        }
         if (self.hir.kindOf(decl) == .namespace_decl) {
             const namespace_t = try self.namespaceValueObjectType(decl);
             try self.registerEnumNamespaceDisplayName(namespace_t, name);
@@ -42098,17 +42101,21 @@ pub const Checker = struct {
                 // tsgo stops after the inherited-property conflict instead of
                 // cascading TS2420 onto implementing classes.
                 if (self.implementsTargetHasInheritedBaseConflict(impl_node)) continue;
-                if (try self.reportClassImplementsGenericMethodConstraintMismatches(node, instance_t, target_t)) {
+                const implements_source_t = self.class_instance_types.get(cid.name) orelse instance_t;
+                if (try self.reportClassImplementsGenericMethodConstraintMismatches(node, implements_source_t, target_t)) {
                     continue;
                 }
-                if (try self.reportClassWeakTypeNoOverlap(node, impl_node, instance_t, target_t, cid.name)) {
+                if (try self.reportClassWeakTypeNoOverlap(node, impl_node, implements_source_t, target_t, cid.name)) {
                     continue;
                 }
-                if (try self.reportClassImplementsMemberMismatches(node, impl_node, instance_t, target_t)) {
+                if (try self.reportClassImplementsMemberMismatches(node, impl_node, implements_source_t, target_t)) {
                     continue;
                 }
-                if (!(self.classImplementsAssignable(instance_t, target_t) catch true)) {
-                    try self.reportClassIncorrectlyImplements(node, impl_node, target_t, cid.name);
+                if (!(self.classImplementsAssignable(implements_source_t, target_t) catch true)) {
+                    const refreshed_source_t = self.class_instance_types.get(cid.name) orelse implements_source_t;
+                    if (!(self.classImplementsAssignable(refreshed_source_t, target_t) catch true)) {
+                        try self.reportClassIncorrectlyImplements(node, impl_node, target_t, cid.name);
+                    }
                 }
             }
             // The constructor symbol for duplicate class declarations
@@ -42810,7 +42817,7 @@ pub const Checker = struct {
                     if (try self.reportClassImplementsMemberMismatches(node, impl_node, instance_t, target_t)) {
                         continue;
                     }
-                    if (!(self.heritageAssignable(instance_t, target_t) catch true)) {
+                    if (!(self.classImplementsAssignable(instance_t, target_t) catch true)) {
                         try self.reportClassIncorrectlyImplements(node, impl_node, target_t, cid.name);
                     }
                 }
@@ -51564,6 +51571,7 @@ pub const Checker = struct {
     }
 
     fn heritageMemberAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (try self.jsxRecursiveBrandedObjectAssignable(source, target)) return true;
         if (self.heritageAssignable(source, target) catch false) return true;
         if (try self.zeroArgSignatureReturnType(target)) |ret| {
             if (self.heritageAssignable(source, ret) catch false) return true;
@@ -51574,6 +51582,58 @@ pub const Checker = struct {
         return false;
     }
 
+    fn jsxRecursiveBrandedObjectAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source).is_object_type or
+            !self.interner.pool.flagsOf(target).is_object_type) return false;
+        const source_root_brand = self.jsxNestedElementBrand(source, 0);
+        const target_root_brand = self.jsxNestedElementBrand(target, 0);
+        if (source_root_brand == null or target_root_brand == null or source_root_brand.? != target_root_brand.?) return false;
+        for (self.interner.objectMembers(target)) |target_member| {
+            const source_member = self.interner.objectMemberInfo(source, target_member.name) orelse {
+                if (target_member.is_optional) continue;
+                return false;
+            };
+            if (!target_member.is_optional and source_member.is_optional) return false;
+            const source_brand = self.jsxNestedElementBrand(source_member.type, 0);
+            const target_brand = self.jsxNestedElementBrand(target_member.type, 0);
+            if (source_brand != null or target_brand != null) {
+                if (source_brand == null or target_brand == null or source_brand.? != target_brand.?) return false;
+                continue;
+            }
+            if (!(self.engine.isAssignableTo(source_member.type, target_member.type) catch false)) return false;
+        }
+        return true;
+    }
+
+    fn jsxNestedElementBrand(self: *Checker, t: TypeId, depth: u8) ?hir_mod.StringId {
+        const resolved_t = self.resolvedRecursiveInterfaceType(t);
+        if (depth >= 8 or resolved_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(resolved_t);
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(resolved_t) else self.interner.intersectionMembers(resolved_t);
+            for (members) |member| {
+                if (self.jsxNestedElementBrand(member, depth + 1)) |brand| return brand;
+            }
+            return null;
+        }
+        if (flags.is_signature) {
+            const return_t = self.interner.signatureReturn(resolved_t) orelse return null;
+            return self.jsxNestedElementBrand(return_t, depth + 1);
+        }
+        if (!flags.is_object_type) return null;
+        for (self.interner.objectMembers(resolved_t)) |member| {
+            const name = self.string_interner.get(member.name);
+            if (std.mem.startsWith(u8, name, "__") and std.mem.endsWith(u8, name, "Brand")) return member.name;
+        }
+        const element_t = self.interner.objectNumberIndex(resolved_t);
+        if (element_t != types.Primitive.none) return self.jsxNestedElementBrand(element_t, depth + 1);
+        for (self.interner.objectMembers(resolved_t)) |member| {
+            if (self.jsxNestedElementBrand(member.type, depth + 1)) |brand| return brand;
+        }
+        return null;
+    }
+
     fn classImplementsAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
         if (!self.classImplementsPrivateMembersCompatible(source, target)) return false;
         if (!self.classImplementsProtectedMembersCompatible(source, target)) return false;
@@ -51581,6 +51641,7 @@ pub const Checker = struct {
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_object_type or !tf.is_object_type) return false;
+        if (try self.jsxRecursiveBrandedObjectAssignable(source, target)) return true;
         const source_string_index = self.interner.objectStringIndex(source);
         const source_number_index = self.interner.objectNumberIndex(source);
         const index_pairs = [_]struct { source: TypeId, target: TypeId }{
@@ -59788,6 +59849,8 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name and
                 std.mem.startsWith(u8, spec_text, "."))
             {
+                const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+                if (try self.virtualRelativeModuleExportValueType(stmt, imp.module, default_name)) |t| return t;
                 if (try self.virtualCommonJsModuleExportObjectType(stmt, spec_text)) |t| return t;
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
@@ -63530,6 +63593,14 @@ pub const Checker = struct {
                 }
                 break :blk false;
             },
+            .object_type => blk: {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeReferencesBareName(member, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .interface_member => self.typeNodeReferencesBareName(hir_mod.interfaceMemberOf(self.hir, node).type_node, name),
+            .index_signature => self.typeNodeReferencesBareName(hir_mod.indexSignatureOf(self.hir, node).value_type, name),
             .fn_type, .constructor_type => blk: {
                 const ft = hir_mod.fnTypeOf(self.hir, node);
                 for (self.hir.childSlice(ft.type_params_start, ft.type_params_len)) |tp| {
@@ -108848,7 +108919,9 @@ pub const Checker = struct {
                     if (self.hir.kindOf(ex.expression) == .spread) {
                         const sp = hir_mod.spreadOf(self.hir, ex.expression);
                         const spread_t = try self.checkExpression(sp.expression);
-                        if (!try self.jsxSpreadChildTypeIsValid(spread_t)) {
+                        if (!try self.jsxSpreadChildTypeIsValid(spread_t) or
+                            (self.typeIsAnyLike(spread_t) and self.jsxSpreadChildHasInvalidAccess(sp.expression)))
+                        {
                             try self.report(node, TsCodes.jsx_spread_child_must_be_array, "JSX spread child must be an array type.");
                         }
                         break :blk spread_t;
@@ -109746,7 +109819,8 @@ pub const Checker = struct {
         for (children) |child| {
             const child_t = try self.checkExpression(child);
             if (self.jsxSpreadChildSyntaxPosition(child)) |spread_pos| {
-                if (!try self.jsxSpreadChildTypeIsValid(child_t) and
+                if ((!try self.jsxSpreadChildTypeIsValid(child_t) or
+                    (self.typeIsAnyLike(child_t) and self.jsxSpreadChildHasInvalidAccess(child))) and
                     !self.hasDiagnosticAtPosition(TsCodes.jsx_spread_child_must_be_array, spread_pos))
                 {
                     try self.reportAt(child, spread_pos, TsCodes.jsx_spread_child_must_be_array, "JSX spread child must be an array type.");
@@ -110019,7 +110093,7 @@ pub const Checker = struct {
                         self.interner.objectMembers(target).len == 0 and
                         self.interner.objectStringIndex(target) != types.Primitive.none)
                     {
-                        return types.Primitive.any;
+                        return (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
                     }
                     var effective_target = target;
                     if (self.containsFreeTypeParameter(target)) {
@@ -110039,8 +110113,7 @@ pub const Checker = struct {
                         // children (`<Tag><div /></Tag>`) typed as
                         // `Element` in the synthesized children member
                         // (`checkJsxChildrenProperty15` k4/k5).
-                        if (try self.jsxLibElementSyntheticType()) |t| return t;
-                        return types.Primitive.any;
+                        return (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
                     }
                     const has_generic_spread = generic_spread_types.items.len > 0;
                     const explicit_attrs_t = try self.jsxExplicitAttributesBagType(explicit_attrs.items);
@@ -110243,7 +110316,7 @@ pub const Checker = struct {
         // as `Element` so diagnostic prose renders the correct shape
         // (`{ children: Element; }` rather than `{ children: any; }`).
         // Falls through to `any` for fixtures with no lib reference.
-        if (try self.jsxLibElementSyntheticType()) |t| return t;
+        if (try self.jsxElementConstraint(node)) |t| return t;
         return types.Primitive.any;
     }
 
@@ -110451,6 +110524,16 @@ pub const Checker = struct {
             return try self.jsxSpreadChildTypeIsValid(constraint);
         }
         return try self.arrayElementType(t) != types.Primitive.none;
+    }
+
+    fn jsxSpreadChildHasInvalidAccess(self: *Checker, node: NodeId) bool {
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != TsCodes.object_possibly_undefined and
+                diagnostic.code != TsCodes.object_possibly_undefined_18048 and
+                diagnostic.code != TsCodes.object_possibly_nullish) continue;
+            if (diagnostic.node == node or self.nodeIsAncestorOf(node, diagnostic.node)) return true;
+        }
+        return false;
     }
 
     fn jsxSpreadChildSyntaxPosition(self: *Checker, child: NodeId) ?u32 {
@@ -112491,8 +112574,10 @@ pub const Checker = struct {
         }
         if (missing_total == 0) return false;
 
-        const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
-        const source_name = (try self.normalizedRelationDisplayName(source)) orelse return false;
+        const target_name = self.jsxQualifiedElementDiagnosticName(target) orelse
+            (try self.allocSimpleTypeName(target)) orelse return false;
+        const source_name = self.jsxQualifiedElementDiagnosticName(source) orelse
+            (try self.normalizedRelationDisplayName(source)) orelse return false;
 
         if (missing_total == 1) {
             const prop_text = self.formatMissingPropertyNameForDiagnostic(
@@ -112545,7 +112630,7 @@ pub const Checker = struct {
         const target_t = if (self.actualTupleLength(children_t) != null)
             self.tupleElementType(children_t, child_index)
         else
-            children_t;
+            (try self.jsxArrayLikeChildrenElementType(children_t)) orelse children_t;
         if (target_t == types.Primitive.none) return false;
         if (self.typeIsAnyLike(target_t)) return false;
         const child_t = try self.checkedExpressionType(child);
@@ -112577,10 +112662,12 @@ pub const Checker = struct {
         }
         const child_kind = self.hir.kindOf(anchor);
         if (child_kind == .jsx_element or child_kind == .jsx_self_closing) {
+            if (try self.tryReportJsxChildMissingProperties(anchor, child_t, target_t)) return true;
             try self.reportTypeNotAssignable(anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
             return true;
         }
-        if (try self.tryReportJsxChildMissingProperties(anchor, child_t, target_t)) return true;
+        const missing_anchor = if (self.hir.kindOf(child) == .jsx_expression) child else anchor;
+        if (try self.tryReportJsxChildMissingProperties(missing_anchor, child_t, target_t)) return true;
         try self.reportTypeNotAssignable(anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
         return true;
     }
@@ -113457,6 +113544,17 @@ pub const Checker = struct {
     }
 
     fn jsxElementAttributesPropertyName(self: *Checker, anchor: NodeId) CheckError!?hir_mod.StringId {
+        const attrs_name = self.string_interner.intern("ElementAttributesProperty") catch return error.OutOfMemory;
+        if (try self.jsxLocalFactoryNamespaceType(anchor, attrs_name)) |attrs_t| {
+            if (attrs_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(attrs_t).is_object_type) {
+                const members = self.interner.objectMembers(attrs_t);
+                if (members.len == 1) return members[0].name;
+                if (members.len > 1) {
+                    try self.reportOnce(anchor, TsCodes.jsx_global_type_multiple_properties, "The global type 'JSX.ElementAttributesProperty' may not have more than one property.");
+                }
+            }
+            return null;
+        }
         const decl = (try self.jsxElementAttributesPropertyDecl(anchor)) orelse return null;
 
         var count: usize = 0;
@@ -113853,9 +113951,13 @@ pub const Checker = struct {
     fn jsxElementTypeConstraint(self: *Checker, anchor: NodeId) CheckError!?TypeId {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const element_type_name = self.string_interner.intern("ElementType") catch return error.OutOfMemory;
+        if (try self.jsxLocalFactoryNamespaceType(anchor, element_type_name)) |t| return t;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return null;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, element_type_name) orelse return null;
         switch (self.hir.kindOf(decl)) {
             .type_alias_decl => {
@@ -113881,11 +113983,15 @@ pub const Checker = struct {
     fn jsxElementConstraint(self: *Checker, anchor: NodeId) CheckError!?TypeId {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const element_name = self.string_interner.intern("Element") catch return error.OutOfMemory;
+        if (try self.jsxLocalFactoryNamespaceType(anchor, element_name)) |t| return t;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) {
             return try self.jsxLibElementSyntheticType();
         }
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse
             return try self.jsxLibElementSyntheticType();
         const decl = self.findNamedTypeDeclInNamespace(ns_node, element_name) orelse return null;
         switch (self.hir.kindOf(decl)) {
@@ -113894,6 +114000,7 @@ pub const Checker = struct {
                 if (alias_type_node == hir_mod.none_node_id) return null;
                 const t = try self.lowererLowerWithTypeParams(alias_type_node);
                 if (t == types.Primitive.none or t == types.Primitive.unknown) return null;
+                try self.registerGlobalJsxElementDisplay(t, element_name);
                 return t;
             },
             .interface_decl => {
@@ -113903,18 +114010,35 @@ pub const Checker = struct {
                     iface_t = self.hir.typeOf(decl);
                 }
                 if (iface_t == types.Primitive.none or iface_t == types.Primitive.unknown) return null;
+                try self.registerGlobalJsxElementDisplay(iface_t, element_name);
                 return iface_t;
             },
             else => return null,
         }
     }
 
+    fn registerGlobalJsxElementDisplay(self: *Checker, t: TypeId, element_name: hir_mod.StringId) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        const display = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "JSX.{s}",
+            .{self.string_interner.get(element_name)},
+        );
+        _ = self.alias_display_names.remove(t);
+        try self.alias_display_names.put(self.gpa, t, display);
+        try self.qualified_alias_diagnostic_names.put(self.gpa, t, display);
+    }
+
     fn jsxElementClassConstraint(self: *Checker, anchor: NodeId) CheckError!?TypeId {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const element_class_name = self.string_interner.intern("ElementClass") catch return error.OutOfMemory;
+        if (try self.jsxLocalFactoryNamespaceType(anchor, element_class_name)) |t| return t;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return null;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const jsx_path = [_]hir_mod.StringId{jsx_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &jsx_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, &jsx_path) orelse return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, element_class_name) orelse return null;
         switch (self.hir.kindOf(decl)) {
             .type_alias_decl => {
@@ -114092,7 +114216,7 @@ pub const Checker = struct {
         }
 
         if (self.typeIsAnyLike(instance_t)) return;
-        if (self.engine.isAssignableTo(instance_t, class_t) catch true) return;
+        if (self.classImplementsAssignable(instance_t, class_t) catch true) return;
 
         const tag_text = self.nodeSourceTextOrEmpty(tag);
         if (tag_text.len == 0) return;
@@ -114504,6 +114628,49 @@ pub const Checker = struct {
         return first;
     }
 
+    fn jsxLocalFactoryNamespaceType(self: *Checker, anchor: NodeId, leaf_name: hir_mod.StringId) CheckError!?TypeId {
+        const factory_root = self.jsxFactoryRootName(self.jsxFactoryNameText(anchor)) orelse return null;
+        const local_name = self.string_interner.intern(factory_root) catch return error.OutOfMemory;
+        const import_info = (try self.localImportModuleInfo(local_name, anchor)) orelse return null;
+        const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
+        var path: [2]hir_mod.StringId = undefined;
+        var path_len: usize = 0;
+        if (import_info.exported_root) |exported_root| {
+            path[path_len] = exported_root;
+            path_len += 1;
+        }
+        path[path_len] = jsx_name;
+        path_len += 1;
+        const result = try self.virtualRelativeModuleExportType(
+            anchor,
+            import_info.specifier,
+            path[0..path_len],
+            leaf_name,
+        );
+        if (result) |t| {
+            if (std.mem.eql(u8, self.string_interner.get(leaf_name), "Element")) {
+                const raw_spec = stripJsOutputExtension(self.string_interner.get(import_info.specifier));
+                const display_spec = if (std.mem.startsWith(u8, raw_spec, "./")) raw_spec[2..] else raw_spec;
+                var display: std.ArrayListUnmanaged(u8) = .empty;
+                defer display.deinit(self.gpa);
+                try display.appendSlice(self.gpa, "import(\"");
+                try display.appendSlice(self.gpa, display_spec);
+                try display.appendSlice(self.gpa, "\")");
+                for (path[0..path_len]) |segment| {
+                    try display.append(self.gpa, '.');
+                    try display.appendSlice(self.gpa, self.string_interner.get(segment));
+                }
+                try display.append(self.gpa, '.');
+                try display.appendSlice(self.gpa, self.string_interner.get(leaf_name));
+                const stored = try self.diag_arena.allocator().dupe(u8, display.items);
+                _ = self.alias_display_names.remove(t);
+                try self.alias_display_names.put(self.gpa, t, stored);
+                try self.qualified_alias_diagnostic_names.put(self.gpa, t, stored);
+            }
+        }
+        return result;
+    }
+
     fn jsxFactoryType(self: *Checker, anchor: NodeId, factory_name: []const u8) CheckError!?TypeId {
         var parts = std.mem.splitScalar(u8, factory_name, '.');
         const first = self.jsxFactoryRootName(factory_name) orelse return null;
@@ -114617,6 +114784,14 @@ pub const Checker = struct {
     fn jsxIntrinsicPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
+        if (try self.jsxLocalFactoryNamespaceType(anchor, intrinsic_name)) |intrinsic_t| {
+            if (try self.lookupObjectMember(intrinsic_t, tag_name)) |props_t| return props_t;
+            const string_idx = self.interner.objectStringIndex(intrinsic_t);
+            if (string_idx != types.Primitive.none) return string_idx;
+            const number_idx = self.interner.objectNumberIndex(intrinsic_t);
+            if (number_idx != types.Primitive.none and self.isNumericStringId(tag_name)) return number_idx;
+            return null;
+        }
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const root_stmts = hir_mod.blockStmts(self.hir, root);
@@ -114886,6 +115061,7 @@ pub const Checker = struct {
     fn jsxHasIntrinsicElementsDecl(self: *Checker, anchor: NodeId) CheckError!bool {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
+        if ((try self.jsxLocalFactoryNamespaceType(anchor, intrinsic_name)) != null) return true;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const root_stmts = hir_mod.blockStmts(self.hir, root);
@@ -114897,6 +115073,8 @@ pub const Checker = struct {
 
     fn jsxHasNamespaceDecl(self: *Checker, anchor: NodeId) CheckError!bool {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
+        const element_name = self.string_interner.intern("Element") catch return error.OutOfMemory;
+        if ((try self.jsxLocalFactoryNamespaceType(anchor, element_name)) != null) return true;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const root_stmts = hir_mod.blockStmts(self.hir, root);
@@ -172260,6 +172438,7 @@ pub const Checker = struct {
     }
 
     fn missingPropertyTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.jsxQualifiedElementDiagnosticName(t)) |display| return display;
         if (self.actualTupleLength(t) != null) {
             return try self.allocSimpleTypeName(t);
         }
@@ -172303,6 +172482,13 @@ pub const Checker = struct {
         }
         return (try self.allocObjectTypeShape(t)) orelse
             (try self.allocSimpleTypeName(t));
+    }
+
+    fn jsxQualifiedElementDiagnosticName(self: *Checker, t: TypeId) ?[]const u8 {
+        const display = self.qualified_alias_diagnostic_names.get(t) orelse return null;
+        if (std.mem.startsWith(u8, display, "import(\"") or
+            std.mem.startsWith(u8, display, "JSX.")) return display;
+        return null;
     }
 
     fn missingPrivatePropertyApparentSourceName(
