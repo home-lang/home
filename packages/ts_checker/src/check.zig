@@ -2825,6 +2825,9 @@ pub const TsCodes = struct {
 pub const GenericAliasInfo = struct {
     params: []TypeId,
     body: TypeId,
+    /// Type aliases use their symbol name in TS2314/TS2707, while classes
+    /// and interfaces render their declared type-parameter list.
+    is_type_alias: bool = false,
     /// HIR node for the alias body. Used when the body contains a
     /// mapped type whose constraint can't materialize until the
     /// outer parameters are substituted (homomorphic case:
@@ -7953,6 +7956,7 @@ pub const Checker = struct {
         try self.generic_aliases.put(self.gpa, id.name, .{
             .params = owned_params,
             .body = types.Primitive.unknown,
+            .is_type_alias = true,
             .body_node = ta.aliased,
         });
         try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
@@ -24272,7 +24276,7 @@ pub const Checker = struct {
         return false;
     }
 
-    /// `noUnusedParameters` (TS6133 / TS6205): report declaration type
+    /// `noUnusedParameters` (TS6196 / TS6205): report declaration type
     /// parameters that are never referenced in a type position. Mirrors
     /// tsc's `checkUnusedTypeParameters`: type parameters are gated by
     /// `noUnusedParameters` (not `noUnusedLocals`) to match upstream's
@@ -24355,7 +24359,7 @@ pub const Checker = struct {
             if (used.contains(name)) continue;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
-                "'{s}' is declared but its value is never read.",
+                "'{s}' is declared but never used.",
                 .{name_str},
             );
             try self.diagnostics.append(self.gpa, .{
@@ -24364,7 +24368,7 @@ pub const Checker = struct {
                     self.typeParameterListDiagnosticStart(tp)
                 else
                     self.typeParameterNameDiagnosticStart(tp),
-                .code = TsCodes.declared_but_not_read,
+                .code = TsCodes.declared_but_never_used,
                 .message = msg,
             });
         }
@@ -69130,6 +69134,7 @@ pub const Checker = struct {
             try self.generic_aliases.put(self.gpa, id.name, .{
                 .params = owned_params,
                 .body = body_t,
+                .is_type_alias = true,
                 .body_node = ta.aliased,
             });
             // Also expose the un-instantiated body via `type_names`
@@ -70744,16 +70749,12 @@ pub const Checker = struct {
 
     fn reportGenericTypeRequiresArgs(self: *Checker, node: NodeId, name: hir_mod.StringId, info: GenericAliasInfo) CheckError!void {
         const raw = self.string_interner.get(name);
-        // Match upstream TS's diagnostic shape: include the
-        // declared type-parameter list after the name ÃÂ¢ÃÂÃÂ
-        //   `Generic type 'Foo<T>' requires 1 type argument(s).`
-        // ÃÂ¢ÃÂÃÂ instead of the bare `Foo`. Tools and editors scrape
-        // this verbatim, and the upstream `.errors.txt` baseline
-        // ratchet relies on byte-identical text.
+        // Classes and interfaces render their declared parameters as
+        // `Foo<T>`, while type aliases use their bare symbol name.
         var name_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer name_buf.deinit(self.gpa);
         try name_buf.appendSlice(self.gpa, raw);
-        try self.appendTypeParameterListLabel(&name_buf, info.params);
+        if (!info.is_type_alias) try self.appendTypeParameterListLabel(&name_buf, info.params);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Generic type '{s}' requires {d} type argument(s).",
@@ -70772,7 +70773,7 @@ pub const Checker = struct {
         var name_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer name_buf.deinit(self.gpa);
         try name_buf.appendSlice(self.gpa, raw);
-        try self.appendTypeParameterListLabel(&name_buf, info.params);
+        if (!info.is_type_alias) try self.appendTypeParameterListLabel(&name_buf, info.params);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Generic type '{s}' requires between {d} and {d} type arguments.",
@@ -92919,11 +92920,12 @@ pub const Checker = struct {
             const params_copy = self.gpa.dupe(TypeId, formal_params.items) catch return error.OutOfMemory;
             if (self.generic_aliases.getPtr(alias_name)) |existing| {
                 self.gpa.free(existing.params);
-                existing.* = .{ .params = params_copy, .body = generic_body };
+                existing.* = .{ .params = params_copy, .body = generic_body, .is_type_alias = true };
             } else {
                 try self.generic_aliases.put(self.gpa, alias_name, .{
                     .params = params_copy,
                     .body = generic_body,
+                    .is_type_alias = true,
                 });
             }
             if (subs.count() > 0) {
@@ -200783,7 +200785,7 @@ test "checker: noUnusedParameters honors leading-underscore convention" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
-test "checker: noUnusedParameters emits TS6133 for unused function type parameter" {
+test "checker: noUnusedParameters emits TS6196 for unused function type parameter" {
     const s = try newSetup("function f<X, Y, Z>(a: X, b: Y): void { a; b; }");
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
@@ -200791,7 +200793,7 @@ test "checker: noUnusedParameters emits TS6133 for unused function type paramete
     var has_z = false;
     var only_z = true;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.declared_but_not_read) continue;
+        if (d.code != TsCodes.declared_but_never_used) continue;
         const msg = d.message;
         if (std.mem.indexOf(u8, msg, "'Z'") != null) has_z = true;
         // X/Y are referenced via the parameter annotations; a/b via the body.
@@ -200804,14 +200806,14 @@ test "checker: noUnusedParameters emits TS6133 for unused function type paramete
     try T.expect(only_z);
 }
 
-test "checker: noUnusedParameters emits TS6133 for unused method type parameter" {
+test "checker: noUnusedParameters emits TS6196 for unused method type parameter" {
     const s = try newSetup("class A { f1<X, Y, Z>(a: X, b: Y): void { a; b; } }");
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     var has_z = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.declared_but_not_read and
+        if (d.code == TsCodes.declared_but_never_used and
             std.mem.indexOf(u8, d.message, "'Z'") != null) has_z = true;
     }
     try T.expect(has_z);
@@ -200832,28 +200834,28 @@ test "checker: noUnusedParameters checks declaration type parameters" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
 
-    var count_6133: usize = 0;
+    var count_6196: usize = 0;
     var saw_alias = false;
     var saw_interface = false;
     var saw_class = false;
     var saw_method = false;
     var saw_arrow = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.declared_but_not_read) continue;
-        count_6133 += 1;
-        if (std.mem.indexOf(u8, d.message, "'T' is declared but its value is never read.") != null) {
+        if (d.code != TsCodes.declared_but_never_used) continue;
+        count_6196 += 1;
+        if (std.mem.indexOf(u8, d.message, "'T' is declared but never used.") != null) {
             const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
             if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "Alias<T>").? + "Alias".len))) saw_alias = true;
             if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "I<T>").? + "I".len))) saw_interface = true;
             if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "C<T>").? + "C".len))) saw_class = true;
             if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "<T>() =>").?))) saw_arrow = true;
         }
-        if (std.mem.indexOf(u8, d.message, "'V' is declared but its value is never read.") != null) {
+        if (std.mem.indexOf(u8, d.message, "'V' is declared but never used.") != null) {
             const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
             if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "m<V>").? + "m".len))) saw_method = true;
         }
     }
-    try T.expectEqual(@as(usize, 6), count_6133);
+    try T.expectEqual(@as(usize, 6), count_6196);
     try T.expect(saw_alias);
     try T.expect(saw_interface);
     try T.expect(saw_class);
@@ -200878,8 +200880,8 @@ test "checker: partially unused method type parameter anchors at identifier" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.declared_but_not_read) continue;
-        if (std.mem.indexOf(u8, d.message, "'Z' is declared but its value is never read.") == null) continue;
+        if (d.code != TsCodes.declared_but_never_used) continue;
+        if (std.mem.indexOf(u8, d.message, "'Z' is declared but never used.") == null) continue;
         found = true;
         try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "Z>()").?)), d.pos orelse 0);
     }
@@ -200896,7 +200898,7 @@ test "checker: used declaration type parameters are not reported unused" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.declared_but_never_used);
         try T.expect(d.code != TsCodes.all_type_parameters_unused);
     }
 }
@@ -200912,7 +200914,7 @@ test "checker: class-merged interface type parameter is not reported unused" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true, .strict_property_initialization = false });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.declared_but_never_used);
         try T.expect(d.code != TsCodes.all_type_parameters_unused);
     }
 }
@@ -200923,17 +200925,17 @@ test "checker: unused type parameters that are all unused emit single TS6205" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     var count_6205: usize = 0;
-    var count_6133: usize = 0;
+    var count_6196: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.all_type_parameters_unused) {
             count_6205 += 1;
             try T.expect(std.mem.indexOf(u8, d.message, "All type parameters are unused.") != null);
         }
-        if (d.code == TsCodes.declared_but_not_read) count_6133 += 1;
+        if (d.code == TsCodes.declared_but_never_used) count_6196 += 1;
     }
     try T.expectEqual(@as(usize, 1), count_6205);
     // The all-unused path replaces the per-parameter reports.
-    try T.expectEqual(@as(usize, 0), count_6133);
+    try T.expectEqual(@as(usize, 0), count_6196);
 }
 
 test "checker: used type parameter is not reported unused" {
@@ -200942,7 +200944,7 @@ test "checker: used type parameter is not reported unused" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.declared_but_never_used);
         try T.expect(d.code != TsCodes.all_type_parameters_unused);
     }
 }
@@ -217880,6 +217882,7 @@ test "checker: bare generic type alias in type parameter constraint emits TS2314
         {
             found = true;
         }
+        try T.expect(std.mem.indexOf(u8, d.message, "Generic type 'callback<T>'") == null);
     }
     try T.expect(found);
 }
