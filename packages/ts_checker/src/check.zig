@@ -120453,7 +120453,7 @@ pub const Checker = struct {
         arg_types: []const TypeId,
         sig: TypeId,
     ) CheckError!?SignatureArgumentError {
-        if (self.generic_signature_params.get(sig) == null) return null;
+        const declared_params = self.generic_signature_params.get(sig) orelse return null;
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(sig, args, arg_types, &subs);
@@ -120472,6 +120472,7 @@ pub const Checker = struct {
             {
                 continue;
             }
+            if (std.mem.indexOfScalar(TypeId, declared_params, type_param) == null) continue;
             const candidate = subs.get(type_param) orelse arg_types[arg_i];
             if (candidate == types.Primitive.any or
                 candidate == types.Primitive.unknown or
@@ -218021,6 +218022,7 @@ test "checker: abstract constructor assigned to non-abstract constructor emits T
 
 test "checker: implicit derived constructor preserves base overload arities" {
     const s = try newSetup(
+        \\// @target: es2015
         \\class Base {
         \\  constructor(x: number, y?: number, z?: number);
         \\  constructor(x: number, y?: number);
@@ -218037,14 +218039,23 @@ test "checker: implicit derived constructor preserves base overload arities" {
         \\  constructor(x: T, y?: T);
         \\  constructor(x: T) {}
         \\}
-        \\class GenericDerived<T extends Date> extends GenericBase<T> {}
+        \\class GenericDerived<T extends Date> extends GenericBase<T> { value: T = null; }
         \\new GenericDerived(new Date());
         \\new GenericDerived(new Date(), new Date());
         \\new GenericDerived(new Date(), new Date(), new Date());
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 0."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 4."));
 }
