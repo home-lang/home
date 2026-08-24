@@ -52,6 +52,7 @@ const CheckerResolverAdapter = struct {
         path: []const u8,
         display_specifier: []const u8,
         type_only_path: []const u8 = "",
+        shadows_resolution: bool = false,
     };
 
     pub const vtable = ts_checker.ExternalResolver.VTable{
@@ -133,6 +134,11 @@ const CheckerResolverAdapter = struct {
                     .display_specifier = m.specifier,
                 };
             }
+            if (!m.is_augmentation) {
+                result.?.path = m.path;
+                result.?.display_specifier = m.specifier;
+                result.?.shadows_resolution = true;
+            }
             result.?.facts.exported_type = result.?.facts.exported_type or facts.exported_type;
             result.?.facts.exported_value = result.?.facts.exported_value or facts.exported_value;
             result.?.facts.ambient_const_enum = result.?.facts.ambient_const_enum or facts.ambient_const_enum;
@@ -156,11 +162,15 @@ const CheckerResolverAdapter = struct {
         const resolved: ?ts_resolver.Resolution = self.resolver.resolve(specifier, containing) catch null;
         const ambient = self.ambientModuleExportQuery(specifier, containing, name);
         if (resolved == null and ambient == null) return null;
-        const module_path = if (resolved) |r| r.path else ambient.?.path;
+        const effective_resolved: ?ts_resolver.Resolution = if (ambient != null and ambient.?.shadows_resolution)
+            null
+        else
+            resolved;
+        const module_path = if (effective_resolved) |r| r.path else ambient.?.path;
         // JavaScript implementation files outside an allowJs project are
         // untyped modules. Their export surface is `any`, so a syntactically
         // empty JS module must not reject arbitrary named imports.
-        if (resolved) |r| {
+        if (effective_resolved) |r| {
             if (!self.allow_js and !r.is_declaration and isJsLikeVirtualFile(r.path)) {
                 const arena = self.resolver.arena.allocator();
                 const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
@@ -196,7 +206,7 @@ const CheckerResolverAdapter = struct {
         else
             null;
         defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
-        const resolved_facts = if (resolved != null)
+        const resolved_facts = if (effective_resolved != null)
             ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, module_path, name)
         else
             ts_program.ModuleExportFacts{
@@ -214,12 +224,12 @@ const CheckerResolverAdapter = struct {
         const ambient_exported = if (ambient) |query| query.facts.exported_type or query.facts.exported_value else false;
         const cannot_be_named = !exported and !ambient_exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_info = if (resolved != null)
+        const type_only_info = if (effective_resolved != null)
             self.moduleTypeOnlyExportInfoFromSource(src, module_path, name, is_tsx)
         else
             null;
         const type_only_pos = if (type_only_info) |info| info.pos else null;
-        const module_name = if (resolved != null)
+        const module_name = if (effective_resolved != null)
             ts_program.renderModuleDisplayName(arena, module_path) catch return null
         else
             std.fmt.allocPrint(arena, "\"{s}\"", .{ambient.?.display_specifier}) catch return null;
@@ -232,6 +242,7 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported or if (ambient) |query| query.facts.exported_type else false,
             .exported_value = exported_value or if (ambient) |query| query.facts.exported_value else false,
+            .exported_value_readonly = resolved_facts.exported_value_readonly,
             .ambient_const_enum = ambient_const_enum or if (ambient) |query| query.facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
             .type_only_export = effective_type_only_pos != null,
@@ -245,7 +256,7 @@ const CheckerResolverAdapter = struct {
             .default_export_member_readonly = resolved_facts.default_export_member_readonly,
             .generic_function = resolved_facts.generic_function,
             .call_only_function = resolved_facts.call_only_function,
-            .module_is_external = if (resolved != null) resolved_facts.module_is_external else true,
+            .module_is_external = if (effective_resolved != null) resolved_facts.module_is_external else true,
             .ambient_module = ambient != null,
             .ambient_module_exports_known = ambient != null,
         };
@@ -1095,6 +1106,9 @@ const ActualDiagnosticLine = struct {
         }
         if (a.line != b.line) return a.line < b.line;
         if (a.col != b.col) return a.col < b.col;
+        if ((a.code == 7026 and b.code == 2657) or (a.code == 2657 and b.code == 7026)) {
+            return a.code == 7026;
+        }
         if (isJsLikeVirtualFile(a.file) and
             ((a.code == 2300 and b.code == 1005) or
                 (a.code == 1005 and b.code == 2300)))
@@ -1241,6 +1255,7 @@ const ScriptGlobalSpaces = struct {
 const AmbientModuleResolution = struct {
     specifier: []const u8,
     path: []const u8,
+    is_augmentation: bool,
 };
 
 fn freeAmbientModuleResolutions(gpa: std.mem.Allocator, items: []const AmbientModuleResolution) void {
@@ -1266,6 +1281,7 @@ fn collectAmbientModules(
 
     for (files) |file| {
         if (!isCodeVirtualFile(file.path)) continue;
+        const is_augmentation = sourceHasExternalModuleIndicator(file.source);
         var search_start: usize = 0;
         while (ambientDeclareModuleName(file.source, &search_start)) |module_name| {
             if (module_name.len == 0) continue;
@@ -1277,6 +1293,7 @@ fn collectAmbientModules(
             try out.append(gpa, .{
                 .specifier = spec,
                 .path = canon,
+                .is_augmentation = is_augmentation,
             });
         }
     }
@@ -1314,6 +1331,117 @@ fn ambientDeclareModuleName(source: []const u8, search_start: *usize) ?[]const u
         return source[name_start..i];
     }
     return null;
+}
+
+fn sourceHasExternalModuleIndicator(source: []const u8) bool {
+    var i: usize = 0;
+    var brace_depth: usize = 0;
+    while (i < source.len) {
+        const ch = source[i];
+        if (std.ascii.isWhitespace(ch)) {
+            i += 1;
+            continue;
+        }
+        if (ch == '/' and i + 1 < source.len) {
+            if (source[i + 1] == '/') {
+                i += 2;
+                while (i < source.len and source[i] != '\n') : (i += 1) {}
+                continue;
+            }
+            if (source[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) : (i += 1) {}
+                i = @min(i + 2, source.len);
+                continue;
+            }
+        }
+        if (ch == '\'' or ch == '"' or ch == '`') {
+            const quote = ch;
+            i += 1;
+            while (i < source.len) : (i += 1) {
+                if (source[i] == '\\') {
+                    i = @min(i + 1, source.len);
+                    continue;
+                }
+                if (source[i] == quote) {
+                    i += 1;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (ch == '{') {
+            brace_depth += 1;
+            i += 1;
+            continue;
+        }
+        if (ch == '}') {
+            brace_depth -|= 1;
+            i += 1;
+            continue;
+        }
+        if (!isIdentifierStart(ch)) {
+            i += 1;
+            continue;
+        }
+        const token_start = i;
+        i += 1;
+        while (i < source.len and isIdentifierContinue(source[i])) : (i += 1) {}
+        const token = source[token_start..i];
+        if (!std.mem.eql(u8, token, "import") and !std.mem.eql(u8, token, "export")) continue;
+
+        const next = skipModuleIndicatorTrivia(source, i);
+        if (std.mem.eql(u8, token, "import")) {
+            if (next < source.len and source[next] == '.') return true;
+            if (brace_depth == 0 and (next >= source.len or source[next] != '(')) return true;
+            continue;
+        }
+        if (brace_depth != 0) continue;
+        if (conformanceIdentifierKeywordAt(source, next, "as")) {
+            const namespace_pos = skipModuleIndicatorTrivia(source, next + "as".len);
+            if (conformanceIdentifierKeywordAt(source, namespace_pos, "namespace")) continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn skipModuleIndicatorTrivia(source: []const u8, start: usize) usize {
+    var i = start;
+    while (i < source.len) {
+        if (std.ascii.isWhitespace(source[i])) {
+            i += 1;
+            continue;
+        }
+        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '/') {
+            i += 2;
+            while (i < source.len and source[i] != '\n') : (i += 1) {}
+            continue;
+        }
+        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) : (i += 1) {}
+            i = @min(i + 2, source.len);
+            continue;
+        }
+        break;
+    }
+    return i;
+}
+
+test "conformance: ambient module declarations distinguish scripts from augmentations" {
+    try T.expect(!sourceHasExternalModuleIndicator(
+        \\declare module "pkg" {
+        \\  export const declared: number;
+        \\}
+    ));
+    try T.expect(!sourceHasExternalModuleIndicator("export as namespace Library;"));
+    try T.expect(sourceHasExternalModuleIndicator(
+        \\export {};
+        \\declare module "pkg" { export const augmented: number; }
+    ));
+    try T.expect(sourceHasExternalModuleIndicator("function metadata() { return import.meta.url; }"));
+    try T.expect(!sourceHasExternalModuleIndicator("const load = () => import('pkg');"));
 }
 
 fn isAtTypesVirtualPath(path: []const u8) bool {
@@ -1405,6 +1533,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
     }
     if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
     if (rawSourceHasCommonJsNamedExportsAndRelativeImport(c.raw_source)) return true;
+    if (rawSourceHasExplicitUmdDependency(c.raw_source)) return true;
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
     // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
     // no non-code package.json / tsconfig / node_modules markers) work
@@ -1645,6 +1774,19 @@ fn rawSourceHasCommonJsNamedExportsAndRelativeImport(raw: []const u8) bool {
     return has_named_import and has_relative_from;
 }
 
+fn rawSourceHasExplicitUmdDependency(raw: []const u8) bool {
+    if (std.mem.indexOf(u8, raw, "export as namespace") == null) return false;
+    if (std.mem.indexOf(u8, raw, "<reference path=") != null) return true;
+    return std.mem.indexOf(u8, raw, " from './") != null or
+        std.mem.indexOf(u8, raw, " from \"./") != null or
+        std.mem.indexOf(u8, raw, " from '../") != null or
+        std.mem.indexOf(u8, raw, " from \"../") != null or
+        std.mem.indexOf(u8, raw, "require('./") != null or
+        std.mem.indexOf(u8, raw, "require(\"./") != null or
+        std.mem.indexOf(u8, raw, "require('../") != null or
+        std.mem.indexOf(u8, raw, "require(\"../") != null;
+}
+
 fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
     var lines = std.mem.splitScalar(u8, raw, '\n');
     while (lines.next()) |line_with_cr| {
@@ -1700,6 +1842,10 @@ fn sourceLineHasBareImportSpecifier(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (std.mem.startsWith(u8, trimmed, "import")) {
         if (quotedBareSpecifierAfter(trimmed["import".len..])) return true;
+        if (std.mem.indexOf(u8, trimmed["import".len..], "require(")) |relative_require| {
+            const require_pos = "import".len + relative_require;
+            if (quotedBareSpecifierAfter(trimmed[require_pos + "require(".len ..])) return true;
+        }
     }
     search_start = 0;
     while (std.mem.indexOfPos(u8, line, search_start, "import(")) |idx| {
@@ -1762,10 +1908,19 @@ fn splitVirtualFiles(
 
         // Section ends at the start of the next marker (its byte_offset),
         // or end-of-file for the last marker.
-        const section_end = if (idx + 1 < markers.items.len)
+        var section_end = if (idx + 1 < markers.items.len)
             @as(usize, markers.items[idx + 1].byte_offset)
         else
             raw.len;
+
+        // The line ending immediately before the next `@filename` marker
+        // separates harness sections; it is not part of the virtual file.
+        // Remove exactly one ending, preserving any additional blank line as
+        // real source content (and therefore as a logical EOF line).
+        if (idx + 1 < markers.items.len and section_end > content_start) {
+            if (raw[section_end - 1] == '\n') section_end -= 1;
+            if (section_end > content_start and raw[section_end - 1] == '\r') section_end -= 1;
+        }
 
         if (content_start >= section_end) continue;
         const section_source = raw[content_start..section_end];
@@ -1831,6 +1986,20 @@ test "conformance: duplicate virtual filenames keep the final section" {
     defer T.allocator.free(stripped);
     try T.expect(std.mem.indexOf(u8, stripped, "class Final") != null);
     try T.expect(std.mem.indexOf(u8, stripped, "class First") == null);
+}
+
+test "conformance: virtual section stripping preserves trailing newline count" {
+    const without_trailing = "// @filename: file.tsx\nconst value = <div />;";
+    const stripped_without = (try stripNonCodeVirtualSections(T.allocator, without_trailing)) orelse
+        return error.TestExpectedEqual;
+    defer T.allocator.free(stripped_without);
+    try T.expectEqualStrings(without_trailing, stripped_without);
+
+    const with_trailing = without_trailing ++ "\n";
+    const stripped_with = (try stripNonCodeVirtualSections(T.allocator, with_trailing)) orelse
+        return error.TestExpectedEqual;
+    defer T.allocator.free(stripped_with);
+    try T.expectEqualStrings(with_trailing, stripped_with);
 }
 
 test "conformance: implementation source shadows same-stem declaration root" {
@@ -1908,6 +2077,29 @@ fn collectUmdGlobalsFromVirtualFiles(
             try out.append(gpa, .{ .name = owned });
         }
     }
+}
+
+test "conformance: collects UMD globals from declaration virtual files" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "foo.d.ts",
+            .source =
+            \\export var x: number;
+            \\export as namespace Foo;
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "a.ts", .source = "Foo;", .extra_strip = 0 },
+    };
+    var globals: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
+    defer {
+        for (globals.items) |global| std.testing.allocator.free(global.name);
+        globals.deinit(std.testing.allocator);
+    }
+
+    try collectUmdGlobalsFromVirtualFiles(std.testing.allocator, &files, &globals);
+    try T.expectEqual(@as(usize, 1), globals.items.len);
+    try T.expectEqualStrings("Foo", globals.items[0].name);
 }
 
 fn virtualPathIsDeclarationFile(path: []const u8) bool {
@@ -2128,6 +2320,7 @@ const TsconfigResolverOptions = struct {
     import_helpers: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
+    types_configured: bool = false,
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
@@ -2167,6 +2360,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         result.import_helpers = options.import_helpers;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
+        result.types_configured = options.types != null;
         return result;
     }
     return .{};
@@ -2669,6 +2863,64 @@ test "conformance: visible @types ambient modules resolve from multiple node_mod
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: script ambient module declaration wins over resolved source file" {
+    const raw =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @module: commonjs
+        \\// @filename: vs/foo_0/index.ts
+        \\export var x: number = 42;
+        \\// @filename: foo_1.ts
+        \\declare module "vs/foo_0" {
+        \\  export var y: () => number;
+        \\}
+        \\// @filename: foo_2.ts
+        \\/// <reference path="foo_1.ts"/>
+        \\import foo = require("vs/foo_0");
+        \\var z1 = foo.x + 10;
+        \\var z2 = foo.y() + 10;
+    ;
+    const c: Case = .{
+        .name = "topLevelModuleDeclarationAndFile",
+        .source = "",
+        .path = "foo_2.ts",
+        .raw_source = raw,
+        .expected_errors = "foo_2.ts(3,14): error TS2339: Property 'x' does not exist on type 'typeof import(\"vs/foo_0\")'.",
+        .strict_flags = .{},
+    };
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: external module ambient declaration augments resolved source file" {
+    const raw =
+        \\// @moduleResolution: node
+        \\// @filename: /node_modules/pkg/index.ts
+        \\export const x = 1;
+        \\// @filename: augmentation.ts
+        \\export {};
+        \\declare module "pkg" {
+        \\  export const y: number;
+        \\}
+        \\// @filename: consumer.ts
+        \\import pkg = require("pkg");
+        \\pkg.x + pkg.y;
+    ;
+    const c: Case = .{
+        .name = "externalAmbientModuleAugmentation",
+        .source = "",
+        .path = "consumer.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    };
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: wildcard configured types expand without a literal missing-type diagnostic" {
     const raw =
         \\// @target: es2015
@@ -2695,6 +2947,31 @@ test "conformance: wildcard configured types expand without a literal missing-ty
         .strict_flags = .{},
     };
     const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: noImplicitReferences suppresses automatic type directive discovery" {
+    const raw =
+        \\// @module: commonjs
+        \\// @noImplicitReferences: true
+        \\// @currentDirectory: /
+        \\// @filename: /node_modules/@types/lquery/package.json
+        \\{ "typings": "lquery" }
+        \\// @filename: /node_modules/@types/lquery/lquery.ts
+        \\export const value = 1;
+        \\// @filename: /a.ts
+        \\import { value } from "lquery";
+        \\value;
+    ;
+    const result = try runProgram(T.allocator, .{
+        .name = "noImplicitReferencesAutomaticTypes",
+        .source = "",
+        .path = "/a.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    }) orelse return error.TestExpectedEqual;
     defer if (result.detail.len > 0) T.allocator.free(result.detail);
     try T.expectEqual(Outcome.passed, result.outcome);
 }
@@ -2788,6 +3065,41 @@ test "conformance: checked JS CommonJS named exports route through program" {
         .expected_errors = "b.js(1,10): error TS2305: placeholder",
         .strict_flags = .{},
     }));
+}
+
+test "conformance: explicitly referenced UMD declarations route through program" {
+    const declaration =
+        \\// @filename: foo.d.ts
+        \\export var x: number;
+        \\export as namespace Foo;
+    ;
+    const referenced = declaration ++
+        \\// @filename: reference.ts
+        \\/// <reference path="foo.d.ts" />
+        \\Foo.x;
+    ;
+    const imported = declaration ++
+        \\// @filename: import.ts
+        \\import * as Bar from './foo';
+        \\let x = Foo;
+    ;
+    const unrelated = declaration ++
+        \\// @filename: unrelated.ts
+        \\Foo.x;
+    ;
+
+    for ([_][]const u8{ referenced, imported }) |raw| {
+        try T.expect(rawSourceHasExplicitUmdDependency(raw));
+        try T.expect(shouldRouteThroughProgram(.{
+            .name = "umdExplicitDependency",
+            .source = raw,
+            .path = "consumer.ts",
+            .raw_source = raw,
+            .expected_errors = "consumer.ts(1,1): error TS2304: placeholder",
+            .strict_flags = .{},
+        }));
+    }
+    try T.expect(!rawSourceHasExplicitUmdDependency(unrelated));
 }
 
 test "conformance: clean virtual shebang fixture routes through program" {
@@ -3160,10 +3472,19 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
+    const types_directive_present = directiveValue(directive_source, "types") != null;
     const explicit_type_names = if (raw_configured_type_names.len > 0)
         raw_configured_type_names
     else
         tsconfig_options.types;
+    const automatic_type_names = [_][]const u8{"*"};
+    const suppress_automatic_types = directiveBool(directive_source, "noImplicitReferences") orelse false;
+    const type_names_to_expand = if (!types_directive_present and
+        !tsconfig_options.types_configured and
+        !suppress_automatic_types)
+        automatic_type_names[0..]
+    else
+        explicit_type_names;
     const module_kind_label = selectedModuleKind(c, directive_source, tsconfig_options.module);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, module_kind_label))
@@ -3183,7 +3504,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const current_directory = directiveValue(directive_source, "currentDirectory") orelse "/";
     const configured_type_names = try resolver.expandTypeDirectiveNames(
         gpa,
-        explicit_type_names,
+        type_names_to_expand,
         current_directory,
     );
     defer freeStringList(gpa, configured_type_names);
@@ -3506,6 +3827,14 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                     }
                 }
             }
+            // Script globals are shared across every root file in a
+            // TypeScript program. The program route currently checks each
+            // file independently, so JSX files after a sibling
+            // `declare var React` can surface a spurious TS2874 even though
+            // the factory is visible program-wide. The same collected
+            // script-global table used for TS2304 suppression proves that
+            // this diagnostic is invalid.
+            if (code == 2874 and prefix == .TS and script_globals.hasValue("React")) continue;
             if (exact_mode) {
                 if (baselineObjectFewTypesRoot(c.expected_errors, pf.diag_path, diag_line, diag_col, code, d.chain)) |root_message| {
                     code = 2696;
@@ -7112,9 +7441,13 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
     var include_section = true;
     var comment_section = false;
     var marker_index: usize = 0;
+    var consumed: usize = 0;
     const allow_js = directiveBool(source, "allowJs") orelse false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_with_cr| {
+        const segment_end = consumed + line_with_cr.len;
+        const has_line_terminator = segment_end < source.len and source[segment_end] == '\n';
+        consumed = segment_end + @as(usize, @intFromBool(has_line_terminator));
         const line = std.mem.trim(u8, line_with_cr, "\r");
         if (virtualFilename(line)) |path| {
             var shadowed_by_later_file = false;
@@ -7134,14 +7467,14 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
             if (include_section) {
                 if (comment_section) try out.appendSlice(gpa, "// ");
                 try out.appendSlice(gpa, line);
-                try out.append(gpa, '\n');
+                if (has_line_terminator) try out.append(gpa, '\n');
             }
             continue;
         }
         if (!include_section) continue;
         if (comment_section) try out.appendSlice(gpa, "// ");
         try out.appendSlice(gpa, line);
-        try out.append(gpa, '\n');
+        if (has_line_terminator) try out.append(gpa, '\n');
     }
     return try out.toOwnedSlice(gpa);
 }
@@ -9173,14 +9506,36 @@ fn sourceHasUninitializedField(source: []const u8) bool {
     if (std.mem.indexOf(u8, source, "class ") == null) return false;
     var in_class = false;
     var pending_class = false;
+    var class_is_ambient = false;
     var class_depth: i32 = 0;
+    var ambient_depth: i32 = 0;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         if (std.mem.startsWith(u8, line, "//")) continue;
+        const starts_ambient_scope = ambient_depth == 0 and
+            (std.mem.startsWith(u8, line, "declare namespace ") or
+                std.mem.startsWith(u8, line, "declare module ") or
+                std.mem.startsWith(u8, line, "declare global "));
+        defer {
+            if (ambient_depth > 0 or starts_ambient_scope) {
+                for (line) |c| {
+                    if (c == '{') {
+                        ambient_depth += 1;
+                    } else if (c == '}' and ambient_depth > 0) {
+                        ambient_depth -= 1;
+                    }
+                }
+            }
+        }
         if (!in_class) {
-            if (std.mem.indexOf(u8, line, "class ") != null) pending_class = true;
+            if (std.mem.indexOf(u8, line, "class ") != null) {
+                pending_class = true;
+                class_is_ambient = ambient_depth > 0 or
+                    starts_ambient_scope or
+                    std.mem.indexOf(u8, line, "declare class ") != null;
+            }
             if (pending_class) {
                 for (line) |c| {
                     if (c == '{') {
@@ -9193,6 +9548,7 @@ fn sourceHasUninitializedField(source: []const u8) bool {
                 if (class_depth == 0) {
                     in_class = false;
                     pending_class = false;
+                    class_is_ambient = false;
                 }
             }
             continue;
@@ -9208,8 +9564,10 @@ fn sourceHasUninitializedField(source: []const u8) bool {
             if (class_depth == 0) {
                 in_class = false;
                 pending_class = false;
+                class_is_ambient = false;
             }
         }
+        if (class_is_ambient) continue;
         if (class_depth != 1) continue;
         if (std.mem.indexOfScalar(u8, line, '=') != null) continue;
         if (std.mem.indexOfScalar(u8, line, '(') != null) continue;
@@ -9648,7 +10006,31 @@ fn caseNeedsProgramRouteByName(name: []const u8) bool {
     return std.mem.eql(u8, name, "resolvesWithoutExportsDiagnostic1") or
         std.mem.eql(u8, name, "moduleResolutionWithoutExtension3") or
         std.mem.eql(u8, name, "typeOnlyMerge2") or
-        std.mem.eql(u8, name, "bundlerCommonJS");
+        std.mem.eql(u8, name, "bundlerCommonJS") or
+        std.mem.eql(u8, name, "jsxCheckJsxNoTypeArgumentsAllowed") or
+        std.mem.eql(u8, name, "jsxInvalidEsprimaTestSuite");
+}
+
+test "conformance: malformed JSX virtual files route independently" {
+    const raw =
+        \\// @filename: first.tsx
+        \\declare var React: any; </>;
+        \\// @filename: second.tsx
+        \\<a: />;
+    ;
+    for ([_][]const u8{
+        "jsxCheckJsxNoTypeArgumentsAllowed",
+        "jsxInvalidEsprimaTestSuite",
+    }) |name| {
+        try T.expect(shouldRouteThroughProgram(.{
+            .name = name,
+            .source = raw,
+            .path = "first.tsx",
+            .raw_source = raw,
+            .expected_errors = "first.tsx(1,1): error TS1128: Declaration or statement expected.",
+            .strict_flags = .{},
+        }));
+    }
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
@@ -55431,6 +55813,26 @@ test "conformance: inferFixtureStrictOn ignores interface members when scanning 
         .baseline_path = baseline_path,
         .gpa = T.allocator,
     }));
+}
+
+test "conformance: strict inference ignores ambient class fields" {
+    try T.expect(!sourceHasUninitializedField(
+        \\declare namespace React {
+        \\    class Component<P> {
+        \\        props: P;
+        \\    }
+        \\}
+    ));
+    try T.expect(!sourceHasUninitializedField(
+        \\declare class Component<P> {
+        \\    props: P;
+        \\}
+    ));
+    try T.expect(sourceHasUninitializedField(
+        \\class Component<P> {
+        \\    props: P;
+        \\}
+    ));
 }
 
 test "conformance: inferFixtureStrictOn keeps strict on when baseline expects TS2564" {

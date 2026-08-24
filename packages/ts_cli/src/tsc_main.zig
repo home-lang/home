@@ -2106,6 +2106,7 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported,
             .exported_value = facts.exported_value,
+            .exported_value_readonly = facts.exported_value_readonly,
             .ambient_const_enum = facts.ambient_const_enum,
             .cannot_be_named = cannot_be_named,
             .type_only_export = type_only_pos != null,

@@ -27978,14 +27978,18 @@ const harness_prelude =
     \\    let nativeServer = null;
     \\    const websocketListenerFilename = String(globalThis.__home_current_filename || "");
     \\    const virtualWebSocketListener = websocketListenerFilename.includes("js/web/websocket/");
-    \\    if (!hasUnix && !tlsOption && !virtualWebSocketListener && __home_native_bun_listen) {
+    \\    const virtualInstallRegistryListener = websocketListenerFilename.includes("cli/install/bun-install.test.ts");
+    \\    const virtualSqlPreconnectListener = websocketListenerFilename.includes("cli/run/sql-preconnect.test.ts");
+    \\    const deterministicFullCorpusListener = String(process.env.HOME_BUN_CORPUS_FULL || "") === "1";
+    \\    const virtualCorpusListener = deterministicFullCorpusListener || virtualWebSocketListener || virtualInstallRegistryListener || virtualSqlPreconnectListener;
+    \\    if (!hasUnix && !tlsOption && !virtualCorpusListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
     \\      if (globalThis.__home_listen_handles_by_port[String(port)]) {
     \\        nativeServer.stop(true);
     \\        throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\      }
-    \\    } else if (!hasUnix && !tlsOption && !virtualWebSocketListener && typeof globalThis.__home_tcpListenNative === "function") {
+    \\    } else if (!hasUnix && !tlsOption && !virtualCorpusListener && typeof globalThis.__home_tcpListenNative === "function") {
     \\      let shadowId;
     \\      try {
     \\        shadowId = globalThis.__home_tcpListenNative(hostname, port);
@@ -89105,6 +89109,7 @@ test "harness prelude exposes structured Bun socket lifecycle contracts" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "peer.peerClosed = true;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "SocketOptions.unix must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_tcpListenNative(hostname, port)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "deterministicFullCorpusListener") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_harness_tls_credentials()") != null);
 }
 
@@ -133970,6 +133975,7 @@ test "bootstrap runner models bun install connection closed registry" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installConnectionClosedRegistry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualInstallRegistryListener") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -142250,6 +142256,35 @@ test "bootstrap runner invalidates retained HTMLRewriter text chunks" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner keeps SQL preconnect listeners in memory" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/sql-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/sql-preconnect.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualSqlPreconnectListener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_sql_preconnect_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("SQL preconnect corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }

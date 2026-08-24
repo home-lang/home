@@ -188,7 +188,7 @@ fn parseLine(line: []const u8) ?Tag {
             if (consumeWordPrefix(&rest, "const")) is_const = true;
         }
         if ((kind == .param_tag or kind == .template_tag) and rest.len > 0 and rest[0] == '[') {
-            const close = std.mem.indexOfScalar(u8, rest, ']') orelse return null;
+            const close = matchingBracketNameClose(rest) orelse return null;
             const inner = rest[1..close];
             optional = true;
             if (std.mem.indexOfScalar(u8, inner, '=')) |eq| {
@@ -241,6 +241,21 @@ fn parseLine(line: []const u8) ?Tag {
         .template_variance = template_variance,
         .is_name_first = is_name_first,
     };
+}
+
+fn matchingBracketNameClose(text: []const u8) ?usize {
+    if (text.len == 0 or text[0] != '[') return null;
+    var depth: usize = 0;
+    for (text, 0..) |c, index| {
+        if (c == '[') {
+            depth += 1;
+        } else if (c == ']') {
+            if (depth == 0) return null;
+            depth -= 1;
+            if (depth == 0) return index;
+        }
+    }
+    return null;
 }
 
 fn applyParamContinuation(tag: *Tag, line: []const u8) void {
@@ -572,6 +587,19 @@ test "jsdoc: @param with bracket-optional name" {
     try T.expectEqualStrings("s", tags[0].name);
     try T.expect(tags[0].optional);
     try T.expectEqualStrings("", tags[0].default_text);
+}
+
+test "jsdoc: bracket-optional array property path uses the outer close" {
+    const body =
+        \\ * @param {string} [opts[].value="fallback"] explanation
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqualStrings("opts[].value", tags[0].name);
+    try T.expectEqualStrings("\"fallback\"", tags[0].default_text);
+    try T.expectEqualStrings("explanation", tags[0].description);
+    try T.expect(tags[0].optional);
 }
 
 test "jsdoc: @param with bracket-default expression" {

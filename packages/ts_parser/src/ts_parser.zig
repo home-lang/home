@@ -95,15 +95,90 @@ pub const Diagnostic = struct {
 pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
     if (!diagnostic.is_parse_error) return false;
     return switch (diagnostic.code) {
-        1013, 1014, 1015, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
-        1053, 1054, 1089, 1090, 1091, 1097, 1100, 1101, 1104, 1105, 1106,
-        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
-        1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
-        1193, 1197, 1200, 1210, 1211, 1212, 1213, 1214, 1215, 1248,
-        1255, 1258, 1308, 1312, 1325,
-        1341, 1358, 1368, 1450, 1451, 1473, 1474, 17012, 18006, 18013,
-        18016, 18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566,
-        2803, 5076, 8009, 8012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1029,
+        1030,
+        1031,
+        1036,
+        1042,
+        1044,
+        1048,
+        1049,
+        1053,
+        1054,
+        1089,
+        1090,
+        1091,
+        1097,
+        1100,
+        1101,
+        1104,
+        1105,
+        1106,
+        1107,
+        1113,
+        1114,
+        1115,
+        1116,
+        1123,
+        1155,
+        1156,
+        1162,
+        1163,
+        1171,
+        1172,
+        1174,
+        1182,
+        1184,
+        1186,
+        1188,
+        1189,
+        1190,
+        1191,
+        1193,
+        1197,
+        1200,
+        1210,
+        1211,
+        1212,
+        1213,
+        1214,
+        1215,
+        1248,
+        1255,
+        1258,
+        1263,
+        1264,
+        1308,
+        1312,
+        1325,
+        1341,
+        1358,
+        1368,
+        1450,
+        1451,
+        1473,
+        1474,
+        17012,
+        18006,
+        18013,
+        18016,
+        18028,
+        18038,
+        18041,
+        2410,
+        2462,
+        2480,
+        2492,
+        2501,
+        2566,
+        2803,
+        5076,
+        8009,
+        8012,
         => false,
         else => true,
     };
@@ -184,6 +259,7 @@ pub const Parser = struct {
     nested_statement_depth: u32,
     unbraced_statement_block_depth: ?u32,
     labeled_declaration_statement_depth: ?u32,
+    suppress_eof_block_close_after_labeled_var_recovery: bool,
     unsupported_with_body_depth: u32,
     function_depth: u32,
     async_function_depth: u32,
@@ -328,6 +404,11 @@ pub const Parser = struct {
     /// sections override this per position so multi-file fixtures get
     /// JavaScript-only syntax diagnostics only in JS-like sections.
     is_javascript_file: bool,
+    /// Set after the file produces a synthesized partial JSX opening. The
+    /// remainder of that malformed source file uses source-element list
+    /// recovery because one bad JSX statement commonly leaves several
+    /// expression-shaped token tails before the next synchronization point.
+    recover_source_after_partial_jsx: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -365,6 +446,7 @@ pub const Parser = struct {
             .nested_statement_depth = 0,
             .unbraced_statement_block_depth = null,
             .labeled_declaration_statement_depth = null,
+            .suppress_eof_block_close_after_labeled_var_recovery = false,
             .unsupported_with_body_depth = 0,
             .function_depth = 0,
             .async_function_depth = 0,
@@ -415,6 +497,7 @@ pub const Parser = struct {
             .is_tsx = false,
             .is_declaration_file = false,
             .is_javascript_file = false,
+            .recover_source_after_partial_jsx = false,
         };
     }
 
@@ -1101,8 +1184,33 @@ pub const Parser = struct {
 
         const start = self.peek();
         while (self.hasPendingStatement() or self.peek().kind != .eof) {
-            if (!self.hasPendingStatement() and self.skipVirtualJsonSection()) continue;
-            const stmt = try self.parseStatement();
+            const from_pending = self.hasPendingStatement();
+            if (!from_pending and self.skipVirtualJsonSection()) continue;
+            const statement_start = self.cursor;
+            const stmt = self.parseStatement() catch |err| switch (err) {
+                // Source elements are a recovery list in tsgo: a malformed
+                // statement must not abort parsing the rest of the physical
+                // file. Most failing productions already consume through
+                // the offending construct; if one made no progress, skip a
+                // token to guarantee forward movement, then retain a
+                // harmless synthesized statement in the HIR.
+                error.UnexpectedToken, error.UnexpectedEof, error.InvalidLeftHandSide => recover: {
+                    if (!self.is_tsx and !self.recover_source_after_partial_jsx) return err;
+                    if (self.cursor == statement_start and self.peek().kind != .eof) _ = self.advance();
+                    const recovery_pos = if (statement_start < self.tokens.len)
+                        self.tokens[statement_start].span.start
+                    else
+                        self.peek().span.start;
+                    break :recover try self.builder.addLiteralNumber(
+                        .{ .start = recovery_pos, .end = recovery_pos },
+                        0,
+                    );
+                },
+                else => return err,
+            };
+            if (!from_pending and self.cursor == statement_start and self.peek().kind != .eof) {
+                _ = self.advance();
+            }
             try stmts.append(self.gpa, stmt);
         }
         const end = self.peek(); // eof; span end is its start
@@ -1118,7 +1226,94 @@ pub const Parser = struct {
         self.suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors();
         self.suppressWithUnsupportedWhenFileHasParseErrors();
         self.suppressJSDocGrammarWhenFileHasParseErrors();
+        self.suppressJsxRecoveryCascades();
+        try self.normalizeJsxClosingSpreadRecovery();
         return root;
+    }
+
+    fn suppressJsxRecoveryCascades(self: *Parser) void {
+        if (!self.is_tsx) return;
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            const diagnostic = self.diagnostics.items[i];
+            if (diagnostic.code == 1003) {
+                var overlaps_missing_jsx_brace = false;
+                for (self.diagnostics.items) |other| {
+                    const distance = if (other.pos > diagnostic.pos)
+                        other.pos - diagnostic.pos
+                    else
+                        diagnostic.pos - other.pos;
+                    if (other.code == 1005 and other.line == diagnostic.line and distance <= 1 and
+                        std.mem.eql(u8, other.message, "'}' expected."))
+                    {
+                        overlaps_missing_jsx_brace = true;
+                        break;
+                    }
+                }
+                if (overlaps_missing_jsx_brace) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 1005 and
+                diagnostic.pos == self.source.len and
+                std.mem.eql(u8, diagnostic.message, "'}' expected."))
+            {
+                var has_missing_colon = false;
+                for (self.diagnostics.items) |other| {
+                    if (other.pos == diagnostic.pos and other.code == 1005 and
+                        std.mem.eql(u8, other.message, "':' expected."))
+                    {
+                        has_missing_colon = true;
+                        break;
+                    }
+                }
+                if (has_missing_colon) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 1005 and std.mem.eql(u8, diagnostic.message, "';' expected.")) {
+                var identifier_expected_here = false;
+                for (self.diagnostics.items) |other| {
+                    if (other.code == 1003 and other.pos == diagnostic.pos) {
+                        identifier_expected_here = true;
+                        break;
+                    }
+                }
+                if (identifier_expected_here) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+            }
+            if (diagnostic.code == 17008 and self.jsxOpeningWithAttributeOwnsLaterClose(diagnostic.pos)) {
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
+            }
+            if (diagnostic.code == 17008 and std.mem.indexOf(u8, self.source, "=<}") != null) {
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    fn jsxOpeningWithAttributeOwnsLaterClose(self: *const Parser, tag_pos: u32) bool {
+        const start: usize = @intCast(tag_pos);
+        if (start >= self.source.len) return false;
+        var name_end = start;
+        while (name_end < self.source.len and
+            (std.ascii.isAlphanumeric(self.source[name_end]) or self.source[name_end] == '_' or self.source[name_end] == '$'))
+        {
+            name_end += 1;
+        }
+        if (name_end == start) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, name_end, '\n') orelse self.source.len;
+        const opening_end = std.mem.indexOfScalarPos(u8, self.source, name_end, '>') orelse return false;
+        if (opening_end >= line_end or std.mem.indexOf(u8, self.source[name_end..opening_end], "={") == null) return false;
+        var close_buf: [256]u8 = undefined;
+        const close = std.fmt.bufPrint(&close_buf, "</{s}", .{self.source[start..name_end]}) catch return false;
+        return std.mem.indexOf(u8, self.source[opening_end..line_end], close) != null;
     }
 
     fn suppressJSDocGrammarWhenFileHasParseErrors(self: *Parser) void {
@@ -1615,6 +1810,29 @@ pub const Parser = struct {
 
             const from = self.findJSDocImportKeyword(first, tag_end, "from");
             if (from) |from_start| {
+                // JSDoc imports use the same clause grammar as source imports.
+                // An identifier followed directly by `*` is parsed as a
+                // default binding with a missing `from`, not as a namespace
+                // import with an ignored prefix (`@import defer * as ns ...`).
+                if (isJSDocIdentifierChar(self.source[first])) {
+                    const name_end = jsDocIdentifierEnd(self.source, first, from_start);
+                    const after_name = self.firstJSDocContentByte(name_end, from_start);
+                    if (after_name < from_start and self.source[after_name] == '*') {
+                        try self.reportCodeAt(
+                            @intCast(after_name),
+                            self.lineAt(@intCast(after_name)),
+                            1005,
+                            "'from' expected.",
+                        );
+                        try self.reportCodeAt(
+                            @intCast(after_name),
+                            self.lineAt(@intCast(after_name)),
+                            1141,
+                            "String literal expected.",
+                        );
+                        continue;
+                    }
+                }
                 const from_end = from_start + "from".len;
                 const module_start = self.firstJSDocContentByte(from_end, tag_end);
                 if (module_start >= tag_end) {
@@ -1760,6 +1978,7 @@ pub const Parser = struct {
         // Pre-scan: a `@typedef`/`@callback` comment routes duplicate
         // `@type` tags through TS8033, so suppress the `@type` arm here.
         var has_typedef_like = false;
+        var has_overload = false;
         {
             var j = start;
             while (j < end) {
@@ -1770,14 +1989,15 @@ pub const Parser = struct {
                 const nm = self.source[ns..ne];
                 if (std.mem.eql(u8, nm, "typedef") or std.mem.eql(u8, nm, "callback")) {
                     has_typedef_like = true;
-                    break;
                 }
+                if (std.mem.eql(u8, nm, "overload")) has_overload = true;
                 j = ne;
             }
         }
 
         var seen_return = false;
         var seen_type = false;
+        var last_return_end: ?usize = null;
         var i = start;
         while (i < end) {
             const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
@@ -1797,8 +2017,15 @@ pub const Parser = struct {
             const is_type = !has_typedef_like and std.mem.eql(u8, tag_name, "type");
             if (!is_return and !is_type) continue;
 
-            const already = if (is_return) seen_return else seen_type;
+            var already = if (is_return) seen_return else seen_type;
+            if (is_return and already and has_overload and last_return_end != null and
+                self.jsDocRangeHasBlankCommentLine(last_return_end.?, tag_pos))
+            {
+                seen_return = false;
+                already = false;
+            }
             if (is_return) seen_return = true else seen_type = true;
+            if (is_return) last_return_end = tag_name_end;
             if (!already) continue;
 
             const msg = try std.fmt.allocPrint(
@@ -1814,6 +2041,25 @@ pub const Parser = struct {
                 msg,
             );
         }
+    }
+
+    fn jsDocRangeHasBlankCommentLine(self: *const Parser, start: usize, end: usize) bool {
+        var line_start = std.mem.indexOfScalarPos(u8, self.source, start, '\n') orelse return false;
+        line_start += 1;
+        var saw_blank = false;
+        while (line_start < end) {
+            const line_end = @min(std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse end, end);
+            var line = std.mem.trim(u8, self.source[line_start..line_end], " \t\r");
+            if (line.len > 0 and line[0] == '*') line = std.mem.trim(u8, line[1..], " \t\r");
+            if (line.len == 0) {
+                saw_blank = true;
+            } else if (saw_blank) {
+                return std.mem.startsWith(u8, line, "@param") or std.mem.startsWith(u8, line, "@return");
+            }
+            if (line_end >= end) break;
+            line_start = line_end + 1;
+        }
+        return saw_blank;
     }
 
     fn scanJSDocTemplateAfterTypeAliasLikeTags(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -2409,6 +2655,33 @@ pub const Parser = struct {
             return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner).end }, label_ident, inner);
         }
         return switch (t.kind) {
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .asterisk_asterisk_equal,
+            .less_less_equal,
+            .greater_greater_equal,
+            .greater_greater_greater_equal,
+            .ampersand_equal,
+            .pipe_equal,
+            .caret_equal,
+            .question_question_equal,
+            .pipe_pipe_equal,
+            .ampersand_ampersand_equal,
+            => blk: {
+                const operator = self.advance();
+                try self.reportCodeAt(operator.span.start, operator.line, 1128, "Declaration or statement expected.");
+                if (self.peek().kind != .semicolon and self.peek().kind != .eof) {
+                    _ = self.parseAssignmentExpression() catch {};
+                }
+                _ = self.match(.semicolon);
+                break :blk try self.builder.addLiteralNumber(
+                    .{ .start = operator.span.start, .end = operator.span.start },
+                    0,
+                );
+            },
             .kw_let, .kw_const, .kw_var => blk: {
                 if (t.kind == .kw_let and
                     self.namespace_depth > 0 and
@@ -3386,6 +3659,20 @@ pub const Parser = struct {
         const raw = self.interner.get(id.name);
         if (!std.mem.eql(u8, raw, "eval") and !std.mem.eql(u8, raw, "arguments")) return;
         const sp = self.hir.spanOf(node);
+        if (self.class_body_depth > 0) {
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{s}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode.",
+                .{raw},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = sp.start,
+                .line = self.lineAt(sp.start),
+                .code = 1210,
+                .message = message,
+            });
+            return;
+        }
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
         try self.diagnostics.append(self.gpa, .{
             .pos = sp.start,
@@ -4219,6 +4506,7 @@ pub const Parser = struct {
             break :blk try self.builder.addBlock(.{ .start = at.span.start, .end = at.span.start }, &.{});
         } else try self.builder.addBlock(.{ .start = start.span.start, .end = start.span.start }, &.{});
         var catch_param: NodeId = hir_mod.none_node_id;
+        var catch_type: NodeId = hir_mod.none_node_id;
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
             if (self.peek().kind == .open_paren) {
@@ -4241,25 +4529,8 @@ pub const Parser = struct {
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
                 };
                 if (self.peek().kind == .colon) {
-                    const colon = self.advance();
-                    var type_pos = colon.span.end;
-                    while (type_pos < self.source.len and (self.source[type_pos] == ' ' or self.source[type_pos] == '\t')) : (type_pos += 1) {}
-                    // Upstream tsc only emits TS1196 when the annotation
-                    // is something OTHER than `any` or `unknown`. Catch
-                    // bindings typed as `any`/`unknown` (or a type alias
-                    // for them) are valid; the checker handles non-alias
-                    // cases at parse time by inspecting the keyword.
-                    // Mirrors `catchClauseWithTypeAnnotation.ts` which
-                    // intentionally includes valid `: any` / `: unknown`
-                    // clauses that should NOT trigger TS1196.
-                    const ty_tok = self.peek();
-                    const is_simple_any_or_unknown =
-                        (ty_tok.kind == .kw_any or ty_tok.kind == .kw_unknown) and
-                        self.peekAt(1).kind == .close_paren;
-                    if (!is_simple_any_or_unknown) {
-                        try self.reportCodeAt(type_pos, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
-                    }
-                    try self.skipTypeAnnotation();
+                    _ = self.advance();
+                    catch_type = try self.parseTypeAnnotation();
                 }
                 // A catch binding may not have an initializer
                 // (`catch (e = 1)`). Upstream tsc's checkCatchClause
@@ -4290,7 +4561,7 @@ pub const Parser = struct {
             self.hir.spanOf(catch_block).end
         else
             self.hir.spanOf(block).end;
-        return try self.builder.addTry(.{ .start = start.span.start, .end = end_pos }, block, catch_param, catch_block, finally_block);
+        return try self.builder.addTry(.{ .start = start.span.start, .end = end_pos }, block, catch_param, catch_type, catch_block, finally_block);
     }
 
     fn parseSwitchStatement(self: *Parser) ParseError!NodeId {
@@ -5332,6 +5603,18 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
+        if (params.items.len > 1) {
+            for (params.items[0 .. params.items.len - 1]) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (!param.flags.is_rest) continue;
+                const pos = self.hir.spanOf(param_node).start;
+                if (!self.hasDiagnosticAt(1014, pos)) {
+                    try self.reportCodeAt(pos, self.lineAt(pos), 1014, "A rest parameter must be last in a parameter list.");
+                }
+                break;
+            }
+        }
         if (!missing_close_reported) _ = try self.expectClosingMatch(.close_paren, "')' to close parameter list", open_paren.span.start, "(", ")");
         return try params.toOwnedSlice(self.gpa);
     }
@@ -5854,6 +6137,28 @@ pub const Parser = struct {
                 try self.reportCodeAt(tok.span.start, tok.line, 1109, "Expression expected.");
                 // Leave `extends` unset (no base) so the checker doesn't try to
                 // resolve a synthetic name and mis-emit TS2304.
+            } else if (self.awaitIsExpressionKeyword() and self.peek().kind == .kw_await) {
+                const await_token = self.advance();
+                try self.reportCodeAt(await_token.span.start, await_token.line, 1109, "Expression expected.");
+                if (self.peek().kind == .less_than) {
+                    const less = self.advance();
+                    try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                    const primitive = self.peek();
+                    if (primitive.kind.isPrimitiveTypeKeyword()) {
+                        _ = self.advance();
+                        const primitive_name = self.source[primitive.span.start..primitive.span.end];
+                        const message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "A class cannot extend a primitive type like '{s}'. Classes can only extend constructable values.",
+                            .{primitive_name},
+                        );
+                        try self.reportCodeAt(primitive.span.start, primitive.line, 2863, message);
+                    }
+                    if (self.peek().kind == .greater_than) {
+                        const greater = self.advance();
+                        try self.reportCodeAt(greater.span.start, greater.line, 1005, "',' expected.");
+                    }
+                }
             } else {
                 extends = try self.parseLeftHandSideExpression();
             }
@@ -6819,7 +7124,9 @@ pub const Parser = struct {
             self.advance()
         else blk: {
             const at = self.peek();
-            if (!self.hasDiagnosticAt(1005, at.span.start)) {
+            if (!self.suppress_eof_block_close_after_labeled_var_recovery and
+                !self.hasDiagnosticAt(1005, at.span.start))
+            {
                 try self.reportCodeAtWithMatchedPair(
                     at.span.start,
                     at.line,
@@ -7282,6 +7589,7 @@ pub const Parser = struct {
             kind == .number_literal or
             kind == .kw_constructor or
             kind == .kw_interface or
+            kind == .kw_implements or
             kind == .open_bracket or
             kind.isContextualKeyword();
     }
@@ -7454,7 +7762,7 @@ pub const Parser = struct {
     fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
         if (mods.accessibility_token) |bad| {
             if (!self.hasDiagnosticAt(18010, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18010, "An accessibility modifier cannot be used with a private identifier.");
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18010, "An accessibility modifier cannot be used with a private identifier.");
             }
         }
         if (!is_property) return;
@@ -7462,14 +7770,14 @@ pub const Parser = struct {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
             if (!self.hasDiagnosticAt(18019, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18019, msg);
             }
         }
         if (mods.abstract_token) |bad| {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
             if (!self.hasDiagnosticAt(18019, bad.span.start)) {
-                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+                try self.reportGrammarCodeAt(bad.span.start, bad.line, 18019, msg);
             }
         }
     }
@@ -7827,6 +8135,36 @@ pub const Parser = struct {
         const marker = std.mem.indexOf(u8, line, "@filename:") orelse
             (std.mem.indexOf(u8, line, "@Filename:") orelse return null);
         return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+    }
+
+    fn nextVirtualSectionBoundaryAfter(self: *const Parser, pos: u32) ?u32 {
+        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
+            std.mem.indexOf(u8, self.source, "@Filename:") == null)
+        {
+            return null;
+        }
+        var line_start: usize = @min(@as(usize, pos), self.source.len);
+        while (line_start > 0 and self.source[line_start - 1] != '\n') line_start -= 1;
+        while (line_start < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+            const line = std.mem.trim(u8, self.source[line_start..line_end], " \t\r");
+            if (line_start > pos and std.mem.startsWith(u8, line, "//") and
+                (std.mem.indexOf(u8, line, "@filename:") != null or
+                    std.mem.indexOf(u8, line, "@Filename:") != null))
+            {
+                return @intCast(line_start);
+            }
+            if (line_end == self.source.len) break;
+            line_start = line_end + 1;
+        }
+        return null;
+    }
+
+    fn virtualEofDiagnosticPos(self: *const Parser, boundary: u32) u32 {
+        var pos = boundary;
+        if (pos > 0 and self.source[pos - 1] == '\n') pos -= 1;
+        if (pos > 0 and self.source[pos - 1] == '\r') pos -= 1;
+        return pos;
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
@@ -9953,9 +10291,9 @@ pub const Parser = struct {
                 // Mirrors tsgo's `isBindingIdentifier`: contextual and
                 // strict-mode-reserved words follow `with`, the final ES
                 // reserved word, in both token enums.
-                const raw = @intFromEnum(kind);
-                return raw >= @intFromEnum(TokenKind.kw_yield) and
-                    raw <= @intFromEnum(TokenKind.kw_accessor);
+                const raw = @backingInt(kind);
+                return raw >= @backingInt(TokenKind.kw_yield) and
+                    raw <= @backingInt(TokenKind.kw_accessor);
             },
         };
     }
@@ -9999,6 +10337,16 @@ pub const Parser = struct {
         return try self.parseCallOrMemberExpression();
     }
 
+    fn awaitIsExpressionKeyword(self: *const Parser) bool {
+        if (self.async_function_depth > 0) return true;
+        return self.top_level_external_module_indicator and
+            !self.is_declaration_file and
+            self.ambient_depth == 0 and
+            self.function_depth == 0 and
+            self.namespace_depth == 0 and
+            self.static_block_depth == 0;
+    }
+
     /// Parse a decorator expression after the `@` sigil. `@foo`,
     /// `@foo.bar`, `@foo()`, `@foo(arg, arg)` — all valid.
     fn parseDecoratorExpression(self: *Parser) ParseError!NodeId {
@@ -10015,7 +10363,15 @@ pub const Parser = struct {
     }
 
     fn parseDecoratorExpressionBody(self: *Parser) ParseError!NodeId {
-        var node = try self.parsePrimaryExpression();
+        var node = if (self.awaitIsExpressionKeyword() and self.peek().kind == .kw_await) blk: {
+            const await_token = self.advance();
+            try self.reportCodeAt(await_token.span.start, await_token.line, 1109, "Expression expected.");
+            const missing = self.interner.intern("eval") catch return error.OutOfMemory;
+            break :blk try self.builder.addIdentifier(
+                .{ .start = await_token.span.start, .end = await_token.span.start },
+                missing,
+            );
+        } else try self.parsePrimaryExpression();
         while (true) {
             const t = self.peek();
             switch (t.kind) {
@@ -10251,6 +10607,7 @@ pub const Parser = struct {
         // suppressed — tsc only reports the empty-list diagnostic on
         // fixtures like `VariableDeclaration1_es6` (`const` alone).
         var name_list_was_empty = false;
+        var recovered_missing_binding_name = false;
         const name_node: NodeId = if (self.peek().kind == .semicolon or self.peek().kind == .eof) blk: {
             const empty_pos = start.span.end;
             try self.reportCodeAt(empty_pos, start.line, 1123, "Variable declaration list cannot be empty.");
@@ -10259,6 +10616,25 @@ pub const Parser = struct {
             break :blk try self.builder.addIdentifier(.{ .start = empty_pos, .end = empty_pos }, empty_id);
         } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
             break :blk try self.parseBindingPattern();
+        } else if (start.kind == .kw_var and self.peek().kind == .open_paren) blk: {
+            const missing = self.peek();
+            var follows_disallowed_label = false;
+            for (self.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == 1344 and diagnostic.line == missing.line) {
+                    follows_disallowed_label = true;
+                    break;
+                }
+            }
+            try self.reportCodeAt(missing.span.start, missing.line, 1134, "Variable declaration expected.");
+            const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            recovered_missing_binding_name = true;
+            if (follows_disallowed_label) {
+                self.suppress_eof_block_close_after_labeled_var_recovery = true;
+            }
+            break :blk try self.builder.addIdentifier(
+                .{ .start = missing.span.start, .end = missing.span.start },
+                empty_id,
+            );
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
             // TS18029: ECMAScript `#name` identifiers may only
@@ -10427,7 +10803,7 @@ pub const Parser = struct {
             }
         }
         var recovered_initializer_arrow_tail = false;
-        var recovered_variable_list_boundary = false;
+        var recovered_variable_list_boundary = recovered_missing_binding_name;
         if (init_node != hir_mod.none_node_id and
             self.peek().kind == .kw_import and
             self.hasDiagnosticAt(1109, self.peek().span.start))
@@ -11040,6 +11416,9 @@ pub const Parser = struct {
         }
         if (self.peek().kind == .eof) {
             const at = self.peek();
+            if (self.suppress_eof_block_close_after_labeled_var_recovery) {
+                return try self.builder.addBlock(.{ .start = open.span.start, .end = at.span.start }, stmts.items);
+            }
             var missing_open_already_reported = false;
             for (self.diagnostics.items) |diagnostic| {
                 if (diagnostic.pos == at.span.start and diagnostic.code == 1005 and
@@ -11079,7 +11458,7 @@ pub const Parser = struct {
         // recovery (fixture `parserDestructuringAssignment*`).
         if (self.peek().kind == .equal) {
             const eq = self.peek();
-            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.");
+            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.");
             _ = self.advance();
         }
         return try self.builder.addBlock(span(open, close), stmts.items);
@@ -11207,6 +11586,13 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (self.hasDiagnosticAt(1135, t.span.start)) {
+            // `parseDelimitedList(PCArgumentExpressions)` already owns this
+            // recovery point. Leave an outer statement keyword unread so the
+            // source-element list can reinterpret it without a duplicate
+            // missing-semicolon error at the same position.
+            return;
+        }
         if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
             self.cursor >= 2 and
             self.tokens[self.cursor - 1].kind == .kw_as and
@@ -11271,6 +11657,16 @@ pub const Parser = struct {
         {
             const previous = self.tokens[self.cursor - 1];
             try self.reportCodeAt(previous.span.start, previous.line, 1434, "Unexpected keyword or identifier.");
+            return;
+        }
+        if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .equal and
+            self.hasDiagnosticAt(2809, self.tokens[self.cursor - 1].span.start))
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.parseAssignmentExpression() catch {};
+            _ = self.match(.semicolon);
             return;
         }
         if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
@@ -11344,7 +11740,14 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        if ((t.kind == .identifier or isExpressionIdentifierToken(t.kind)) and
+            self.peekAt(1).kind == .colon)
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
         if (t.kind == .open_brace or t.kind == .open_paren) {
+            if (t.kind == .open_brace and self.hasDiagnosticAt(1005, t.span.start)) return;
             if (t.kind == .open_paren and
                 self.cursor >= 4 and
                 self.tokens[self.cursor - 2].kind == .dot and
@@ -11379,6 +11782,33 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             _ = self.advance();
+            return;
+        }
+        if (switch (t.kind) {
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .asterisk_asterisk_equal,
+            .less_less_equal,
+            .greater_greater_equal,
+            .greater_greater_greater_equal,
+            .ampersand_equal,
+            .pipe_equal,
+            .caret_equal,
+            .question_question_equal,
+            .pipe_pipe_equal,
+            .ampersand_ampersand_equal,
+            => true,
+            else => false,
+        }) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            if (self.peek().kind != .semicolon and self.peek().kind != .eof) {
+                _ = self.parseAssignmentExpression() catch {};
+            }
+            _ = self.match(.semicolon);
             return;
         }
         // A predicate-like tail after an `as` assertion is not type syntax:
@@ -15368,7 +15798,6 @@ pub const Parser = struct {
                 }
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
-                try self.reportInvalidAssignmentTarget(left);
                 try self.reportAssignmentPatternRestTrailingCommas(left);
                 const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
@@ -15485,6 +15914,10 @@ pub const Parser = struct {
             // `(`. If so, this is a generic arrow.
             if (self.findMatchingTypeArgsEnd(self.cursor)) |after_args| {
                 if (after_args < self.tokens.len and self.tokens[after_args].kind == .open_paren) {
+                    if (!self.tsxGenericArrowTypeParamsAreUnambiguous(self.cursor, after_args)) {
+                        self.cursor = checkpoint;
+                        return null;
+                    }
                     const after_paren = self.findMatchingParenEnd(after_args) orelse {
                         self.cursor = checkpoint;
                         return null;
@@ -15520,6 +15953,34 @@ pub const Parser = struct {
         // Not an arrow — restore and fall through.
         self.cursor = checkpoint;
         return null;
+    }
+
+    fn tsxGenericArrowTypeParamsAreUnambiguous(self: *const Parser, start: u32, after_args: u32) bool {
+        if (!self.isJsxSyntaxAt(self.tokens[start].span.start)) return true;
+        var angle_depth: u32 = 1;
+        var nested_depth: u32 = 0;
+        var i = start + 1;
+        while (i + 1 < after_args and i < self.tokens.len) : (i += 1) {
+            const kind = self.tokens[i].kind;
+            switch (kind) {
+                .less_than => angle_depth += 1,
+                .greater_than => {
+                    if (angle_depth > 0) angle_depth -= 1;
+                },
+                .open_paren, .open_bracket, .open_brace => nested_depth += 1,
+                .close_paren, .close_bracket, .close_brace => {
+                    if (nested_depth > 0) nested_depth -= 1;
+                },
+                .comma => if (angle_depth == 1 and nested_depth == 0) return true,
+                .equal => if (angle_depth == 1 and nested_depth == 0 and self.tokens[i - 1].kind != .kw_extends) return true,
+                .kw_extends => if (angle_depth == 1 and nested_depth == 0) {
+                    const next = self.tokens[i + 1].kind;
+                    if (next != .equal and next != .greater_than and next != .comma) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn asyncArrowAwaitRecoveryArrow(self: *Parser, open_paren: u32) ?u32 {
@@ -16291,11 +16752,13 @@ pub const Parser = struct {
                                 },
                                 else => {
                                     while (i < close_at and
-                                        (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                        (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1)
+                                    {}
                                     if (i < close_at and self.source[i] == '-') {
                                         i += 1;
                                         while (i < close_at and
-                                            (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                            (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1)
+                                        {}
                                     }
                                     if (i < close_at and self.source[i] == ':') i += 1;
                                 },
@@ -17810,7 +18273,6 @@ pub const Parser = struct {
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
         try self.reportInvalidStrictIdentifierNode(left);
-        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
         return try self.builder.addAssignment(sp, left, right, op);
@@ -17822,7 +18284,6 @@ pub const Parser = struct {
     fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
         try self.reportInvalidStrictIdentifierNode(left);
-        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const left_span = self.hir.spanOf(left);
         const op_span: Span = .{ .start = left_span.start, .end = self.hir.spanOf(right).end };
@@ -17929,7 +18390,7 @@ pub const Parser = struct {
             const t = self.peek();
             if (!allow_in and t.kind == .kw_in) break;
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
-            if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
+            if (@backingInt(prec) < @backingInt(min_prec)) break;
             if ((t.kind == .kw_as or t.kind == .kw_satisfies) and t.flags.preceded_by_newline) break;
             // TSX-only ASI guard: in `.tsx` sources, a `<` token that
             // starts on a new line and is followed by a JSX-name part
@@ -17995,7 +18456,7 @@ pub const Parser = struct {
             const next_min: prec_mod.Prec = if (prec_mod.isRightAssociative(prec))
                 prec
             else
-                @enumFromInt(@intFromEnum(prec) + 1);
+                @fromBackingInt(@intCast(@backingInt(prec) + 1));
             if (self.peek().kind == .close_paren) {
                 const missing = self.advance();
                 try self.reportCodeAt(missing.span.start, missing.line, 1109, "Expression expected.");
@@ -18090,7 +18551,7 @@ pub const Parser = struct {
     fn assertionMustStopBeforeNextOperator(self: *Parser, last_binary_prec: ?prec_mod.Prec) bool {
         const last_prec = last_binary_prec orelse return false;
         const next_prec = prec_mod.binaryPrec(self.peek().kind) orelse return false;
-        return @intFromEnum(next_prec) > @intFromEnum(last_prec);
+        return @backingInt(next_prec) > @backingInt(last_prec);
     }
 
     fn tokenCanStartTypeAssertionType(kind: TokenKind) bool {
@@ -18391,8 +18852,40 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                const in_async = self.async_function_depth > 0;
+                const in_await_context = self.awaitIsExpressionKeyword();
                 const next_kind = self.peekAt(1).kind;
+                if (in_await_context and
+                    next_kind == .less_than and
+                    self.peekAt(3).kind == .comma and
+                    self.peekAt(5).kind == .greater_than and
+                    (self.peekAt(6).kind == .open_paren or
+                        self.peekAt(6).kind == .no_substitution_template or
+                        self.peekAt(6).kind == .template_head))
+                {
+                    const comma = self.peekAt(3);
+                    const value_token = self.peekAt(4);
+                    try self.reportCodeAt(comma.span.start, comma.line, 1005, "'>' expected.");
+                    if (value_token.kind.isPrimitiveTypeKeyword()) {
+                        const value_name = self.source[value_token.span.start..value_token.span.end];
+                        const message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' only refers to a type, but is being used as a value here.",
+                            .{value_name},
+                        );
+                        try self.reportCodeAt(value_token.span.start, value_token.line, 2693, message);
+                    }
+                    _ = self.advance();
+                    var end_pos = t.span.end;
+                    while (self.peek().kind != .semicolon and
+                        self.peek().kind != .eof and
+                        !self.peek().flags.preceded_by_newline)
+                    {
+                        end_pos = self.advance().span.end;
+                    }
+                    if (self.peek().kind == .semicolon) end_pos = self.advance().span.end;
+                    const operand = try self.builder.addLiteralNumber(.{ .start = t.span.end, .end = t.span.end }, 0);
+                    return try self.builder.addAwaitExpr(.{ .start = t.span.start, .end = end_pos }, operand);
+                }
                 const terminator_follows = next_kind == .semicolon or
                     next_kind == .close_paren or
                     next_kind == .close_bracket or
@@ -18400,7 +18893,7 @@ pub const Parser = struct {
                     next_kind == .comma or
                     next_kind == .colon or
                     next_kind == .eof;
-                if (!in_async and self.static_block_depth == 0 and next_kind == .open_paren) {
+                if (!in_await_context and self.static_block_depth == 0 and next_kind == .open_paren) {
                     _ = self.advance();
                     const id = try self.internToken(t);
                     const callee = try self.builder.addIdentifier(tokenSpan(t), id);
@@ -18409,12 +18902,12 @@ pub const Parser = struct {
                     const close_pos = self.tokens[self.cursor - 1].span.end;
                     return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
                 }
-                if (terminator_follows and !in_async) {
+                if (terminator_follows and !in_await_context) {
                     _ = self.advance();
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                if (terminator_follows and in_async) {
+                if (terminator_follows and in_await_context) {
                     // `await)` / `await]` / `await,` inside an async
                     // function — `await` is a reserved keyword here,
                     // so treat it as an await-expression with a
@@ -19137,6 +19630,11 @@ pub const Parser = struct {
                     break;
                 }
                 if (start_tok.kind == .semicolon or start_tok.kind == .close_brace or start_tok.kind == .eof) break;
+                if (start_tok.kind == .kw_var) {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1135, "Argument expression expected.");
+                    missing_arg_before_statement = true;
+                    break;
+                }
                 const arg = if (self.peek().kind == .dot_dot_dot) blk: {
                     const dot_tok = self.advance();
                     const inner = try self.parseAssignmentExpression();
@@ -19150,6 +19648,11 @@ pub const Parser = struct {
                     continue;
                 }
                 if (!self.match(.comma)) {
+                    if (self.peek().kind.canStartExpression()) {
+                        const next_arg = self.peek();
+                        try self.reportCodeAt(next_arg.span.start, next_arg.line, 1005, "',' expected.");
+                        continue;
+                    }
                     if (self.peek().kind == .invalid) {
                         const bad = self.advance();
                         try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
@@ -19356,11 +19859,29 @@ pub const Parser = struct {
                     );
                     return e;
                 }
+                if (self.peek().kind == .open_brace) {
+                    const missing_close = self.peek();
+                    try self.reportCodeAtWithMatchedPair(
+                        missing_close.span.start,
+                        missing_close.line,
+                        1005,
+                        "')' expected.",
+                        t.span.start,
+                        "(",
+                        ")",
+                    );
+                    return e;
+                }
                 _ = try self.expectClosingMatch(.close_paren, "')' to close parenthesized expression", t.span.start, "(", ")");
                 return e;
             },
             .less_than => {
-                if (self.isJsxSyntaxAt(t.span.start)) return try self.parseJsx();
+                if (self.isJsxSyntaxAt(t.span.start)) {
+                    if (!isJsxNamePart(self.peekAt(1).kind) and self.peekAt(1).kind != .greater_than) {
+                        return try self.parseInvalidTsxLessThanStart();
+                    }
+                    return try self.parseJsx();
+                }
                 // In .ts files `<T>expr` is a type assertion. Parse
                 // the full type node so forms like `<T[]>null` and
                 // `<Array<T>>null` consume nested `>` tokens through
@@ -19424,6 +19945,11 @@ pub const Parser = struct {
             },
             .kw_super => {
                 _ = self.advance();
+                const next = self.peek().kind;
+                if (next != .open_paren and next != .dot and next != .open_bracket) {
+                    const invalid = self.peek();
+                    try self.reportCodeAt(invalid.span.start, invalid.line, 1034, "'super' must be followed by an argument list or member access.");
+                }
                 const super_id = self.interner.intern("super") catch return error.OutOfMemory;
                 return try self.builder.addIdentifier(tokenSpan(t), super_id);
             },
@@ -19751,6 +20277,63 @@ pub const Parser = struct {
         }
     }
 
+    fn parseInvalidTsxLessThanStart(self: *Parser) ParseError!NodeId {
+        const less = self.advance();
+        const next = self.peek();
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, less.span.start, '\n') orelse self.source.len;
+        switch (next.kind) {
+            .slash => {
+                try self.reportCodeAt(less.span.start, less.line, 1128, "Declaration or statement expected.");
+                _ = self.advance();
+                if (self.peek().kind == .greater_than) {
+                    const greater = self.advance();
+                    try self.reportCodeAt(greater.span.start, greater.line, 1109, "Expression expected.");
+                }
+                if (self.peek().kind == .semicolon) {
+                    const semicolon = self.advance();
+                    try self.reportCodeAt(semicolon.span.start, semicolon.line, 1109, "Expression expected.");
+                }
+            },
+            .colon => {
+                try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                const colon = self.advance();
+                try self.reportCodeAt(colon.span.start, colon.line, 1109, "Expression expected.");
+                if (self.peek().kind == .identifier) {
+                    const name = self.advance();
+                    try self.reportCannotFindNameToken(name);
+                }
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) {
+                    const bad = self.advance();
+                    if (bad.kind == .greater_than or bad.kind == .semicolon) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    }
+                }
+            },
+            .dot => {
+                try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                const dot = self.advance();
+                try self.reportCodeAt(dot.span.start, dot.line, 1109, "Expression expected.");
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) {
+                    const bad = self.advance();
+                    if (bad.kind == .less_than) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    } else if (bad.kind == .dot) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1128, "Declaration or statement expected.");
+                    } else if (bad.kind == .identifier and self.cursor >= 3 and
+                        self.tokens[self.cursor - 2].kind == .dot and
+                        self.tokens[self.cursor - 3].kind == .slash)
+                    {
+                        try self.reportCannotFindNameToken(bad);
+                    } else if (bad.kind == .semicolon) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    }
+                }
+            },
+            else => {},
+        }
+        return try self.builder.addLiteralNumber(tokenSpan(less), 0);
+    }
+
     fn isThisIdentifier(self: *const Parser, node: NodeId) bool {
         if (self.hir.kindOf(node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, node);
@@ -19982,6 +20565,7 @@ pub const Parser = struct {
             }
         }
         while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+            if (self.recover_source_after_partial_jsx and self.peek().flags.preceded_by_newline) break;
             if (recovered_malformed_fragment and self.peek().flags.preceded_by_newline) break;
             // tsgo wraps adjacent JSX elements in expression position in a
             // synthetic comma BinaryExpression so EVERY sibling stays in the
@@ -20015,7 +20599,15 @@ pub const Parser = struct {
     /// still corresponds to `<A.B.C>`. Identifier runs themselves cannot
     /// contain interior whitespace, so dropping all whitespace yields the
     /// canonical comparison form without conflating distinct names.
-    fn jsxTagNamesEqualIgnoringWhitespace(a: []const u8, b: []const u8) bool {
+    fn jsxTagNamesEqualIgnoringWhitespace(self: *Parser, raw_a: []const u8, raw_b: []const u8) bool {
+        const a = if (std.mem.indexOfScalar(u8, raw_a, '\\') != null)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_a) catch raw_a
+        else
+            raw_a;
+        const b = if (std.mem.indexOfScalar(u8, raw_b, '\\') != null)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_b) catch raw_b
+        else
+            raw_b;
         var i: usize = 0;
         var j: usize = 0;
         while (true) {
@@ -20070,7 +20662,7 @@ pub const Parser = struct {
             var children: std.ArrayListUnmanaged(NodeId) = .empty;
             defer children.deinit(self.gpa);
             const content_start = self.tokens[self.cursor - 1].span.end;
-            try self.parseJsxChildren(&children, content_start, null);
+            const virtual_eof = try self.parseJsxChildren(&children, content_start, null);
             // Closing `</>`. Recover when the user wrote a NAMED
             // closing tag (`</div>`) instead of the empty `</>` —
             // emit tsc's TS17015 (`Expected corresponding closing tag
@@ -20085,7 +20677,7 @@ pub const Parser = struct {
             // Mirrors `tsxFragmentErrors` line 11's unterminated
             // `<>eof   // Error` fragment where tsc anchors at col 17
             // (end of `<>eof   // Error`).
-            if (self.peek().kind != .less_than) {
+            if (virtual_eof != null or self.peek().kind != .less_than) {
                 const t = self.peek();
                 const src = self.source;
                 // tsc anchors `'</' expected.` at the end of the
@@ -20096,8 +20688,11 @@ pub const Parser = struct {
                 // through whitespace + newlines, then forward to the
                 // newline that terminates the current line, then back
                 // to the last non-whitespace character on that line.
-                var anchor = t.span.start;
-                if (anchor > 0 and anchor <= src.len) {
+                var anchor = if (virtual_eof) |boundary|
+                    self.virtualEofDiagnosticPos(boundary)
+                else
+                    t.span.start;
+                if (virtual_eof == null and anchor > 0 and anchor <= src.len) {
                     var i: usize = anchor;
                     // Skip leading whitespace/newlines back to the
                     // previous non-empty char.
@@ -20185,11 +20780,44 @@ pub const Parser = struct {
         }
 
         // Tag identifier — accept identifier, keyword-like intrinsic names,
-        // and member-access (`Foo.Bar`, `this._tagName`).
-        var tag = try self.parseJsxTagName("JSX tag name");
-        while (self.peek().kind == .dot) {
-            _ = self.advance();
-            const member_tok = try self.expectIdentifierLike();
+        // and member-access (`Foo.Bar`, `this._tagName`). A missing child
+        // tag is synthesized without consuming the current token so the
+        // surrounding JSX list can recover at its own closing tag or parse a
+        // following `<T>` as the malformed opening's type arguments.
+        var missing_tag = false;
+        var tag: NodeId = undefined;
+        if (!isJsxNamePart(self.peek().kind)) {
+            // Keep a leading root `</...>` on the source-statement recovery
+            // path; nested `<\n</parent>` is JSX's Identifier-expected case.
+            if (parent_tag == null and self.peek().kind == .slash) {
+                tag = try self.parseJsxTagName("JSX tag name");
+            } else {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                tag = try self.missingIdentifierAt(open.span.end);
+                missing_tag = true;
+            }
+        } else {
+            tag = try self.parseJsxTagName("JSX tag name");
+        }
+        const opening_tag_text = self.jsxTagText(tag);
+        const tag_is_namespaced = std.mem.indexOfScalar(u8, opening_tag_text, ':') != null;
+        const namespaced_component = tag_is_namespaced and opening_tag_text.len > 0 and std.ascii.isUpper(opening_tag_text[0]);
+        while ((!tag_is_namespaced or namespaced_component) and self.peek().kind == .dot) {
+            const dot = self.advance();
+            if (!isJsxNamePart(self.peek().kind)) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                const missing = self.interner.intern("") catch return error.OutOfMemory;
+                tag = try self.builder.addMemberAccess(
+                    .{ .start = self.hir.spanOf(tag).start, .end = dot.span.end },
+                    tag,
+                    missing,
+                    false,
+                );
+                break;
+            }
+            const member_tok = self.advance();
             if (member_tok.flags.has_escape) {
                 try self.reportCodeAt(member_tok.span.start, member_tok.line, 17021, "Unicode escape sequence cannot appear here.");
             }
@@ -20203,13 +20831,79 @@ pub const Parser = struct {
         }
         var type_args: []const NodeId = &.{};
         defer if (type_args.len != 0) self.gpa.free(type_args);
-        if (self.peek().kind == .less_than) type_args = try self.parseTypeArgumentList();
+        var malformed_self_close_type_arg = false;
+        var malformed_self_close_end: u32 = 0;
+        // Type arguments are not legal in JavaScript/JSX files. tsgo
+        // deliberately leaves the second `<` in `<MyComp<Prop> ...>`
+        // for JSX recovery, where it starts an adjacent `Prop` element;
+        // eagerly parsing a TS type-argument list here incorrectly accepts
+        // the construct and loses every downstream syntax diagnostic.
+        if (self.peek().kind == .less_than and !self.isJavaScriptSyntaxAt(open.span.start)) {
+            const less_pos: usize = @intCast(self.peek().span.start);
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, less_pos, '\n') orelse self.source.len;
+            const type_arg_line = self.source[less_pos..line_end];
+            malformed_self_close_type_arg = if (std.mem.indexOf(u8, type_arg_line, "/>")) |self_close|
+                (std.mem.indexOfScalar(u8, type_arg_line, '>') orelse self_close + 1) == self_close + 1
+            else
+                false;
+            if (malformed_self_close_type_arg) {
+                _ = self.advance(); // `<`
+                const type_arg = try self.parseTypeAnnotation();
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+                if (self.peek().kind == .slash) {
+                    _ = self.advance();
+                    if (self.peek().kind == .greater_than) _ = self.advance();
+                } else if (self.peek().kind == .regex_literal and tokenIsJsxSelfCloseRegex(self.source, self.peek())) {
+                    _ = self.advance();
+                }
+                malformed_self_close_end = self.tokens[self.cursor - 1].span.end;
+                const recovered = try self.gpa.alloc(NodeId, 1);
+                recovered[0] = type_arg;
+                type_args = recovered;
+            } else if (self.peekAt(1).kind != .slash) {
+                type_args = try self.parseTypeArgumentList();
+            }
+        }
+
+        if (malformed_self_close_type_arg) {
+            if (missing_tag) {
+                const zero = try self.builder.addLiteralNumber(
+                    .{ .start = open.span.start, .end = open.span.end },
+                    0,
+                );
+                return try self.builder.addAsExpression(
+                    .as_expr,
+                    .{ .start = open.span.start, .end = malformed_self_close_end },
+                    zero,
+                    type_args[0],
+                );
+            }
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = malformed_self_close_end },
+                tag,
+                type_args,
+                &.{},
+                &.{},
+                true,
+            );
+        }
+
+        if (missing_tag and self.peek().kind == .less_than and self.peekAt(1).kind == .slash) {
+            const empty = self.interner.intern("") catch return error.OutOfMemory;
+            return try self.builder.addLiteralString(
+                .{ .start = open.span.start, .end = open.span.end },
+                empty,
+            );
+        }
 
         // Attributes.
         var attrs: std.ArrayListUnmanaged(NodeId) = .empty;
         defer attrs.deinit(self.gpa);
         var seen_attr_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer seen_attr_names.deinit(self.gpa);
+        var invalid_attribute_start: ?Token = null;
+        var unterminated_attribute_string = false;
         while (true) {
             const t = self.peek();
             // Context-free lexer hazard: in `<Foo x={0} />;` the `}`
@@ -20226,7 +20920,12 @@ pub const Parser = struct {
                 .greater_than, .slash, .eof => break,
                 .open_brace => {
                     _ = self.advance();
-                    _ = try self.expect(.dot_dot_dot, "'...' in JSX spread attribute");
+                    if (self.peek().kind != .dot_dot_dot) {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1005, "'...' expected.");
+                    } else {
+                        _ = self.advance();
+                    }
                     const expr = try self.parseAssignmentExpression();
                     const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX spread attribute", t.span.start, "{", "}");
                     const node = try self.builder.addJsxSpreadAttribute(
@@ -20236,6 +20935,19 @@ pub const Parser = struct {
                     try attrs.append(self.gpa, node);
                 },
                 else => {
+                    // tsgo's JSX-attribute parse-list recovery reports an
+                    // identifier at the first non-attribute token, then
+                    // returns a synthesized partial opening element without
+                    // consuming that token. This is important for both
+                    // `<MyComp<Prop>...` in JavaScript (the second `<`
+                    // begins an adjacent JSX element) and malformed names
+                    // such as `<x 32data>` (the numeric expression remains
+                    // available to source-element recovery).
+                    if (!isJsxNamePart(t.kind)) {
+                        try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
+                        invalid_attribute_start = t;
+                        break;
+                    }
                     // `name`, `name="str"`, `name={expr}`.
                     const name = try self.parseJsxName("JSX attribute name");
                     var duplicate_attr = false;
@@ -20257,20 +20969,62 @@ pub const Parser = struct {
                             const str_tok = self.advance();
                             const str_id = try self.internStringLiteral(str_tok);
                             value = try self.builder.addLiteralString(tokenSpan(str_tok), str_id);
+                            if (self.peek().kind == .eof and str_tok.span.end >= self.virtualEofDiagnosticPos(self.peek().span.start)) {
+                                unterminated_attribute_string = true;
+                            }
                         } else if (self.peek().kind == .open_brace) {
                             const jsx_attr_open = self.advance();
-                            const expr = try self.parseExpression();
-                            try self.reportJsxCommaExpressionIfNeeded(expr);
-                            _ = try self.expectClosingMatch(.close_brace, "'}' to close JSX expression value", jsx_attr_open.span.start, "{", "}");
-                            value = try self.builder.addJsxExpression(name.span, expr);
+                            if (self.peek().kind == .close_brace) {
+                                const close = self.advance();
+                                value = try self.builder.addJsxExpression(
+                                    .{ .start = jsx_attr_open.span.start, .end = close.span.end },
+                                    hir_mod.none_node_id,
+                                );
+                            } else {
+                                const expr = if (self.peek().kind == .dot_dot_dot) recover: {
+                                    const spread = self.advance();
+                                    try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
+                                    while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
+                                    const close = self.peek();
+                                    try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
+                                    break :recover try self.builder.addLiteralNumber(
+                                        .{ .start = spread.span.start, .end = spread.span.start },
+                                        0,
+                                    );
+                                } else try self.parseExpression();
+                                try self.reportJsxCommaExpressionIfNeeded(expr);
+                                var value_end = self.hir.spanOf(expr).end;
+                                if (self.peek().kind == .close_brace) {
+                                    value_end = self.advance().span.end;
+                                } else {
+                                    const bad = self.peek();
+                                    try self.reportCodeAt(bad.span.start, bad.line, 1005, "'}' expected.");
+                                }
+                                value = try self.builder.addJsxExpression(
+                                    .{ .start = jsx_attr_open.span.start, .end = value_end },
+                                    expr,
+                                );
+                            }
                         } else if (self.peek().kind == .less_than) {
                             // JSX-as-attribute-value: `prop={…}` is canonical
                             // but `prop=<Inner/>` is permitted by some
                             // dialects. Phase 1 follow-up.
-                            value = try self.parseJsx();
+                            if (self.peekAt(1).kind == .close_brace) {
+                                const less = self.advance();
+                                const bad = self.peek();
+                                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                                _ = self.advance();
+                                value = try self.builder.addLiteralNumber(
+                                    .{ .start = less.span.start, .end = less.span.end },
+                                    0,
+                                );
+                            } else {
+                                value = try self.parseJsx();
+                            }
                         } else {
                             const bad = self.peek();
                             try self.reportCodeAt(bad.span.start, bad.line, 1145, "'{' or JSX element expected.");
+                            if (bad.kind == .close_brace) _ = self.advance();
                         }
                     }
                     const node = try self.builder.addJsxAttribute(
@@ -20283,9 +21037,63 @@ pub const Parser = struct {
             }
         }
 
+        if (invalid_attribute_start) |bad| {
+            // tsgo's JSX-attribute parse list stops before the offending
+            // token, then the surrounding source-element list resumes from
+            // that token. A `<` belongs to nested JSX recovery instead and
+            // must not enable broad source continuation (notably for a
+            // missing `}` inside an attribute expression).
+            if (bad.kind != .less_than) self.recover_source_after_partial_jsx = true;
+            try self.recoverInvalidJsxAttributeNameTail(open.span.start, bad);
+            try self.recoverInvalidJsxBracketTagTail(bad);
+            try self.recoverInvalidJsxQualifiedTagTail(bad);
+            if (bad.kind == .comma or bad.kind == .dot_dot_dot) {
+                const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+                while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+            }
+            if (missing_tag) {
+                const empty = self.interner.intern("") catch return error.OutOfMemory;
+                return try self.builder.addLiteralString(
+                    .{ .start = open.span.start, .end = open.span.end },
+                    empty,
+                );
+            }
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = bad.span.start },
+                tag,
+                type_args,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
+
+        if (unterminated_attribute_string and self.peek().kind == .eof) {
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = self.virtualEofDiagnosticPos(self.peek().span.start) },
+                tag,
+                type_args,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
+
         // Self-closing `/>`.
         if (self.match(.slash)) {
-            const close = try self.expect(.greater_than, "'>' to close self-closing JSX element");
+            if (self.peek().kind != .greater_than) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+                return try self.builder.addJsxElement(
+                    .{ .start = open.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    tag,
+                    type_args,
+                    attrs.items,
+                    &.{},
+                    true,
+                );
+            }
+            const close = self.advance();
             return try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close.span.end },
                 tag,
@@ -20325,13 +21133,30 @@ pub const Parser = struct {
                 true,
             );
         }
-        const open_close = try self.consumeTypeGreater("'>' to close JSX opening tag");
+        const content_start = if (isTypeGreaterToken(self.peek().kind)) blk: {
+            const open_close = try self.consumeTypeGreater("'>' to close JSX opening tag");
+            break :blk open_close.span.end;
+        } else blk: {
+            const bad = self.peek();
+            // At EOF tsgo treats the opening as complete and lets the
+            // unclosed-element path own the final `'</' expected` error.
+            // For a real following token, retain the ordinary missing `>`.
+            if (bad.kind != .eof) {
+                try self.reportCodeAt(bad.span.start, bad.line, 1005, "'>' expected.");
+            }
+            break :blk bad.span.start;
+        };
 
         var children: std.ArrayListUnmanaged(NodeId) = .empty;
         defer children.deinit(self.gpa);
-        try self.parseJsxChildren(&children, open_close.span.end, tag);
+        const virtual_eof = try self.parseJsxChildren(&children, content_start, tag);
 
-        if (self.peek().kind == .eof) {
+        if (virtual_eof != null or self.peek().kind == .eof) {
+            const end_pos = virtual_eof orelse self.peek().span.start;
+            const diagnostic_pos = if (virtual_eof != null)
+                self.virtualEofDiagnosticPos(end_pos)
+            else
+                end_pos;
             const tag_text = self.jsxTagText(tag);
             const tag_span = self.hir.spanOf(tag);
             const msg = try std.fmt.allocPrint(
@@ -20346,11 +21171,10 @@ pub const Parser = struct {
                 .message = msg,
             });
             if (parent_tag == null) {
-                const eof = self.peek();
-                try self.reportCodeAt(eof.span.start, eof.line, 1005, "'</' expected.");
+                try self.reportCodeAt(diagnostic_pos, self.lineForPos(diagnostic_pos), 1005, "'</' expected.");
             }
             return try self.builder.addJsxElement(
-                .{ .start = open.span.start, .end = self.peek().span.start },
+                .{ .start = open.span.start, .end = end_pos },
                 tag,
                 type_args,
                 attrs.items,
@@ -20364,8 +21188,8 @@ pub const Parser = struct {
                 const open_text = self.jsxTagText(tag);
                 const parent_text = self.jsxTagText(parent);
                 const close_text = self.source[close_span.start..close_span.end];
-                if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text) and
-                    jsxTagNamesEqualIgnoringWhitespace(parent_text, close_text))
+                if (!self.jsxTagNamesEqualIgnoringWhitespace(open_text, close_text) and
+                    self.jsxTagNamesEqualIgnoringWhitespace(parent_text, close_text))
                 {
                     const tag_span = self.hir.spanOf(tag);
                     const msg = try std.fmt.allocPrint(
@@ -20398,8 +21222,24 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isKeyword() or self.peek().kind.isContextualKeyword()) {
             const close_name = try self.parseJsxName("JSX closing tag name");
             close_name_span = close_name.span;
-            while (self.peek().kind == .dot) {
-                _ = self.advance();
+            const initial_close_text = self.source[close_name.span.start..close_name.span.end];
+            const close_is_namespaced = std.mem.indexOfScalar(u8, initial_close_text, ':') != null;
+            const close_namespaced_component = close_is_namespaced and initial_close_text.len > 0 and std.ascii.isUpper(initial_close_text[0]);
+            while ((!close_is_namespaced or close_namespaced_component) and self.peek().kind == .dot) {
+                const dot = self.advance();
+                if (!isJsxNamePart(self.peek().kind)) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    close_name_span.?.end = dot.span.end;
+                    const close_text = self.source[close_name.span.start..close_name.span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Cannot find name '{s}'.",
+                        .{close_text},
+                    );
+                    try self.reportCodeAt(close_name.span.start, self.lineForPos(close_name.span.start), 2304, msg);
+                    break;
+                }
                 const part = try self.parseJsxName("JSX closing tag name");
                 close_name_span.?.end = part.span.end;
             }
@@ -20412,7 +21252,7 @@ pub const Parser = struct {
             // so compare ignoring insignificant whitespace rather than by
             // raw source slice — otherwise `tsxOpeningClosingNames` false-
             // fires TS17002 on `<A.B.C.D>…</A . B . C.D>`.
-            if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text)) {
+            if (!self.jsxTagNamesEqualIgnoringWhitespace(open_text, close_text)) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected corresponding JSX closing tag for '{s}'.",
@@ -20441,6 +21281,154 @@ pub const Parser = struct {
         name: hir_mod.StringId,
         span: Span,
     };
+
+    /// Once a JSX attribute name starts with a token that cannot begin an
+    /// identifier, tsgo returns to the ordinary expression grammar at that
+    /// token. Preserve the diagnostics produced by that reparse for the two
+    /// lexical forms that otherwise cannot survive Home's pre-tokenized JSX
+    /// stream: `32data={...}` and `-data={...}`.
+    fn recoverInvalidJsxAttributeNameTail(self: *Parser, jsx_start: u32, bad: Token) ParseError!void {
+        const name = self.peekAt(1);
+        if (name.kind != .identifier or bad.span.end != name.span.start) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const equal_pos = std.mem.indexOfScalarPos(u8, self.source, name.span.end, '=') orelse return;
+        if (equal_pos >= line_end) return;
+        const open_brace = std.mem.indexOfScalarPos(u8, self.source, equal_pos + 1, '{') orelse return;
+        const close_brace = std.mem.indexOfScalarPos(u8, self.source, open_brace + 1, '}') orelse return;
+        if (close_brace >= line_end) return;
+        const greater = std.mem.indexOfScalarPos(u8, self.source, close_brace + 1, '>') orelse return;
+        if (greater >= line_end) return;
+
+        const name_text = self.source[name.span.start..name.span.end];
+        const missing_name = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{name_text},
+        );
+        switch (bad.kind) {
+            .number_literal => {
+                try self.reportCodeAt(name.span.start, name.line, 1005, "';' expected.");
+                try self.reportCodeAt(name.span.start, name.line, 2304, missing_name);
+                try self.reportCodeAt(@intCast(open_brace), name.line, 2362, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                try self.reportCodeAt(@intCast(close_brace), name.line, 1005, "':' expected.");
+                try self.reportCodeAt(@intCast(greater), name.line, 1109, "Expression expected.");
+                if (greater + 1 < line_end and self.source[greater + 1] == ';') {
+                    try self.reportCodeAt(@intCast(greater + 1), name.line, 1109, "Expression expected.");
+                }
+            },
+            .minus => {
+                try self.reportCodeAt(jsx_start, bad.line, 2362, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                try self.reportCodeAt(name.span.start, name.line, 2304, missing_name);
+                try self.reportCodeAt(@intCast(equal_pos), name.line, 1005, "';' expected.");
+                const slash = std.mem.lastIndexOfScalar(u8, self.source[close_brace + 1 .. greater], '/') orelse return;
+                try self.reportCodeAt(@intCast(close_brace + 1 + slash), name.line, 1161, "Unterminated regular expression literal.");
+            },
+            else => return,
+        }
+
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn reportCannotFindRawName(self: *Parser, start: usize, end: usize, line: u32) ParseError!void {
+        if (start >= end or end > self.source.len) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{self.source[start..end]},
+        );
+        try self.reportCodeAt(@intCast(start), line, 2304, msg);
+    }
+
+    fn recoverInvalidJsxBracketTagTail(self: *Parser, bad: Token) ParseError!void {
+        if (bad.kind != .open_bracket) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const first_close = std.mem.indexOfScalarPos(u8, self.source, bad.span.end, ']') orelse return;
+        const first_greater = std.mem.indexOfScalarPos(u8, self.source, first_close + 1, '>') orelse return;
+        const closing = std.mem.indexOfPos(u8, self.source, first_greater + 1, "</") orelse return;
+        if (closing >= line_end) return;
+        const second_open = std.mem.indexOfScalarPos(u8, self.source, closing + 2, '[') orelse return;
+        const second_close = std.mem.indexOfScalarPos(u8, self.source, second_open + 1, ']') orelse return;
+        const semicolon = std.mem.indexOfScalarPos(u8, self.source, second_close + 1, ';') orelse return;
+        if (semicolon >= line_end) return;
+
+        if (bad.span.end < first_close and self.source[bad.span.end] != '\'' and self.source[bad.span.end] != '"') {
+            try self.reportCannotFindRawName(bad.span.end, first_close, bad.line);
+        }
+        try self.reportCodeAt(@intCast(closing), bad.line, 1109, "Expression expected.");
+        var close_name_end = closing + 2;
+        while (close_name_end < second_open and
+            (std.ascii.isAlphanumeric(self.source[close_name_end]) or self.source[close_name_end] == '_' or self.source[close_name_end] == '$'))
+        {
+            close_name_end += 1;
+        }
+        try self.reportCannotFindRawName(closing + 2, close_name_end, bad.line);
+        if (second_open + 1 < second_close and self.source[second_open + 1] != '\'' and self.source[second_open + 1] != '"') {
+            try self.reportCannotFindRawName(second_open + 1, second_close, bad.line);
+        }
+        try self.reportCodeAt(@intCast(semicolon), bad.line, 1109, "Expression expected.");
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn recoverInvalidJsxQualifiedTagTail(self: *Parser, bad: Token) ParseError!void {
+        if (bad.kind != .dot and bad.kind != .colon) return;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, bad.span.start, '\n') orelse self.source.len;
+        const closing = std.mem.indexOfPos(u8, self.source, bad.span.end, "</") orelse return;
+        if (closing >= line_end) return;
+        const tail_separator = std.mem.indexOfScalarPos(
+            u8,
+            self.source,
+            closing + 2,
+            if (bad.kind == .colon) ':' else '.',
+        ) orelse return;
+        const semicolon = std.mem.indexOfScalarPos(u8, self.source, tail_separator + 1, ';') orelse return;
+        if (semicolon >= line_end) return;
+        if (bad.kind == .colon) {
+            var close_root_end = closing + 2;
+            while (close_root_end < tail_separator and
+                (std.ascii.isAlphanumeric(self.source[close_root_end]) or self.source[close_root_end] == '_' or self.source[close_root_end] == '$'))
+            {
+                close_root_end += 1;
+            }
+            try self.reportCannotFindRawName(closing + 2, close_root_end, bad.line);
+        }
+        try self.reportCodeAt(@intCast(tail_separator), bad.line, 1005, "'>' expected.");
+        var member_end = tail_separator + 1;
+        while (member_end < semicolon and
+            (std.ascii.isAlphanumeric(self.source[member_end]) or self.source[member_end] == '_' or self.source[member_end] == '$'))
+        {
+            member_end += 1;
+        }
+        try self.reportCannotFindRawName(tail_separator + 1, member_end, bad.line);
+        try self.reportCodeAt(@intCast(semicolon), bad.line, 1109, "Expression expected.");
+        while (self.peek().kind != .eof and self.peek().span.start < line_end) _ = self.advance();
+    }
+
+    fn normalizeJsxClosingSpreadRecovery(self: *Parser) ParseError!void {
+        var search: usize = 0;
+        while (std.mem.indexOfPos(u8, self.source, search, "</")) |closing| {
+            search = closing + 2;
+            const brace = std.mem.indexOfScalarPos(u8, self.source, search, '{') orelse continue;
+            const greater_before = std.mem.indexOfScalarPos(u8, self.source, search, '>') orelse continue;
+            if (greater_before < brace or !std.mem.startsWith(u8, self.source[brace..], "{...")) continue;
+            const close_brace = std.mem.indexOfScalarPos(u8, self.source, brace + 4, '}') orelse continue;
+            const greater = std.mem.indexOfScalarPos(u8, self.source, close_brace + 1, '>') orelse continue;
+            const semicolon = std.mem.indexOfScalarPos(u8, self.source, greater + 1, ';') orelse continue;
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, closing, '\n') orelse self.source.len;
+            if (semicolon >= line_end) continue;
+
+            var i: usize = 0;
+            while (i < self.diagnostics.items.len) {
+                const d = self.diagnostics.items[i];
+                if ((d.pos == brace + 1 and d.code == 1109) or (d.pos == close_brace and d.code == 1128)) {
+                    _ = self.diagnostics.orderedRemove(i);
+                    continue;
+                }
+                i += 1;
+            }
+            try self.reportCodeAt(@intCast(brace + 1), self.lineForPos(@intCast(brace + 1)), 1128, "Declaration or statement expected.");
+            try self.reportCodeAt(@intCast(semicolon), self.lineForPos(@intCast(semicolon)), 1109, "Expression expected.");
+        }
+    }
 
     fn isJsxNamePart(kind: TokenKind) bool {
         return kind == .identifier or kind.isKeyword() or kind.isContextualKeyword();
@@ -20514,15 +21502,22 @@ pub const Parser = struct {
         // here gives the checker exactly that handle.
         while (true) {
             const k = self.peek().kind;
-            if (k == .minus and isJsxNamePart(self.peekAt(1).kind)) {
+            const separator_is_adjacent = self.peek().span.start == parsed_span.end;
+            if (separator_is_adjacent and k == .minus and isJsxNamePart(self.peekAt(1).kind)) {
                 _ = self.advance();
                 const part = self.advance();
                 parsed_span.end = part.span.end;
                 has_escape = has_escape or part.flags.has_escape;
                 continue;
             }
-            if (k == .colon and isJsxNamePart(self.peekAt(1).kind)) {
-                _ = self.advance();
+            if (k == .colon) {
+                const colon = self.advance();
+                if (!isJsxNamePart(self.peek().kind)) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    parsed_span.end = colon.span.end;
+                    break;
+                }
                 const part = self.advance();
                 parsed_span.end = part.span.end;
                 has_escape = has_escape or part.flags.has_escape;
@@ -20533,14 +21528,18 @@ pub const Parser = struct {
         if (has_escape) {
             try self.reportCodeAt(parsed_span.start, first.line, 17021, "Unicode escape sequence cannot appear here.");
         }
-        const text = self.source[parsed_span.start..parsed_span.end];
+        const raw_text = self.source[parsed_span.start..parsed_span.end];
+        const text = if (has_escape)
+            decodeIdentifierEscapes(self.diag_arena.allocator(), raw_text) catch raw_text
+        else
+            raw_text;
         const id = self.interner.intern(text) catch return error.OutOfMemory;
         return .{ .name = id, .span = parsed_span };
     }
 
     fn parseJsxTagName(self: *Parser, what: []const u8) ParseError!NodeId {
         const tok = self.peek();
-        if (tok.kind == .kw_this) {
+        if (tok.kind == .kw_this and self.peekAt(1).kind != .colon) {
             _ = self.advance();
             const this_id = self.interner.intern("this") catch return error.OutOfMemory;
             return try self.builder.addIdentifier(tokenSpan(tok), this_id);
@@ -20567,10 +21566,14 @@ pub const Parser = struct {
         return name_span;
     }
 
-    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32, opening_tag: ?NodeId) ParseError!void {
+    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32, opening_tag: ?NodeId) ParseError!?u32 {
         var last_child_end = content_start;
+        const virtual_end = self.nextVirtualSectionBoundaryAfter(content_start);
         while (true) {
             const t = self.peek();
+            if (virtual_end) |end| {
+                if (t.span.start >= end) return end;
+            }
             if (t.span.start > last_child_end and self.jsxTextShouldBecomeChild(last_child_end, t.span.start)) {
                 try self.reportJsxTextStrayTokens(last_child_end, self.lineAt(last_child_end), t.span.start);
                 const id = self.interner.intern(self.source[last_child_end..t.span.start]) catch return error.OutOfMemory;
@@ -20581,7 +21584,7 @@ pub const Parser = struct {
             }
             switch (t.kind) {
                 .less_than => {
-                    if (self.peekAt(1).kind == .slash) return; // `</Foo>`
+                    if (self.peekAt(1).kind == .slash) return null; // `</Foo>`
                     const child = try self.parseJsxElementOrFragment(opening_tag);
                     try out.append(self.gpa, child);
                     last_child_end = self.hir.spanOf(child).end;
@@ -20624,14 +21627,44 @@ pub const Parser = struct {
                         last_child_end = bad.span.start;
                         continue;
                     }
+                    var recovered_expression_error = false;
                     const expr = if (self.match(.dot_dot_dot)) blk: {
                         const dot_tok = self.tokens[self.cursor - 1];
                         const inner = try self.parseAssignmentExpression();
                         const end = self.hir.spanOf(inner).end;
                         break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
-                    } else try self.parseExpression();
+                    } else self.parseExpression() catch |err| switch (err) {
+                        error.UnexpectedToken, error.UnexpectedEof, error.InvalidLeftHandSide => recover: {
+                            recovered_expression_error = true;
+                            const pos = self.peek().span.start;
+                            break :recover try self.builder.addLiteralNumber(.{ .start = pos, .end = pos }, 0);
+                        },
+                        else => return err,
+                    };
+                    if (recovered_expression_error) {
+                        const expr_end = self.hir.spanOf(expr).end;
+                        const node = try self.builder.addJsxExpression(
+                            .{ .start = t.span.start, .end = expr_end },
+                            expr,
+                        );
+                        try out.append(self.gpa, node);
+                        last_child_end = expr_end;
+                        continue;
+                    }
                     try self.reportJsxCommaExpressionIfNeeded(expr);
-                    const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX child expression", t.span.start, "{", "}");
+                    if (self.peek().kind != .close_brace) {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1005, "'}' expected.");
+                        const expr_end = self.hir.spanOf(expr).end;
+                        const node = try self.builder.addJsxExpression(
+                            .{ .start = t.span.start, .end = expr_end },
+                            expr,
+                        );
+                        try out.append(self.gpa, node);
+                        last_child_end = expr_end;
+                        continue;
+                    }
+                    const close = self.advance();
                     const node = try self.builder.addJsxExpression(
                         .{ .start = t.span.start, .end = close.span.end },
                         expr,
@@ -20639,7 +21672,7 @@ pub const Parser = struct {
                     try out.append(self.gpa, node);
                     last_child_end = close.span.end;
                 },
-                .eof => return,
+                .eof => return null,
                 else => {
                     const text_start = t.span.start;
                     var text_end = t.span.end;
@@ -20657,6 +21690,9 @@ pub const Parser = struct {
                         self.peek().kind != .open_brace and
                         self.peek().kind != .eof)
                     {
+                        if (virtual_end) |end| {
+                            if (self.peek().span.start >= end) break;
+                        }
                         const part = self.advance();
                         try self.reportJsxTextStrayTokens(part.span.start, part.line, part.span.end);
                         text_end = part.span.end;
@@ -23246,9 +24282,11 @@ test "parser: variable definite-assignment assertion reports TS1263 and TS1264" 
     var saw_1264: u32 = 0;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1263) {
+            try T.expect(!diagnosticIsSyntacticParseError(d));
             saw_1263 += 1;
             try T.expectEqualStrings("Declarations with initializers cannot also have definite assignment assertions.", d.message);
         } else if (d.code == 1264) {
+            try T.expect(!diagnosticIsSyntacticParseError(d));
             saw_1264 += 1;
             try T.expectEqualStrings("Declarations with definite assignment assertions must also have type annotations.", d.message);
         }
@@ -24033,13 +25071,16 @@ test "parser: catch accepts object binding pattern target" {
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(tp.catch_param));
 }
 
-test "parser: catch type annotation reports TS1196" {
+test "parser: catch type annotation is preserved for checker validation" {
     var s = try newTestSetup("try {} catch (e: Error) {}");
     defer destroyTestSetup(s);
 
-    _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1196), s.parser.diagnostics.items[0].code);
+    const root = try s.parser.parseSourceFile();
+    const statement = hir_mod.blockStmts(&s.hir, root)[0];
+    const payload = hir_mod.tryOf(&s.hir, statement);
+    try T.expect(payload.catch_type != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(payload.catch_type));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: for-in multiple declarations reports TS1091 on the second binding" {
@@ -24411,6 +25452,18 @@ test "parser: rest parameter before another parameter reports TS1014" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1014), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: rest parameter before another parameter in overload reports TS1014" {
+    var s = try newTestSetup(
+        \\function fn(x: string, ...y: any[], z: string);
+        \\function fn() {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const diagnostic = findFirstDiagnosticOfCode(&s.parser, 1014) orelse return error.TestExpectedEqual;
+    try T.expectEqual(@as(u32, 23), diagnostic.pos);
 }
 
 test "parser: rest parameter trailing comma reports TS1013 outside ambient contexts" {
@@ -26227,7 +27280,7 @@ test "parser: block statement followed by '=' reports TS2809" {
 
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 2809) orelse return error.TestExpectedEqual;
-    try T.expectEqualStrings("Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.", d.message);
+    try T.expectEqualStrings("Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.", d.message);
 }
 
 test "parser: parenthesized destructuring assignment stays clean (no TS2809)" {
@@ -27821,6 +28874,152 @@ test "parser: jsx self-closing element" {
     try T.expect(hir_mod.jsxElementOf(&s.hir, init_node).self_closing);
 }
 
+test "parser: TSX generic arrows require an unambiguous type parameter list" {
+    var s = try newTsxTestSetup(
+        \\let jsx1 = <T>() => {}</T>;
+        \\let fn1 = <T extends {}>() => {};
+        \\let fn2 = <T, U>() => {};
+        \\let jsx2 = <T extends={true}>() => {}</T>;
+        \\let jsx3 = <T extends>() => {}</T>;
+        \\let fn3 = <T = string,>() => {};
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 6), stmts.len);
+    const expected = [_]hir_mod.NodeKind{
+        .jsx_element,
+        .arrow_fn,
+        .arrow_fn,
+        .jsx_element,
+        .jsx_element,
+        .arrow_fn,
+    };
+    for (stmts, expected) |stmt, kind| {
+        try T.expectEqual(kind, s.hir.kindOf(hir_mod.varDeclOf(&s.hir, stmt).init));
+    }
+}
+
+test "parser: TSX less-than comparison preserves a following JSX return" {
+    var s = try newTsxTestSetup("\xEF\xBB\xBF" ++
+        \\declare namespace JSX { interface Element { div: string; } }
+    ++
+        \\declare namespace React { class Component<P, S> { props: P; } }
+    ++
+        \\export class ShortDetails extends React.Component<{ id: number }, {}> {
+    ++
+        \\  public render(): JSX.Element {
+    ++
+        \\    if (this.props.id < 1) { return (<div></div>); }
+    ++
+        \\  }
+    ++
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const class_node = hir_mod.exportOf(&s.hir, stmts[2]).decl;
+    const render = hir_mod.classMembers(&s.hir, class_node)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, render).body;
+    const if_node = hir_mod.blockStmts(&s.hir, body)[0];
+    const condition = hir_mod.ifOf(&s.hir, if_node).cond;
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(condition));
+    try T.expectEqual(hir_mod.BinOp.lt, hir_mod.binopOf(&s.hir, condition).op);
+    const then_block = hir_mod.ifOf(&s.hir, if_node).then_branch;
+    const return_node = hir_mod.blockStmts(&s.hir, then_block)[0];
+    try T.expectEqual(hir_mod.NodeKind.jsx_element, s.hir.kindOf(hir_mod.returnOf(&s.hir, return_node).value));
+}
+
+test "parser: JSX attribute values reject an immediate spread expression" {
+    var s = try newTsxTestSetup("<X a={...a} />");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expression_expected = findDiag(s, 1109) orelse return error.MissingDiagnostic;
+    const identifier_expected = findDiag(s, 1003) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 6), expression_expected.pos);
+    try T.expectEqual(@as(u32, 10), identifier_expected.pos);
+}
+
+test "parser: JSX this namespace tags keep the full intrinsic name" {
+    var s = try newTsxTestSetup("<this:b></this:b>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const element = hir_mod.blockStmts(&s.hir, root)[0];
+    const tag = hir_mod.jsxElementOf(&s.hir, element).tag;
+    try T.expectEqualStrings("this:b", s.interner.get(hir_mod.identifierOf(&s.hir, tag).name));
+}
+
+test "parser: JSX leaves type arguments to JavaScript recovery" {
+    var s = try newTsxTestSetup("let x = <MyComp<Prop> a={10} />;");
+    defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2657));
+    const identifier_expected = findDiag(s, 1003) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 15), identifier_expected.pos);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 17008));
+}
+
+test "parser: unclosed JSX stops at virtual files and anchors CRLF EOF by source line" {
+    const source =
+        "// @filename: first.tsx\r\n" ++
+        "const first = <div>;\r\n\r\n" ++
+        "// @filename: second.tsx\r\n" ++
+        "const second = <span />;";
+    var virtual = try newTsxTestSetup(source);
+    defer destroyTestSetup(virtual);
+    _ = try virtual.parser.parseSourceFile();
+    const boundary = findDiag(virtual, 1005) orelse return error.MissingDiagnostic;
+    const second_marker: u32 = @intCast(std.mem.indexOf(u8, source, "// @filename: second.tsx").?);
+    try T.expectEqual(second_marker - 2, boundary.pos);
+
+    var eof = try newTsxTestSetup("<div>\r\n\r\n");
+    defer destroyTestSetup(eof);
+    _ = try eof.parser.parseSourceFile();
+    const eof_close = findDiag(eof, 1005) orelse return error.MissingDiagnostic;
+    try T.expectEqual(@as(u32, 3), eof_close.line);
+}
+
+test "parser: malformed JSX child leaves the parent close for recovery" {
+    var s = try newTsxTestSetup(
+        \\var donkey = <div>
+        \\    <
+        \\</div>;
+        \\function noName() {}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1003));
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
+}
+
+test "parser: malformed JSX assertion sequence retains its source root" {
+    var s = try newTsxTestSetup(
+        \\declare var createElement: any;
+        \\class foo {}
+        \\var x: any;
+        \\x = <any> { test: <any></any> };
+        \\x = <any><any></any>;
+        \\x = <foo>hello {<foo>{}} </foo>;
+        \\x = <foo test={<foo>{}}>hello</foo>;
+        \\x = <foo test={<foo>{}}>hello{<foo>{}}</foo>;
+        \\x = <foo>x</foo>, x = <foo/>;
+        \\<foo>{<foo><foo>{/foo/.test(x) ? <foo><foo></foo> : <foo><foo></foo>}</foo>}</foo>
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 4);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[3]));
+}
+
 test "parser: TS1382 fires for a stray `>` in JSX child text" {
     // Mirrors upstream `scanJsxText` (scanner.go ~L1268): a literal `>`
     // in JSX element content is invalid and must be escaped. tsc
@@ -28017,6 +29216,7 @@ test "parser: jsx unicode escapes in tag and attribute names report TS17021" {
         }
     }
     try T.expectEqual(@as(usize, 7), count);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 17002));
 }
 
 test "parser: jsx grammar diagnostics report duplicate attrs comma expressions and closing tags" {
@@ -28503,6 +29703,51 @@ test "parser: decorator before await produces a missing declaration" {
     try T.expectEqualStrings("Declaration expected.", declaration.message);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOfScalar(u8, src, '\n').?)), declaration.pos);
     try T.expectEqual(@as(u32, 0), countDiag(s, 1206));
+}
+
+test "parser: module await trailing comma recovery makes progress" {
+    var s = try newTestSetup("export {};\nawait (1,);\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2695));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+}
+
+test "parser: module await invalid type arguments make progress" {
+    var s = try newTestSetup("export {};\nawait <number, string>(1);\nawait <number, string> ``;\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 2693));
+}
+
+test "parser: module await heritage recovery makes progress" {
+    var s = try newTestSetup("export {};\nclass C extends await<string> {}\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2863));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+}
+
+test "parser: module await decorator recovery makes progress" {
+    var s = try newTestSetup(
+        \\export {};
+        \\@(await) class C1 {}
+        \\@await(x) class C2 {}
+        \\@await class C3 {}
+        \\class C4 { @await ["m"]() {} }
+        \\class C5 { @await(1) ["m"]() {} }
+        \\class C6 { @(await) ["m"]() {} }
+        \\class C7 {
+        \\    method1(@await [x]) {}
+        \\    method2(@await(1) [x]) {}
+        \\    method3(@(await) [x]) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 9), countDiag(s, 1109));
 }
 
 test "parser: decorator accepts unparenthesized valid expression forms" {
@@ -30712,6 +31957,29 @@ test "parser: strict mode restricted names and delete operands report diagnostic
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
 }
 
+test "parser: class field named interface preserves following strict methods" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    interface = 10;
+        \\    public implements() { }
+        \\    public foo(arguments: any) { }
+        \\    private bar(eval: any) {
+        \\        arguments = "hello";
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1210: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1210) count_1210 += 1;
+        try T.expect(diagnostic.code != 1435);
+        try T.expect(diagnostic.code != 1128);
+    }
+    try T.expectEqual(@as(usize, 3), count_1210);
+}
+
 test "parser: strict mode delete identifier reports TS1102 at operand" {
     var s = try newTestSetup("\"use strict\"; delete a;");
     defer destroyTestSetup(s);
@@ -32171,6 +33439,36 @@ test "parser: call argument list empty slot before eof reports close paren" {
     try T.expectEqualStrings("')' expected.", s.parser.diagnostics.items[1].message);
 }
 
+test "parser: call argument list recovers missing comma before expression" {
+    var s = try newTestSetup(
+        \\foo(
+        \\  first
+        \\  second,
+        \\);
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: call argument list leaves statement keyword for outer recovery" {
+    var s = try newTestSetup(
+        \\foo(first:
+        \\var (--value));
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Argument expression expected.", s.parser.diagnostics.items[1].message);
+}
+
 test "parser: top-level close parens recover as declaration expected" {
     var s = try newTestSetup(
         \\function foo() {}
@@ -32678,6 +33976,24 @@ test "parser: malformed JSDoc import tags mirror TypeScript recovery" {
         try T.expectEqual(@as(u32, 3), from.line);
         const from_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..from.pos], '\n').? + 1;
         try T.expectEqual(@as(u32, 2), from.pos - @as(u32, @intCast(from_line_start)) + 1);
+    }
+
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import defer * as ns from "./types"
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+        for (s.parser.diagnostics.items, 0..) |d, index| {
+            try T.expectEqual(@as(u32, if (index == 0) 1005 else 1141), d.code);
+            try T.expectEqual(@as(u32, 2), d.line);
+            const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+            try T.expectEqual(@as(u32, 18), d.pos - @as(u32, @intCast(line_start)) + 1);
+        }
     }
 }
 

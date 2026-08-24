@@ -648,7 +648,6 @@ fn reportDeprecatedOptionDirectives(
                 });
                 c.has_errors = true;
             }
-
         }
     }
 }
@@ -1933,7 +1932,7 @@ pub fn compileSource(
             c.tokens = .empty;
             errdefer c.tokens.deinit(gpa);
             for (scanner.diagnostics.items) |d| {
-                if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
+                if (options.is_tsx and scannerDiagnosticIsSuppressedInJsxText(d.message) and
                     isDiagnosticInsideJsxText(source, d.pos))
                 {
                     continue;
@@ -1946,7 +1945,7 @@ pub fn compileSource(
                 }
                 try c.diagnostics.append(gpa, .{
                     .phase = .lex,
-                    .pos = d.pos,
+                    .pos = tsxScannerDiagnosticPos(source, options.is_tsx, normalized.code, d.pos),
                     .line = d.line,
                     .code = normalized.code,
                     .message = try gpa.dupe(u8, normalized.message),
@@ -1972,7 +1971,7 @@ pub fn compileSource(
 
     // Drain scanner diagnostics.
     for (scanner.diagnostics.items) |d| {
-        if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
+        if (options.is_tsx and scannerDiagnosticIsSuppressedInJsxText(d.message) and
             isDiagnosticInsideJsxText(source, d.pos))
         {
             continue;
@@ -1985,7 +1984,7 @@ pub fn compileSource(
         }
         try c.diagnostics.append(gpa, .{
             .phase = .lex,
-            .pos = d.pos,
+            .pos = tsxScannerDiagnosticPos(source, options.is_tsx, normalized.code, d.pos),
             .line = d.line,
             .code = normalized.code,
             .message = try gpa.dupe(u8, normalized.message),
@@ -2016,7 +2015,16 @@ pub fn compileSource(
             break :blk b.addBlock(.{ .start = 0, .end = 0 }, &.{}) catch hir_mod.none_node_id;
         },
     };
+    var has_syntactic_parse_diagnostics = false;
     for (parser.diagnostics.items) |d| {
+        if (!ts_parser.diagnosticIsSyntacticParseError(d)) continue;
+        has_syntactic_parse_diagnostics = true;
+        break;
+    }
+    for (parser.diagnostics.items) |d| {
+        if (has_syntactic_parse_diagnostics and
+            !ts_parser.diagnosticIsSyntacticParseError(d) and
+            !parserDiagnosticSurvivesParseErrors(d, source)) continue;
         if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
         // Copy parser-level related-info anchors (TS1007 matched-pair
         // hints, etc.) into the unified driver diagnostic. Parser
@@ -2138,6 +2146,7 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
+    checker.setTsx(options.is_tsx);
     checker.setIsDeclarationFile(is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling
@@ -2146,12 +2155,6 @@ pub fn compileSource(
     // (private names below ES2015) from the parser, but upstream emits both
     // as grammar errors. They therefore must not populate
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
-    var has_syntactic_parse_diagnostics = false;
-    for (parser.diagnostics.items) |d| {
-        if (!ts_parser.diagnosticIsSyntacticParseError(d)) continue;
-        has_syntactic_parse_diagnostics = true;
-        break;
-    }
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
     checker.setJsxCommaRecoverySpans(parser.jsx_comma_recovery_spans.items);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
@@ -3184,6 +3187,11 @@ fn scannerDiagnosticIsUnexpectedCharacter(message: []const u8) bool {
         std.mem.eql(u8, message, "Invalid character.");
 }
 
+fn scannerDiagnosticIsSuppressedInJsxText(message: []const u8) bool {
+    return scannerDiagnosticIsUnexpectedCharacter(message) or
+        std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.");
+}
+
 fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (scannerDiagnosticIsUnexpectedCharacter(message)) {
         return .{ .code = 1127, .message = "Invalid character." };
@@ -3297,9 +3305,17 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
 
 fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic) bool {
     return switch (d.code) {
-        1125, 1127, 1160, 1199, 1487, 1488 => true,
+        1125, 1127, 1199, 1487, 1488 => true,
         else => false,
     };
+}
+
+fn tsxScannerDiagnosticPos(source: []const u8, is_tsx: bool, code: u32, original: u32) u32 {
+    if (!is_tsx or code != 1002 or original == 0) return original;
+    var pos: usize = @min(@as(usize, original), source.len);
+    if (pos > 0 and source[pos - 1] == '\n') pos -= 1;
+    if (pos > 0 and source[pos - 1] == '\r') pos -= 1;
+    return @intCast(pos);
 }
 
 fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -3383,6 +3399,44 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
     return !v;
 }
 
+fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source: []const u8) bool {
+    return switch (diagnostic.code) {
+        1036,
+        1048,
+        1101,
+        1104,
+        1105,
+        1107,
+        1115,
+        1116,
+        1123,
+        1184,
+        1210,
+        1215,
+        17012,
+        18010,
+        18019,
+        => true,
+        1155 => diagnosticLineContainsText(source, diagnostic.pos, "export const"),
+        1212, 1214 => std.mem.indexOf(u8, diagnostic.message, "'yield'") != null,
+        1031 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos) or
+            std.mem.indexOf(u8, diagnostic.message, "'declare' modifier") != null,
+        1042 => diagnosticLineContainsPrivateIdentifier(source, diagnostic.pos),
+        else => false,
+    };
+}
+
+fn diagnosticLineContainsText(source: []const u8, pos: usize, needle: []const u8) bool {
+    if (pos > source.len) return false;
+    const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..pos], '\n')) |index| index + 1 else 0;
+    const line_end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
+    return std.mem.indexOf(u8, source[line_start..line_end], needle) != null;
+}
+
+fn diagnosticLineContainsPrivateIdentifier(source: []const u8, pos: usize) bool {
+    return diagnosticLineContainsText(source, pos, "#");
+}
+
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source: []const u8) bool {
     if (plainJsGrammarDiagnosticCode(code)) return true;
     if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
@@ -3435,14 +3489,78 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
 /// TypeScript retains even when `allowJs` is enabled without `checkJs`.
 fn plainJsGrammarDiagnosticCode(code: u32) bool {
     return switch (code) {
-        1005, 1009, 1013, 1014, 1029, 1030, 1031, 1042, 1044, 1048,
-        1049, 1053, 1054, 1089, 1090, 1091, 1097, 1104, 1105, 1106,
-        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1171,
-        1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191, 1193,
-        1197, 1200, 1211, 1248, 1255, 1258, 1308, 1312, 1325, 1341,
-        1358, 1368, 1450, 1451, 1473, 1474, 18006, 18013, 18016,
-        18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566, 2803,
-        5076, 8009, 8012,
+        1005,
+        1009,
+        1013,
+        1014,
+        1029,
+        1030,
+        1031,
+        1042,
+        1044,
+        1048,
+        1049,
+        1053,
+        1054,
+        1089,
+        1090,
+        1091,
+        1097,
+        1104,
+        1105,
+        1106,
+        1107,
+        1113,
+        1114,
+        1115,
+        1116,
+        1123,
+        1155,
+        1156,
+        1162,
+        1171,
+        1172,
+        1174,
+        1182,
+        1184,
+        1186,
+        1188,
+        1189,
+        1190,
+        1191,
+        1193,
+        1197,
+        1200,
+        1211,
+        1248,
+        1255,
+        1258,
+        1308,
+        1312,
+        1325,
+        1341,
+        1358,
+        1368,
+        1450,
+        1451,
+        1473,
+        1474,
+        18006,
+        18013,
+        18016,
+        18028,
+        18038,
+        18041,
+        2410,
+        2462,
+        2480,
+        2492,
+        2501,
+        2566,
+        2803,
+        5076,
+        8009,
+        8012,
         => true,
         else => false,
     };
@@ -4215,6 +4333,117 @@ test "driver: alwaysStrict enables strict parser early errors" {
         if (d.code == 1100) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: binder grammar diagnostics survive neighboring parse errors" {
+    var c = try compileSource(T.allocator,
+        \\export default 1;
+        \\class C {
+        \\  #constructor = 1;
+        \\  public #field = 1;
+        \\  method() {
+        \\    const eval = 1;
+        \\    with (eval) {}
+        \\  }
+        \\}
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_private_constructor = false;
+    var saw_private_modifier = false;
+    var saw_class_strict = false;
+    var saw_with_strict = false;
+    for (c.diagnostics.items) |d| {
+        switch (d.code) {
+            18012 => saw_private_constructor = true,
+            18010 => saw_private_modifier = true,
+            1210 => saw_class_strict = true,
+            1101 => saw_with_strict = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_private_constructor);
+    try T.expect(saw_private_modifier);
+    try T.expect(saw_class_strict);
+    try T.expect(saw_with_strict);
+}
+
+test "driver: jump target diagnostics survive neighboring parse errors" {
+    var c = try compileSource(T.allocator,
+        \\break;
+        \\continue;
+        \\while (false) {
+        \\  break missingBreak;
+        \\  continue missingContinue;
+        \\}
+        \\const;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_break_outside = false;
+    var saw_continue_outside = false;
+    var saw_missing_break_label = false;
+    var saw_missing_continue_label = false;
+    for (c.diagnostics.items) |d| {
+        switch (d.code) {
+            1105 => saw_break_outside = true,
+            1104 => saw_continue_outside = true,
+            1116 => saw_missing_break_label = true,
+            1115 => saw_missing_continue_label = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_break_outside);
+    try T.expect(saw_continue_outside);
+    try T.expect(saw_missing_break_label);
+    try T.expect(saw_missing_continue_label);
+}
+
+test "driver: declare method grammar diagnostic survives ambient implementation error" {
+    var c = try compileSource(T.allocator,
+        \\class C {
+        \\    declare Foo() { }
+        \\}
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var declare_modifier_errors: usize = 0;
+    var ambient_implementation_errors: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1031) declare_modifier_errors += 1;
+        if (d.code == 1183) ambient_implementation_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), declare_modifier_errors);
+    try T.expectEqual(@as(usize, 1), ambient_implementation_errors);
+}
+
+test "driver: yield binder diagnostic survives an async binding parse error" {
+    var c = try compileSource(T.allocator,
+        \\async function f() { const await = 1; }
+        \\function g() { const yield = 2; }
+    , .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_await = false;
+    var saw_yield = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1359) saw_await = true;
+        if (d.code == 1212) saw_yield = true;
+    }
+    try T.expect(saw_await);
+    try T.expect(saw_yield);
 }
 
 test "driver: ts-ignore suppresses next-line parser diagnostics" {
@@ -5893,6 +6122,43 @@ test "driver: tsx jsx text entities do not surface lex diagnostics" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.phase != .lex);
     }
+}
+
+test "driver: TSX child text does not retain numeric identifier diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\const value = <div>7x invalid-js-identifier</div>;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1351);
+    }
+}
+
+test "driver: TSX parse errors suppress const grammar diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare const React: any;
+        \\declare namespace JSX { interface IntrinsicElements { [name: string]: any; } }
+        \\const X: any
+        \\const a: any
+        \\<X a={...a} />
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var count_1109: usize = 0;
+    var count_1003: usize = 0;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1155);
+        if (d.code == 1109) count_1109 += 1;
+        if (d.code == 1003) count_1003 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1109);
+    try T.expectEqual(@as(usize, 1), count_1003);
 }
 
 test "driver: tsx multiline string attribute parses before JSX intrinsic diagnostics" {
