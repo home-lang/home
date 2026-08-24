@@ -1494,6 +1494,10 @@ fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
     if (caseNeedsProgramRouteByName(c.name)) return true;
     if (rawSourceHasShadowedDeclarationRoot(c.raw_source)) return true;
+    // Relative module augmentation is inherently program-wide, including
+    // accepted-clean fixtures. The concatenated path cannot synthesize the
+    // augmentation summary consumed by prototype writes and importers.
+    if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
     // Only route fixtures with explicit expected diagnostics. Fixtures
     // upstream treats as clean (no `.errors.txt` baseline) work today
     // via the legacy concatenated source — the checker sees all
@@ -1551,7 +1555,6 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // tsc expects at the failing attribute.
     if (!rawSourceHasNonCodeMarker(c.raw_source)) {
         if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
-        if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
         if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
         if ((directiveBool(c.raw_source, "declaration") orelse false) and
             rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
@@ -3030,6 +3033,10 @@ test "conformance: relative module augmentation virtual fixture routes through p
     };
     try T.expect(rawSourceHasRelativeModuleAugmentation(raw));
     try T.expect(shouldRouteThroughProgram(c));
+    var clean = c;
+    clean.name = "moduleAugmentationsImports2";
+    clean.expected_errors = "";
+    try T.expect(shouldRouteThroughProgram(clean));
 }
 
 test "conformance: ambient external module virtual fixture routes through program" {

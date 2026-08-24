@@ -6732,27 +6732,25 @@ test "Program: relative module augmentation summary adds methods to imported cla
     _ = try p.add("/proj/c.ts",
         \\export class Cls { ok = true; }
     );
-    _ = try p.add("/proj/d.ts",
+    const d_id = try p.add("/proj/d.ts",
         \\import { A } from "./a";
         \\import { B } from "./b";
-        \\export {};
+        \\A.prototype.getB = function() { return undefined; };
         \\declare module "./a" {
         \\  interface A {
         \\    getB(): B;
         \\  }
         \\}
-        \\A.prototype.getB = function() { return new B(); };
     );
-    _ = try p.add("/proj/e.ts",
+    const e_id = try p.add("/proj/e.ts",
         \\import { A } from "./a";
         \\import { Cls } from "./c";
-        \\export {};
+        \\A.prototype.getCls = function() { return undefined; };
         \\declare module "./a" {
         \\  interface A {
         \\    getCls(): Cls;
         \\  }
         \\}
-        \\A.prototype.getCls = function() { return new Cls(); };
     );
     const main_id = try p.add("/proj/main.ts",
         \\import { A } from "./a";
@@ -6763,8 +6761,14 @@ test "Program: relative module augmentation summary adds methods to imported cla
         \\a.getCls().ok;
     );
 
-    try p.compileAll(.{ .no_emit = true });
+    const options: ts_driver.CompileOptions = .{ .no_emit = true };
+    _ = try p.loadImportClosure(options);
+    try p.recompileAll(options);
+    const d_c = p.fileById(d_id).compilation.?;
+    const e_c = p.fileById(e_id).compilation.?;
     const main_c = p.fileById(main_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(d_c, 2339);
+    try expectCompilationLacksDiagnosticCode(e_c, 2339);
     try expectCompilationLacksDiagnosticCode(main_c, 2339);
 }
 
