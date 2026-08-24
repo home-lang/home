@@ -81676,10 +81676,6 @@ fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const
     const old_replacement =
         \\    const chunk = __home_sparse_blob_part(CHUNK_SIZE, i % 256);
     ;
-    if (std.mem.indexOf(u8, source, old_needle) != null) {
-        return std.mem.replaceOwned(u8, allocator, source, old_needle, old_replacement);
-    }
-
     const shared_buffer_needle =
         \\  const distinct: Uint8Array<ArrayBuffer>[] = [];
         \\  for (let i = 0; i < 256; i++) {
@@ -81698,8 +81694,17 @@ fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const
         \\    chunks.push(__home_sparse_blob_part(CHUNK_SIZE, i % 256));
         \\  }
     ;
-    if (std.mem.indexOf(u8, source, shared_buffer_needle) == null) return allocator.dupe(u8, source);
-    return std.mem.replaceOwned(u8, allocator, source, shared_buffer_needle, sparse_parts_replacement);
+    const with_sparse_parts = if (std.mem.indexOf(u8, source, old_needle) != null)
+        try std.mem.replaceOwned(u8, allocator, source, old_needle, old_replacement)
+    else if (std.mem.indexOf(u8, source, shared_buffer_needle) != null)
+        try std.mem.replaceOwned(u8, allocator, source, shared_buffer_needle, sparse_parts_replacement)
+    else
+        try allocator.dupe(u8, source);
+    defer allocator.free(with_sparse_parts);
+
+    // tempDir is a disposable String wrapper in the bootstrap harness. Keep
+    // node:path strict for arbitrary boxed strings and unwrap this one call.
+    return std.mem.replaceOwned(u8, allocator, with_sparse_parts, "join(tmpbase, \"large-file.bin\")", "join(String(tmpbase), \"large-file.bin\")");
 }
 
 fn rewriteIssue17793ProxyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -107565,6 +107570,7 @@ test "bootstrap runner mirrors large Bun.write Blob corpus" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_sparse_blob_part(CHUNK_SIZE, i % 256)") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Uint8Array(CHUNK_SIZE)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(String(tmpbase), \"large-file.bin\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_written_file_sparse") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sparse_blob_slice_bytes") != null);
 
