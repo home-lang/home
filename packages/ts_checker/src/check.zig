@@ -120161,17 +120161,6 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
-        if (flags.is_type_parameter) {
-            const name = self.interner.typeParameterName(t) orelse return;
-            for (type_params, 0..) |param_t, i| {
-                const param_name = self.interner.typeParameterName(param_t) orelse continue;
-                if (name == param_name) {
-                    try subs.put(self.gpa, t, explicit_types[i]);
-                    return;
-                }
-            }
-            return;
-        }
         if (flags.is_union) {
             if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
             const members = self.interner.unionMembers(t);
@@ -120189,6 +120178,21 @@ pub const Checker = struct {
             defer self.gpa.free(snapshot);
             for (snapshot) |member| {
                 try self.addExplicitTypeArgNameSubstitutions(member, type_params, explicit_types, subs, false);
+            }
+            return;
+        }
+        // Compound flags aggregate their members, so a union or
+        // intersection containing T also carries is_type_parameter.
+        // Only interpret the payload as a type parameter after the
+        // compound containers have been dispatched.
+        if (flags.is_type_parameter) {
+            const name = self.interner.typeParameterName(t) orelse return;
+            for (type_params, 0..) |param_t, i| {
+                const param_name = self.interner.typeParameterName(param_t) orelse continue;
+                if (name == param_name) {
+                    try subs.put(self.gpa, t, explicit_types[i]);
+                    return;
+                }
             }
             return;
         }
