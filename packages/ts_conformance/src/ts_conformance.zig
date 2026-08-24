@@ -8650,6 +8650,7 @@ fn parseEmitTarget(raw: []const u8) ?ts_driver.EsTarget {
     if (std.ascii.eqlIgnoreCase(target, "es2022")) return .es2022;
     if (std.ascii.eqlIgnoreCase(target, "es2023")) return .es2023;
     if (std.ascii.eqlIgnoreCase(target, "es2024") or
+        std.ascii.eqlIgnoreCase(target, "es2025") or
         std.ascii.eqlIgnoreCase(target, "esnext") or
         std.ascii.eqlIgnoreCase(target, "latest")) return .esnext;
     return null;
@@ -8670,8 +8671,8 @@ fn baselineEmitTarget(path: ?[]const u8) ?ts_driver.EsTarget {
 
 fn selectedEmitTarget(source: []const u8, baseline_path: ?[]const u8) ts_driver.EsTarget {
     if (baselineEmitTarget(baseline_path)) |target| return target;
-    const raw = directiveValue(source, "target") orelse return .es5;
-    return parseEmitTarget(firstCommaSeparatedValue(raw)) orelse .es5;
+    const raw = directiveValue(source, "target") orelse return .esnext;
+    return parseEmitTarget(firstCommaSeparatedValue(raw)) orelse .esnext;
 }
 
 fn effectiveEmitTarget(target_emit_es5: bool, emit_target: ts_driver.EsTarget) ts_driver.EsTarget {
@@ -8695,8 +8696,9 @@ test "conformance: selected emit target follows baseline variants and directives
     ));
     try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("// @target: es6", null));
     try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("\xEF\xBB\xBF//@target: es6\r\rconst x = 1;", null));
-    try T.expectEqual(ts_driver.EsTarget.es5, selectedEmitTarget("const x = 1;", null));
+    try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("const x = 1;", null));
     try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2024", null));
+    try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2025", null));
 }
 
 /// Inspect the chosen `.errors.txt` baseline filename for an
