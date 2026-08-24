@@ -80562,7 +80562,7 @@ pub const Checker = struct {
         };
         var can_materialize = self.collectStringLiteralKeys(constraint_t, &literal_keys);
         if (homomorphic_source) |source_t| {
-            if (self.isTupleShapedTarget(source_t)) {
+            if (self.isActualTupleType(source_t)) {
                 literal_keys.clearRetainingCapacity();
                 for (self.interner.objectMembers(source_t)) |member| {
                     if (!self.isNumericStringId(member.name)) continue;
@@ -80759,7 +80759,7 @@ pub const Checker = struct {
             });
         }
         const number_index = if (homomorphic_source) |source_t|
-            if (self.isTupleShapedTarget(source_t) and self.interner.objectNumberIndex(source_t) != types.Primitive.none)
+            if (self.isActualTupleType(source_t) and self.interner.objectNumberIndex(source_t) != types.Primitive.none)
                 try self.lowerMappedIndexValue(node, m, tp.name, types.Primitive.number_t, "number")
             else
                 types.Primitive.none
@@ -80767,7 +80767,7 @@ pub const Checker = struct {
             types.Primitive.none;
         const obj_t = self.interner.internObjectTypeWithIndex(built.items, types.Primitive.none, number_index) catch return error.OutOfMemory;
         if (homomorphic_source) |source_t| {
-            if (self.isTupleShapedTarget(source_t)) try self.markTupleOrigin(obj_t);
+            if (self.isActualTupleType(source_t)) try self.markTupleOrigin(obj_t);
             if (self.tuple_trailing_variadic_types.get(source_t)) |source_rest_t| {
                 if (try self.mappedTypeForHomomorphicTupleRest(m, tp.name, tp_id, source_rest_t)) |mapped_rest_t| {
                     try self.tuple_trailing_variadic_types.put(self.gpa, obj_t, mapped_rest_t);
@@ -81010,7 +81010,7 @@ pub const Checker = struct {
             }
             try self.appendUniqueKeyofName(out, member.name);
         }
-        if (self.isTupleShapedTarget(t) or self.typeIsArrayLikeObject(t)) {
+        if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
             var elem_t = self.interner.objectNumberIndex(t);
             if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
             if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
@@ -89751,9 +89751,9 @@ pub const Checker = struct {
     fn deferredConditionalAssignableToConditional(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
         const source = self.interner.conditionalPayloadOrNull(source_t) orelse return null;
         const target = self.interner.conditionalPayloadOrNull(target_t) orelse return null;
-        if (source.is_distributive != target.is_distributive) return false;
-        if (!self.conditionalCheckTypesRelated(source.check_type, target.check_type)) return false;
-        if (!self.conditionalExtendsTypesIdentical(source.extends_type, target.extends_type)) return false;
+        if (source.is_distributive != target.is_distributive) return null;
+        if (!self.conditionalCheckTypesRelated(source.check_type, target.check_type)) return null;
+        if (!self.conditionalExtendsTypesIdentical(source.extends_type, target.extends_type)) return null;
         if (!try self.checkerAssignableTo(source.true_branch, target.true_branch)) return false;
         if (!try self.checkerAssignableTo(source.false_branch, target.false_branch)) return false;
         return true;
@@ -148323,6 +148323,7 @@ pub const Checker = struct {
             if (try self.inferFromIndexedAccessTarget(param_t, arg_t, subs)) return;
         }
         if (p_flags.is_conditional) {
+            if (!self.typeContainsUnfixedInferenceParameter(param_t, subs, 0)) return;
             if (try self.inferFromConditionalTarget(param_t, arg_t, subs)) return;
         }
         if (p_flags.is_object_type and a_flags.is_union) {
@@ -150269,6 +150270,7 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (flags.is_infer) return false;
         if (flags.is_type_parameter) {
             if (subs.contains(t)) return false;
             const payload_idx = self.interner.pool.payloadOf(t);
@@ -150737,14 +150739,24 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (param_t >= self.interner.pool.typeCount()) return false;
         const c = self.interner.conditionalPayloadOrNull(param_t) orelse return false;
+        var conditional_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer conditional_subs.deinit(self.gpa);
+        try self.copyInferSubs(subs, &conditional_subs);
         var inferred = false;
         if (try self.conditionalInferenceBranchMayMatchArg(c.true_branch, arg_t, 0)) {
-            try self.inferFromPair(c.true_branch, arg_t, subs);
+            try self.inferFromPair(c.true_branch, arg_t, &conditional_subs);
             inferred = true;
         }
         if (try self.conditionalInferenceBranchMayMatchArg(c.false_branch, arg_t, 0)) {
-            try self.inferFromPair(c.false_branch, arg_t, subs);
+            try self.inferFromPair(c.false_branch, arg_t, &conditional_subs);
             inferred = true;
+        }
+        var it = conditional_subs.iterator();
+        while (it.next()) |entry| {
+            const type_param = entry.key_ptr.*;
+            if (subs.contains(type_param) or type_param >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(type_param).is_infer) continue;
+            try subs.put(self.gpa, type_param, entry.value_ptr.*);
         }
         return inferred;
     }
@@ -151726,7 +151738,7 @@ pub const Checker = struct {
             constraint_source_obj
         else
             template_source_obj;
-        const source_is_array_like = self.isTupleShapedTarget(source_obj) or self.objectTypeIsArrayLikeContainer(source_obj);
+        const source_is_array_like = self.isActualTupleType(source_obj) or self.objectTypeIsArrayLikeContainer(source_obj);
         var can_materialize = self.collectStringLiteralKeys(constraint, &keys);
         if (source_obj != types.Primitive.none) {
             can_materialize = try self.collectKeyofObjectKeys(source_obj, &keys) or can_materialize;
@@ -151815,7 +151827,7 @@ pub const Checker = struct {
                     mapped_number_index,
                     types.Primitive.none,
                 ) catch return error.OutOfMemory;
-                if (self.isTupleShapedTarget(source_obj)) try self.markTupleOrigin(result);
+                if (self.isActualTupleType(source_obj)) try self.markTupleOrigin(result);
                 return try self.finishSubstitutedMappedType(mapped_t, result, subs);
             }
             const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
@@ -156976,7 +156988,12 @@ pub const Checker = struct {
         if (!self.containsThisTypeParameter(c.check_type)) return null;
         if (c.false_branch != c.check_type) return null;
         if (c.true_branch >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(c.true_branch).is_type_parameter) return null;
+        const true_is_infer_parameter = self.interner.pool.flagsOf(c.true_branch).is_type_parameter;
+        const true_is_instantiated_wrapper_argument = if (self.alias_type_args.get(c.extends_type)) |args|
+            args.len == 1 and args[0] == c.true_branch
+        else
+            false;
+        if (!true_is_infer_parameter and !true_is_instantiated_wrapper_argument) return null;
         const check_name = (try self.allocSimpleTypeName(c.check_type)) orelse return null;
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -209835,6 +209852,29 @@ test "checker: homomorphic Partial<T> preserves field types" {
     try T.expect(saw_y_string);
 }
 
+test "checker: homomorphic mapped numeric-key objects do not become tuples" {
+    const s = try newSetup(
+        \\type Partial<T> = { [K in keyof T]?: T[K] };
+        \\type PartialNull<T> = { [K in keyof T]?: T[K] | null };
+        \\interface API {
+        \\  0: (x: 0) => string;
+        \\  1: (x: 1) => string;
+        \\  2: (x: 2) => string;
+        \\}
+        \\declare const keys: (keyof API)[];
+        \\const partial: Partial<API> = {};
+        \\const nullable: PartialNull<API> = {};
+        \\for (const key of keys) {
+        \\  partial[key] = () => "ok";
+        \\  nullable[key] = () => "ok";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: recursive homomorphic mapped aliases preserve primitive leaves" {
     const s = try newSetup(
         \\type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
@@ -252874,6 +252914,55 @@ test "checker: deferred conditional source can flow through every output branch"
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: deferred conditional source compares through independent target branches" {
+    const s = try newSetup(
+        \\function test<T>() {
+        \\  const source: [T] extends [string]
+        \\    ? { y: number }
+        \\    : { a: number; b: number } = undefined!;
+        \\  const compatible: [T] extends [number]
+        \\    ? ([T] extends [string] ? { y: number } : { a: number })
+        \\    : ([T] extends [string] ? { y: number } : { b: number }) = source;
+        \\  const incompatible: [T] extends [number]
+        \\    ? ([T] extends [string] ? { z: number } : { a: number })
+        \\    : ([T] extends [string] ? { z: number } : { b: number }) = source;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: fixed generic inputs do not infer through a deferred conditional value" {
+    const source =
+        \\type Wrapped<T> = { secret: T };
+        \\type Unwrap<T> = T extends Wrapped<infer U> ? U : T;
+        \\declare function set<T, K extends keyof T>(obj: T, key: K, value: Unwrap<T[K]>): void;
+        \\class Box {
+        \\  prop!: Wrapped<string>;
+        \\  method() {
+        \\    set(this, "prop", "hi");
+        \\  }
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string' is not assignable to parameter of type 'Unwrap<this[\"prop\"]>'.",
+    ));
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "\"hi\"") orelse return error.TestExpectedEqual);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.argument_type_mismatch) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
+    }
 }
 
 test "checker: bare reference to a function-local enum value resolves" {
