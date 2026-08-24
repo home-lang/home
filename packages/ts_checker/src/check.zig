@@ -30064,6 +30064,7 @@ pub const Checker = struct {
         return_value: NodeId,
         target_sig: TypeId,
     ) CheckError!bool {
+        if (!self.strict_flags.strict_null_checks) return false;
         const fn_node = self.enclosingFunctionLike(return_stmt) orelse return false;
         const parent = self.hir.parentOf(fn_node);
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
@@ -164169,6 +164170,13 @@ pub const Checker = struct {
 
     fn contextualFunctionReturnAssignable(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
         if (source_ret == target_ret) return true;
+        if (!self.strict_flags.strict_null_checks and
+            source_ret != types.Primitive.void_t and
+            self.typeIsNullishOnly(source_ret) and
+            target_ret != types.Primitive.never)
+        {
+            return true;
+        }
         if (target_ret == types.Primitive.void_t or
             target_ret == types.Primitive.any or
             target_ret == types.Primitive.unknown)
@@ -166746,6 +166754,7 @@ pub const Checker = struct {
     }
 
     fn tryReportNullishFunctionAssignmentMismatch(self: *Checker, assignment_node: NodeId, fn_node: NodeId, target_t: TypeId) CheckError!bool {
+        if (!self.strict_flags.strict_null_checks) return false;
         const fn_kind = self.hir.kindOf(fn_node);
         if (fn_kind != .fn_decl and fn_kind != .fn_expr and fn_kind != .arrow_fn) return false;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
@@ -238959,6 +238968,25 @@ test "checker: non-generic class heritage suppresses super call cascade" {
     try T.expect(saw_2315);
     try T.expect(!saw_2346);
     try T.expect(!saw_2508);
+}
+
+test "checker: contextual nullish function returns follow strictNullChecks" {
+    const source =
+        \\interface Result { value: number }
+        \\let create: () => Result;
+        \\create = function() { return undefined; };
+    ;
+
+    const loose = try newSetup(source);
+    defer destroySetup(loose);
+    try loose.checker.checkSourceFile(loose.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(loose, TsCodes.type_not_assignable));
+
+    const strict = try newSetup(source);
+    defer destroySetup(strict);
+    strict.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try strict.checker.checkSourceFile(strict.root);
+    try T.expect(checkerCountCode(strict, TsCodes.type_not_assignable) > 0);
 }
 
 test "checker: namespaced derived constructor resolves declared super signature" {
