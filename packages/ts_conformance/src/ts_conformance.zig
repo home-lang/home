@@ -2150,6 +2150,7 @@ fn virtualFilesContainProjectPath(gpa: std.mem.Allocator, files: []const Virtual
 
 fn virtualFilesAllowJs(gpa: std.mem.Allocator, raw_source: []const u8, files: []const VirtualFile) !bool {
     if (directiveBool(raw_source, "allowJs") orelse false) return true;
+    if (directiveBool(raw_source, "checkJs") orelse false) return true;
     for (files) |f| {
         const canon = try canonicalVfsPath(gpa, f.path);
         defer gpa.free(canon);
@@ -2794,6 +2795,32 @@ test "conformance: clean ancestor node_modules declaration fixture routes throug
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: checkJs enables JavaScript program imports" {
+    try T.expect(try virtualFilesAllowJs(T.allocator, "// @checkJs: true", &.{}));
+}
+
+test "conformance: absolute package types stubs are external modules" {
+    const raw =
+        \\// @module: commonjs
+        \\// @filename: node_modules/typescript/package.json
+        \\{ "name": "typescript", "types": "/.ts/typescript.d.ts" }
+        \\// @filename: app.ts
+        \\import * as ts from "typescript";
+        \\let source: ts.SourceFile;
+    ;
+    const c: Case = .{
+        .name = "absoluteTypesPackage",
+        .source = "",
+        .path = "app.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    };
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: clean conditional @types import types route through program" {
     const raw =
         \\// @module: esnext
@@ -3141,9 +3168,9 @@ fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
 /// Scan node_modules `package.json` virtual files for a `types` /
 /// `typings` field that names an ABSOLUTE path (e.g.
 /// `"/.ts/typescript.d.ts"`). When the named declaration file isn't
-/// already a virtual file, synthesize an empty `.d.ts` stub at that
-/// path so the resolver resolves the package to a typed (`any`-shaped)
-/// module instead of failing with TS2307 — matching the upstream test
+/// already a virtual file, synthesize an any-exporting `.d.ts` stub at
+/// that path so the resolver resolves the package to a typed module
+/// instead of failing with TS2306/TS2307 — matching the upstream test
 /// harness, which mounts the real declaration files at `/.ts/...`.
 fn synthesizeAbsoluteTypesStubs(
     gpa: std.mem.Allocator,
@@ -3175,7 +3202,7 @@ fn synthesizeAbsoluteTypesStubs(
             else
                 try std.fmt.allocPrint(gpa, "{s}.d.ts", .{target});
             defer gpa.free(stub_path);
-            try vfs.addFile(stub_path, "");
+            try vfs.addFile(stub_path, "declare const api: any; export = api;\n");
         }
     }
 }
