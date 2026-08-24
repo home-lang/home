@@ -148158,7 +148158,8 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
         const source_tp = self.homomorphicMappedSourceTypeParameter(param_t) orelse
-            (self.limitedReverseMappedSourceTypeParameter(param_t) orelse return false);
+            (self.limitedReverseMappedSourceTypeParameter(param_t) orelse
+                (self.builtinMappedSourceType(param_t) orelse return false));
         try self.inferFromPair(source_tp, arg_t, subs);
         return true;
     }
@@ -148731,8 +148732,8 @@ pub const Checker = struct {
             const ia = self.indexedAccessPayloadOrNull(t) orelse return null;
             if (ia.object < self.interner.pool.typeCount() and
                 ia.index < self.interner.pool.typeCount() and
-                (!require_type_parameter_object or self.interner.pool.flagsOf(ia.object).is_type_parameter) and
-                self.interner.pool.flagsOf(ia.index).is_type_parameter)
+                (!require_type_parameter_object or self.isBareTypeParameter(ia.object)) and
+                self.isBareTypeParameter(ia.index))
             {
                 return .{ .object_tp = ia.object, .key_tp = ia.index };
             }
@@ -149436,12 +149437,8 @@ pub const Checker = struct {
         const source_t = self.homomorphicMappedTypeParameter(param_t) orelse
             (self.limitedReverseMappedSourceTypeParameter(param_t) orelse
                 (self.builtinMappedSourceType(param_t) orelse return false));
-        if (source_t < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(source_t).is_type_parameter and
-            !subs.contains(source_t))
-        {
-            return false;
-        }
+        const effective_source_t = self.substituteType(source_t, subs) catch source_t;
+        if (self.containsFreeTypeParameter(effective_source_t)) return false;
 
         const mapped = self.interner.mappedPayload(param_t);
         if (mapped.constraint >= self.interner.pool.typeCount()) return true;
@@ -151235,15 +151232,8 @@ pub const Checker = struct {
             template_source_obj;
         const source_is_array_like = self.isTupleShapedTarget(source_obj) or self.objectTypeIsArrayLikeContainer(source_obj);
         var can_materialize = self.collectStringLiteralKeys(constraint, &keys);
-        if (!can_materialize and
-            constraint < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(constraint).is_keyof)
-        {
-            const payload_idx = self.interner.pool.payloadOf(constraint);
-            if (payload_idx < self.interner.pool.keyof_payloads.items.len) {
-                const operand = self.interner.pool.keyof_payloads.items[payload_idx].operand;
-                can_materialize = try self.collectKeyofObjectKeys(operand, &keys);
-            }
+        if (source_obj != types.Primitive.none) {
+            can_materialize = try self.collectKeyofObjectKeys(source_obj, &keys) or can_materialize;
         }
         if (source_is_array_like) {
             for (self.interner.objectMembers(source_obj)) |member| {
@@ -151251,6 +151241,17 @@ pub const Checker = struct {
                 try self.appendUniqueKeyofName(&keys, member.name);
             }
             can_materialize = keys.items.len > 0;
+        }
+        if (can_materialize and source_obj < self.interner.pool.typeCount()) {
+            const source_flags = self.interner.pool.flagsOf(source_obj);
+            // `keyof (Fixed & T)` is not closed over Fixed's known keys.
+            // Keep the homomorphic mapping symbolic until T is inferred;
+            // materializing now would permanently discard T's properties.
+            if ((source_flags.is_union or source_flags.is_intersection) and
+                self.containsFreeTypeParameter(source_obj))
+            {
+                can_materialize = false;
+            }
         }
         if (can_materialize) {
             const key_tp = raw_key_tp;
@@ -151270,10 +151271,7 @@ pub const Checker = struct {
                         try self.substituteType(template, &key_subs)
                     else
                         template);
-                const source_member = if (source_obj < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source_obj).is_object_type)
-                    self.interner.objectMemberInfo(source_obj, key)
-                else
-                    null;
+                const source_member = self.mappedSourceMemberInfo(source_obj, key);
                 const is_optional = switch (m.optional) {
                     .add => true,
                     .remove => false,
@@ -151344,6 +151342,47 @@ pub const Checker = struct {
         }
         const result = self.interner.internMapped(constraint, template, m.readonly, m.optional) catch return error.OutOfMemory;
         return try self.finishSubstitutedMappedType(mapped_t, result, subs);
+    }
+
+    fn mappedSourceMemberInfo(
+        self: *Checker,
+        source_t: TypeId,
+        name: hir_mod.StringId,
+    ) ?types.ObjectMember {
+        if (source_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(source_t);
+        if (flags.is_intersection) {
+            var combined: ?types.ObjectMember = null;
+            for (self.interner.intersectionMembers(source_t)) |member_t| {
+                const member = self.mappedSourceMemberInfo(member_t, name) orelse continue;
+                if (combined) |*current| {
+                    current.is_optional = current.is_optional and member.is_optional;
+                    current.is_readonly = current.is_readonly or member.is_readonly;
+                } else {
+                    combined = member;
+                }
+            }
+            return combined;
+        }
+        if (flags.is_union) {
+            var combined: ?types.ObjectMember = null;
+            for (self.interner.unionMembers(source_t)) |member_t| {
+                const member = self.mappedSourceMemberInfo(member_t, name) orelse return null;
+                if (combined) |*current| {
+                    current.is_optional = current.is_optional or member.is_optional;
+                    current.is_readonly = current.is_readonly and member.is_readonly;
+                } else {
+                    combined = member;
+                }
+            }
+            return combined;
+        }
+        if (self.isBareTypeParameter(source_t)) {
+            const constraint = self.typeParameterConstraint(source_t) orelse return null;
+            if (constraint == source_t) return null;
+            return self.mappedSourceMemberInfo(constraint, name);
+        }
+        return self.interner.objectMemberInfo(source_t, name);
     }
 
     fn builtinMappedSourceType(self: *Checker, mapped_t: TypeId) ?TypeId {
@@ -254634,6 +254673,25 @@ test "checker: generic intersection inference uses array iteration elements" {
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
+}
+
+test "checker: readonly intersection props infer the catch-all class parameter" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface ElementAttributesProperty { props: {}; }
+        \\}
+        \\declare class Component<P> {
+        \\  constructor(props: Readonly<P>);
+        \\  readonly props: Readonly<P>;
+        \\}
+        \\class C<T> extends Component<{ x?: boolean } & T> {}
+        \\const constructed = new C({ foobar: "example" });
+        \\const rendered = <C foobar="example" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: JSX generic alias excess checks retain attribute member ids" {
