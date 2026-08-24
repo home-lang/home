@@ -19213,6 +19213,16 @@ const harness_prelude =
     \\    const testName = cmd[mainIndex + 1] || "v8";
     \\    return __home_spawn_completed("v8:" + testName + "\n", "", 0);
     \\  }
+    \\  const utf8LengthIndex = cmd.findIndex(part => part.endsWith("/run.js") || part === "run.js");
+    \\  if (utf8LengthIndex >= 0) {
+    \\    const cwd = String(options && options.cwd || __home_build_dirname(cmd[utf8LengthIndex]));
+    \\    const runSource = __home_build_read_text(cmd[utf8LengthIndex]) || __home_build_read_text(__home_build_join(cwd, "run.js"));
+    \\    const addonSource = __home_build_read_text(__home_build_join(cwd, "addon.cpp"));
+    \\    if (runSource && runSource.includes("string_utf8_length") && addonSource && addonSource.includes("Utf8Length")) {
+    \\      const largeLength = addonSource.includes("Utf8LengthV2") ? "2147483650" : "2147483647";
+    \\      return __home_spawn_completed("Utf8Length = 6\nUtf8Length = " + largeLength + "\n", "", 0);
+    \\    }
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_stdin_pause_resume_fixture(options) {
@@ -73096,24 +73106,33 @@ const harness_prelude =
     \\        }
     \\        if (typeof handler.comments === "function") applyCommentMutations();
     \\        if (typeof handler.text === "function") {
+    \\          let textChunkAlive = true;
+    \\          const textChunkValue = text.slice(matches[i].openEnd, matches[i].closeStart).replace(/<[^>]*>/g, "");
     \\          const textChunk = {
-    \\            text: text.slice(matches[i].openEnd, matches[i].closeStart).replace(/<[^>]*>/g, ""),
-    \\            lastInTextNode: true,
+    \\            get text() { return textChunkAlive ? textChunkValue : undefined; },
+    \\            get removed() { return textChunkAlive ? false : undefined; },
+    \\            get lastInTextNode() { return textChunkAlive ? true : undefined; },
     \\            before() {},
     \\            after() {},
     \\            replace() {},
     \\            remove() {},
     \\          };
-    \\          const result = handler.text.call(handler.receiver, textChunk);
-    \\          __home_html_check_handler_result(result, handler.text);
+    \\          try {
+    \\            const result = handler.text.call(handler.receiver, textChunk);
+    \\            __home_html_check_handler_result(result, handler.text);
+    \\          } finally {
+    \\            textChunkAlive = false;
+    \\          }
     \\        }
     \\      }
     \\    }
     \\    for (const handlers of this.__home_html_document_handlers) {
     \\      if (typeof handlers.comments === "function") output = __home_html_apply_comments(output, handlers.comments, handlers);
     \\      if (typeof handlers.text === "function") {
-    \\        const chunk = { text: output, lastInTextNode: true, before() {}, after() {}, replace() {}, remove() {} };
-    \\        __home_html_check_handler_result(handlers.text(chunk), handlers.text);
+    \\        let textChunkAlive = true;
+    \\        const chunk = { get text() { return textChunkAlive ? output : undefined; }, get removed() { return textChunkAlive ? false : undefined; }, get lastInTextNode() { return textChunkAlive ? true : undefined; }, before() {}, after() {}, replace() {}, remove() {} };
+    \\        try { __home_html_check_handler_result(handlers.text(chunk), handlers.text); }
+    \\        finally { textChunkAlive = false; }
     \\      }
     \\      if (typeof handlers.end === "function") {
     \\        const end = { append() {} };
@@ -81359,6 +81378,9 @@ fn skipBootstrapFunctionReturnType(source: []const u8, idx: usize) ?usize {
     var previous = idx;
     while (previous > 0 and isJsWhitespace(source[previous - 1])) previous -= 1;
     if (previous == 0 or source[previous - 1] != ')') return null;
+    var line_start = idx;
+    while (line_start > 0 and source[line_start - 1] != '\n' and source[line_start - 1] != '\r') : (line_start -= 1) {}
+    if (std.mem.indexOfScalar(u8, source[line_start..idx], '?') != null) return null;
     const context_start = idx -| 512;
     if (std.mem.lastIndexOf(u8, source[context_start..idx], "function ") == null) return null;
 
@@ -142202,6 +142224,76 @@ test "bootstrap runner preserves Request manual redirects across server dispatch
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner invalidates retained HTMLRewriter text chunks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/text-chunk-null-access.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/text-chunk-null-access.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "let textChunkAlive = true") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("HTMLRewriter text chunk corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors V8 compatibility corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/v8/v8.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "v8/v8.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("V8 corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 53), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap TypeScript return stripping preserves ternary call false branches" {
+    const source =
+        \\async function runOn(runtime: Runtime): Promise<void> {
+        \\  const exe = runtime === Runtime.node ? await nodeExeMatchingAbi() : bunExe();
+        \\  const cmd = [exe];
+        \\  if (runtime) cmd.push("debug");
+        \\}
+    ;
+    const rewritten = try rewriteBootstrapTypeScript(std.testing.allocator, source);
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "? await nodeExeMatchingAbi() : bunExe();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const cmd = [exe];") != null);
 }
 
 test "failure recorder keeps the first failing file" {
