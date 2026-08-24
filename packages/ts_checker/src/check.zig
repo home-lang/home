@@ -46956,6 +46956,12 @@ pub const Checker = struct {
     fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!bool {
         if (self.hir.kindOf(target) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, target);
+        // Program-routed modules can carry concrete CommonJS descriptor
+        // metadata even when their require alias is otherwise writable.
+        if (self.external_resolver != null and try self.importedRequireMemberIsReadonly(m.object, m.name)) {
+            try self.reportReadonlyMemberAssignment(target, m.name);
+            return true;
+        }
         if (self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
         if (try self.importedRequireMemberIsReadonly(m.object, m.name)) {
             try self.reportReadonlyMemberAssignment(target, m.name);
