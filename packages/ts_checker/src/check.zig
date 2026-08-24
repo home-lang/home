@@ -20504,6 +20504,21 @@ pub const Checker = struct {
         return false;
     }
 
+    fn isInferredCallableExpandoPredicateAssignment(
+        self: *Checker,
+        assignment_node: NodeId,
+        assignment: hir_mod.AssignmentPayload,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (assignment.op != null or !self.isContextualFunctionExpressionLike(assignment.value)) return false;
+        if ((try self.expandoFunctionMemberKey(assignment.target)) == null) return false;
+        if (self.expandoReceiverHasExplicitType(assignment_node, assignment.target)) return false;
+        const target_pred = (try self.assignmentExpressionPredicate(assignment.target, target_t)) orelse return false;
+        const source_pred = try self.assignmentExpressionPredicate(assignment.value, source_t);
+        return self.signaturePredicateAnnotationsAssignable(source_pred, target_pred);
+    }
+
     fn expandoReceiverDeclaration(self: *Checker, target: NodeId) ?NodeId {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
         const member = hir_mod.memberOf(self.hir, target);
@@ -103409,6 +103424,8 @@ pub const Checker = struct {
                     try self.checkJsInferredClassMemberWrite(a.target);
                 const target_is_repeated_callable_expando =
                     try self.isRepeatedCallableExpandoAssignment(node, a);
+                const target_is_inferred_callable_expando_predicate =
+                    try self.isInferredCallableExpandoPredicateAssignment(node, a, assignment_check_value_t, target_t);
                 if (a.op == null and self.sourceHasCheckJsDirective() and
                     (try self.expandoFunctionMemberKey(a.target)) != null)
                 {
@@ -103738,7 +103755,7 @@ pub const Checker = struct {
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
                     self.genericIndexedAssignmentUsesDedicatedRelation(a.target, a.value);
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and !target_is_inferred_checkjs_class_member and !target_is_explicit_jsdoc_function_expando_declaration and !target_is_repeated_callable_expando and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_checked_js_undefined_any and !target_is_checked_js_default_parameter_undefined and !target_is_commonjs_export_assignment and !target_is_js_container_prototype_object_assignment and !target_is_js_namespace_declaration_initialization and !target_is_inferred_checkjs_class_member and !target_is_explicit_jsdoc_function_expando_declaration and !target_is_repeated_callable_expando and !target_is_inferred_callable_expando_predicate and a.op == null and
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
@@ -211785,6 +211802,20 @@ test "checker: computed class keys inherit declaration await context" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.await_only_in_async));
+}
+
+test "checker: expando assertion function accepts its inferred predicate signature" {
+    const s = try newSetup(
+        \\function example() {}
+        \\example.isFoo = function isFoo(value: string): asserts value is "foo" {
+        \\  if (value !== "foo") throw new Error("Not foo");
+        \\};
+        \\example.isFoo("test");
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: checkjs await in non-async function reports TS1308" {
