@@ -125291,6 +125291,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "arguments") and
             !self.immediateFunctionLocalsContain(node, id.name) and
             self.hasNonArrowFunctionAncestor(node) and
+            self.argumentsClassContext(node) == .none and
             !(self.sourceTargetMentionsEs5() and
                 (self.argumentsInsideArrowOnlyChain(node) or self.argumentsInsideAsyncNonArrowFunction(node))))
         {
@@ -238193,6 +238194,20 @@ test "checker: TS2815/TS18039 ignore local arguments bindings and ordinary funct
         try T.expect(d.code != TsCodes.arguments_in_class_field_or_static_block);
         try T.expect(d.code != TsCodes.invalid_use_in_class_static_block);
     }
+}
+
+test "checker: nested class static blocks do not capture outer arguments" {
+    const s = try newSetup(
+        \\function syncOuter() {
+        \\  class C { static { arguments; } }
+        \\}
+        \\async function asyncOuter() {
+        \\  class C { static { arguments; } }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.arguments_in_class_field_or_static_block));
 }
 
 test "checker: TS2448 binding-default forward ref names the referenced variable" {
