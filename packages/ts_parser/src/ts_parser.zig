@@ -21450,7 +21450,7 @@ pub const Parser = struct {
 
     fn parseJsxTagName(self: *Parser, what: []const u8) ParseError!NodeId {
         const tok = self.peek();
-        if (tok.kind == .kw_this) {
+        if (tok.kind == .kw_this and self.peekAt(1).kind != .colon) {
             _ = self.advance();
             const this_id = self.interner.intern("this") catch return error.OutOfMemory;
             return try self.builder.addIdentifier(tokenSpan(tok), this_id);
@@ -28846,6 +28846,17 @@ test "parser: JSX attribute values reject an immediate spread expression" {
     const identifier_expected = findDiag(s, 1003) orelse return error.MissingDiagnostic;
     try T.expectEqual(@as(u32, 6), expression_expected.pos);
     try T.expectEqual(@as(u32, 10), identifier_expected.pos);
+}
+
+test "parser: JSX this namespace tags keep the full intrinsic name" {
+    var s = try newTsxTestSetup("<this:b></this:b>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const element = hir_mod.blockStmts(&s.hir, root)[0];
+    const tag = hir_mod.jsxElementOf(&s.hir, element).tag;
+    try T.expectEqualStrings("this:b", s.interner.get(hir_mod.identifierOf(&s.hir, tag).name));
 }
 
 test "parser: JSX leaves type arguments to JavaScript recovery" {

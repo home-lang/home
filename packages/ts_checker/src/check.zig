@@ -109242,6 +109242,16 @@ pub const Checker = struct {
         try self.checkJsxNamespacedPropertyAccessTag(el.tag);
         try self.checkJsxNamespacedComponentTag(el.tag);
         try self.checkJsxImportEqualsNamespaceTagMember(el.tag);
+        if (self.has_parse_diagnostics) {
+            const tag_text = self.nodeSourceTextOrEmpty(el.tag);
+            const tag_span = self.hir.spanOf(el.tag);
+            const source = self.source orelse "";
+            if (std.mem.indexOfScalar(u8, tag_text, ':') != null and
+                tag_span.end < source.len and source[tag_span.end] == '.')
+            {
+                return types.Primitive.any;
+            }
+        }
         const type_args = hir_mod.jsxTypeArgs(self.hir, node);
         if (self.jsxTagIsIntrinsic(el.tag) and type_args.len > 0) {
             for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
@@ -190131,6 +190141,18 @@ test "checker: JSX preserve permits namespaced component tag grammar diagnostic"
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.jsx_component_namespaced_name);
     }
+}
+
+test "checker: malformed namespaced property tags skip partial props checks" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface IntrinsicElements { "b:c": { x: any }; } }
+        \\<b:c.x></b:c.x>;
+    );
+    defer destroySetup(s);
+    try T.expect(s.parser.diagnostics.items.len > 0);
+    s.checker.setHasParseDiagnostics(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
 }
 
 test "checker: JSX function component rejects excess children when props has named members" {
