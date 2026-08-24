@@ -29387,7 +29387,8 @@ pub const Checker = struct {
             },
             else => return null,
         }
-        return if (self.typeIsBuiltinFunctionObject(target_t)) null else target_t;
+        const apparent_t = self.typeParameterConstraint(target_t) orelse target_t;
+        return if (self.typeIsBuiltinFunctionObject(apparent_t)) null else apparent_t;
     }
 
     fn functionContextReturnDiagnosticOwnedByOuterExpression(self: *Checker, fn_node: NodeId) bool {
@@ -90651,7 +90652,9 @@ pub const Checker = struct {
             self.logicalTypeCanBeTruthy(literal_lhs_t)
         else
             self.logicalTypeCanBeFalsy(literal_lhs_t);
-        if (!rhs_reachable) return try self.checkerAssignableTo(short_circuit_t, target_t);
+        if (!rhs_reachable) {
+            return try self.expressionNodeAssignableToTarget(l.lhs, short_circuit_t, target_t);
+        }
         if (short_circuit_t != types.Primitive.never and
             !try self.checkerAssignableTo(short_circuit_t, target_t))
         {
@@ -106495,6 +106498,8 @@ pub const Checker = struct {
                         }
                     } else if (self.superReferenceHasDerivedMemberOwner(m.object)) {
                         obj_t = types.Primitive.any;
+                    } else if (self.superReferenceInObjectLiteralMember(m.object)) {
+                        obj_t = types.Primitive.any;
                     } else {
                         // See note in `call_expr` super branch: TS2466 is the
                         // canonical diagnostic for super used inside a class
@@ -107473,6 +107478,9 @@ pub const Checker = struct {
                             // member-access path above; the predicate is
                             // retained for future narrowed-context use.
                             break :blk_obj self.superPropertyObjectType(st);
+                        }
+                        if (self.superReferenceInObjectLiteralMember(e.object)) {
+                            break :blk_obj types.Primitive.any;
                         }
                         // TS2466 (super-in-computed-property-name) already covers
                         // the same root error; skip the secondary TS2335.
@@ -115982,13 +115990,14 @@ pub const Checker = struct {
         try self.report(node, TsCodes.super_property_access_only_in_derived, "'super' property access is permitted only in a constructor, member function, or member accessor of a derived class.");
     }
 
-    fn superReferenceInEs5ObjectLiteralMember(self: *Checker, node: NodeId) bool {
-        if (!self.sourceTargetMentionsEs5()) return false;
+    fn superReferenceInObjectLiteralMember(self: *Checker, node: NodeId) bool {
         var cur: NodeId = node;
         var first_fn: NodeId = hir_mod.none_node_id;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             switch (self.hir.kindOf(cur)) {
-                .fn_decl, .fn_expr, .arrow_fn => {
+                .arrow_fn => {},
+                .fn_decl, .fn_expr => {
+                    if (hir_mod.fnDeclOf(self.hir, cur).flags.is_arrow) continue;
                     if (first_fn != hir_mod.none_node_id) return false;
                     first_fn = cur;
                 },
@@ -116012,6 +116021,10 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn superReferenceInEs5ObjectLiteralMember(self: *Checker, node: NodeId) bool {
+        return self.sourceTargetMentionsEs5() and self.superReferenceInObjectLiteralMember(node);
     }
 
     fn reportSuperOnlyObjectLiteralMethodsEs2015(self: *Checker, node: NodeId) CheckError!void {
@@ -135117,6 +135130,10 @@ pub const Checker = struct {
         for (self.diagnostics.items) |d| {
             if (d.node == node and d.code == TsCodes.value_used_as_type_did_you_mean_typeof) return;
         }
+        // A named import supplied by an explicitly referenced declaration
+        // library has already established a type-space meaning. External
+        // module metadata can expose the same symbol's runtime side first.
+        if ((try self.importedReferenceLibTypeForLocal(name, node)) != null) return;
         // An unresolved-import binding is typed `any` by tsc and is
         // usable as a type — suppress TS2749 for it.
         if (self.nameBoundByUnresolvedImport(node, name)) return;
@@ -191541,7 +191558,7 @@ test "checker: React.PureComponent heritage supplies props member" {
     }
 }
 
-test "checker: React16 reference lib named type imports are permissive for JSX attrs" {
+test "checker: parity 301 React16 reference lib named type imports are permissive for JSX attrs" {
     const s = try newTsxSetup(
         \\/// <reference path="/.lib/react16.d.ts" />
         \\import React from "react";
@@ -191566,6 +191583,7 @@ test "checker: React16 reference lib named type imports are permissive for JSX a
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.value_used_as_type_did_you_mean_typeof);
     }
 }
 
@@ -261513,4 +261531,69 @@ test "checker: parity 251 strict nested callback diagnostics expand typeof and b
         }
     }
     try T.expectEqual(@as(usize, 2), expanded_count);
+}
+
+test "checker: parity 301 generic constraints contextually type call arguments" {
+    const s = try newSetup(
+        \\function foo<T extends (p: string) => number>(x: T): T {
+        \\  return undefined;
+        \\}
+        \\foo(x => x.length);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: parity 301 ES2015 object methods own super references" {
+    const s = try newSetup(
+        \\// @target: ES2015
+        \\var obj = {
+        \\  method() { super.method(); },
+        \\  get prop() { super.method(); return 1; },
+        \\  set prop(value) { super.method(); },
+        \\  p1: function () { super.method(); },
+        \\  p2: function named() { super.method(); },
+        \\  p3: () => { super.method(); }
+        \\};
+        \\class A { method() {} }
+        \\class B extends A { method() {
+        \\  return {
+        \\    method() { super.method(); },
+        \\    get prop() { super.method(); return 1; },
+        \\    set prop(value) { super.method(); },
+        \\    p1: function () { super.method(); },
+        \\    p2: function named() { super.method(); },
+        \\    p3: () => { super.method(); }
+        \\  };
+        \\} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.super_not_in_derived_member));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.super_only_object_literal_methods_es2015));
+}
+
+test "checker: parity 301 truthy imported namespaces retain node-aware assignability" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @module: commonjs
+        \\// @Filename: backbone.ts
+        \\export class Model { someData: string; }
+        \\// @Filename: moduleA.ts
+        \\import Backbone = require("./backbone");
+        \\export class VisualizationModel extends Backbone.Model {}
+        \\// @Filename: main.ts
+        \\import Backbone = require("./backbone");
+        \\import moduleA = require("./moduleA");
+        \\interface IHasVisualizationModel { VisualizationModel: typeof Backbone.Model; }
+        \\declare var i: IHasVisualizationModel;
+        \\var left: IHasVisualizationModel = i || moduleA;
+        \\var right: IHasVisualizationModel = moduleA || i;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
