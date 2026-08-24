@@ -100,7 +100,7 @@ pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
         1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
         1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
         1193, 1197, 1200, 1210, 1211, 1212, 1213, 1214, 1215, 1248,
-        1255, 1258, 1308, 1312, 1325,
+        1255, 1258, 1263, 1264, 1308, 1312, 1325,
         1341, 1358, 1368, 1450, 1451, 1473, 1474, 17012, 18006, 18013,
         18016, 18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566,
         2803, 5076, 8009, 8012,
@@ -24193,9 +24193,11 @@ test "parser: variable definite-assignment assertion reports TS1263 and TS1264" 
     var saw_1264: u32 = 0;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1263) {
+            try T.expect(!diagnosticIsSyntacticParseError(d));
             saw_1263 += 1;
             try T.expectEqualStrings("Declarations with initializers cannot also have definite assignment assertions.", d.message);
         } else if (d.code == 1264) {
+            try T.expect(!diagnosticIsSyntacticParseError(d));
             saw_1264 += 1;
             try T.expectEqualStrings("Declarations with definite assignment assertions must also have type annotations.", d.message);
         }
