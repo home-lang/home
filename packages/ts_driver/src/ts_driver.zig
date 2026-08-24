@@ -2026,6 +2026,7 @@ pub fn compileSource(
         if (has_syntactic_parse_diagnostics and
             !ts_parser.diagnosticIsSyntacticParseError(d) and
             !parserDiagnosticSurvivesParseErrors(d, source)) continue;
+        if (options.suppress_js_check_diagnostics and d.code == 8013) continue;
         if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
         // Copy parser-level related-info anchors (TS1007 matched-pair
         // hints, etc.) into the unified driver diagnostic. Parser
@@ -2172,6 +2173,7 @@ pub fn compileSource(
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setAllowJsEnabled(options.allow_js);
+    checker.setNoEmitEnabled(options.no_emit);
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
@@ -4487,6 +4489,20 @@ test "driver: unchecked allowJs still surfaces satisfies JS grammar diagnostic" 
         if (d.code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: unchecked allowJs omits non-null assertion diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\0!
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true, .importer_path = "/src/a.js" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 8013);
+    }
 }
 
 test "driver: unchecked allowJs still surfaces generic declaration JS grammar diagnostic" {

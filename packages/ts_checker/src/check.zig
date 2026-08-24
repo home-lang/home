@@ -4589,6 +4589,7 @@ pub const Checker = struct {
     parameter_annotation_index_built: bool = false,
     source_has_virtual_sections: bool = false,
     allow_js_enabled: bool = false,
+    no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
     is_tsx: bool = false,
     jsx_option_present: bool = true,
@@ -4929,6 +4930,10 @@ pub const Checker = struct {
 
     pub fn setAllowJsEnabled(self: *Checker, enabled: bool) void {
         self.allow_js_enabled = enabled;
+    }
+
+    pub fn setNoEmitEnabled(self: *Checker, enabled: bool) void {
+        self.no_emit_enabled = enabled;
     }
 
     pub fn setTsx(self: *Checker, enabled: bool) void {
@@ -22438,6 +22443,7 @@ pub const Checker = struct {
         name_node: NodeId,
         name: hir_mod.StringId,
     ) CheckError!void {
+        if (self.no_emit_enabled) return;
         const text = self.string_interner.get(name);
         const is_require_or_exports = std.mem.eql(u8, text, "require") or std.mem.eql(u8, text, "exports");
         const is_object = std.mem.eql(u8, text, "Object");
@@ -58760,14 +58766,6 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
-        if (self.sourceModuleTargetIsEsm()) {
-            try self.diagnostics.append(self.gpa, .{
-                .node = import_node,
-                .pos = self.moduleSpecifierQuotePos(import_node, spec),
-                .code = TsCodes.export_equals_requires_default_import_flag,
-                .message = "This module can only be referenced with ECMAScript imports/exports by turning on the 'allowSyntheticDefaultImports' flag and referencing its default export.",
-            });
-        }
         return true;
     }
 
@@ -205661,15 +205659,13 @@ test "checker: named import of export equals target reports default-import diagn
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var saw_2595 = false;
-    var saw_2497 = false;
     var saw_2459 = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.export_equals_named_import_default_only) saw_2595 = true;
-        if (d.code == TsCodes.export_equals_requires_default_import_flag) saw_2497 = true;
+        try T.expect(d.code != TsCodes.export_equals_requires_default_import_flag);
         if (d.code == TsCodes.module_declares_locally_not_exported) saw_2459 = true;
     }
     try T.expect(saw_2595);
-    try T.expect(saw_2497);
     try T.expect(!saw_2459);
 }
 
@@ -241300,6 +241296,12 @@ test "checker: TS2441 for top-level require/exports enum in external module" {
     }
     try T.expect(saw_require);
     try T.expect(saw_exports);
+
+    const no_emit = try newBoundSetup(src);
+    defer destroyBoundSetup(no_emit);
+    no_emit.base.checker.setNoEmitEnabled(true);
+    try no_emit.base.checker.checkSourceFile(no_emit.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(no_emit.base, TsCodes.duplicate_identifier_reserves_name));
 }
 
 // Negative ÃÂ¢ÃÂÃÂ inside a namespace the reserved names are scoped to the
