@@ -81495,7 +81495,19 @@ pub const Checker = struct {
                 break;
             }
         }
-        const ri = rest_i orelse return true;
+        const ri = rest_i orelse {
+            const min_required = self.tupleAnnotationMinRequiredCount(tuple_node);
+            if (values.len < min_required or values.len > elems.len) return false;
+            for (values, 0..) |value, i| {
+                if (value == hir_mod.none_node_id) {
+                    if (self.hir.kindOf(elems[i]) != .optional_type and
+                        !self.tupleElementHasOptionalMarker(elems[i])) return false;
+                    continue;
+                }
+                if (!try self.expressionAssignableToTypeNode(value, elems[i])) return false;
+            }
+            return true;
+        };
         const suffix_len = elems.len - ri - 1;
         if (values.len < ri + suffix_len) return false;
         var i: usize = 0;
@@ -81522,7 +81534,6 @@ pub const Checker = struct {
     fn arrayLiteralVisibleTupleAnnotationAssignmentResult(self: *Checker, value_node: NodeId, target_node: NodeId) CheckError!?bool {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .array_literal) return null;
         const tuple_node = self.visibleTupleAnnotationForIdentifier(target_node) orelse return null;
-        if (!self.tupleTypeHasRestElement(tuple_node)) return null;
         return try self.checkArrayLiteralAgainstTupleAnnotation(value_node, tuple_node);
     }
 
@@ -222264,6 +222275,23 @@ test "checker: spread optional tuple element is checked against fixed parameter"
         if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: optional tuple assignments accept holes and trailing elements" {
+    const s = try newSetup(
+        \\type Some = [number, string?, boolean?];
+        \\type All = [number?, string?, boolean?];
+        \\let some: Some;
+        \\let all: All;
+        \\some = [42, , true];
+        \\all = [42, , true];
+        \\all = [, "hello", true];
+        \\all = [, , true];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: union tuple spread into fixed parameters reports TS2556" {
