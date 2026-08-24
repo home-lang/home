@@ -80977,9 +80977,16 @@ pub const Checker = struct {
     ) !bool {
         const elements = hir_mod.arrayLiteralElements(self.hir, init_node);
         const fixed_prefix = self.tupleFixedPrefixCount(target);
-        if (elements.len < fixed_prefix) return false;
-        if (self.fixedTupleLength(target)) |len| {
-            if (elements.len > len) return false;
+        const source_fixed_len = try self.fixedArrayLiteralTupleLength(init_node);
+        if (source_fixed_len) |source_len| {
+            if (source_len < fixed_prefix) return false;
+            if (self.fixedTupleLength(target)) |target_len| {
+                if (source_len > target_len) return false;
+            }
+        } else if (self.fixedTupleLength(target) != null) {
+            // An open spread cannot satisfy a fixed tuple because its arity is
+            // not statically known. The whole assignment owns that diagnostic.
+            return false;
         }
         // Collect ALL element mismatches before returning, so tuple
         // assignability emits one TS2322 per misaligned element rather
@@ -80987,9 +80994,49 @@ pub const Checker = struct {
         // `var a1: [boolean, string, number] = ["string", 1, true]`
         // emits three separate TS2322 diagnostics ÃÂ¢ÃÂÃÂ one per element.
         var any_mismatch = false;
-        for (elements, 0..) |el, i| {
+        var target_index: usize = 0;
+        for (elements) |el| {
             if (el == hir_mod.none_node_id) continue;
-            const tgt_t = self.tupleElementType(target, i);
+            if (self.hir.kindOf(el) == .spread) {
+                const spread = hir_mod.spreadOf(self.hir, el);
+                var spread_t = self.hir.typeOf(spread.expression);
+                if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread.expression);
+                if (self.actualTupleLength(spread_t)) |spread_len_raw| {
+                    const spread_len: usize = @intCast(spread_len_raw);
+                    for (0..spread_len) |spread_index| {
+                        const source_t = self.tupleElementType(spread_t, spread_index);
+                        const target_t = self.tupleElementType(target, target_index);
+                        target_index += 1;
+                        if (target_t == types.Primitive.none) {
+                            if (self.fixedTupleLength(target) != null) any_mismatch = true;
+                            continue;
+                        }
+                        if (try self.checkerAssignableTo(source_t, target_t)) continue;
+                        if (emit_element_diagnostic) {
+                            try self.reportTypeNotAssignable(el, source_t, target_t, "Type is not assignable to tuple element type.");
+                        }
+                        any_mismatch = true;
+                    }
+                    continue;
+                }
+
+                const target_rest_t = self.interner.objectNumberIndex(target);
+                if (target_rest_t == types.Primitive.none) return false;
+                const source_number_t = self.interner.objectNumberIndex(spread_t);
+                const source_elem_t = if (source_number_t != types.Primitive.none)
+                    source_number_t
+                else
+                    try self.iterableElementType(spread_t);
+                if (source_elem_t == types.Primitive.none or
+                    !try self.checkerAssignableTo(source_elem_t, target_rest_t))
+                {
+                    any_mismatch = true;
+                }
+                continue;
+            }
+
+            const tgt_t = self.tupleElementType(target, target_index);
+            target_index += 1;
             if (tgt_t == types.Primitive.none) {
                 // A tuple-shaped target that is NOT a fixed-arity tuple —
                 // a plain object with sparse numeric-named members such as
@@ -180148,23 +180195,10 @@ pub const Checker = struct {
         for (hir_mod.arrayLiteralElements(self.hir, init_node)) |el| {
             if (el == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(el) == .spread) {
-                const sp = hir_mod.spreadOf(self.hir, el);
-                var spread_t = self.hir.typeOf(sp.expression);
-                if (spread_t == types.Primitive.none) {
-                    spread_t = try self.checkExpression(sp.expression);
-                }
-                const number_elem_t = self.interner.objectNumberIndex(spread_t);
-                const spread_elem_t = if (number_elem_t != types.Primitive.none)
-                    number_elem_t
-                else
-                    try self.iterableElementType(spread_t);
-                if (spread_elem_t != types.Primitive.none and
-                    spread_elem_t != types.Primitive.any and
-                    spread_elem_t != types.Primitive.unknown and
-                    !(self.engine.isAssignableTo(spread_elem_t, elem_t) catch return error.OutOfMemory))
-                {
-                    try self.reportTypeNotAssignable(el, spread_elem_t, elem_t, "Type is not assignable to array element type.");
-                }
+                // A spread contributes a rest/variadic segment to the array
+                // literal relation. tsgo keeps failures in that segment on
+                // the whole assignment instead of elaborating one synthetic
+                // element diagnostic at the spread token.
                 continue;
             }
             if (self.hir.kindOf(el) == .arrow_fn or self.hir.kindOf(el) == .fn_expr) {
@@ -219688,6 +219722,36 @@ test "checker: array spread of T[] yields T[]" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: tuple spreads preserve contextual positions and open spreads report whole assignments" {
+    const b = try newBoundSetup(
+        \\const numbers = [1, 2, 3];
+        \\const strings = ["s", "t", "r"];
+        \\const pair: [number[], string[]] = [numbers, strings];
+        \\interface PairLike {
+        \\  0: number[] | string[];
+        \\  1: number[] | string[];
+        \\}
+        \\interface NumberArray extends Array<Number> {}
+        \\const accepted: PairLike = [...pair];
+        \\const tupleError: [number, number, number] = [...numbers];
+        \\const arrayError: NumberArray = [...numbers, ...strings];
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type 'number[]' is not assignable to type '[number, number, number]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type '(string | number)[]' is not assignable to type 'NumberArray'.",
+    ));
 }
 
 test "checker: array spread rejects non-iterable object" {
