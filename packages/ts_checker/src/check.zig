@@ -58609,6 +58609,7 @@ pub const Checker = struct {
                 self.programAmbientModuleInterfaceExportsName(spec, sp.imported))
             {
                 if (imp.is_type_only or sp.is_type_only) continue;
+                if (self.externalModuleNamedExportRuntimeStatus(node, spec, sp.imported) == .value) continue;
                 if (self.virtualSectionIsJsLike(node)) {
                     try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
                 } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
@@ -76381,7 +76382,7 @@ pub const Checker = struct {
                     .exported_root = self.string_interner.intern("default") catch return error.OutOfMemory,
                 };
             }
-            if (imp.default_binding != hir_mod.none_node_id and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(stmt) and
+            if (imp.default_binding != hir_mod.none_node_id and self.importDeclIsRequireAssignment(stmt) and
                 self.hir.kindOf(imp.default_binding) == .identifier and
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
@@ -95959,7 +95960,7 @@ pub const Checker = struct {
                         }
                     }
                     if (try self.repeatedVarDistinctPrivateClassAnnotations(node, prior_annotation, v.type_annotation)) {
-                        annotation_text_mismatch = .{
+                        annotation_text_mismatch = qualified_private_text_mismatch orelse .{
                             .prior = self.annotationSourceText(prior_annotation) orelse "unknown",
                             .current = self.annotationSourceText(v.type_annotation) orelse "unknown",
                         };
@@ -97093,11 +97094,24 @@ pub const Checker = struct {
         }
         const prior_ref = hir_mod.typeRefOf(self.hir, prior_annotation);
         const current_ref = hir_mod.typeRefOf(self.hir, current_annotation);
-        if (prior_ref.qualifier_len != 0 or current_ref.qualifier_len != 0 or prior_ref.name == current_ref.name) {
-            return false;
+        const prior_class = if (prior_ref.qualifier_len != 0)
+            self.importEqualsTargetDecl(prior_annotation) orelse hir_mod.none_node_id
+        else
+            self.findClassDeclByName(anchor, prior_ref.name);
+        const current_class = if (current_ref.qualifier_len != 0)
+            self.importEqualsTargetDecl(current_annotation) orelse hir_mod.none_node_id
+        else
+            self.findClassDeclByName(anchor, current_ref.name);
+        if ((prior_class == hir_mod.none_node_id or current_class == hir_mod.none_node_id) and
+            prior_ref.qualifier_len != 0 and current_ref.qualifier_len != 0 and
+            prior_ref.name == current_ref.name and
+            !self.typeRefQualifiersNameEqual(
+                self.hir.childSlice(prior_ref.qualifier_start, prior_ref.qualifier_len),
+                self.hir.childSlice(current_ref.qualifier_start, current_ref.qualifier_len),
+            ))
+        {
+            return try self.hasMultiplePrivateClassDeclarationsNamed(prior_ref.name);
         }
-        const prior_class = self.findClassDeclByName(anchor, prior_ref.name);
-        const current_class = self.findClassDeclByName(anchor, current_ref.name);
         if (prior_class == hir_mod.none_node_id or current_class == hir_mod.none_node_id or prior_class == current_class) {
             return false;
         }
@@ -97111,6 +97125,27 @@ pub const Checker = struct {
         if (!prior_has_private) return false;
         for (hir_mod.classMembers(self.hir, current_class)) |member| {
             if ((try self.privateOrProtectedClassMemberName(member)) != null) return true;
+        }
+        return false;
+    }
+
+    fn hasMultiplePrivateClassDeclarationsNamed(self: *Checker, name: hir_mod.StringId) CheckError!bool {
+        var found: NodeId = hir_mod.none_node_id;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            if (self.declarationName(node) != name) continue;
+            var has_private = false;
+            for (hir_mod.classMembers(self.hir, node)) |member| {
+                if ((try self.privateOrProtectedClassMemberName(member)) != null) {
+                    has_private = true;
+                    break;
+                }
+            }
+            if (!has_private) continue;
+            if (found != hir_mod.none_node_id and found != node) return true;
+            found = node;
         }
         return false;
     }
@@ -102826,6 +102861,7 @@ pub const Checker = struct {
                 },
             });
         }
+        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
@@ -102868,7 +102904,7 @@ pub const Checker = struct {
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = self.string_interner.intern(exported_class.target_path) catch return error.OutOfMemory;
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
@@ -102928,15 +102964,52 @@ pub const Checker = struct {
                 },
             });
         }
+        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const display = if (exported_class.is_default)
             try self.programDefaultClassDisplayName(exported_class.target_path)
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = self.string_interner.intern(exported_class.target_path) catch return error.OutOfMemory;
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         return instance_t;
+    }
+
+    fn appendSyntheticProgramClassNominalBrand(
+        self: *Checker,
+        exported_class: ProgramExportedClass,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        var nominal = false;
+        for (exported_class.members) |member| {
+            if (member.visibility != .public) {
+                nominal = true;
+                break;
+            }
+        }
+        if (!nominal) return;
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
+        const origin_text = self.string_interner.get(origin);
+        const brand_text = try std.fmt.allocPrint(self.diag_arena.allocator(), "__home_class_origin_{s}", .{origin_text});
+        const brand = self.string_interner.intern(brand_text) catch return error.OutOfMemory;
+        try members.append(self.gpa, .{
+            .name = brand,
+            .type = types.Primitive.never,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+            .visibility = .private,
+        });
+    }
+
+    fn syntheticProgramClassOrigin(self: *Checker, exported_class: ProgramExportedClass) CheckError!hir_mod.StringId {
+        const text = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}::{s}::{s}",
+            .{ exported_class.target_path, exported_class.ambient_module_name, exported_class.class_name },
+        );
+        return self.string_interner.intern(text) catch error.OutOfMemory;
     }
 
     fn programDefaultClassDisplayName(self: *Checker, path: []const u8) CheckError![]const u8 {
@@ -140168,8 +140241,30 @@ pub const Checker = struct {
         for (self.program_global_var_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw)) return true;
         }
+        if (self.declareGlobalBlockHasValue(name)) return true;
         return self.rootHasVarDeclarationNamed(anchor, name) or
             self.rootHasFunctionDeclarationNamed(anchor, name);
+    }
+
+    fn declareGlobalBlockHasValue(self: *Checker, name: hir_mod.StringId) bool {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .namespace_decl and kind != .module_decl) continue;
+            const namespace = hir_mod.namespaceOf(self.hir, node);
+            if (namespace.name == hir_mod.none_node_id or self.hir.kindOf(namespace.name) != .identifier) continue;
+            const namespace_name = hir_mod.identifierOf(self.hir, namespace.name).name;
+            if (!std.mem.eql(u8, self.string_interner.get(namespace_name), "global")) continue;
+            for (hir_mod.namespaceBody(self.hir, node)) |raw| {
+                const declaration = self.unwrapExportDecl(raw);
+                if (declaration == hir_mod.none_node_id or self.declarationName(declaration) != name) continue;
+                switch (self.hir.kindOf(declaration)) {
+                    .var_decl, .let_decl, .const_decl, .fn_decl, .class_decl, .enum_decl => return true,
+                    else => {},
+                }
+            }
+        }
+        return false;
     }
 
     fn globalWindowReceiverIncludesGlobalProperties(self: *Checker, object_node: NodeId) bool {
@@ -190480,6 +190575,7 @@ test "checker: isolatedModules reports global value conflicts for type-only impo
     try T.expectEqual(@as(usize, 2), ts2866);
     try T.expectEqual(@as(usize, 0), ts1361);
     try T.expectEqual(@as(usize, 0), ts1362);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
 }
 
 test "checker: relative self imports preserve arbitrary string exports" {
@@ -200971,6 +201067,47 @@ test "checker: repeated var declarations require identical annotated types" {
         if (d.code == TsCodes.subsequent_var_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: repeated imported private classes retain qualified origin" {
+    const s = try newSetup(
+        \\declare module "mod1" { class Foo { private n; } }
+        \\declare module "mod2" { class Foo { private n; } }
+        \\import m1 = require("mod1");
+        \\import m2 = require("mod2");
+        \\var x: m1.Foo;
+        \\var x: m2.Foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const message = checkerFirstMessageForCode(s, TsCodes.subsequent_var_type_mismatch) orelse
+        return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Subsequent variable declarations must have the same type.  Variable 'x' must be of type 'Foo', but here has type 'Foo'.",
+        message,
+    );
+}
+
+test "checker: program ambient require namespaces retain private class origin" {
+    const s = try newSetup(
+        \\import m1 = require("mod1");
+        \\import m2 = require("mod2");
+        \\var x: m1.Foo;
+        \\var x: m2.Foo;
+    );
+    defer destroySetup(s);
+    const private_member = [_]ProgramExportedClassMember{.{
+        .name = "n",
+        .type_name = "any",
+        .visibility = .private,
+    }};
+    const classes = [_]ProgramExportedClass{
+        .{ .target_path = "/decls.ts", .ambient_module_name = "mod1", .class_name = "Foo", .members = &private_member },
+        .{ .target_path = "/decls.ts", .ambient_module_name = "mod2", .class_name = "Foo", .members = &private_member },
+    };
+    s.checker.setProgramExportedClasses(&classes);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: repeated structural vars and for-head typeof share the hoisted type" {

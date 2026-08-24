@@ -4993,10 +4993,105 @@ pub fn ambientModuleExportFacts(
         if (!moduleNameMatchesSpecifier(module_name, specifier)) continue;
         found_module = true;
         if (name_id) |id| {
-            collectAmbientModuleExportFacts(&compilation.hir, id, hir_mod_ns.namespaceBody(&compilation.hir, local), true, &facts);
+            const body = hir_mod_ns.namespaceBody(&compilation.hir, local);
+            collectAmbientModuleExportFacts(&compilation.hir, id, body, true, &facts);
+            if (ambientExportAssignmentHasValueMember(&compilation.hir, body, id)) {
+                facts.exported_value = true;
+            }
         }
     }
     return if (found_module) facts else null;
+}
+
+fn ambientExportAssignmentHasValueMember(
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+    member_name: hir_mod_ns.StringId,
+) bool {
+    const target_name = ambientExportAssignmentTargetName(hir, stmts) orelse return false;
+    const target_type = ambientNestedValueTypeName(hir, stmts, target_name) orelse return false;
+    return ambientNestedInterfaceHasMember(hir, stmts, target_type, member_name);
+}
+
+fn ambientExportAssignmentTargetName(
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+) ?hir_mod_ns.StringId {
+    for (stmts) |raw| {
+        if (hir.kindOf(raw) != .export_decl) continue;
+        const export_decl = hir_mod_ns.exportOf(hir, raw);
+        if (!export_decl.is_export_equals or export_decl.decl == hir_mod_ns.none_node_id) continue;
+        return switch (hir.kindOf(export_decl.decl)) {
+            .identifier => hir_mod_ns.identifierOf(hir, export_decl.decl).name,
+            .member_access => hir_mod_ns.memberOf(hir, export_decl.decl).name,
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn ambientNestedValueTypeName(
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+    value_name: hir_mod_ns.StringId,
+) ?hir_mod_ns.StringId {
+    for (stmts) |raw| {
+        const declaration = if (hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(hir, raw).decl
+        else
+            raw;
+        if (declaration == hir_mod_ns.none_node_id) continue;
+        switch (hir.kindOf(declaration)) {
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod_ns.varDeclOf(hir, declaration);
+                if (variable.name == hir_mod_ns.none_node_id or hir.kindOf(variable.name) != .identifier or
+                    hir_mod_ns.identifierOf(hir, variable.name).name != value_name or
+                    variable.type_annotation == hir_mod_ns.none_node_id or
+                    hir.kindOf(variable.type_annotation) != .type_ref) continue;
+                const type_ref = hir_mod_ns.typeRefOf(hir, variable.type_annotation);
+                if (type_ref.qualifier_len == 0) return type_ref.name;
+            },
+            .namespace_decl, .module_decl => {
+                if (ambientNestedValueTypeName(hir, hir_mod_ns.namespaceBody(hir, declaration), value_name)) |name| return name;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn ambientNestedInterfaceHasMember(
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+    interface_name: hir_mod_ns.StringId,
+    member_name: hir_mod_ns.StringId,
+) bool {
+    for (stmts) |raw| {
+        const declaration = if (hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(hir, raw).decl
+        else
+            raw;
+        if (declaration == hir_mod_ns.none_node_id) continue;
+        switch (hir.kindOf(declaration)) {
+            .interface_decl => {
+                if (declarationName(hir, declaration) != interface_name) continue;
+                for (hir_mod_ns.interfaceMembers(hir, declaration)) |member| {
+                    if (hir.kindOf(member) != .interface_member) continue;
+                    if (hir_mod_ns.interfaceMemberOf(hir, member).name == member_name) return true;
+                }
+            },
+            .namespace_decl, .module_decl => {
+                if (ambientNestedInterfaceHasMember(
+                    hir,
+                    hir_mod_ns.namespaceBody(hir, declaration),
+                    interface_name,
+                    member_name,
+                )) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn moduleNameMatchesSpecifier(pattern: []const u8, spec: []const u8) bool {
@@ -7105,6 +7200,21 @@ test "ambientModuleExportFacts keeps exported interfaces out of value space" {
     const function_facts = ambientModuleExportFacts(T.allocator, source, "fs", "writeFile", false).?;
     try T.expect(!function_facts.exported_type);
     try T.expect(function_facts.exported_value);
+}
+
+test "ambient export assignment projects declared global value members" {
+    const source =
+        \\declare module "node:console" {
+        \\  global {
+        \\    interface Console { Console: console.ConsoleConstructor; }
+        \\    namespace console { interface ConsoleConstructor { new (): Console; } }
+        \\    var console: Console;
+        \\  }
+        \\  export = globalThis.console;
+        \\}
+    ;
+    const facts = ambientModuleExportFacts(T.allocator, source, "node:console", "Console", false).?;
+    try T.expect(facts.exported_value);
 }
 
 test "module export facts follow explicit typesVersions back-references" {
