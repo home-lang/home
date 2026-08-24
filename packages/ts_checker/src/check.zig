@@ -124690,6 +124690,13 @@ pub const Checker = struct {
         {
             return false;
         }
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (source_flags.is_union or source_flags.is_intersection or
+            target_flags.is_union or target_flags.is_intersection)
+        {
+            return false;
+        }
         const source_members = self.interner.objectMembers(source_t);
         for (self.interner.objectMembers(target_t)) |tm| {
             if (tm.is_optional or tm.is_method) continue;
@@ -259522,10 +259529,12 @@ test "checker: fresh object unions normalize arrays and generic rest candidates"
         \\correlated = { a: "def", b: 20 };
         \\correlated = { a: 1 };
         \\declare function choose<T>(...items: T[]): T;
+        \\declare function collect<T>(...items: T[]): T[];
         \\declare let data: { a: 1, b: "abc", c: true };
         \\choose({ a: 1, b: 2 }, { a: "abc" }, {});
         \\choose(data, { a: 2 });
         \\choose({ a: 2 }, data);
+        \\let objects: { x: boolean }[] = collect({ x: true }, { x: false });
     );
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
