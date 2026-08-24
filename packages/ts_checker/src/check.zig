@@ -24942,6 +24942,26 @@ pub const Checker = struct {
                 // Computed keys reference identifiers; skip the name slot.
                 if (op.is_computed) try self.collectIdentifierRefs(op.key, out);
             },
+            .jsx_element, .jsx_self_closing => {
+                const element = hir_mod.jsxElementOf(self.hir, node);
+                if (!self.jsxTagIsIntrinsic(element.tag)) {
+                    try self.collectIdentifierRefs(element.tag, out);
+                }
+                for (hir_mod.jsxAttrs(self.hir, node)) |attr| {
+                    switch (self.hir.kindOf(attr)) {
+                        .jsx_attribute => try self.collectIdentifierRefs(hir_mod.jsxAttributeOf(self.hir, attr).value, out),
+                        .jsx_spread_attribute => try self.collectIdentifierRefs(hir_mod.jsxSpreadAttributeOf(self.hir, attr).expression, out),
+                        else => {},
+                    }
+                }
+                for (hir_mod.jsxChildren(self.hir, node)) |child| {
+                    try self.collectIdentifierRefs(child, out);
+                }
+            },
+            .jsx_fragment => for (hir_mod.jsxFragmentChildren(self.hir, node)) |child| {
+                try self.collectIdentifierRefs(child, out);
+            },
+            .jsx_expression => try self.collectIdentifierRefs(hir_mod.jsxExpressionOf(self.hir, node).expression, out),
             else => {},
         }
     }
@@ -204335,6 +204355,18 @@ test "checker: noUnusedLocals reports unread functions in external modules" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.declared_but_not_read));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.declared_but_not_read, "'first' is declared but its value is never read."));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.declared_but_not_read, "'second' is declared but its value is never read."));
+}
+
+test "checker: noUnusedLocals counts JSX component tags as value reads" {
+    const s = try newTsxSetup(
+        \\export {};
+        \\function Component() { return null; }
+        \\<Component />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_locals = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.declared_but_not_read));
 }
 
 test "checker: noUnusedLocals reports unread namespace-local class" {
