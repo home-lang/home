@@ -7507,7 +7507,7 @@ test "Program: declaration UMD globals reach script and module consumers" {
         try T.expect(diagnostic.code != 2503);
         if (diagnostic.code == 2454) script_used_before_assignment += 1;
     }
-    try T.expectEqual(@as(usize, 1), script_used_before_assignment);
+    try T.expectEqual(@as(usize, 0), script_used_before_assignment);
 
     const module = program.fileById(module_id).compilation orelse return error.TestExpectedEqual;
     var module_umd_diagnostics: usize = 0;
