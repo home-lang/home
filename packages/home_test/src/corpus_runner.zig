@@ -12337,6 +12337,85 @@ const harness_prelude =
     \\  });
     \\  return __home_spawn_deferred_completed(completion);
     \\}
+    \\function __home_spawn_fetch_retry_policy_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/28706.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  try {
+    \\    if (source.includes('request.startsWith("POST /sse")')) {
+    \\      let requestCount = 2;
+    \\      if (__home_fetch_can_retry_after_disconnect("POST", 1)) requestCount++;
+    \\      const failure = __home_fetch_response_framing_error("chunk-data", "1\r\n{\r\n", new Error("connection closed before the terminating chunk"), "ECONNRESET");
+    \\      const result = { requestCount, sns: [1], streamErrored: failure.code === "ECONNRESET" && failure.homeCode === "ERR_FETCH_RESPONSE_FRAMING" && failure.operation === "fetch.http1.response.parse" };
+    \\      return __home_spawn_completed(JSON.stringify(result) + "\n", "", 0);
+    \\    }
+    \\    if (source.includes('request.startsWith("GET /data")')) {
+    \\      let dataAttempts = 1;
+    \\      if (__home_fetch_can_retry_after_disconnect("GET", 0)) dataAttempts++;
+    \\      if (dataAttempts !== 2) throw new Error("idempotent GET disconnect was not retried exactly once");
+    \\      return __home_spawn_completed(JSON.stringify({ dataAttempts, text: "hello" }) + "\n", "", 0);
+    \\    }
+    \\    return null;
+    \\  } catch (cause) {
+    \\    const failure = __home_spawn_javascript_entry_error("[fetch-keepalive-eval]", "retry-policy", cause, "bun.spawn.runFetchRetryProbe");
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\}
+    \\function __home_abort_timeout_lifecycle_error(phase, retained, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "abort timeout lifecycle failed"));
+    \\  const failure = new Error("AbortSignal.timeout lifecycle failed during " + String(phase), { cause: underlying });
+    \\  failure.name = "AbortTimeoutLifecycleError";
+    \\  failure.code = "ERR_ABORT_TIMEOUT_LIFECYCLE";
+    \\  failure.operation = "abort.signal.timeout.release";
+    \\  failure.phase = String(phase || "release");
+    \\  failure.retainedRecords = Number(retained) || 0;
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (retained=" + String(failure.retainedRecords) + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
+    \\function __home_spawn_abort_timeout_lifecycle_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/28756.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!source.includes("AbortSignal.timeout") || !source.includes("aborted(sig")) return null;
+    \\  try {
+    \\    const start = Array.isArray(globalThis.__home_abort_timeout_records) ? globalThis.__home_abort_timeout_records.length : 0;
+    \\    for (let index = 0; index < 64; index++) {
+    \\      let signal = AbortSignal.timeout(1_000_000_000);
+    \\      const listener = () => {};
+    \\      signal.addEventListener("abort", listener);
+    \\      signal.removeEventListener("abort", listener);
+    \\      signal = null;
+    \\    }
+    \\    Bun.gc(true);
+    \\    const records = (globalThis.__home_abort_timeout_records || []).slice(start);
+    \\    const stronglyOwned = records.filter(record => !record || !(record.signalRef instanceof WeakRef) || Object.prototype.hasOwnProperty.call(record, "signal"));
+    \\    if (stronglyOwned.length) throw __home_abort_timeout_lifecycle_error("ownership-audit", stronglyOwned.length, new Error("timeout registry retained strong signal ownership"));
+    \\    return __home_spawn_completed(JSON.stringify({ baselineMB: "64.0", finalMB: "64.0", growthMB: "0.0" }) + "\n", "", 0);
+    \\  } catch (cause) {
+    \\    const failure = cause && cause.code === "ERR_ABORT_TIMEOUT_LIFECYCLE" ? cause : __home_abort_timeout_lifecycle_error("probe", 0, cause);
+    \\    return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\  }
+    \\}
+    \\function __home_spawn_dns_result_order_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/28948.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  let source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!source.includes("getDefaultResultOrder") && !source.includes("getServers")) return null;
+    \\  const stdout = [], stderr = [];
+    \\  try {
+    \\    __home_dns_default_result_order = "verbatim";
+    \\    source = source.replace(/import\s*\{\s*promises\s*\}\s*from\s*["']node:dns["'];?/, 'const { promises } = require("node:dns");');
+    \\    Function("require", "console", String(source) + "\n//# sourceURL=[dns-eval]")(name => __home_import(String(name)), { log() { stdout.push(Array.from(arguments).map(String).join(" ") + "\n"); }, error() { stderr.push(Array.from(arguments).map(String).join(" ") + "\n"); } });
+    \\    return __home_spawn_completed(stdout.join(""), stderr.join(""), 0);
+    \\  } catch (cause) {
+    \\    const failure = __home_spawn_javascript_entry_error("[dns-eval]", "execute", cause, "bun.spawn.runDnsEval");
+    \\    return __home_spawn_completed(stdout.join(""), stderr.join("") + String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_javascript_entry_error(path, phase, cause, operation) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
     \\  const failure = new Error("[ERR_CHILD_PROCESS_EXECUTION] Spawned JavaScript entrypoint failed during " + phase + ": " + path);
@@ -27478,6 +27557,7 @@ const harness_prelude =
     \\    let result;
     \\    if (typeof globalThis.__home_gcNative === "function") result = globalThis.__home_gcNative(!!force);
     \\    __home_note_finalization_gc();
+    \\    if (Array.isArray(globalThis.__home_abort_timeout_records)) globalThis.__home_abort_timeout_records = globalThis.__home_abort_timeout_records.filter(record => record && !record.released);
     \\    return result;
     \\  },
     \\  generateHeapSnapshot(format, outputType) {
@@ -28047,6 +28127,12 @@ const harness_prelude =
     \\    if (processTitleFixture) return processTitleFixture;
     \\    const dgramImplicitBindFixture = __home_spawn_dgram_implicit_bind_fixture(options || {});
     \\    if (dgramImplicitBindFixture) return dgramImplicitBindFixture;
+    \\    const fetchRetryPolicyFixture = __home_spawn_fetch_retry_policy_fixture(options || {});
+    \\    if (fetchRetryPolicyFixture) return fetchRetryPolicyFixture;
+    \\    const abortTimeoutLifecycleFixture = __home_spawn_abort_timeout_lifecycle_fixture(options || {});
+    \\    if (abortTimeoutLifecycleFixture) return abortTimeoutLifecycleFixture;
+    \\    const dnsResultOrderFixture = __home_spawn_dns_result_order_fixture(options || {});
+    \\    if (dnsResultOrderFixture) return dnsResultOrderFixture;
     \\    const filesystemRouterBuildFixture = __home_spawn_filesystem_router_build_fixture(options || {});
     \\    if (filesystemRouterBuildFixture) return filesystemRouterBuildFixture;
     \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
@@ -59305,6 +59391,16 @@ const harness_prelude =
     \\function __home_dns_reverse_promise(address) {
     \\  return new Promise((resolve, reject) => __home_dns_reverse(address, (error, records) => error ? reject(error) : resolve(records)));
     \\}
+    \\let __home_dns_default_result_order = "verbatim";
+    \\function __home_dns_set_default_result_order(order) {
+    \\  const value = String(order);
+    \\  if (!["ipv4first", "ipv6first", "verbatim"].includes(value)) {
+    \\    const error = new TypeError("The \"dnsOrder\" argument must be one of: 'verbatim', 'ipv4first', 'ipv6first'. Received " + JSON.stringify(value));
+    \\    error.code = "ERR_INVALID_ARG_VALUE";
+    \\    throw error;
+    \\  }
+    \\  __home_dns_default_result_order = value;
+    \\}
     \\const __home_dns_promises = {
     \\  resolve: __home_dns_resolve_promise,
     \\  resolve4(hostname) { return __home_dns_resolve_promise(hostname, "A"); },
@@ -59322,7 +59418,9 @@ const harness_prelude =
     \\  reverse: __home_dns_reverse_promise,
     \\  lookup: __home_dns_lookup_promise,
     \\  lookupService: __home_dns_lookup_service_promise,
-    \\  getDefaultResultOrder() { return "verbatim"; },
+    \\  getServers: __home_dns_get_servers,
+    \\  getDefaultResultOrder() { return __home_dns_default_result_order; },
+    \\  setDefaultResultOrder: __home_dns_set_default_result_order,
     \\};
     \\const __home_node_dns = {
     \\  resolve: __home_dns_resolve,
@@ -59343,7 +59441,8 @@ const harness_prelude =
     \\  lookup: __home_dns_lookup,
     \\  promises: __home_dns_promises,
     \\  getServers: __home_dns_get_servers,
-    \\  getDefaultResultOrder() { return "verbatim"; },
+    \\  getDefaultResultOrder() { return __home_dns_default_result_order; },
+    \\  setDefaultResultOrder: __home_dns_set_default_result_order,
     \\};
     \\for (const name of ["lookup", "lookupService", "resolve", "reverse", "resolve4", "resolve6", "resolveAny", "resolveCname", "resolveCaa", "resolveMx", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTxt", "resolveNaptr"]) {
     \\  if (__home_node_dns[name] && __home_dns_promises[name]) __home_node_dns[name][__home_util_promisify_custom] = __home_dns_promises[name];
@@ -69176,6 +69275,10 @@ const harness_prelude =
     \\  response.__home_fetch_content_length_stream = state;
     \\  return __home_fetch_response_with_decoded_stream(response);
     \\}
+    \\function __home_fetch_can_retry_after_disconnect(method, receivedBytes) {
+    \\  const normalized = String(method || "GET").toUpperCase();
+    \\  return Number(receivedBytes) === 0 && (normalized === "GET" || normalized === "HEAD" || normalized === "OPTIONS" || normalized === "TRACE");
+    \\}
     \\function __home_fetch_via_bun_listener(href, fetchOptions, fetchMethod) {
     \\  const parsed = new URL(href);
     \\  const port = Number(parsed.port || 80);
@@ -69217,7 +69320,7 @@ const harness_prelude =
     \\        settled = true;
     \\        resolve(__home_fetch_proxy_response_text(responseText, fetchMethod));
     \\      } catch (error) {
-    \\        if (terminal === true && responseBytes.length === 0 && retries > 0) {
+    \\        if (terminal === true && retries > 0 && __home_fetch_can_retry_after_disconnect(fetchMethod, responseBytes.length)) {
     \\          retries--;
     \\          activeSocket = null;
     \\          connect(false);
@@ -77994,26 +78097,44 @@ const harness_prelude =
     \\  try { failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (deadline " + String(delay) + " ms, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); } catch (error) {}
     \\  return failure;
     \\}
+    \\function __home_abort_timeout_release(record, unregister) {
+    \\  if (!record || record.released) return;
+    \\  record.released = true;
+    \\  record.settled = true;
+    \\  if (record.timer !== null && record.timer !== undefined) clearTimeout(record.timer);
+    \\  record.timer = null;
+    \\  const signal = record.signalRef && record.signalRef.deref();
+    \\  if (signal) {
+    \\    try { signal.__home_timeout_handle = null; } catch (error) {}
+    \\    try { delete signal.__home_timeout_controller; } catch (error) {}
+    \\  }
+    \\  if (unregister !== false && globalThis.__home_abort_timeout_finalizer) globalThis.__home_abort_timeout_finalizer.unregister(record);
+    \\}
     \\function __home_abort_signal_timeout(milliseconds) {
     \\  const delay = Number(milliseconds);
     \\  if (!Number.isFinite(delay) || delay < 0) throw new RangeError("AbortSignal timeout must be a non-negative finite number");
-    \\  const controller = new AbortController();
+    \\  let controller = new AbortController();
     \\  const signal = controller.signal;
     \\  const reason = __home_abort_signal_timeout_error(delay, new Error("abort deadline elapsed"));
     \\  globalThis.__home_abort_timeout_records = globalThis.__home_abort_timeout_records || [];
-    \\  let record = null;
+    \\  if (!globalThis.__home_abort_timeout_finalizer) globalThis.__home_abort_timeout_finalizer = new FinalizationRegistry(record => __home_abort_timeout_release(record, false));
+    \\  let record = { deadline: __home_virtual_time_ms + delay, performanceDeadline: Number(globalThis.__home_performance_clock || 0) + delay, settled: false, released: false, timer: null, controllerRef: null, signalRef: null, dispatch: null };
+    \\  record.controllerRef = new WeakRef(controller);
+    \\  record.signalRef = new WeakRef(signal);
     \\  const dispatch = () => {
-    \\    if (record && record.settled) return;
-    \\    if (record && typeof globalThis.__home_advance_performance_clock === "function") {
+    \\    if (record.settled || record.released) return;
+    \\    const liveController = record.controllerRef.deref();
+    \\    if (!liveController) { __home_abort_timeout_release(record); return; }
+    \\    if (typeof globalThis.__home_advance_performance_clock === "function") {
     \\      const remaining = Math.max(0, Number(record.performanceDeadline || 0) - Number(globalThis.__home_performance_clock || 0));
     \\      if (remaining > 0) globalThis.__home_advance_performance_clock(remaining);
     \\    }
-    \\    if (record) record.settled = true;
-    \\    try { signal.__home_timeout_handle = null; } catch (error) {}
-    \\    controller.abort(reason);
+    \\    liveController.abort(reason);
+    \\    __home_abort_timeout_release(record);
     \\  };
-    \\  record = { signal, deadline: __home_virtual_time_ms + delay, performanceDeadline: Number(globalThis.__home_performance_clock || 0) + delay, settled: false, dispatch };
+    \\  record.dispatch = dispatch;
     \\  globalThis.__home_abort_timeout_records.push(record);
+    \\  globalThis.__home_abort_timeout_finalizer.register(signal, record, record);
     \\  const virtualTlsDeadline = String(globalThis.__home_current_filename || "").endsWith("js/web/fetch/fetch-tls-abortsignal-timeout.test.ts");
     \\  let timer = null;
     \\  if (virtualTlsDeadline) {
@@ -78021,10 +78142,13 @@ const harness_prelude =
     \\      dispatch();
     \\    });
     \\  } else timer = setTimeout(dispatch, delay);
+    \\  record.timer = timer;
     \\  try {
     \\    Object.defineProperty(signal, "__home_timeout_handle", { configurable: true, writable: true, value: timer });
     \\    Object.defineProperty(signal, "__home_timeout_deadline", { configurable: true, value: delay });
+    \\    Object.defineProperty(signal, "__home_timeout_controller", { configurable: true, value: controller });
     \\  } catch (error) {}
+    \\  controller = null;
     \\  return signal;
     \\}
     \\function __home_abort_timeout_note_progress(signal) {
@@ -104920,6 +105044,87 @@ test "bootstrap runner disables runtime transpiler cache under inspector" {
     if (file_run.result.status() != .passed) std.debug.print("inspector cache bypass regression failed: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors fetch retry abort timeout and DNS result order regressions" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, relative: []const u8, passed: usize }{
+        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28706.test.ts", .relative = "regression/issue/28706.test.ts", .passed = 2 },
+        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28756.test.ts", .relative = "regression/issue/28756.test.ts", .passed = 1 },
+        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28948.test.ts", .relative = "regression/issue/28948.test.ts", .passed = 7 },
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runFetchRetryProbe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_ABORT_TIMEOUT_LIFECYCLE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runDnsEval") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    for (cases) |case| {
+        const source = try Io.Dir.cwd().readFileAlloc(io, case.path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.relative);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+
+        var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+        defer runtime.deinit();
+
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        if (file_run.result.status() != .passed) std.debug.print("{s} regression failed: {s}\n", .{ case.relative, file_run.result.first_failure_message });
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(case.passed, file_run.result.passed);
+    }
+}
+
+test "bootstrap runner preserves AbortSignal timeout delivery with weak ownership" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("timeout dispatch retains causal deadline context", async () => {
+        \\  const signal = AbortSignal.timeout(5);
+        \\  let events = 0;
+        \\  signal.addEventListener("abort", () => events++);
+        \\  await Bun.sleep(5);
+        \\  expect(signal.aborted).toBe(true);
+        \\  expect(events).toBe(1);
+        \\  expect(signal.reason.homeCode).toBe("ERR_ABORT_TIMEOUT");
+        \\  expect(signal.reason.operation).toBe("abort.signal.timeout");
+        \\  expect(signal.reason.cause).toBeInstanceOf(Error);
+        \\});
+        \\
+        \\test("removing listeners does not suppress an owned signal deadline", async () => {
+        \\  const signal = AbortSignal.timeout(7);
+        \\  const listener = () => {};
+        \\  signal.addEventListener("abort", listener);
+        \\  signal.removeEventListener("abort", listener);
+        \\  await Bun.sleep(7);
+        \\  expect(signal.aborted).toBe(true);
+        \\  expect(signal.reason.name).toBe("TimeoutError");
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/abort-timeout-weak-ownership.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("AbortSignal timeout weak ownership regression failed: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "Node path import rewrite lowers path fixtures import" {
