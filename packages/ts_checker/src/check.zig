@@ -168511,7 +168511,27 @@ pub const Checker = struct {
         var emitted = false;
         for (hir_mod.arrayLiteralElements(self.hir, init_node)) |elem_node| {
             if (elem_node == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(elem_node) == .spread) continue;
+            if (self.hir.kindOf(elem_node) == .spread) {
+                const spread_expr = hir_mod.spreadOf(self.hir, elem_node).expression;
+                var spread_t = self.hir.typeOf(spread_expr);
+                if (spread_t == types.Primitive.none) spread_t = try self.checkExpression(spread_expr);
+                const spread_elem_t = try self.iterableElementType(spread_t);
+                if (spread_elem_t == types.Primitive.none or
+                    spread_elem_t == types.Primitive.any or
+                    spread_elem_t == types.Primitive.unknown or
+                    (self.engine.isAssignableTo(spread_elem_t, elem_target_t) catch true))
+                {
+                    continue;
+                }
+                try self.reportTypeNotAssignable(
+                    elem_node,
+                    spread_elem_t,
+                    elem_target_t,
+                    "Type is not assignable to array element type.",
+                );
+                emitted = true;
+                continue;
+            }
             if (try self.literalExpressionAssignableToTarget(elem_node, elem_target_t)) continue;
             const raw_elem_t = if (self.hir.typeOf(elem_node) != types.Primitive.none)
                 self.hir.typeOf(elem_node)
@@ -172356,7 +172376,7 @@ pub const Checker = struct {
             return false;
         }
 
-        const target_name = (try self.missingPropertyTypeName(display_target)) orelse return false;
+        const target_name = (try self.missingPropertyTypeNameAt(display_target, diag_node)) orelse return false;
         const source_name = if (source_is_primitive_object_intersection)
             (try self.allocIntersectionNameWithPrimitiveWrappers(source)) orelse
                 (try self.allocSimpleTypeName(source)) orelse
@@ -172370,9 +172390,9 @@ pub const Checker = struct {
             self.hir.kindOf(self.hir.parentOf(value_node)) == .array_literal)
         blk: {
             const refined_source = try self.literalRefinedObjectTypeForTarget(value_node, source);
-            break :blk (try self.missingPropertyTypeName(refined_source)) orelse
-                (try self.missingPropertyTypeName(source)) orelse "{}";
-        } else (try self.missingPropertyTypeName(source)) orelse "{}";
+            break :blk (try self.missingPropertyTypeNameAt(refined_source, diag_node)) orelse
+                (try self.missingPropertyTypeNameAt(source, diag_node)) orelse "{}";
+        } else (try self.missingPropertyTypeNameAt(source, diag_node)) orelse "{}";
         // Tuple types render their numeric element index as `'2'`
         // (no inner quotes) ÃÂ¢ÃÂÃÂ see `arityAndOrderCompatibility01.ts`.
         // For other object types the missing string-named property is
@@ -172742,6 +172762,26 @@ pub const Checker = struct {
         }
         return (try self.allocObjectTypeShape(t)) orelse
             (try self.allocSimpleTypeName(t));
+    }
+
+    fn missingPropertyTypeNameAt(self: *Checker, t: TypeId, anchor: NodeId) CheckError!?[]const u8 {
+        if (self.class_decl_by_instance.get(t)) |class_decl| {
+            if (self.declarationsShareNamespacePath(class_decl, anchor)) {
+                if (self.class_name_by_instance.get(t)) |class_name| {
+                    if (self.alias_display_names.get(t)) |display| {
+                        if (std.mem.indexOfScalar(u8, display, '<')) |args_start| {
+                            return try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "{s}{s}",
+                                .{ self.string_interner.get(class_name), display[args_start..] },
+                            );
+                        }
+                    }
+                    return self.string_interner.get(class_name);
+                }
+            }
+        }
+        return self.missingPropertyTypeName(t);
     }
 
     fn jsxQualifiedElementDiagnosticName(self: *Checker, t: TypeId) ?[]const u8 {
@@ -259845,6 +259885,49 @@ test "checker: same-named namespace classes retain distinct static and diagnosti
     }
     try T.expect(saw_qualified_namespaces);
     try T.expect(saw_qualified_classes);
+}
+
+test "checker: same-named namespace classes use bare names within their namespace" {
+    const s = try newSetup(
+        \\namespace First { export class Item { required: string; } }
+        \\namespace Second {
+        \\  export class Item { required: string; }
+        \\  let target: Item;
+        \\  target = {};
+        \\  let shaped: { other: string };
+        \\  shaped = new Item();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'required' is missing in type '{}' but required in type 'Item'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'other' is missing in type 'Item' but required in type '{ other: string; }'.",
+    ));
+}
+
+test "checker: array spread reports an incompatible iterable element" {
+    const s = try newSetup(
+        \\class SymbolIterator {
+        \\  next() { return { value: Symbol(), done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\let values: number[] = [0, ...new SymbolIterator()];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'symbol' is not assignable to type 'number'.",
+    ));
 }
 
 test "checker: class method arguments assignment keeps IArguments type" {
