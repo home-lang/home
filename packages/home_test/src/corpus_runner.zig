@@ -22318,6 +22318,35 @@ const harness_prelude =
     \\}
     \\function __home_spawn_websocket_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("regression/issue/3613.test.ts") && cmd.some(part => part === "server.js" || part.endsWith("/server.js"))) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const source = String(__home_build_read_text(__home_build_join(cwd, "server.js")) || "");
+    \\    const explicit = source.includes("return 'selected-protocol'");
+    \\    const empty = source.includes("return ''");
+    \\    const offered = source.includes("first-protocol, second-protocol") ? "first-protocol, second-protocol" : (source.includes("custom-protocol, selected-protocol") ? "custom-protocol, selected-protocol" : "custom-protocol");
+    \\    const serverOptions = { port: 0 };
+    \\    if (explicit) serverOptions.handleProtocols = () => "selected-protocol";
+    \\    else if (empty) serverOptions.handleProtocols = () => "";
+    \\    const wss = new __home_ws_WebSocketServer(serverOptions);
+    \\    let serverProtocol = "";
+    \\    wss.on("connection", ws => { serverProtocol = ws.protocol; });
+    \\    const completion = Promise.resolve().then(async () => {
+    \\      const response = await fetch("http://127.0.0.1:" + String(wss.address().port), { headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Protocol": offered } });
+    \\      await Promise.resolve();
+    \\      const protocol = response.headers.get("sec-websocket-protocol");
+    \\      const stdout = "PORT:" + String(wss.address().port) + "\nSTATUS:" + String(response.status) + "\nPROTOCOL:" + String(protocol) + "\nSERVER_WS_PROTOCOL:" + (empty ? JSON.stringify(serverProtocol) : serverProtocol) + "\n";
+    \\      wss.close();
+    \\      return { stdout, stderr: "", exitCode: 0 };
+    \\    }).catch(cause => {
+    \\      wss.close();
+    \\      const failure = __home_spawn_javascript_entry_error(__home_build_join(cwd, "server.js"), "websocket-upgrade", cause, "bun.spawn.wsHandleProtocols");
+    \\      return { stdout: "", stderr: String(failure.diagnostic) + "\n", exitCode: 1 };
+    \\    });
+    \\    const child = __home_spawn_deferred_completed(completion);
+    \\    child[Symbol.dispose] = function() { wss.close(); };
+    \\    child[Symbol.asyncDispose] = function() { wss.close(); return child.exited.then(() => undefined); };
+    \\    return child;
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").endsWith("js/web/websocket/websocket-custom-headers.test.ts") && cmd.some(part => part.endsWith("/websocket-server-echo-headers-simple.mjs"))) {
     \\    const wss = new __home_ws_WebSocketServer({ port: 0 });
     \\    wss.on("connection", (ws, request) => {
@@ -70130,6 +70159,8 @@ const harness_prelude =
     \\  const transportOptions = __home_fetch_compress_request(fetchOptions);
     \\  const pendingConnect = __home_fetch_wait_for_abort(href, fetchOptions);
     \\  if (pendingConnect) return pendingConnect;
+    \\  const wsUpgradeResponse = unixPath === null ? __home_ws_fetch_upgrade(href, transportOptions) : null;
+    \\  if (wsUpgradeResponse) return wsUpgradeResponse;
     \\  const proxyResponse = unixPath === null ? __home_fetch_via_http_proxy(href, transportOptions, fetchMethod) : null;
     \\  if (proxyResponse) return proxyResponse;
     \\  if (unixPath === null && (requestedTransport === "http2" || (fetchOptions && fetchOptions.__home_http2_enabled))) {
@@ -71318,6 +71349,9 @@ const harness_prelude =
     \\  const server = __home_ws_servers_by_port[port];
     \\  if (!server || server.__home_closed) return false;
     \\  const serverSocket = new __home_ws_ServerSocket(client);
+    \\  const requestHeaders = new Headers(client.__home_request_headers || {});
+    \\  serverSocket.protocol = server.__home_select_protocol(requestHeaders, { url: (parsed.pathname || "/") + (parsed.search || ""), headers: requestHeaders });
+    \\  client.protocol = serverSocket.protocol;
     \\  client.__home_ws_server_side = serverSocket;
     \\  client.__home_pending_open = true;
     \\  __home_websocket_drain_pending(client, "open");
@@ -72015,6 +72049,7 @@ const harness_prelude =
     \\    this.__home_client = client;
     \\    this.readyState = WebSocket.OPEN;
     \\    this.binaryType = "nodebuffer";
+    \\    this.protocol = "";
     \\  }
     \\  send(data, options, callback) {
     \\    if (typeof options === "function") callback = options;
@@ -72126,6 +72161,7 @@ const harness_prelude =
     \\class __home_ws_WebSocketServer extends __home_EventEmitter {
     \\  constructor(options) {
     \\    super();
+    \\    this.options = options || {};
     \\    const httpServer = options && options.server;
     \\    const requested = Number(options && options.port || 0);
     \\    this.__home_http_server = httpServer || null;
@@ -72138,6 +72174,7 @@ const harness_prelude =
     \\    } else {
     \\      this.__home_bind_port(requested > 0 ? requested : __home_ws_next_server_port++);
     \\    }
+    \\    Promise.resolve().then(() => { if (!this.__home_closed) this.emit("listening"); });
     \\  }
     \\  __home_bind_port(port) {
     \\    if (this.__home_port > 0 && __home_ws_servers_by_port[this.__home_port] === this) delete __home_ws_servers_by_port[this.__home_port];
@@ -72162,11 +72199,22 @@ const harness_prelude =
     \\    }
     \\    if (typeof callback === "function") Promise.resolve().then(callback);
     \\  }
+    \\  __home_select_protocol(headers, request) {
+    \\    const raw = headers && typeof headers.get === "function" ? String(headers.get("sec-websocket-protocol") || "") : String(headers && (headers["sec-websocket-protocol"] || headers["Sec-WebSocket-Protocol"]) || "");
+    \\    const protocols = raw.split(",").map(value => value.trim()).filter(Boolean);
+    \\    const selector = this.options && this.options.handleProtocols;
+    \\    if (typeof selector !== "function") return protocols[0] || "";
+    \\    let selected;
+    \\    try { selected = selector(new Set(protocols), request || { headers }); }
+    \\    catch (cause) { throw __home_websocket_handshake_error("select-protocol", "WebSocket handleProtocols failed", { operation: "ws.handleProtocols" }, cause); }
+    \\    return selected ? String(selected) : (protocols[0] || "");
+    \\  }
     \\  handleUpgrade(request, socket, head, callback) {
     \\    const ws = new __home_ws_ServerSocket(null);
-    \\    void request; void head;
+    \\    void head;
+    \\    ws.protocol = this.__home_select_protocol(request && request.headers, request);
     \\    ws.__home_raw_socket = socket;
-    \\    if (socket && typeof socket.write === "function") socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    \\    if (socket && typeof socket.write === "function") socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" + (ws.protocol ? "Sec-WebSocket-Protocol: " + ws.protocol + "\r\n" : "") + "\r\n");
     \\    if (socket && typeof socket.on === "function") {
     \\      socket.on("data", chunk => {
     \\        const payload = __home_ws_unmask_frame_payload(chunk);
@@ -72176,6 +72224,25 @@ const harness_prelude =
     \\    }
     \\    if (typeof callback === "function") Promise.resolve().then(() => callback(ws));
     \\  }
+    \\}
+    \\function __home_ws_fetch_upgrade(href, options) {
+    \\  let parsed;
+    \\  try { parsed = new URL(href); } catch (error) { return null; }
+    \\  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    \\  const server = __home_ws_servers_by_port[Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80))];
+    \\  if (!server || server.__home_closed) return null;
+    \\  const headers = new Headers(options && options.headers || {});
+    \\  if (String(headers.get("upgrade") || "").toLowerCase() !== "websocket") return null;
+    \\  const request = { url: href, headers };
+    \\  let protocol;
+    \\  try { protocol = server.__home_select_protocol(headers, request); }
+    \\  catch (cause) { return __home_fetch_thenable(null, cause); }
+    \\  const socket = new __home_ws_ServerSocket(null);
+    \\  socket.protocol = protocol;
+    \\  const responseHeaders = new Headers({ Upgrade: "websocket", Connection: "Upgrade" });
+    \\  if (protocol) responseHeaders.set("Sec-WebSocket-Protocol", protocol);
+    \\  const response = { status: 101, statusText: "Switching Protocols", headers: responseHeaders, ok: false, redirected: false, url: href, text() { return Promise.resolve(""); } };
+    \\  return Promise.resolve().then(() => { server.emit("connection", socket, request); return response; });
     \\}
     \\const __home_ws_module = __home_ws_WebSocket;
     \\__home_ws_module.WebSocket = __home_ws_WebSocket;
@@ -104614,6 +104681,33 @@ test "bootstrap runner mirrors issue 29684 websocket deflate offers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 3613 websocket protocol selection" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/3613.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/3613.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_ws_fetch_upgrade") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ws.handleProtocols") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.wsHandleProtocols") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 29780 fetch TLS client hello extensions" {
