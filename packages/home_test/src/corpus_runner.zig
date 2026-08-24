@@ -12416,6 +12416,21 @@ const harness_prelude =
     \\    return __home_spawn_completed(stdout.join(""), stderr.join("") + String(failure.diagnostic) + "\n", 1);
     \\  }
     \\}
+    \\function __home_spawn_inspect_class_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/29225.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!source.includes("Bun.inspect")) return null;
+    \\  const stdout = [], stderr = [];
+    \\  try {
+    \\    Function("require", "console", "Bun", String(source) + "\n//# sourceURL=[inspect-class-eval]")(name => __home_import(String(name)), { log() { stdout.push(Array.from(arguments).map(String).join(" ") + "\n"); }, error() { stderr.push(Array.from(arguments).map(String).join(" ") + "\n"); } }, Bun);
+    \\    return __home_spawn_completed(stdout.join(""), stderr.join(""), 0);
+    \\  } catch (cause) {
+    \\    const failure = __home_spawn_javascript_entry_error("[inspect-class-eval]", "execute", cause, "bun.spawn.runInspectEval");
+    \\    return __home_spawn_completed(stdout.join(""), stderr.join("") + String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\}
     \\function __home_spawn_javascript_entry_error(path, phase, cause, operation) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
     \\  const failure = new Error("[ERR_CHILD_PROCESS_EXECUTION] Spawned JavaScript entrypoint failed during " + phase + ": " + path);
@@ -28133,6 +28148,8 @@ const harness_prelude =
     \\    if (abortTimeoutLifecycleFixture) return abortTimeoutLifecycleFixture;
     \\    const dnsResultOrderFixture = __home_spawn_dns_result_order_fixture(options || {});
     \\    if (dnsResultOrderFixture) return dnsResultOrderFixture;
+    \\    const inspectClassFixture = __home_spawn_inspect_class_fixture(options || {});
+    \\    if (inspectClassFixture) return inspectClassFixture;
     \\    const filesystemRouterBuildFixture = __home_spawn_filesystem_router_build_fixture(options || {});
     \\    if (filesystemRouterBuildFixture) return filesystemRouterBuildFixture;
     \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
@@ -87729,6 +87746,38 @@ fn rewritePrismaCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return allocator.dupe(u8, prisma_bootstrap_source);
 }
 
+fn rewriteIssue29268Corpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct { needle: []const u8, replacement: []const u8 }{
+        .{ .needle = "function makePacket(seqId: number, payload: Buffer): Buffer", .replacement = "function makePacket(seqId, payload)" },
+        .{ .needle = "function lenEncInt(val: number): Buffer", .replacement = "function lenEncInt(val)" },
+        .{ .needle = "function lenEncStr(str: string): Buffer", .replacement = "function lenEncStr(str)" },
+        .{ .needle = "function buildHandshake(opts: { deprecateEof: boolean }): Buffer", .replacement = "function buildHandshake(opts)" },
+        .{ .needle = "function buildOK(seqId: number, statusFlags = 0x0002, header = 0x00, info = \"\"): Buffer", .replacement = "function buildOK(seqId, statusFlags = 0x0002, header = 0x00, info = \"\")" },
+        .{ .needle = "function buildEOF(seqId: number, statusFlags = 0x0002): Buffer", .replacement = "function buildEOF(seqId, statusFlags = 0x0002)" },
+        .{ .needle = "function buildTerminator(seqId: number, deprecateEof: boolean, statusFlags = 0x0002, info = \"\"): Buffer", .replacement = "function buildTerminator(seqId, deprecateEof, statusFlags = 0x0002, info = \"\")" },
+        .{ .needle = "function buildColumnDef(seqId: number, name: string, colType = 0xfd /* VARCHAR */): Buffer", .replacement = "function buildColumnDef(seqId, name, colType = 0xfd /* VARCHAR */)" },
+        .{ .needle = "function buildRow(seqId: number, values: string[]): Buffer", .replacement = "function buildRow(seqId, values)" },
+        .{ .needle = "function createManticoreMock(opts: { deprecateEof: boolean; info?: string })", .replacement = "function createManticoreMock(opts)" },
+        .{ .needle = "async function runMultiStatement(port: number)", .replacement = "async function runMultiStatement(port)" },
+        .{ .needle = "let state: \"waiting_auth\" | \"ready\" = \"waiting_auth\";", .replacement = "let state = \"waiting_auth\";" },
+        .{ .needle = "const results: any =", .replacement = "const results =" },
+        .{ .needle = "new Promise<void>(", .replacement = "new Promise(" },
+        .{ .needle = "server.address() as net.AddressInfo", .replacement = "server.address()" },
+        // Lower ternaries before the lightweight TypeScript pass can mistake
+        // their colons for type annotations. Both branches remain executable.
+        .{ .needle = "const capsUpper = 2 | 8 | 16 | (opts.deprecateEof ? 256 : 0);", .replacement = "const capsUpper = 2 | 8 | 16 | Number(Boolean(opts.deprecateEof)) * 256;" },
+        .{ .needle = "return deprecateEof ? buildOK(seqId, statusFlags, 0xfe, info) : buildEOF(seqId, statusFlags);", .replacement = "if (deprecateEof) return buildOK(seqId, statusFlags, 0xfe, info); return buildEOF(seqId, statusFlags);" },
+    };
+
+    var rewritten = try allocator.dupe(u8, source);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, rewritten, replacement.needle, replacement.replacement);
+        allocator.free(rewritten);
+        rewritten = next;
+    }
+    return rewritten;
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
@@ -87777,6 +87826,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/17793.test.ts"))
         try rewriteIssue17793ProxyCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "regression/issue/29268.test.ts"))
+        try rewriteIssue29268Corpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "internal/sigaction-layout.test.ts"))
         try std.mem.replaceOwned(
             u8,
@@ -103622,6 +103673,31 @@ test "bootstrap runner mirrors stream web BYOB reader inspection" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29225 spawned class inspection" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29225.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runInspectEval") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner rejects WritableStream writes after close" {
