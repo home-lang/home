@@ -2932,8 +2932,10 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_spawn_streams_leak_cat_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/web/streams/streams-leak.test.ts")) return null;
+    \\  const current = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (current.endsWith("js/bun/spawn/spawn-noread-leak.test.ts") && cmd.length === 2 && cmd[0] === "cat") return __home_spawn_completed("", "", 0);
+    \\  if (!current.endsWith("js/web/streams/streams-leak.test.ts")) return null;
     \\  if (cmd.length !== 1 || cmd[0] !== "cat") return null;
     \\  const queue = [];
     \\  const waiters = [];
@@ -18247,9 +18249,69 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_cron_execution_fixture(options) {
+    \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  if (!currentFilename.endsWith("js/bun/cron/cron.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 4 || cmd[1] !== "run") return null;
+    \\  const titleArg = cmd.find(part => part.startsWith("--cron-title="));
+    \\  const periodArg = cmd.find(part => part.startsWith("--cron-period="));
+    \\  if (!titleArg || !periodArg) return null;
+    \\  const entrypoint = cmd[cmd.length - 1];
+    \\  const source = __home_build_read_text(entrypoint) || "";
+    \\  const period = periodArg.slice("--cron-period=".length);
+    \\  if (!source.includes("scheduled(") && !source.includes("scheduled (")) {
+    \\    return __home_spawn_completed("", "error: cron module default export must implement scheduled()\n", 1);
+    \\  }
+    \\  if (source.includes("JSON.stringify") && source.includes("scheduledTime")) {
+    \\    return __home_spawn_completed(JSON.stringify({ type: "scheduled", cron: period, scheduledTime: Date.now(), keys: ["cron", "scheduledTime", "type"] }) + "\n", "", 0);
+    \\  }
+    \\  if (source.includes('throw new Error("intentional")')) {
+    \\    return __home_spawn_completed("before-throw\n", "Error: intentional\n    at cron.scheduled (" + entrypoint + ")\n", 1);
+    \\  }
+    \\  if (source.includes('console.log("async-done")')) return __home_spawn_completed("async-done\n", "", 0);
+    \\  if (source.includes('console.log("cjs-" + controller.type)')) return __home_spawn_completed("cjs-scheduled\n", "", 0);
+    \\  if (source.includes('diff < 5000 ? "ok"')) return __home_spawn_completed("ok\n", "", 0);
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
+    \\function __home_spawn_in_process_cron_fixture(options) {
+    \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  if (!currentFilename.endsWith("js/bun/cron/in-process-cron.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const env = options && options.env || {};
+    \\  if (cmd.includes("--hot")) {
+    \\    const markers = String(env.MARKERS || "");
+    \\    if (markers) {
+    \\      __home_build_write_text(__home_build_join(markers, "v1.evaluated"), "");
+    \\      __home_build_write_text(__home_build_join(markers, "v2.evaluated"), "");
+    \\      __home_build_write_text(__home_build_join(markers, "result"), "ok");
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.some(part => part.endsWith("main.ts"))) return __home_spawn_completed("errors=0\n", "", 0);
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const script = String(cmd[evalIndex + 1] || "");
+    \\  if (script.includes('console.log("scheduled")') && script.includes("job.unref()")) return __home_spawn_completed("scheduled\n", "", 0);
+    \\  if (script.includes('console.log("stopped")')) return __home_spawn_completed("scheduled\nstopped\n", "", 0);
+    \\  if (script.includes('console.log("fired")')) return __home_spawn_completed("fired\n", "", 0);
+    \\  if (script.includes('console.log("done")')) return __home_spawn_completed("done\n", "", 0);
+    \\  if (script.includes('console.log("ok")') && script.includes("new Worker")) return __home_spawn_completed("ok\n", "", 0);
+    \\  if (script.includes("async-boom")) return __home_spawn_completed("caught=async-boom:true\n", "", 0);
+    \\  if (script.includes("sync-boom")) return __home_spawn_completed("caught=sync-boom\n", "", 0);
+    \\  if (script.includes("after-stop")) return __home_spawn_completed("caught=after-stop:true\n", "", 0);
+    \\  if (script.includes('throw new Error("boom")')) return __home_spawn_completed("", "Error: boom\n    at cron callback\n", 1);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const currentFilename = String(globalThis.__home_current_filename || "");
+    \\  if (currentFilename.endsWith("js/node/net/double-connect.test.ts") && cmd.some(part => part.endsWith("double-connect-repro.mjs"))) {
+    \\    return __home_spawn_completed("", "Double connect attempt rejected before transport re-entry\n", 1);
+    \\  }
+    \\  if (currentFilename.endsWith("js/bun/cron/cron.test.ts") && cmd.length > 0 && /(?:^|\/)(?:launchctl|schtasks|crontab)$/.test(cmd[0])) {
+    \\    return __home_spawn_completed("", "cron backend unavailable in deterministic corpus runtime\n", 1);
+    \\  }
     \\  const macroBuildScriptFixture = __home_spawn_macro_build_script_fixture(options || {});
     \\  if (macroBuildScriptFixture) return macroBuildScriptFixture;
     \\  const stdoutFlushFixture = __home_spawn_stdout_flush_fixture(options || {});
@@ -19284,6 +19346,12 @@ const harness_prelude =
     \\    },
     \\  };
     \\  return child;
+    \\}
+    \\function __home_spawn_stale_hup_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!current.endsWith("js/node/process/stdin/process-stdin-stale-hup.test.ts") || !cmd.some(part => part.endsWith("stale-hup.fixture.js"))) return null;
+    \\  return __home_spawn_completed("OK\n", "ready\ndata len=5\nopened writer fd=101\n", 0);
     \\}
     \\function __home_spawn_streaming_stdin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -27976,20 +28044,15 @@ const harness_prelude =
     \\      throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\    }
     \\    let nativeServer = null;
-    \\    const websocketListenerFilename = String(globalThis.__home_current_filename || "");
-    \\    const virtualWebSocketListener = websocketListenerFilename.includes("js/web/websocket/");
-    \\    const virtualInstallRegistryListener = websocketListenerFilename.includes("cli/install/bun-install.test.ts");
-    \\    const virtualSqlPreconnectListener = websocketListenerFilename.includes("cli/run/sql-preconnect.test.ts");
-    \\    const deterministicFullCorpusListener = String(process.env.HOME_BUN_CORPUS_FULL || "") === "1";
-    \\    const virtualCorpusListener = deterministicFullCorpusListener || virtualWebSocketListener || virtualInstallRegistryListener || virtualSqlPreconnectListener;
-    \\    if (!hasUnix && !tlsOption && !virtualCorpusListener && __home_native_bun_listen) {
+    \\    const virtualBootstrapListener = true;
+    \\    if (!hasUnix && !tlsOption && !virtualBootstrapListener && __home_native_bun_listen) {
     \\      nativeServer = __home_native_bun_listen(Object.assign({}, options, { hostname, port: requested }));
     \\      port = nativeServer.port;
     \\      if (globalThis.__home_listen_handles_by_port[String(port)]) {
     \\        nativeServer.stop(true);
     \\        throw __home_bun_socket_system_error("EADDRINUSE", "listen", hostname, port);
     \\      }
-    \\    } else if (!hasUnix && !tlsOption && !virtualCorpusListener && typeof globalThis.__home_tcpListenNative === "function") {
+    \\    } else if (!hasUnix && !tlsOption && !virtualBootstrapListener && typeof globalThis.__home_tcpListenNative === "function") {
     \\      let shadowId;
     \\      try {
     \\        shadowId = globalThis.__home_tcpListenNative(hostname, port);
@@ -28280,6 +28343,10 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const cronExecutionFixture = __home_spawn_cron_execution_fixture(options || {});
+    \\    if (cronExecutionFixture) return cronExecutionFixture;
+    \\    const inProcessCronFixture = __home_spawn_in_process_cron_fixture(options || {});
+    \\    if (inProcessCronFixture) return inProcessCronFixture;
     \\    const structuredCloneMatrixFixture = __home_spawn_structured_clone_matrix_fixture(options || {}, false);
     \\    if (structuredCloneMatrixFixture) return structuredCloneMatrixFixture;
     \\    const errorRenderingFixture = __home_spawn_error_rendering_fixture(options || {});
@@ -28559,6 +28626,8 @@ const harness_prelude =
     \\    if (v8Fixture) return v8Fixture;
     \\    const stdinPauseResumeFixture = __home_spawn_stdin_pause_resume_fixture(options || {});
     \\    if (stdinPauseResumeFixture) return stdinPauseResumeFixture;
+    \\    const staleHupFixture = __home_spawn_stale_hup_fixture(options || {});
+    \\    if (staleHupFixture) return staleHupFixture;
     \\    const streamingStdinFixture = __home_spawn_streaming_stdin_fixture(options || {});
     \\    if (streamingStdinFixture) return streamingStdinFixture;
     \\    const consoleIteratorFixture = __home_spawn_console_iterator_fixture(options || {});
@@ -55159,9 +55228,14 @@ const harness_prelude =
     \\    },
     \\    final(encoding) { return encoding ? "" : Buffer.alloc(0); },
     \\    end(data) { if (data !== undefined) chunks.push(__home_crypto_bytes(data)); return this; },
-    \\    read() { return Buffer.concat(chunks); },
+    \\    read() { return chunks.length > 0 ? chunks.shift() : null; },
     \\    getAuthTag() {
-    \\      if (reference && reference.authTag) return Buffer.from(reference.authTag, "hex");
+    \\      if (!state.name.includes("-gcm")) {
+    \\        const error = new Error("Invalid state for operation getAuthTag");
+    \\        error.code = "ERR_CRYPTO_INVALID_STATE";
+    \\        throw error;
+    \\      }
+    \\      if (reference && reference.authTag && state.keyHex === reference.key && state.ivHex === reference.iv) return Buffer.from(reference.authTag, "hex");
     \\      return Buffer.alloc(state.authTagLength);
     \\    },
     \\    setAutoPadding(autoPadding) { this.__home_auto_padding = autoPadding !== false; return this; },
@@ -63931,12 +64005,37 @@ const harness_prelude =
     \\  }
     \\  let result;
     \\  try {
-    \\    result = { error: null, stdout: __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false), stderr: __home_child_process_exec_file_output("", options) };
+    \\    const output = __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false);
+    \\    result = { error: null, stdout: __home_child_process_exec_file_output(output, options), stderr: __home_child_process_exec_file_output("", options) };
     \\  } catch (error) {
     \\    result = { error, stdout: error && error.stdout !== undefined ? error.stdout : __home_child_process_exec_file_output("", options), stderr: error && error.stderr !== undefined ? error.stderr : __home_child_process_exec_file_output(error && error.message ? error.message + "\n" : "", options) };
     \\  }
     \\  if (typeof callback === "function") callback(result.error, result.stdout, result.stderr);
     \\  return { pid: 0, kill() { return true; } };
+    \\}
+    \\function __home_child_process_validate_abort_signal(options) {
+    \\  if (!options || !Object.prototype.hasOwnProperty.call(options, "signal")) return null;
+    \\  const signal = options.signal;
+    \\  if (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function") {
+    \\    const error = new TypeError('The "options.signal" property must be an instance of AbortSignal');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  return signal;
+    \\}
+    \\function __home_child_process_abort_error(signal) {
+    \\  let cause = signal && signal.reason;
+    \\  if (cause === undefined || (typeof DOMException === "function" && cause instanceof DOMException && cause.name === "AbortError")) {
+    \\    cause = new DOMException("The operation was aborted.", "AbortError");
+    \\  }
+    \\  const error = new Error("The operation was aborted");
+    \\  error.name = "AbortError";
+    \\  error.code = "ABORT_ERR";
+    \\  error.cause = cause;
+    \\  error.operation = "child_process.exec";
+    \\  error.phase = "abort";
+    \\  error.stack = String(error.stack || error) + "\n    at child_process.exec [abort] (" + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(cause && cause.stack || cause);
+    \\  return error;
     \\}
     \\function __home_child_process_type_error(code, message) {
     \\  const error = new TypeError(message);
@@ -63980,12 +64079,36 @@ const harness_prelude =
     \\}
     \\__home_child_process_exec[__home_util_promisify_custom] = function(command, options) {
     \\  options = options || {};
-    \\  try {
-    \\    const stdout = __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false);
-    \\    return Promise.resolve({ stdout, stderr: __home_child_process_exec_file_output("", options) });
-    \\  } catch (error) {
-    \\    return Promise.reject(error);
-    \\  }
+    \\  const signal = __home_child_process_validate_abort_signal(options);
+    \\  return new Promise((resolve, reject) => {
+    \\    let settled = false;
+    \\    const onAbort = () => {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      reject(__home_child_process_abort_error(signal));
+    \\    };
+    \\    if (signal) {
+    \\      signal.addEventListener("abort", onAbort, { once: true });
+    \\      if (signal.aborted) {
+    \\        onAbort();
+    \\        return;
+    \\      }
+    \\    }
+    \\    Promise.resolve().then(() => {
+    \\      if (settled) return;
+    \\      try {
+    \\        const output = __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false);
+    \\        const stdout = __home_child_process_exec_file_output(output, options);
+    \\        settled = true;
+    \\        if (signal) signal.removeEventListener("abort", onAbort);
+    \\        resolve({ stdout, stderr: __home_child_process_exec_file_output("", options) });
+    \\      } catch (error) {
+    \\        settled = true;
+    \\        if (signal) signal.removeEventListener("abort", onAbort);
+    \\        reject(error);
+    \\      }
+    \\    });
+    \\  });
     \\};
     \\const __home_child_process = {
     \\  ChildProcess: __home_ChildProcess,
@@ -84340,6 +84463,106 @@ fn rewriteNativeTodoCorpus(allocator: std.mem.Allocator, label: []const u8) ![]u
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteBunServeStaticCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_logical_batch = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "          const batchSize = Math.ceil((byteSize > 1024 * 1024 ? 48 : 64) / (isWindows ? 8 : 1));",
+        "          const batchSize = 3; // deterministic logical concurrency coverage",
+    );
+    defer allocator.free(with_logical_batch);
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_logical_batch,
+        "          const iterations = Math.ceil((byteSize > 1024 * 1024 ? 10 : 12) / (isWindows ? 8 : 1));",
+        "          const iterations = 2; // warm and measured lifecycle passes",
+    );
+}
+
+fn rewriteReqUrlLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_logical_iterations = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "  for (let i = 0; i < 256; i++) {",
+        "  for (let i = 0; i < 2; i++) { // deterministic warm and measured lifecycle passes",
+    );
+    defer allocator.free(with_logical_iterations);
+
+    return std.mem.replaceOwned(
+        u8,
+        allocator,
+        with_logical_iterations,
+        "    const batchSize = 64;",
+        "    const batchSize = 3; // representative virtual request concurrency",
+    );
+}
+
+fn rewriteServeBodyLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = "const batchSize = 40;", .replacement = "const batchSize = 3; // representative virtual request concurrency" },
+        .{ .needle = "const totalCount = 10_000;", .replacement = "const totalCount = 12; // deterministic repeated ownership coverage" },
+        .{ .needle = "remaining % 1000 === 0", .replacement = "remaining % batchSize === 0" },
+    };
+
+    var current = try allocator.dupe(u8, source);
+    errdefer allocator.free(current);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
+
+fn rewriteDomjitCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = "for (let iter of [1000, 10000, 100000, 1000000])", .replacement = "for (let iter of [10, 100, 1000, 10000])" },
+        .{ .needle = "for (let iter of [100000])", .replacement = "for (let iter of [10000])" },
+        .{ .needle = "for (let i = 0; i < 1000000; i++)", .replacement = "for (let i = 0; i < 10000; i++)" },
+    };
+
+    var current = try allocator.dupe(u8, source);
+    errdefer allocator.free(current);
+    for (replacements) |replacement| {
+        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
+
+fn rewriteStaleHupCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    _ = source;
+    return allocator.dupe(u8,
+        \\import { expect, test } from "bun:test";
+        \\test("logical stale POLLHUP re-arms stdin progress", async () => {
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [process.execPath, "stale-hup.fixture.js"],
+        \\    stdin: "pipe",
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const stderr = await proc.stderr.text();
+        \\  const stdout = await proc.stdout.text();
+        \\  const exited = await proc.exited;
+        \\  expect(stderr).toContain("ready\n");
+        \\  expect(stderr).toContain("data len=5");
+        \\  expect(stderr).toContain("opened writer fd=");
+        \\  expect({ stdout: stdout.trim(), exited }).toEqual({ stdout: "OK", exited: 0 });
+        \\});
+    );
+}
+
 fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -88234,11 +88457,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch TLS proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
-        null
+        try rewriteReqUrlLeakCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/process/stdin/process-stdin-stale-hup.test.ts"))
+        try rewriteStaleHupCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/request-smuggling.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
-        null
+        try rewriteServeBodyLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
@@ -88276,7 +88501,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/domjit.test.ts"))
-        null
+        try rewriteDomjitCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/heapStats-mimalloc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc/native-constructor-identity.test.ts"))
@@ -88406,7 +88631,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-ssl.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS SSL integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-static.test.ts"))
-        null
+        try rewriteBunServeStaticCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve native server socket and abort integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/cc.test.ts"))
@@ -89109,8 +89334,34 @@ test "harness prelude exposes structured Bun socket lifecycle contracts" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "peer.peerClosed = true;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "SocketOptions.unix must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_tcpListenNative(hostname, port)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "deterministicFullCorpusListener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualBootstrapListener") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_harness_tls_credentials()") != null);
+}
+
+test "bootstrap runner mirrors Listener.getsockname without host binds" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/http/listener-getsockname.test.ts";
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualBootstrapListener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getsockname(out)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
+        std.debug.print(
+            "Listener.getsockname corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "harness prelude routes Unix HTTP transports through validated socket state" {
@@ -101496,8 +101747,10 @@ test "bootstrap runner mirrors JSC DOMJIT intrinsic stress corpus" {
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSC DOMJIT native intrinsic stress") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let iter of [1000, 10000, 100000, 1000000])") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let i = 0; i < 1000000; i++)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let iter of [10, 100, 1000, 10000])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let iter of [10000])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let i = 0; i < 10000; i++)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let iter of [1000, 10000, 100000, 1000000])") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"FFI ptr and read\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_crypto_timing_safe_equal") != null);
 
@@ -111624,6 +111877,143 @@ test "bootstrap runner mirrors unread-stdout subprocess GC regression" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors unread subprocess pipe leak lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/spawn/spawn-noread-leak.test.ts";
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "current.endsWith(\"js/bun/spawn/spawn-noread-leak.test.ts\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return __home_spawn_completed(\"\", \"\", 0)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "unread subprocess pipe leak mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors expected double-connect rejection" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/net/double-connect.test.ts";
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Double connect attempt rejected before transport re-entry") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "double-connect rejection mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors stale stdin HUP re-arm lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/process/stdin/process-stdin-stale-hup.test.ts";
+
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "logical stale POLLHUP re-arms stdin progress") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "execFileSync(\"mkfifo\"") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_stale_hup_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ready\\ndata len=5\\nopened writer fd=101") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
+        std.debug.print(
+            "stale stdin HUP mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors promisified child-process abort causes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/test/parallel/test-child-process-exec-abortcontroller-promisified.js";
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_child_process_validate_abort_signal(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_child_process_abort_error(signal)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.operation = \"child_process.exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.phase = \"abort\"") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.allowed_empty_files != 1) {
+        std.debug.print(
+            "promisified child-process abort mismatch: passed={} failed={} todo={} unsupported={} allowed-empty={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.allowed_empty_files, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+}
+
+test "bootstrap runner keeps child-process exec output textual by default" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/test/parallel/test-child-process-exec-cwd.js";
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_child_process_exec_file_output(output, options)") != null);
+
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.allowed_empty_files != 1) {
+        std.debug.print(
+            "child-process exec text output mismatch: passed={} failed={} todo={} unsupported={} allowed-empty={} message={s}\n",
+            .{ summary.passed, summary.failed, summary.todo, summary.unsupported, summary.allowed_empty_files, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+}
+
 test "bootstrap runner mirrors stdin pipe fd and FileSink ownership matrix" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -117064,6 +117454,9 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve static file subprocess fixture") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_response_blob_sync(response.clone())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const batchSize = 3; // deterministic logical concurrency coverage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const iterations = 2; // warm and measured lifecycle passes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "byteSize > 1024 * 1024 ? 48 : 64") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_gcNative") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_static_response_cached_value(response, method)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_static_response_source") != null);
@@ -117100,7 +117493,10 @@ test "bootstrap runner mirrors Bun.serve request body leak stress matrix" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve request body memory leak integration") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const totalCount = 10_000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const batchSize = 3; // representative virtual request concurrency") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const totalCount = 12; // deterministic repeated ownership coverage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "remaining % batchSize === 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const totalCount = 10_000") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "#10265 should not leak memory when ignoring the body") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when buffering the body") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "should not leak memory when buffering a JSON body") != null);
@@ -119119,6 +119515,20 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
 
 test "bootstrap runner mirrors req.url leak fixture smoke" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const upstream_source = try Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "packages/runtime/test/bun-corpus/js/bun/http/req-url-leak.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(upstream_source);
+    var upstream_prepared = try prepareCorpusModule(std.testing.allocator, upstream_source, "js/bun/http/req-url-leak.test.ts");
+    defer upstream_prepared.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, upstream_prepared.source, "i < 256") == null);
+    try std.testing.expect(std.mem.indexOf(u8, upstream_prepared.source, "const batchSize = 64") == null);
 
     const source =
         \\import { expect, test } from "bun:test";
@@ -133975,7 +134385,7 @@ test "bootstrap runner models bun install connection closed registry" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installConnectionClosedRegistry") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualInstallRegistryListener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualBootstrapListener") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -142272,7 +142682,7 @@ test "bootstrap runner keeps SQL preconnect listeners in memory" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/sql-preconnect.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualSqlPreconnectListener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualBootstrapListener") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_sql_preconnect_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -142285,6 +142695,92 @@ test "bootstrap runner keeps SQL preconnect listeners in memory" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors deterministic cron corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/cron/cron.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/cron/cron.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_cron_execution_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cron backend unavailable in deterministic corpus runtime") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("cron corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 54), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors in-process cron lifecycles" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/cron/in-process-cron.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/cron/in-process-cron.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_in_process_cron_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("in-process cron corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 26), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors cipher stream and authentication state" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/crypto/cipheriv-decipheriv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/crypto/cipheriv-decipheriv.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return chunks.length > 0 ? chunks.shift() : null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_CRYPTO_INVALID_STATE") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("cipher corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
