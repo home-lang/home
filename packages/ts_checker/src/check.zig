@@ -172869,6 +172869,18 @@ pub const Checker = struct {
         return self.typeIsGlobalObjectBuiltin(source);
     }
 
+    fn nodeIsDirectCallArgument(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind != .call_expr and parent_kind != .new_expr) return false;
+        for (hir_mod.callArgs(self.hir, parent)) |arg| {
+            if (arg == node) return true;
+        }
+        return false;
+    }
+
     fn arrayLiteralMissingPropertySourceName(self: *Checker, value_node: NodeId, source: TypeId) CheckError!?[]const u8 {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .array_literal) return null;
         if (source >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source).is_object_type) return null;
@@ -173023,8 +173035,10 @@ pub const Checker = struct {
         const object_literal_to_class = target_is_class_instance and
             value_node != hir_mod.none_node_id and
             self.hir.kindOf(value_node) == .object_literal;
+        const direct_call_argument = self.nodeIsDirectCallArgument(value_node);
         for (target_members) |tm| {
-            if (tm.is_optional or (tm.is_method and !class_shape_mismatch and !object_literal_to_class)) continue;
+            if (tm.is_optional or
+                (tm.is_method and !class_shape_mismatch and !object_literal_to_class and !direct_call_argument)) continue;
             var found = (source_is_primitive_object_intersection or source_is_object_intersection) and
                 self.intersectionHasObjectMemberNamed(source, tm.name);
             for (source_members) |sm| {
@@ -190434,6 +190448,26 @@ test "checker: single missing property still uses TS2741, not TS2739" {
     try T.expect(checkerHasCode(b, TsCodes.property_missing_required));
     try T.expect(!checkerHasCode(b, TsCodes.type_missing_properties));
     try T.expect(!checkerHasCode(b, TsCodes.type_missing_properties_truncated));
+}
+
+test "checker: call arguments include required interface methods in TS2741" {
+    const s = try newSetup(
+        \\interface IState {}
+        \\interface IMode { getInitialState(): IState; }
+        \\interface Window { opener: Window; }
+        \\declare const self: Window;
+        \\class State { constructor(mode: IMode) {} }
+        \\new State(self);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'getInitialState' is missing in type 'Window' but required in type 'IMode'.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: ambient module export target does not conflict with import equals" {
