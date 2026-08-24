@@ -47013,17 +47013,13 @@ pub const Checker = struct {
     fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!bool {
         if (self.hir.kindOf(target) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, target);
-        // Program-routed modules can carry concrete CommonJS descriptor
-        // metadata even when their require alias is otherwise writable.
-        if (self.external_resolver != null and try self.importedRequireMemberIsReadonly(m.object, m.name)) {
-            try self.reportReadonlyMemberAssignment(target, m.name);
-            return true;
-        }
-        if (self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
+        // A require alias is generally writable, but a concrete exported
+        // `const` or CommonJS readonly descriptor keeps its member flag.
         if (try self.importedRequireMemberIsReadonly(m.object, m.name)) {
             try self.reportReadonlyMemberAssignment(target, m.name);
             return true;
         }
+        if (self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
         if (try self.importedDefaultMemberIsReadonly(m.object, m.name)) {
             try self.reportReadonlyMemberAssignment(target, m.name);
             return true;
@@ -47069,10 +47065,41 @@ pub const Checker = struct {
             const info = resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name)) orelse return false;
             return info.exported_value_readonly;
         }
+        if (try self.virtualRequireExportIsConst(object, spec, member_name)) return true;
+        if (!self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name)) return false;
         const module_t = (try self.moduleNamespaceTypeForLocalImport(local_name, object)) orelse
             (try self.commonJsWholeExportTypeForRequireVariable(object)) orelse return false;
         const info = self.interner.objectMemberInfo(module_t, member_name) orelse return false;
         return info.is_readonly;
+    }
+
+    fn virtualRequireExportIsConst(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec) or
+                self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            const decl = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(decl) == .const_decl and
+                (self.declarationName(decl) orelse 0) == member_name) return true;
+            if (self.string_interner.get(ex.module).len != 0) continue;
+            for (hir_mod.exportNamed(self.hir, raw)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const export_spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (self.exportSpecifierExportedName(spec_node, export_spec) != member_name) continue;
+                const local_decl = self.findNamedDeclInVirtualSection(raw, export_spec.imported) orelse continue;
+                if (self.hir.kindOf(local_decl) == .const_decl) return true;
+            }
+        }
+        return false;
     }
 
     fn memberAccessReceiverIsWritableModuleAlias(self: *Checker, object: NodeId) bool {
@@ -237473,6 +237500,24 @@ test "checker: program require members preserve defineProperty readonly" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_property));
+}
+
+test "checker: import equals preserves exported const readonly members" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\export const x = 0;
+        \\export let y = 0;
+        \\// @filename: /b.ts
+        \\import m = require("./a");
+        \\m.x = 1;
+        \\m.x++;
+        \\m["x"] = 1;
+        \\m.y = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.readonly_property));
 }
 
 test "checker: external resolver declaration result accepts unless exports null blocked" {
