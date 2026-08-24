@@ -4549,6 +4549,10 @@ pub const Checker = struct {
     /// object types. Preserve their origin so diagnostics don't mistake
     /// custom `{ length; [n: number] }` interfaces for real arrays.
     array_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Object-literal unions widened through TypeScript's normalization pass.
+    /// Relation diagnostics use this to retain whole-union ownership unless
+    /// every branch rejects the same present source property.
+    normalized_object_literal_unions: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Exact element type of an unbounded trailing tuple rest. The object
     /// representation's number index is the union of every tuple element,
     /// but a literal index beyond the fixed prefix resolves specifically to
@@ -5105,6 +5109,7 @@ pub const Checker = struct {
         self.checkjs_object_expando_narrows.deinit(self.gpa);
         self.tuple_origin_types.deinit(self.gpa);
         self.array_origin_types.deinit(self.gpa);
+        self.normalized_object_literal_unions.deinit(self.gpa);
         self.tuple_trailing_rest_types.deinit(self.gpa);
         self.tuple_trailing_variadic_types.deinit(self.gpa);
         var symbolic_layout_it = self.symbolic_tuple_layouts.valueIterator();
@@ -103818,6 +103823,25 @@ pub const Checker = struct {
                                 // contextually typed by that declaration.
                             } else if (!excess_property_diag_fired and
                                 self.hir.kindOf(a.value) == .object_literal and
+                                self.normalized_object_literal_unions.contains(target_t))
+                            {
+                                if (!try self.tryReportNormalizedUnionCommonPropertyMismatch(a.value, target_t)) {
+                                    const normalized_source = try self.normalizedObjectLiteralDiagnosticSource(
+                                        a.value,
+                                        source_for_report,
+                                    );
+                                    try self.reportAssignmentTypeNotAssignable(
+                                        node,
+                                        a.value,
+                                        a.target,
+                                        normalized_source,
+                                        value_t,
+                                        target_t,
+                                        "Type is not assignable to target type.",
+                                    );
+                                }
+                            } else if (!excess_property_diag_fired and
+                                self.hir.kindOf(a.value) == .object_literal and
                                 try self.tryReportObjectLiteralPropertyMismatch(a.value, target_t))
                             {
                                 // Reported the precise property-level
@@ -105273,13 +105297,26 @@ pub const Checker = struct {
                                 const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
                                 const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
                                 if (rest_target_t < self.interner.pool.typeCount()) {
-                                    var j: usize = fixed_count;
-                                    while (j < arg_types.items.len) : (j += 1) {
-                                        var candidate_t = arg_types.items[j];
-                                        if (self.hir.kindOf(args[j]) == .spread) {
-                                            candidate_t = try self.iterableElementType(candidate_t);
+                                    const rest_target_flags = self.interner.pool.flagsOf(rest_target_t);
+                                    const batched_object_inference = rest_target_flags.is_type_parameter and
+                                        !rest_target_flags.is_union and
+                                        !rest_target_flags.is_intersection and
+                                        try self.inferNormalizedFreshObjectRestCandidates(
+                                            rest_target_t,
+                                            args,
+                                            arg_types.items,
+                                            fixed_count,
+                                            &call_subs,
+                                        );
+                                    if (!batched_object_inference) {
+                                        var j: usize = fixed_count;
+                                        while (j < arg_types.items.len) : (j += 1) {
+                                            var candidate_t = arg_types.items[j];
+                                            if (self.hir.kindOf(args[j]) == .spread) {
+                                                candidate_t = try self.iterableElementType(candidate_t);
+                                            }
+                                            try self.inferFromArgument(rest_target_t, candidate_t, args[j], &call_subs);
                                         }
-                                        try self.inferFromArgument(rest_target_t, candidate_t, args[j], &call_subs);
                                     }
                                 }
                             }
@@ -107496,9 +107533,11 @@ pub const Checker = struct {
                 const elements = hir_mod.arrayLiteralElements(self.hir, node);
                 var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer elem_types.deinit(self.gpa);
+                var normalize_object_literals = true;
                 for (elements) |el| {
                     if (el == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(el) == .spread) {
+                        normalize_object_literals = false;
                         // `...expr` ÃÂ¢ÃÂÃÂ the spread's element type
                         // contributes to the result. v0: require
                         // the spread operand to be an array type
@@ -107527,6 +107566,9 @@ pub const Checker = struct {
                         try elem_types.append(self.gpa, contrib);
                         continue;
                     }
+                    if (self.hir.kindOf(el) != .object_literal or self.objectLiteralContainsSpread(el)) {
+                        normalize_object_literals = false;
+                    }
                     const raw_t = try self.checkExpression(el);
                     // A fresh enum-member literal element widens to its
                     // owning enum type when forming the array element
@@ -107547,6 +107589,8 @@ pub const Checker = struct {
                     types.Primitive.any
                 else if (elem_types.items.len == 1)
                     elem_types.items[0]
+                else if (normalize_object_literals)
+                    (try self.freshObjectReturnUnion(elem_types.items)) orelse try self.inferArrayLiteralElementType(elem_types.items)
                 else
                     try self.inferArrayLiteralElementType(elem_types.items);
                 // Build the standard Array<T> shape ÃÂ¢ÃÂÃÂ `length:
@@ -149957,6 +150001,46 @@ pub const Checker = struct {
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
+    fn inferNormalizedFreshObjectRestCandidates(
+        self: *Checker,
+        type_param: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        start: usize,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        if (start >= args.len or args.len != arg_types.len) return false;
+        var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer candidates.deinit(self.gpa);
+        var non_fresh_candidate: ?TypeId = null;
+        for (args[start..], start..) |arg, index| {
+            const arg_t = arg_types[index];
+            if (arg_t >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(arg_t).is_object_type)
+            {
+                return false;
+            }
+            if (self.hir.kindOf(arg) == .object_literal and !self.objectLiteralContainsSpread(arg)) {
+                try candidates.append(
+                    self.gpa,
+                    try self.widenedMutableObjectLiteralInferenceType(arg, arg_t),
+                );
+            } else if (non_fresh_candidate == null) {
+                non_fresh_candidate = arg_t;
+            } else {
+                return false;
+            }
+        }
+        if (candidates.items.len + @intFromBool(non_fresh_candidate != null) < 2) return false;
+        if (non_fresh_candidate) |declared| {
+            try subs.put(self.gpa, type_param, declared);
+            return true;
+        }
+        const normalized = (try self.freshObjectReturnUnion(candidates.items)) orelse return false;
+        try subs.put(self.gpa, type_param, normalized);
+        return true;
+    }
+
     fn inferCallSubstitutions(
         self: *Checker,
         sig: TypeId,
@@ -150002,6 +150086,18 @@ pub const Checker = struct {
             const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
             const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
             if (rest_target_t < self.interner.pool.typeCount()) {
+                const rest_target_flags = self.interner.pool.flagsOf(rest_target_t);
+                const batched_object_inference = rest_target_flags.is_type_parameter and
+                    !rest_target_flags.is_union and
+                    !rest_target_flags.is_intersection and
+                    try self.inferNormalizedFreshObjectRestCandidates(
+                        rest_target_t,
+                        args,
+                        arg_types,
+                        fixed_count,
+                        subs,
+                    );
+                if (batched_object_inference) return;
                 var j: usize = fixed_count;
                 while (j < arg_types.len) : (j += 1) {
                     var candidate_t = arg_types[j];
@@ -152800,6 +152896,12 @@ pub const Checker = struct {
                         }
                         if (emitted_rest_mismatch) continue;
                         if (self.laterArgsHaveNameResolutionDiagnostic(args, j + 1)) continue;
+                        if (self.hir.kindOf(args[j]) == .object_literal and
+                            try self.tryReportObjectLiteralPropertyMismatchForCall(args[j], target_t))
+                        {
+                            emitted_rest_mismatch = true;
+                            continue;
+                        }
                         // Use the shared formatter so rest-arg TS2345
                         // sites also get the richer `Argument of type 'A'
                         // is not assignable to parameter of type 'P'.`
@@ -166566,6 +166668,134 @@ pub const Checker = struct {
         return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false, true);
     }
 
+    fn tryReportNormalizedUnionCommonPropertyMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        if (self.hir.kindOf(init_node) != .object_literal or
+            !self.normalized_object_literal_unions.contains(target_t))
+        {
+            return false;
+        }
+        const branches = try self.gpa.dupe(TypeId, self.interner.unionMembers(target_t));
+        defer self.gpa.free(branches);
+        var common: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer common.deinit(self.gpa);
+        var first_branch = true;
+        for (branches) |branch_t| {
+            if (branch_t >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(branch_t).is_object_type)
+            {
+                return false;
+            }
+            var branch_mismatches: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer branch_mismatches.deinit(self.gpa);
+            for (hir_mod.objectLiteralProps(self.hir, init_node)) |prop_node| {
+                if (self.hir.kindOf(prop_node) != .object_property) continue;
+                const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+                if (property.value == hir_mod.none_node_id) continue;
+                const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+                const target_member = self.interner.objectMemberInfo(branch_t, name) orelse continue;
+                const raw_source = if (self.hir.typeOf(property.value) != types.Primitive.none)
+                    self.hir.typeOf(property.value)
+                else
+                    try self.checkExpression(property.value);
+                const source = try self.diagnosticExpressionSourceTypeForTarget(
+                    property.value,
+                    raw_source,
+                    target_member.type,
+                );
+                if (try self.literalExpressionAssignableToTarget(property.value, target_member.type)) continue;
+                if (try self.checkerAssignableExpressionTo(property.value, source, target_member.type)) continue;
+                if (std.mem.indexOfScalar(hir_mod.StringId, branch_mismatches.items, name) == null) {
+                    try branch_mismatches.append(self.gpa, name);
+                }
+            }
+            if (first_branch) {
+                try common.appendSlice(self.gpa, branch_mismatches.items);
+                first_branch = false;
+            } else {
+                var index: usize = common.items.len;
+                while (index > 0) {
+                    index -= 1;
+                    if (std.mem.indexOfScalar(hir_mod.StringId, branch_mismatches.items, common.items[index]) == null) {
+                        _ = common.orderedRemove(index);
+                    }
+                }
+            }
+            if (common.items.len == 0) return false;
+        }
+        if (common.items.len != 1) return false;
+
+        const name = common.items[0];
+        const prop_node = (try self.findObjectLiteralPropNodeForTargetMember(init_node, name)) orelse return false;
+        const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+        if (property.value == hir_mod.none_node_id) return false;
+        var diagnostic_target = types.Primitive.none;
+        for (branches) |branch_t| {
+            const member = self.interner.objectMemberInfo(branch_t, name) orelse continue;
+            if (diagnostic_target == types.Primitive.none or !self.typeIsNullishOnly(member.type)) {
+                diagnostic_target = member.type;
+            }
+            if (!self.typeIsNullishOnly(member.type)) break;
+        }
+        if (diagnostic_target == types.Primitive.none) return false;
+        const raw_source = if (self.hir.typeOf(property.value) != types.Primitive.none)
+            self.hir.typeOf(property.value)
+        else
+            try self.checkExpression(property.value);
+        const diagnostic_source = try self.diagnosticExpressionSourceTypeForTarget(
+            property.value,
+            raw_source,
+            diagnostic_target,
+        );
+        const anchor = if (property.key != hir_mod.none_node_id) property.key else property.value;
+        try self.reportTypeNotAssignable(
+            anchor,
+            diagnostic_source,
+            diagnostic_target,
+            "Type is not assignable to property type.",
+        );
+        return true;
+    }
+
+    fn normalizedObjectLiteralDiagnosticSource(
+        self: *Checker,
+        init_node: NodeId,
+        fallback: TypeId,
+    ) CheckError!TypeId {
+        if (self.hir.kindOf(init_node) != .object_literal or
+            fallback >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(fallback).is_object_type)
+        {
+            return fallback;
+        }
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try members.appendSlice(self.gpa, self.interner.objectMembers(fallback));
+        var changed = false;
+        for (hir_mod.objectLiteralProps(self.hir, init_node)) |prop_node| {
+            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (property.value == hir_mod.none_node_id or self.hir.kindOf(property.value) != .literal_bool) continue;
+            const name = self.propertyNameFromKeyNode(property.key) orelse continue;
+            const raw = if (self.hir.typeOf(property.value) != types.Primitive.none)
+                self.hir.typeOf(property.value)
+            else
+                try self.checkExpression(property.value);
+            const literal = try self.expressionLiteralType(property.value, raw);
+            for (members.items) |*member| {
+                if (member.name != name) continue;
+                member.type = literal;
+                changed = true;
+                break;
+            }
+        }
+        if (!changed) return fallback;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
     fn tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(
         self: *Checker,
         init_node: NodeId,
@@ -167497,9 +167727,22 @@ pub const Checker = struct {
         return true;
     }
 
+    fn objectLiteralContainsSpread(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return false;
+        for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+            if (self.hir.kindOf(prop) == .spread) return true;
+        }
+        return false;
+    }
+
     /// Inferred unions of object-return branches expose every sibling key by
     /// adding an optional `undefined` member where a branch omitted it.
     fn freshObjectReturnUnion(self: *Checker, candidates: []const TypeId) CheckError!?TypeId {
+        return self.freshObjectReturnUnionDepth(candidates, 0);
+    }
+
+    fn freshObjectReturnUnionDepth(self: *Checker, candidates: []const TypeId, depth: u8) CheckError!?TypeId {
+        if (depth >= 16) return null;
         var objects: std.ArrayListUnmanaged(TypeId) = .empty;
         defer objects.deinit(self.gpa);
         for (candidates) |candidate| {
@@ -167507,32 +167750,57 @@ pub const Checker = struct {
         }
         if (objects.items.len < 2) return null;
 
-        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer names.deinit(self.gpa);
-        for (objects.items) |object_t| {
-            for (self.interner.objectMembers(object_t)) |member| {
-                if (std.mem.indexOfScalar(hir_mod.StringId, names.items, member.name) == null) {
-                    try names.append(self.gpa, member.name);
-                }
-            }
+        var branch_members: std.ArrayListUnmanaged(std.ArrayListUnmanaged(types.ObjectMember)) = .empty;
+        defer {
+            for (branch_members.items) |*members| members.deinit(self.gpa);
+            branch_members.deinit(self.gpa);
         }
-
-        var augmented: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer augmented.deinit(self.gpa);
         for (objects.items) |object_t| {
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-            defer members.deinit(self.gpa);
             try members.appendSlice(self.gpa, self.interner.objectMembers(object_t));
-            for (names.items) |name| {
+            for (members.items) |*member| {
+                var nested_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer nested_candidates.deinit(self.gpa);
+                for (objects.items) |sibling_t| {
+                    const sibling = self.interner.objectMemberInfo(sibling_t, member.name) orelse continue;
+                    try nested_candidates.append(self.gpa, sibling.type);
+                }
+                if (nested_candidates.items.len < 2) continue;
+                if (try self.freshObjectReturnUnionDepth(nested_candidates.items, depth + 1)) |nested| {
+                    member.type = nested;
+                }
+            }
+            try branch_members.append(self.gpa, members);
+        }
+
+        var seen_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer seen_names.deinit(self.gpa);
+        for (branch_members.items, 0..) |*members, branch_index| {
+            const original = try self.gpa.dupe(types.ObjectMember, members.items);
+            defer self.gpa.free(original);
+            for (original) |member| {
+                if (std.mem.indexOfScalar(hir_mod.StringId, seen_names.items, member.name) != null) continue;
+                for (branch_members.items[0..branch_index]) |*prior| {
+                    try prior.append(self.gpa, .{
+                        .name = member.name,
+                        .type = types.Primitive.undefined_t,
+                        .is_optional = true,
+                        .is_readonly = false,
+                        .is_method = false,
+                    });
+                }
+                try seen_names.append(self.gpa, member.name);
+            }
+            for (seen_names.items) |name| {
                 var present = false;
-                for (members.items) |member| {
+                for (original) |member| {
                     if (member.name == name) {
                         present = true;
                         break;
                     }
                 }
                 if (present) continue;
-                try members.append(self.gpa, .{
+                try members.insert(self.gpa, 0, .{
                     .name = name,
                     .type = types.Primitive.undefined_t,
                     .is_optional = true,
@@ -167540,10 +167808,19 @@ pub const Checker = struct {
                     .is_method = false,
                 });
             }
+        }
+
+        var augmented: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer augmented.deinit(self.gpa);
+        for (branch_members.items) |members| {
             const augmented_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
             try augmented.append(self.gpa, augmented_t);
         }
-        return self.interner.internUnion(augmented.items) catch return error.OutOfMemory;
+        const normalized = self.interner.internUnion(augmented.items) catch return error.OutOfMemory;
+        if (normalized < self.interner.pool.typeCount() and self.interner.pool.flagsOf(normalized).is_union) {
+            try self.normalized_object_literal_unions.put(self.gpa, normalized, {});
+        }
+        return normalized;
     }
 
     fn widenLiteralType(self: *Checker, t: TypeId) TypeId {
@@ -172463,7 +172740,8 @@ pub const Checker = struct {
         // generic TS2322 when the source is missing exactly one
         // required property ÃÂ¢ÃÂÃÂ mirrors fixture
         // `nonPrimitiveAssignError.ts(5,1)`.
-        if (try self.tryReportSinglePropertyMissing(node, value_node, source, target)) return;
+        if (!self.normalized_object_literal_unions.contains(target) and
+            try self.tryReportSinglePropertyMissing(node, value_node, source, target)) return;
         // Weak-type check: when the target's named members are all
         // optional and the source shares no property name with the
         // target, upstream tsc surfaces TS2559 in place of TS2322.
@@ -258069,6 +258347,30 @@ test "checker: generic indexed assignment target retains symbolic access name" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqualStrings("Type 'undefined' is not assignable to type '{ [key: string]: string; a: string; b: string; }[Key]'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: fresh object unions normalize arrays and generic rest candidates" {
+    const b = try newBoundSetup(
+        \\let value = [{ a: 0 }, { a: 1, b: "x" }, { a: 2, b: "y", c: true }][0];
+        \\value.b;
+        \\value.c;
+        \\value = { a: 0, b: 0 };
+        \\value = { b: "y" };
+        \\let correlated = [{ a: 1, b: 2 }, { a: "abc" }, {}][0];
+        \\correlated = { a: "def", b: 20 };
+        \\correlated = { a: 1 };
+        \\declare function choose<T>(...items: T[]): T;
+        \\declare let data: { a: 1, b: "abc", c: true };
+        \\choose({ a: 1, b: 2 }, { a: "abc" }, {});
+        \\choose(data, { a: 2 });
+        \\choose({ a: 2 }, data);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 6), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
 test "checker: same-named namespace classes retain distinct static and diagnostic identities" {
