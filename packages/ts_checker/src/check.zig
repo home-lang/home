@@ -102792,6 +102792,23 @@ pub const Checker = struct {
         return try self.instantiateGenericClassWithSubstitutions(class_name, info, &subs);
     }
 
+    fn reportNonGenericClassTypeArguments(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        type_arg_nodes: []const NodeId,
+    ) CheckError!void {
+        if (type_arg_nodes.len == 0 or
+            self.generic_aliases.get(class_name) != null or
+            (!self.class_instance_types.contains(class_name) and
+                !self.class_constructor_sigs.contains(class_name))) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Expected 0 type arguments, but got {d}.",
+            .{type_arg_nodes.len},
+        );
+        try self.reportOnce(type_arg_nodes[0], TsCodes.expected_n_type_arguments, msg);
+    }
+
     fn instantiateGenericClassConstructorSignatureForNew(
         self: *Checker,
         class_name: hir_mod.StringId,
@@ -104349,6 +104366,7 @@ pub const Checker = struct {
                 if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     if (self.hir.kindOf(c.callee) == .identifier) {
                         const class_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                        try self.reportNonGenericClassTypeArguments(class_name, hir_mod.callTypeArgs(self.hir, node));
                         if (self.sourceHasCheckJsDirective()) {
                             if (self.jsConstructorFunctionDeclForName(c.callee, class_name)) |fn_node| {
                                 if (self.fnProvidesCheckJsConstructorInstance(fn_node)) {
@@ -104454,6 +104472,7 @@ pub const Checker = struct {
                         if (type_arg_nodes.len > 0 or !self.class_constructor_sigs.contains(id.name)) {
                             if (try self.instantiateGenericClassForNew(id.name, type_arg_nodes)) |generic_inst| break :blk generic_inst;
                         }
+                        try self.reportNonGenericClassTypeArguments(id.name, type_arg_nodes);
                         if (self.sourceHasCheckJsDirective()) {
                             if (self.jsConstructorFunctionDeclForName(c.callee, id.name)) |fn_node| {
                                 if (self.fnProvidesCheckJsConstructorInstance(fn_node)) {
@@ -207366,6 +207385,16 @@ test "checker: untyped new expression with type arguments reports TS2347" {
         if (d.code == TsCodes.untyped_function_type_args) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: implicit non-generic class constructor rejects type arguments" {
+    const s = try newSetup(
+        \\class C { value = 1; }
+        \\new C<number>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
 }
 
 test "checker: Date constructor rejects explicit type arguments without parens" {
