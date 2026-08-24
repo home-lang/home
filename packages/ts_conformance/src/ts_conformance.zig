@@ -3479,9 +3479,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         tsconfig_options.types;
     const automatic_type_names = [_][]const u8{"*"};
     const suppress_automatic_types = directiveBool(directive_source, "noImplicitReferences") orelse false;
-    const type_names_to_expand = if (!types_directive_present and
+    const uses_automatic_type_names = !types_directive_present and
         !tsconfig_options.types_configured and
-        !suppress_automatic_types)
+        !suppress_automatic_types;
+    const type_names_to_expand = if (uses_automatic_type_names)
         automatic_type_names[0..]
     else
         explicit_type_names;
@@ -3508,6 +3509,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         current_directory,
     );
     defer freeStringList(gpa, configured_type_names);
+    const diagnostic_type_names: []const []const u8 = if (uses_automatic_type_names)
+        &.{}
+    else
+        configured_type_names;
 
     var owned_program_sources: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
@@ -3664,7 +3669,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .module_kind = module_kind_label,
         .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
-        .compiler_type_reference_names = configured_type_names,
+        .compiler_type_reference_names = diagnostic_type_names,
         .program_umd_globals = known_umd_globals.items,
         .deduplicate_packages = c.deduplicate_packages,
     };
@@ -3889,7 +3894,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     actual_count += try appendExplicitRootDirDiagnostics(gpa, virtual_files.items, tsconfig_options, &actual_lines);
     actual_count += try appendMissingConfiguredTypeDiagnostics(
         gpa,
-        configured_type_names,
+        diagnostic_type_names,
         known_type_reference_names.items,
         &actual_lines,
     );
