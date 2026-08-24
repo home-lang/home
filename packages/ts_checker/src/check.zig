@@ -4609,6 +4609,7 @@ pub const Checker = struct {
     target_es5_baseline: bool = false,
     target_selection_explicit: bool = false,
     target_supports_top_level_await: bool = true,
+    intl_number_format_modern_options: bool = true,
     /// True when the entire compilation unit is a `.d.ts` /
     /// `.d.mts` / `.d.cts` declaration file (set from outside via
     /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
@@ -4975,6 +4976,10 @@ pub const Checker = struct {
     pub fn setTargetSupportsTopLevelAwait(self: *Checker, enabled: bool) void {
         self.target_supports_top_level_await = enabled;
         self.target_selection_explicit = true;
+    }
+
+    pub fn setIntlNumberFormatModernOptions(self: *Checker, enabled: bool) void {
+        self.intl_number_format_modern_options = enabled;
     }
 
     pub fn setPrivateIdentifierDownlevelCollisionEnabled(self: *Checker, enabled: bool) void {
@@ -128371,11 +128376,14 @@ pub const Checker = struct {
 
         const style_t = try self.intlStringLiteralUnion(&.{ "decimal", "percent", "currency" }, true);
         const currency_display_t = try self.intlStringLiteralUnion(&.{ "code", "symbol", "name" }, true);
-        const use_grouping_t = try self.intlStringLiteralUnionWithBase(
-            &.{ "true", "false", "min2", "auto", "always" },
-            boolean_t,
-            true,
-        );
+        const use_grouping_t = if (self.intl_number_format_modern_options)
+            try self.intlStringLiteralUnionWithBase(
+                &.{ "true", "false", "min2", "auto", "always" },
+                boolean_t,
+                true,
+            )
+        else
+            self.interner.internUnion(&.{ boolean_t, undefined_t }) catch return error.OutOfMemory;
         const sign_display_t = try self.intlStringLiteralUnion(&.{ "auto", "never", "always", "exceptZero", "negative" }, true);
         const rounding_priority_t = try self.intlStringLiteralUnion(&.{ "auto", "morePrecision", "lessPrecision" }, true);
         const rounding_mode_t = try self.intlStringLiteralUnion(
@@ -128402,11 +128410,14 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("trailingZeroDisplay") catch return error.OutOfMemory, .type = trailing_zero_display_t, .is_optional = true, .is_readonly = false, .is_method = false },
         }) catch return error.OutOfMemory;
         try self.alias_display_names.put(self.gpa, options_t, "NumberFormatOptions");
-        const resolved_use_grouping_t = try self.intlStringLiteralUnionWithBase(
-            &.{ "min2", "auto", "always" },
-            boolean_t,
-            false,
-        );
+        const resolved_use_grouping_t = if (self.intl_number_format_modern_options)
+            try self.intlStringLiteralUnionWithBase(
+                &.{ "min2", "auto", "always" },
+                boolean_t,
+                false,
+            )
+        else
+            boolean_t;
         const resolved_rounding_priority_t = try self.intlStringLiteralUnion(&.{ "auto", "morePrecision", "lessPrecision" }, false);
         const resolved_rounding_mode_t = try self.intlStringLiteralUnion(
             &.{ "ceil", "floor", "expand", "trunc", "halfCeil", "halfFloor", "halfExpand", "halfTrunc", "halfEven" },
@@ -190297,6 +190308,18 @@ test "checker: Intl NumberFormat composes ES2023 options" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: Intl NumberFormat keeps legacy useGrouping before ES2023" {
+    const s = try newSetup(
+        \\new Intl.NumberFormat("en-GB", { useGrouping: true });
+        \\new Intl.NumberFormat("en-GB", { useGrouping: "true" });
+        \\new Intl.NumberFormat("en-GB", { useGrouping: "always" });
+    );
+    defer destroySetup(s);
+    s.checker.setIntlNumberFormatModernOptions(false);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: numeric and any element keys prefer number index signatures" {
