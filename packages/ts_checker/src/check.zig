@@ -118512,8 +118512,8 @@ pub const Checker = struct {
         }
 
         const argument_diagnostic_start = self.diagnostics.items.len;
-        const already_reported_argument_mismatch = self.diagnosticCodeInNodeSpan(
-            node,
+        const already_reported_argument_mismatch = self.argumentsContainDiagnosticCode(
+            args,
             TsCodes.argument_type_mismatch,
         );
         if (!found_applicable and considered_candidate_count == 1) {
@@ -155029,6 +155029,13 @@ pub const Checker = struct {
     fn argAlreadyHasArgumentMismatchDiagnostic(self: *Checker, arg_node: NodeId) bool {
         for (self.diagnostics.items) |d| {
             if (d.node == arg_node and d.code == TsCodes.argument_type_mismatch) return true;
+        }
+        return false;
+    }
+
+    fn argumentsContainDiagnosticCode(self: *Checker, args: []const NodeId, code: u32) bool {
+        for (args) |arg| {
+            if (self.diagnosticCodeInNodeSpan(arg, code)) return true;
         }
         return false;
     }
@@ -220153,6 +220160,29 @@ test "checker: tagged template overload selection rejects inferred constraint vi
         }
     }
     try T.expect(saw_last_overload_constraint);
+}
+
+test "checker: nested tagged template and generic new report independent arguments" {
+    const s = try newSetup(
+        \\interface Taggable { <T>(strings: TemplateStringsArray, ...args: T[]): Newable; }
+        \\interface Newable { new <T>(...args: T[]): any; }
+        \\declare const tag: Taggable;
+        \\new tag<number> `${"hello"}`<string>(100);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'string' is not assignable to parameter of type 'number'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type 'string'.",
+    ));
 }
 
 test "checker: tagged template repeated type parameters refine inference candidates" {
