@@ -105712,7 +105712,7 @@ pub const Checker = struct {
                         const object_id = hir_mod.identifierOf(self.hir, m.object);
                         if (self.enclosingCatchBindingType(m.object, object_id.name)) |catch_t| {
                             object_is_catch_binding = true;
-                            obj_t = catch_t;
+                            obj_t = self.lookupNarrow(object_id.name) orelse catch_t;
                         } else if (self.lookupNarrow(object_id.name)) |flow_t| {
                             obj_t = flow_t;
                         } else if (self.sectionLocalIdentifierHasUnresolvedAnnotation(m.object)) {
@@ -121595,6 +121595,7 @@ pub const Checker = struct {
     fn identifierHasNarrowableValueBinding(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, node);
+        if (self.enclosingCatchBindingType(node, id.name) != null) return true;
         if (self.isNodeCommonJsGlobalName(id.name)) {
             if (self.sourceHasVarDeclarationText(id.name)) return true;
             if (self.globalAugmentedValueType(id.name, node) catch null != null) return true;
@@ -124964,7 +124965,9 @@ pub const Checker = struct {
         // Catch bindings shadow outer annotations and hoisted variables for
         // the whole catch block, including nested functions.
         if (!self.isDeclNameSlot(node)) {
-            if (self.enclosingCatchBindingType(node, id.name)) |catch_t| return catch_t;
+            if (self.enclosingCatchBindingType(node, id.name)) |catch_t| {
+                return self.lookupNarrow(id.name) orelse catch_t;
+            }
         }
 
         // Narrowed binding from an enclosing type-guard takes
@@ -207653,7 +207656,10 @@ test "checker: catch unknown property access reports TS18046" {
         \\}
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .use_unknown_in_catch_variables = true });
+    s.checker.setStrictFlags(.{
+        .use_unknown_in_catch_variables = true,
+        .strict_null_checks = true,
+    });
     try s.checker.checkSourceFile(s.root);
     var unknown_refs: usize = 0;
     for (s.checker.diagnostics.items) |d| {
@@ -207697,7 +207703,10 @@ test "checker: reassignment invalidates conditional aliases referencing name" {
         \\}
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .use_unknown_in_catch_variables = true });
+    s.checker.setStrictFlags(.{
+        .use_unknown_in_catch_variables = true,
+        .strict_null_checks = true,
+    });
     try s.checker.checkSourceFile(s.root);
     var unknown_refs: usize = 0;
     for (s.checker.diagnostics.items) |d| {
