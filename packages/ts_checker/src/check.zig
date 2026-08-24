@@ -159956,6 +159956,7 @@ pub const Checker = struct {
         index_t: TypeId,
     ) !void {
         if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
+        if (self.indexNodeIsVisibleTypeParameter(index_node)) return;
         if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
@@ -159997,6 +159998,12 @@ pub const Checker = struct {
         const span = self.hir.spanOf(index_node);
         if (span.start == 0 or span.start >= src.len or src[span.start] != '#') return false;
         return src[span.start - 1] == '[';
+    }
+
+    fn indexNodeIsVisibleTypeParameter(self: *Checker, index_node: NodeId) bool {
+        if (index_node == hir_mod.none_node_id or self.hir.kindOf(index_node) != .type_ref) return false;
+        const ref = hir_mod.typeRefOf(self.hir, index_node);
+        return ref.qualifier_len == 0 and self.nameHasEnclosingTypeParameter(ref.name, index_node);
     }
 
     fn symbolicIndexedAccessKeyRelation(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?bool {
@@ -161000,6 +161007,7 @@ pub const Checker = struct {
     /// Returns true when a diagnostic was emitted.
     fn reportTupleIndexedAccessTypeRange(self: *Checker, index_node: NodeId, object_t: TypeId, index_t: TypeId) CheckError!bool {
         const length = self.fixedTupleLength(object_t) orelse return false;
+        if (self.indexNodeIsVisibleTypeParameter(index_node)) return false;
         if (index_t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(index_t);
         if (!f.is_literal or !f.is_number) return false;
@@ -253886,6 +253894,16 @@ test "checker: indexed-access type into a tuple with an in-range literal index i
     // must NOT trip either tuple range diagnostic.
     const b = try newBoundSetup(
         \\type t = [string, number][1];
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(!checkerHasCode(b, TsCodes.tuple_negative_index));
+    try T.expect(!checkerHasCode(b, TsCodes.tuple_index_out_of_bounds));
+}
+
+test "checker: generic tuple indices do not inherit temporary literal range errors" {
+    const b = try newBoundSetup(
+        \\type Previous<Depth extends number> = [-1, 0, 1, 2][Depth];
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
