@@ -120193,6 +120193,7 @@ pub const Checker = struct {
         // Only interpret the payload as a type parameter after the
         // compound containers have been dispatched.
         if (flags.is_type_parameter) {
+            if (subs.contains(t)) return;
             const name = self.interner.typeParameterName(t) orelse return;
             for (type_params, 0..) |param_t, i| {
                 const param_name = self.interner.typeParameterName(param_t) orelse continue;
