@@ -118867,6 +118867,11 @@ pub const Checker = struct {
             {
                 const class_info = hir_mod.classOf(self.hir, enclosing_class);
                 if (class_info.extends != hir_mod.none_node_id) {
+                    // tsgo recovers an invalid `Base<T>` heritage after
+                    // TS2315 without cascading into TS2346 at `super()`.
+                    // The heritage diagnostic already explains why the
+                    // constructor target could not be materialized.
+                    if (self.hasPriorTypeNotGenericDiagnosticOnSpan(class_info.extends)) return;
                     if (self.classExtendsName(class_info.extends)) |base_name| {
                         if (self.hir.kindOf(class_info.extends) == .identifier) {
                             if (self.findVisibleNamedClassDecl(call_node, base_name)) |base_decl| {
@@ -238930,10 +238935,9 @@ test "checker: empty string on LHS of `&&` fires TS2873 always-falsy" {
     try T.expectEqual(@as(usize, 1), falsy);
 }
 
-test "checker: non-generic class heritage makes super call non-constructable" {
-    // Mirrors interfaceMergeWithNonGenericTypeArguments.ts. The invalid
-    // `SomeBaseClass<any>` heritage still reports TS2315, and the
-    // recovered constructor body treats `super()` as a non-callable target.
+test "checker: non-generic class heritage suppresses super call cascade" {
+    // Mirrors tsgo's accepted interfaceMergeWithNonGenericTypeArguments
+    // baseline: invalid heritage reports TS2315 without a TS2346 cascade.
     const s = try newSetup(
         \\export class SomeBaseClass { }
         \\export interface SomeInterface { }
@@ -238953,7 +238957,7 @@ test "checker: non-generic class heritage makes super call non-constructable" {
         if (d.code == TsCodes.base_constructor_type_arg_count) saw_2508 = true;
     }
     try T.expect(saw_2315);
-    try T.expect(saw_2346);
+    try T.expect(!saw_2346);
     try T.expect(!saw_2508);
 }
 
