@@ -108820,7 +108820,7 @@ pub const Checker = struct {
                 for (self.hir.childSlice(frag.children_start, frag.children_len)) |child| {
                     _ = try self.checkExpression(child);
                 }
-                break :blk types.Primitive.any;
+                break :blk (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
             },
             .jsx_expression => blk: {
                 const ex = hir_mod.jsxExpressionOf(self.hir, node);
@@ -109789,6 +109789,7 @@ pub const Checker = struct {
                         .code = TsCodes.jsx_single_child_prop_multiple_children,
                         .message = msg,
                     });
+                    child_relation_reported = true;
                 }
                 // A named union children alias is itself the contextual
                 // target for every child. Peeling only its array arm
@@ -191321,6 +191322,23 @@ test "checker: JSX.Element resolves to a named synthetic when only /.lib/react.d
         }
     }
     try T.expect(found);
+}
+
+test "checker: JSX fragments carry Element through children bags" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\interface Multi { children: JSX.Element | JSX.Element[]; }
+        \\interface Single { children: JSX.Element; }
+        \\function Many(p: Multi) { return null as any; }
+        \\function One(p: Single) { return null as any; }
+        \\const ok = <Many><></><span /></Many>;
+        \\const bad = <One><></><span /></One>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.jsx_single_child_prop_multiple_children));
 }
 
 test "checker: React JSX nullish returns render the Element leaf name" {
