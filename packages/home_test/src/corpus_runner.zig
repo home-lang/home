@@ -49646,18 +49646,71 @@ const harness_prelude =
     \\  const localRequire = __home_create_require(path);
     \\  Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path)(module, module.exports, localRequire, path, dirname);
     \\}
+    \\function __home_module_loader_error(loader, filename, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "module loader failed"));
+    \\  const path = String(filename);
+    \\  const operation = "module.extensions." + String(loader || "js");
+    \\  const failure = new SyntaxError("CommonJS " + String(loader || "JavaScript") + " loader failed for '" + path + "': " + String(underlying.message || underlying), { cause: underlying });
+    \\  failure.code = "ERR_MODULE_PARSE";
+    \\  failure.operation = operation;
+    \\  failure.loader = String(loader || "js");
+    \\  failure.path = path;
+    \\  failure.cause = underlying;
+    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
+    \\  const causeStack = String(underlying.stack || "");
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + operation + " (" + path + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
+    \\  return failure;
+    \\}
+    \\function __home_module_transpile_source(source, filename, loader) {
+    \\  try {
+    \\    const transpiler = new Bun.Transpiler({ loader: String(loader), platform: "bun" });
+    \\    return String(transpiler.transformSync(String(source), String(loader)));
+    \\  } catch (cause) {
+    \\    throw __home_module_loader_error(loader, filename, cause);
+    \\  }
+    \\}
+    \\function __home_module_lower_cjs_exports(source) {
+    \\  const names = [];
+    \\  let lowered = String(source).replace(/\bexport\s+(const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g, (_match, kind, name) => { names.push(name); return kind + " " + name; });
+    \\  lowered = lowered.replace(/\bexport\s*\{\s*([^}]+)\s*\}\s*;?/g, (_match, fields) => String(fields).split(",").map(field => { const parts = field.trim().split(/\s+as\s+/); const local = parts[0]; const exported = parts[1] || local; return "exports[" + JSON.stringify(exported) + "] = " + local + ";"; }).join("\n"));
+    \\  if (names.length > 0) lowered += "\n" + names.map(name => "exports[" + JSON.stringify(name) + "] = " + name + ";").join("\n");
+    \\  return lowered;
+    \\}
     \\function __home_module_js_extension(module, filename) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
-    \\  __home_compile_cjs_module(module, filename, source);
+    \\  try { __home_compile_cjs_module(module, filename, source); }
+    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error("js", filename, cause); }
     \\}
+    \\function __home_module_transpiled_extension(module, filename, loader) {
+    \\  const source = __home_build_read_text(filename);
+    \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
+    \\  const transpiled = __home_module_lower_cjs_exports(__home_module_transpile_source(source, filename, loader));
+    \\  try { __home_compile_cjs_module(module, filename, transpiled); }
+    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error(loader, filename, cause); }
+    \\}
+    \\function __home_module_jsx_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "jsx"); }
+    \\function __home_module_ts_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "ts"); }
+    \\function __home_module_tsx_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "tsx"); }
+    \\function __home_module_mjs_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "js"); }
     \\function __home_module_json_extension(module, filename) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
-    \\  module.exports = __home_parse_json_module_text(source, filename);
+    \\  try { module.exports = __home_parse_json_module_text(source, filename); }
+    \\  catch (cause) { throw __home_module_loader_error("json", filename, cause); }
     \\}
     \\const __home_module_original_resolve_filename = __home_module_resolve_filename;
-    \\const __home_node_module_extensions = { ".js": __home_module_js_extension, ".json": __home_module_json_extension };
+    \\const __home_node_module_extensions = {
+    \\  ".js": __home_module_js_extension,
+    \\  ".cjs": __home_module_js_extension,
+    \\  ".mjs": __home_module_mjs_extension,
+    \\  ".jsx": __home_module_jsx_extension,
+    \\  ".ts": __home_module_ts_extension,
+    \\  ".mts": __home_module_ts_extension,
+    \\  ".cts": __home_module_ts_extension,
+    \\  ".tsx": __home_module_tsx_extension,
+    \\  ".json": __home_module_json_extension,
+    \\};
     \\const __home_node_module_builtin = { SourceMap, createRequire: __home_create_require, _resolveFilename: __home_module_original_resolve_filename, _extensions: __home_node_module_extensions };
     \\Object.defineProperty(__home_node_module_builtin, "_cache", { configurable: true, get() { return globalThis.require && globalThis.require.cache ? globalThis.require.cache : Object.create(null); } });
     \\globalThis.__home_modules["module"] = __home_node_module_builtin;
@@ -65478,6 +65531,7 @@ const harness_prelude =
     \\};
     \\function __home_make_cjs_module(resolved, dirname) {
     \\  const module = { id: resolved, path: dirname || "", exports: {}, filename: resolved, loaded: false, children: [], parent: null };
+    \\  Object.defineProperty(module, "_compile", { configurable: true, enumerable: false, value(content, filename) { return __home_compile_cjs_module(this, filename === undefined ? this.filename : filename, content); } });
     \\  Object.defineProperty(module, "__home_inspect", { enumerable: false, configurable: true, get() { return "Module {\n  id: " + JSON.stringify(this.id) + ",\n  filename: " + JSON.stringify(this.filename) + ",\n  loaded: " + String(!!this.loaded) + ",\n}"; } });
     \\  return module;
     \\}
@@ -68918,6 +68972,15 @@ const harness_prelude =
     \\  }
     \\  return headers;
     \\}
+    \\function __home_fetch_server_dispatch_href(href) {
+    \\  try {
+    \\    const parsed = new URL(String(href));
+    \\    if (parsed.pathname.startsWith("//")) parsed.pathname = "/" + parsed.pathname.replace(/^\/+/, "");
+    \\    return parsed.href;
+    \\  } catch (error) {
+    \\    return String(href);
+    \\  }
+    \\}
     \\function __home_fetch_transport_redirect(promise, href, fetchOptions, fetchMethod) {
     \\  const options = fetchOptions || {};
     \\  const state = options.__home_redirect_state || __home_fetch_redirect_state(options.maxRedirects);
@@ -70259,6 +70322,8 @@ const harness_prelude =
     \\      if (redirectState.current === null) __home_fetch_redirect_transition(redirectState, href);
     \\      const requestInit = transportOptions;
     \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, requestInit) : new Request(href, requestInit);
+    \\      const dispatchHref = __home_fetch_server_dispatch_href(href);
+    \\      if (request.url !== dispatchHref) request.url = dispatchHref;
     \\      if (request.headers.get("host") === null) {
     \\        try { request.headers.set("Host", new URL(request.url).host); } catch (error) {}
     \\      }
@@ -70316,7 +70381,7 @@ const harness_prelude =
     \\        if (response.headers && typeof response.headers.get === "function" && response.headers.get("date") === null) response.headers.set("Date", new Date().toUTCString());
     \\        if (response.headers && handle.__home_http3_enabled && !usesHttp3 && response.headers.get("alt-svc") === null) response.headers.set("Alt-Svc", 'h3=":' + String(handle.port) + '"; ma=86400');
     \\        if (response.headers && !usesHttp3 && response.headers.get("alt-svc") !== null) globalThis.__home_fetch_h3_state.altSvc[origin] = true;
-    \\        response.url = request.url;
+    \\        response.url = href;
     \\        response.redirected = false;
     \\        if (redirectMode === "error" && response.status >= 300 && response.status < 400) {
     \\          __home_fetch_redirect_finish(redirectState);
@@ -70324,7 +70389,7 @@ const harness_prelude =
     \\        }
     \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
     \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
-    \\          const redirectedUrl = new URL(__home_fetch_redirect_location(location), request.url).href;
+    \\          const redirectedUrl = new URL(__home_fetch_redirect_location(location), href).href;
     \\          if (request.__home_raw_body !== null && __home_fixed_body_byte_length(request.__home_raw_body) === null) throw __home_fetch_duplex_redirect_error(request, redirectedUrl);
     \\          const redirectedMethod = response.status === 303 && request.method !== "HEAD" || (response.status === 301 || response.status === 302) && request.method === "POST" ? "GET" : request.method;
     \\          __home_fetch_redirect_transition(redirectState, redirectedUrl);
@@ -142078,6 +142143,65 @@ test "bootstrap runner mirrors mock.module missing package resolution corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors CommonJS extension loader type corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/require-extensions-override.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/require-extensions-override.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_module_ts_extension") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "module.extensions.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(module, \"_compile\"") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("CommonJS extension loader corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner preserves Request manual redirects across server dispatch normalization" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/test-21049.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/test-21049.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_server_dispatch_href") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "response.url = href") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Request manual redirect corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "failure recorder keeps the first failing file" {
