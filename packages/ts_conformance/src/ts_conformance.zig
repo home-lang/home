@@ -7179,6 +7179,11 @@ pub fn loadDirectoryWithOptions(
             merged.no_implicit_any = value;
             strict_flags = merged;
         }
+        if (baselineOptionBool(baseline_path, "exactoptionalpropertytypes")) |value| {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.exact_optional_property_types = value;
+            strict_flags = merged;
+        }
         const name = try gpa.dupe(u8, stem);
         var diag_path = default_path;
         var expected_errors: []const u8 = "";
@@ -8753,6 +8758,7 @@ fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
 test "conformance: boolean variant baselines override matrix directives" {
     try T.expectEqual(false, baselineOptionBool("case(noimplicitany=false).errors.txt", "noimplicitany").?);
     try T.expectEqual(true, baselineOptionBool("case(noimplicitany=true).errors.txt", "noimplicitany").?);
+    try T.expectEqual(false, baselineOptionBool("case(exactoptionalpropertytypes=false).errors.txt", "exactoptionalpropertytypes").?);
     try T.expectEqual(false, baselineOptionBool("case(allowimportingtsextensions=false,noemit=true).errors.txt", "allowimportingtsextensions").?);
     try T.expect(baselineOptionBool("case.errors.txt", "noimplicitany") == null);
 }
