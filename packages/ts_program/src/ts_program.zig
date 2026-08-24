@@ -1096,29 +1096,35 @@ pub const Program = struct {
             if (!identifierKeywordAt(source, export_pos, "export")) continue;
             var cursor = export_pos + "export".len;
             while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            const is_default = identifierKeywordAt(source, cursor, "default");
-            if (is_default) {
-                cursor += "default".len;
-                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            }
-            if (identifierKeywordAt(source, cursor, "abstract")) {
-                cursor += "abstract".len;
+            var is_default = false;
+            while (true) {
+                const modifier_len: usize = if (identifierKeywordAt(source, cursor, "default")) blk: {
+                    is_default = true;
+                    break :blk "default".len;
+                } else if (identifierKeywordAt(source, cursor, "declare"))
+                    "declare".len
+                else if (identifierKeywordAt(source, cursor, "abstract"))
+                    "abstract".len
+                else
+                    break;
+                cursor += modifier_len;
                 while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             }
             if (!identifierKeywordAt(source, cursor, "class")) continue;
             cursor += "class".len;
             while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
+            const class_open = classBodyOpenAfterName(source, name_end, source.len) orelse continue;
+            const type_parameter_names = try collectClassTypeParameterNames(gpa, source, name_end, class_open);
             var members: []const ts_driver.ProgramExportedClassMember = &.{};
-            if (std.mem.indexOfScalarPos(u8, source, name_end, '{')) |class_open| {
-                if (findMatchingBrace(source, class_open)) |class_close| {
-                    members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
-                }
+            if (findMatchingBrace(source, class_open)) |class_close| {
+                members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
             }
             const static_members = try collectExportedNamespaceStaticMembers(gpa, source, source[cursor..name_end]);
             try out.append(gpa, .{
                 .target_path = path,
                 .class_name = source[cursor..name_end],
+                .type_parameter_names = type_parameter_names,
                 .is_default = is_default,
                 .members = members,
                 .static_members = static_members,
@@ -1173,24 +1179,80 @@ pub const Program = struct {
             var name_start = class_pos + "class".len;
             while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
             const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            const class_open = classBodyOpenAfterName(source, name_end, body_end) orelse continue;
+            const type_parameter_names = try collectClassTypeParameterNames(gpa, source, name_end, class_open);
             var members: []const ts_driver.ProgramExportedClassMember = &.{};
-            if (std.mem.indexOfScalarPos(u8, source, name_end, '{')) |class_open| {
-                if (class_open < body_end) {
-                    if (findMatchingBrace(source, class_open)) |class_close| {
-                        if (class_close <= body_end) {
-                            members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
-                        }
-                    }
+            if (findMatchingBrace(source, class_open)) |class_close| {
+                if (class_close <= body_end) {
+                    members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
                 }
             }
             try out.append(gpa, .{
                 .target_path = path,
                 .ambient_module_name = spec,
                 .class_name = source[name_start..name_end],
+                .type_parameter_names = type_parameter_names,
                 .members = members,
             });
             search_start = name_end;
         }
+    }
+
+    fn classBodyOpenAfterName(source: []const u8, name_end: usize, limit: usize) ?usize {
+        var cursor = name_end;
+        while (cursor < limit and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor < limit and source[cursor] == '<') {
+            cursor = (findMatchingDelimited(source, cursor, limit, '<', '>') orelse return null) + 1;
+        }
+        return std.mem.indexOfScalarPos(u8, source, cursor, '{');
+    }
+
+    fn collectClassTypeParameterNames(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        name_end: usize,
+        class_open: usize,
+    ) ProgramError![]const []const u8 {
+        var cursor = name_end;
+        while (cursor < class_open and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= class_open or source[cursor] != '<') return &.{};
+        const close = findMatchingDelimited(source, cursor, class_open, '<', '>') orelse return &.{};
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer names.deinit(gpa);
+        cursor += 1;
+        while (cursor < close) {
+            while (cursor < close and (std.ascii.isWhitespace(source[cursor]) or source[cursor] == ',')) : (cursor += 1) {}
+            if (identifierKeywordAt(source, cursor, "const")) {
+                cursor += "const".len;
+                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            if (identifierKeywordAt(source, cursor, "in")) {
+                cursor += "in".len;
+                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            if (identifierKeywordAt(source, cursor, "out")) {
+                cursor += "out".len;
+                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            const param_end = parseIdentifierEnd(source, cursor, close) orelse break;
+            try names.append(gpa, source[cursor..param_end]);
+            cursor = param_end;
+            var depth: usize = 0;
+            while (cursor < close) : (cursor += 1) {
+                switch (source[cursor]) {
+                    '<', '(', '[', '{' => depth += 1,
+                    '>', ')', ']', '}' => if (depth > 0) {
+                        depth -= 1;
+                    },
+                    ',' => if (depth == 0) {
+                        cursor += 1;
+                        break;
+                    },
+                    else => {},
+                }
+            }
+        }
+        return try names.toOwnedSlice(gpa);
     }
 
     fn collectExportedNamespaceStaticMembers(
@@ -1552,6 +1614,7 @@ pub const Program = struct {
                 source,
                 spec,
                 iface_name,
+                name_end,
                 @intCast(name_start),
                 target_decl,
                 iface_open + 1,
@@ -1568,6 +1631,7 @@ pub const Program = struct {
         source: []const u8,
         spec: []const u8,
         iface_name: []const u8,
+        iface_name_end: usize,
         iface_name_pos: u32,
         target_decl: ?ProgramInterfaceDeclaration,
         body_start: usize,
@@ -1580,7 +1644,21 @@ pub const Program = struct {
             const member_start = i;
             const member_end = parseIdentifierEnd(source, member_start, body_end) orelse continue;
             var cursor = member_end;
+            var method_type_parameter_name: []const u8 = "";
             while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (cursor < body_end and source[cursor] == '<') {
+                const type_params_close = findMatchingDelimited(source, cursor, body_end, '<', '>') orelse {
+                    i = member_end;
+                    continue;
+                };
+                var type_param_start = cursor + 1;
+                while (type_param_start < type_params_close and std.ascii.isWhitespace(source[type_param_start])) : (type_param_start += 1) {}
+                if (parseIdentifierEnd(source, type_param_start, type_params_close)) |type_param_end| {
+                    method_type_parameter_name = source[type_param_start..type_param_end];
+                }
+                cursor = type_params_close + 1;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
             if (cursor >= body_end or source[cursor] != '(') {
                 i = member_end;
                 continue;
@@ -1589,6 +1667,13 @@ pub const Program = struct {
                 i = member_end;
                 continue;
             };
+            const callback_parameter_type_param_index = firstCallbackInterfaceTypeParameterIndex(
+                source,
+                iface_name_end,
+                body_start - 1,
+                cursor + 1,
+                params_close,
+            );
             cursor = params_close + 1;
             while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             if (cursor >= body_end or source[cursor] != ':') {
@@ -1611,10 +1696,81 @@ pub const Program = struct {
                 .interface_name = iface_name,
                 .member_name = source[member_start..member_end],
                 .return_type_name = source[return_start..return_end],
+                .callback_parameter_type_param_index = callback_parameter_type_param_index,
+                .method_type_parameter_name = method_type_parameter_name,
                 .is_method = true,
             });
             i = return_end;
         }
+    }
+
+    fn firstCallbackInterfaceTypeParameterIndex(
+        source: []const u8,
+        iface_name_end: usize,
+        iface_open: usize,
+        params_start: usize,
+        params_end: usize,
+    ) ?u16 {
+        var cursor = params_start;
+        while (cursor < params_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        const outer_name_end = parseIdentifierEnd(source, cursor, params_end) orelse return null;
+        cursor = outer_name_end;
+        while (cursor < params_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor < params_end and source[cursor] == '?') {
+            cursor += 1;
+            while (cursor < params_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        }
+        if (cursor >= params_end or source[cursor] != ':') return null;
+        cursor += 1;
+        while (cursor < params_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= params_end or source[cursor] != '(') return null;
+        const callback_close = findMatchingParen(source, cursor, params_end) orelse return null;
+        cursor += 1;
+        while (cursor < callback_close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        const callback_name_end = parseIdentifierEnd(source, cursor, callback_close) orelse return null;
+        cursor = callback_name_end;
+        while (cursor < callback_close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= callback_close or source[cursor] != ':') return null;
+        cursor += 1;
+        while (cursor < callback_close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        const type_name_end = parseIdentifierEnd(source, cursor, callback_close) orelse return null;
+        return interfaceTypeParameterIndex(source, iface_name_end, iface_open, source[cursor..type_name_end]);
+    }
+
+    fn interfaceTypeParameterIndex(
+        source: []const u8,
+        iface_name_end: usize,
+        iface_open: usize,
+        type_name: []const u8,
+    ) ?u16 {
+        var cursor = iface_name_end;
+        while (cursor < iface_open and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= iface_open or source[cursor] != '<') return null;
+        const close = findMatchingDelimited(source, cursor, iface_open, '<', '>') orelse return null;
+        cursor += 1;
+        var index: u16 = 0;
+        while (cursor < close) {
+            while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            const name_end = parseIdentifierEnd(source, cursor, close) orelse return null;
+            if (std.mem.eql(u8, source[cursor..name_end], type_name)) return index;
+            var depth: usize = 0;
+            cursor = name_end;
+            while (cursor < close) : (cursor += 1) {
+                switch (source[cursor]) {
+                    '<', '(', '[', '{' => depth += 1,
+                    '>', ')', ']', '}' => if (depth > 0) {
+                        depth -= 1;
+                    },
+                    ',' => if (depth == 0) {
+                        cursor += 1;
+                        break;
+                    },
+                    else => {},
+                }
+            }
+            index = std.math.add(u16, index, 1) catch return null;
+        }
+        return null;
     }
 
     const ProgramInterfaceDeclaration = struct {
@@ -2051,7 +2207,9 @@ pub const Program = struct {
 
     fn freeProgramExportedClasses(gpa: std.mem.Allocator, items: []const ts_driver.ProgramExportedClass) void {
         for (items) |item| {
+            if (item.type_parameter_names.len > 0) gpa.free(item.type_parameter_names);
             if (item.members.len > 0) gpa.free(item.members);
+            if (item.static_members.len > 0) gpa.free(item.static_members);
         }
         gpa.free(items);
     }
@@ -6809,11 +6967,22 @@ test "Program: relative module augmentation merges namespace static members" {
         \\let z2 = Observable.someAnotherValue.toLowerCase();
     );
 
-    try p.compileAll(.{ .no_emit = true });
+    const augmentations = try p.collectRelativeModuleInterfaceAugmentations();
+    defer p.gpa.free(augmentations);
+    try T.expectEqual(@as(usize, 1), augmentations.len);
+    try T.expectEqual(@as(?u16, 0), augmentations[0].callback_parameter_type_param_index);
+    try T.expectEqualStrings("U", augmentations[0].method_type_parameter_name);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+    });
     const map_c = p.fileById(map_id).compilation.?;
     const main_c = p.fileById(main_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(map_c, 2449);
     try expectCompilationLacksDiagnosticCode(main_c, 2339);
+    try expectCompilationLacksDiagnosticCode(main_c, 7006);
+    try expectCompilationLacksDiagnosticCode(main_c, 2345);
 }
 
 test "Program: relative module augmentation preserves missing member diagnostic" {

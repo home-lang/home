@@ -469,6 +469,8 @@ pub const ModuleInterfaceAugmentation = struct {
     interface_name: []const u8,
     member_name: []const u8,
     return_type_name: []const u8,
+    callback_parameter_type_param_index: ?u16 = null,
+    method_type_parameter_name: []const u8 = "",
     is_method: bool = true,
 };
 
@@ -476,6 +478,7 @@ pub const ProgramExportedClass = struct {
     target_path: []const u8,
     ambient_module_name: []const u8 = "",
     class_name: []const u8,
+    type_parameter_names: []const []const u8 = &.{},
     is_default: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
@@ -4695,6 +4698,10 @@ pub const Checker = struct {
     /// `declare module "./a" { interface A { getB(): B } }`.
     /// Borrowed from the driver/program while checking this file.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
+    /// Callback signatures synthesized from program-level module
+    /// augmentations. Arguments targeting these signatures need the same
+    /// contextual recheck as source-declared generic method callbacks.
+    module_augmentation_callback_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
@@ -5131,6 +5138,7 @@ pub const Checker = struct {
         self.infer_type_parameters.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.synthetic_program_class_origins.deinit(self.gpa);
+        self.module_augmentation_callback_signatures.deinit(self.gpa);
         self.merged_class_instance_types.deinit(self.gpa);
         self.class_this_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
@@ -60155,6 +60163,9 @@ pub const Checker = struct {
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local != local_name) continue;
                 if (std.mem.startsWith(u8, spec_text, ".")) {
+                    if (try self.programExportedClassInstanceTypeForImportedName(local_name, anchor)) |class_t| {
+                        return class_t;
+                    }
                     if (has_sections or try self.relativeSpecifierTargetsCurrentSource(anchor, spec_text)) {
                         if (try self.virtualRelativeModuleExportType(anchor, imp.module, &.{}, sp.imported)) |t| {
                             return try self.instantiateVirtualImportedGenericTypeRef(anchor, imp.module, sp.imported, t);
@@ -98805,7 +98816,7 @@ pub const Checker = struct {
                     }
                 }
             }
-            if (try self.moduleInterfaceAugmentationMemberType(class_name, name, hir_mod.none_node_id)) |t| return t;
+            if (try self.moduleInterfaceAugmentationMemberType(class_name, name, obj_t, hir_mod.none_node_id)) |t| return t;
         }
         return null;
     }
@@ -102498,6 +102509,7 @@ pub const Checker = struct {
         self: *Checker,
         interface_name: hir_mod.StringId,
         member_name: hir_mod.StringId,
+        receiver_t: ?TypeId,
         anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.module_interface_augmentations.len == 0) return null;
@@ -102508,9 +102520,56 @@ pub const Checker = struct {
             if (!std.mem.eql(u8, augmentation.member_name, member_name_str)) continue;
             if (!augmentation.is_method) continue;
             const return_t = try self.moduleInterfaceAugmentationReturnType(augmentation.return_type_name, anchor);
+            if (augmentation.callback_parameter_type_param_index) |index| {
+                const callback_param_t = try self.moduleInterfaceAugmentationReceiverTypeArgument(receiver_t, index, anchor);
+                const callback_t = self.interner.internSignature(
+                    &.{callback_param_t},
+                    types.Primitive.any,
+                    false,
+                ) catch return error.OutOfMemory;
+                try self.module_augmentation_callback_signatures.put(self.gpa, callback_t, {});
+                const method_t = self.interner.internSignature(&.{callback_t}, return_t, false) catch return error.OutOfMemory;
+                if (augmentation.method_type_parameter_name.len > 0) {
+                    const type_param_name = self.string_interner.intern(augmentation.method_type_parameter_name) catch return error.OutOfMemory;
+                    const type_param = self.interner.internTypeParameter(
+                        type_param_name,
+                        types.Primitive.unknown,
+                        types.Primitive.none,
+                    ) catch return error.OutOfMemory;
+                    try self.recordGenericSignatureParams(method_t, &.{type_param});
+                }
+                return method_t;
+            }
             return self.interner.internSignature(&.{}, return_t, false) catch return error.OutOfMemory;
         }
         return null;
+    }
+
+    fn moduleInterfaceAugmentationReceiverTypeArgument(
+        self: *Checker,
+        receiver_t: ?TypeId,
+        index: u16,
+        anchor: NodeId,
+    ) CheckError!TypeId {
+        if (receiver_t) |concrete_receiver| {
+            if (self.alias_type_args.get(concrete_receiver)) |args| {
+                if (index < args.len) return args[index];
+            }
+        }
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .member_access) {
+            return types.Primitive.any;
+        }
+        const receiver = hir_mod.memberOf(self.hir, anchor).object;
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(receiver) orelse return types.Primitive.any;
+        if (self.hir.kindOf(annotation) != .type_ref) return types.Primitive.any;
+        const args = hir_mod.typeRefArgs(self.hir, annotation);
+        if (index >= args.len) return types.Primitive.any;
+        const arg = args[index];
+        const cached = self.hir.typeOf(arg);
+        return if (cached != types.Primitive.none)
+            cached
+        else
+            try self.lowererLowerWithTypeParams(arg);
     }
 
     fn moduleInterfaceAugmentationReturnType(
@@ -102545,7 +102604,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
         if (self.class_name_by_instance.get(access_obj_t)) |class_name| {
-            return try self.moduleInterfaceAugmentationMemberType(class_name, member_name, anchor);
+            return try self.moduleInterfaceAugmentationMemberType(class_name, member_name, access_obj_t, anchor);
         }
         return null;
     }
@@ -102561,7 +102620,7 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, self.string_interner.get(proto.name), "prototype")) return null;
         if (proto.object == hir_mod.none_node_id or self.hir.kindOf(proto.object) != .identifier) return null;
         const ctor = hir_mod.identifierOf(self.hir, proto.object);
-        return try self.moduleInterfaceAugmentationMemberType(ctor.name, member_name, anchor);
+        return try self.moduleInterfaceAugmentationMemberType(ctor.name, member_name, null, anchor);
     }
 
     fn programExportedValueTypeForImportBinding(
@@ -102675,18 +102734,36 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
                 _ = try self.programExportedClassTypeForImportBinding(stmt, local_name, anchor);
-                if (self.class_instance_types.get(local_name)) |instance_t| return instance_t;
+                if (self.class_instance_types.get(local_name)) |instance_t| {
+                    return try self.instantiateProgramImportedClassTypeReference(local_name, anchor, instance_t);
+                }
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local != local_name) continue;
                 _ = try self.programExportedClassTypeForImportBinding(stmt, local_name, anchor);
-                if (self.class_instance_types.get(local_name)) |instance_t| return instance_t;
-                if (self.class_instance_types.get(sp.imported)) |instance_t| return instance_t;
+                if (self.class_instance_types.get(local_name)) |instance_t| {
+                    return try self.instantiateProgramImportedClassTypeReference(local_name, anchor, instance_t);
+                }
+                if (self.class_instance_types.get(sp.imported)) |instance_t| {
+                    return try self.instantiateProgramImportedClassTypeReference(sp.imported, anchor, instance_t);
+                }
             }
         }
         return null;
+    }
+
+    fn instantiateProgramImportedClassTypeReference(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        anchor: NodeId,
+        fallback: TypeId,
+    ) CheckError!TypeId {
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return fallback;
+        const ref = hir_mod.typeRefOf(self.hir, anchor);
+        if (ref.qualifier_len != 0 or ref.args_len == 0) return fallback;
+        return (try self.instantiateGenericClassForNew(class_name, hir_mod.typeRefArgs(self.hir, anchor))) orelse fallback;
     }
 
     fn programExportedClassInstanceTypeForImportPath(
@@ -102718,6 +102795,22 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!TypeId {
         _ = anchor;
+        var class_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer class_params.deinit(self.gpa);
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        for (exported_class.type_parameter_names) |param_name_text| {
+            const param_name = self.string_interner.intern(param_name_text) catch return error.OutOfMemory;
+            const param_t = self.interner.internFreshTypeParameterWithFlags(
+                param_name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                .bivariant,
+                false,
+            ) catch return error.OutOfMemory;
+            try self.recordNarrow(param_name, param_t);
+            try class_params.append(self.gpa, param_t);
+        }
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
@@ -102742,6 +102835,7 @@ pub const Checker = struct {
         const construct_sig = self.interner.internSignature(&construct_params, instance_t, true) catch return error.OutOfMemory;
         try self.rest_signatures.put(self.gpa, construct_sig, {});
         try self.recordSignatureMinArgs(construct_sig, &.{true});
+        if (class_params.items.len > 0) try self.recordGenericSignatureParams(construct_sig, class_params.items);
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -102789,7 +102883,29 @@ pub const Checker = struct {
             try self.class_static_types.put(self.gpa, class_name, static_t);
             try self.type_names.put(self.gpa, class_name, instance_t);
         }
+        if (class_params.items.len > 0) {
+            try self.registerSyntheticProgramClassGeneric(local_name, class_params.items, instance_t);
+            if (class_name != local_name) {
+                try self.registerSyntheticProgramClassGeneric(class_name, class_params.items, instance_t);
+            }
+        }
         return static_t;
+    }
+
+    fn registerSyntheticProgramClassGeneric(
+        self: *Checker,
+        name: hir_mod.StringId,
+        params: []const TypeId,
+        body: TypeId,
+    ) CheckError!void {
+        const owned_params = self.gpa.dupe(TypeId, params) catch return error.OutOfMemory;
+        errdefer self.gpa.free(owned_params);
+        if (self.generic_aliases.get(name)) |existing| self.gpa.free(existing.params);
+        try self.generic_aliases.put(self.gpa, name, .{
+            .params = owned_params,
+            .body = body,
+            .body_node = hir_mod.none_node_id,
+        });
     }
 
     fn syntheticProgramClassInstanceType(
@@ -102847,6 +102963,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, type_name, "null")) return types.Primitive.null_t;
         if (type_name.len > 0) {
             const name = self.string_interner.intern(type_name) catch return error.OutOfMemory;
+            if (self.lookupNarrow(name)) |type_t| return type_t;
             if (self.class_instance_types.get(name)) |instance_t| return instance_t;
             if (self.type_names.get(name)) |type_t| return type_t;
         }
@@ -152044,6 +152161,9 @@ pub const Checker = struct {
                 ) catch return t;
             try self.copySignatureParamNames(new_sig, t);
             try self.copySignatureNullishArrayDefaults(new_sig, t);
+            if (self.module_augmentation_callback_signatures.contains(t)) {
+                try self.module_augmentation_callback_signatures.put(self.gpa, new_sig, {});
+            }
             if (this_t_opt) |this_t| {
                 try self.signature_this_params.put(self.gpa, new_sig, this_t);
             }
@@ -153322,6 +153442,16 @@ pub const Checker = struct {
                 }
             }
             var arg_t = arg_types[i];
+            var augmentation_contextual_callback = false;
+            if (self.isContextualFunctionExpressionLike(args[i])) {
+                if (self.firstSignatureType(param_t)) |contextual_sig| {
+                    if (self.module_augmentation_callback_signatures.contains(contextual_sig)) {
+                        try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                        arg_t = self.hir.typeOf(args[i]);
+                        augmentation_contextual_callback = true;
+                    }
+                }
+            }
             if (self.ordinaryArrayLiteralMissingTemplateStringsRaw(call_node, args, i, sig, fixed_pos, param_t)) {
                 try self.diagnostics.append(self.gpa, .{
                     .node = args[i],
@@ -153600,7 +153730,9 @@ pub const Checker = struct {
             var argument_excess_property_diagnostic_emitted = false;
             const arg_diag_start = self.diagnostics.items.len;
             const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
-            const structurally_assignable = if (imported_class_parameter_match)
+            const structurally_assignable = if (augmentation_contextual_callback)
+                true
+            else if (imported_class_parameter_match)
                 true
             else if (loose_nullish_callback_return and
                 !self.functionExpressionHasAnnotatedValueParameter(args[i]))
