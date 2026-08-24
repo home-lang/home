@@ -163071,6 +163071,7 @@ pub const Checker = struct {
 
     fn functionExpressionAssignableToSignatureTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) CheckError!bool {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
+        if (target_t == types.Primitive.any or target_t == types.Primitive.unknown) return true;
         if (target_t >= self.interner.pool.typeCount()) return false;
         const source_t = if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_signature)
             arg_t
@@ -213555,6 +213556,21 @@ test "checker: inferred generic callback reports qualified typeof instantiation 
         TsCodes.argument_type_mismatch,
         "Argument of type '() => () => CustomNode<any>' is not assignable to parameter of type '() => CustomNode<unknown>'.",
     ));
+}
+
+test "checker: inferred generic callbacks accept unresolved unknown targets" {
+    const s = try newSetup(
+        \\declare function withH<T, U>(factory: Factory<T, U>): U;
+        \\type Props = { out: number };
+        \\type Factory<T, U> = (props: T) => { [P in keyof U]: (props: T) => U[P] };
+        \\const enhancer = withH((props: Props) => ({
+        \\  onChange: (props) => (event: any) => {},
+        \\  onSubmit: (props) => (event: any) => {},
+        \\}));
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: returned generic function enforces substituted scalar constraint" {
