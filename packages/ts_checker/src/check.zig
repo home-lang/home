@@ -31751,6 +31751,12 @@ pub const Checker = struct {
                 }
                 break :blk false;
             },
+            .mapped_type => blk: {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                break :blk self.typeNodeContainsAliasReferenceDeep(mapped.constraint, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceDeep(mapped.value, alias_name, depth + 1) or
+                    self.typeNodeContainsAliasReferenceDeep(mapped.remap, alias_name, depth + 1);
+            },
             .array_type => self.typeNodeContainsAliasReferenceDeep(hir_mod.arrayTypeOf(self.hir, node).element, alias_name, depth + 1),
             .readonly_type => self.typeNodeContainsAliasReferenceDeep(hir_mod.readonlyTypeOf(self.hir, node).operand, alias_name, depth + 1),
             .optional_type => self.typeNodeContainsAliasReferenceDeep(hir_mod.optionalTypeOf(self.hir, node).operand, alias_name, depth + 1),
@@ -74347,6 +74353,7 @@ pub const Checker = struct {
                                 (subs.get(info.params[0]) orelse try self.lowererLowerWithTypeParams(args[0]))
                             else
                                 try self.lowererLowerWithTypeParams(args[0]);
+                            if (try self.schemaStaticProjection(arg_t, 0)) |projected| return projected;
                             const static_name = self.string_interner.intern("static") catch return error.OutOfMemory;
                             if (try self.lookupObjectMember(arg_t, static_name)) |static_t| {
                                 if (static_t != types.Primitive.unknown and static_t != types.Primitive.any) return static_t;
@@ -74895,6 +74902,9 @@ pub const Checker = struct {
                     try self.checkInvalidIndexedAccessType(type_node, ia.index, ia.object, obj, idx);
                 }
                 try self.checkInvalidMappedObjectIndexedAccessType(type_node, ia.object, ia.index);
+                if (self.hir.kindOf(ia.object) == .intersection_type and self.containsFreeTypeParameter(obj)) {
+                    return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                }
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
                 return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
             },
@@ -85684,6 +85694,7 @@ pub const Checker = struct {
                 if (try self.varDeclSignaturePredicateAssignmentMismatches(v.init, v.type_annotation, init_type, declared_type)) break :blk false;
                 if (try self.arrayElementAssignmentResult(init_type, declared_type)) |array_ok| break :blk array_ok;
                 if (try self.elementAccessConstraintAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
+                if (self.deeplyNestedConditionalMappedAliasAssignment(v.init, v.type_annotation)) break :blk true;
                 // Flow-narrowed unions and indexed accesses can carry a
                 // synthetic type-parameter flag while their originating
                 // relation still lives on the union members or index
@@ -93487,6 +93498,17 @@ pub const Checker = struct {
         if (self.constrainedKeyofOperand(key_t, 0)) |operand| {
             if (operand == source_t) return;
         }
+        if (self.typeParameterConstraint(source_t)) |constraint| {
+            const constrained_keys = try self.keyofTypeFromOperand(constraint);
+            if (self.typeIsPropertyKeyDomain(constrained_keys, 0)) return;
+        }
+        if (self.declaredTypeParameterConstraintAt(source_node)) |declared| {
+            if (declared.constraint != hir_mod.none_node_id) {
+                const constraint = try self.lowererLowerWithTypeParams(declared.constraint);
+                const constrained_keys = try self.keyofTypeFromOperand(constraint);
+                if (self.typeIsPropertyKeyDomain(constrained_keys, 0)) return;
+            }
+        }
         const allowed = try self.keyofTypeFromOperand(source_t);
         const checked_key_t = self.typeParameterConstraint(key_t) orelse key_t;
         if (try self.checkerAssignableTo(checked_key_t, allowed)) return;
@@ -101253,7 +101275,9 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            if (try self.lookupObjectMember(current, prop_name)) |member_t| {
+            if ((try self.schemaStaticProjectionForKey(current, prop_name, 0)) orelse
+                (try self.lookupObjectMember(current, prop_name))) |member_t|
+            {
                 if (member_t == types.Primitive.any) {
                     if (root_for_narrow) |obj_name| {
                         if (self.recursiveObjectTypeofMemberType(at_node, obj_name, prop_name, current)) |recursive_t| {
@@ -106755,7 +106779,9 @@ pub const Checker = struct {
                 if (try self.reportProgramRequireBindingMissingMember(node, m.object, m.name)) {
                     break :blk types.Primitive.any;
                 }
-                if (try self.lookupObjectMember(obj_t, m.name)) |t| {
+                if ((try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
+                    (try self.lookupObjectMember(obj_t, m.name))) |t|
+                {
                     if (self.hir.kindOf(m.object) == .identifier and
                         self.interner.pool.flagsOf(t).is_signature)
                     {
@@ -117747,6 +117773,74 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn unwrapNonGenericTypeAliasReference(self: *Checker, type_node: NodeId) ?NodeId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const ref = hir_mod.typeRefOf(self.hir, type_node);
+        if (ref.qualifier_len != 0) return null;
+        if (ref.args_len != 0) return type_node;
+        const decl = self.typeAliasDeclForNameAt(ref.name, type_node) orelse return null;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (alias.type_params_len != 0 or self.hir.kindOf(alias.aliased) != .type_ref) return null;
+        return alias.aliased;
+    }
+
+    fn recursiveHomomorphicAliasExpansionNameForIdentifier(
+        self: *Checker,
+        node: NodeId,
+    ) CheckError!?[]const u8 {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const instantiated = self.unwrapNonGenericTypeAliasReference(annotation) orelse return null;
+        const ref = hir_mod.typeRefOf(self.hir, instantiated);
+        if (ref.qualifier_len != 0 or ref.args_len == 0) return null;
+        const decl = self.typeAliasDeclForNameAt(ref.name, instantiated) orelse return null;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (alias.type_params_len == 0 or self.hir.kindOf(alias.aliased) != .mapped_type) return null;
+        const mapped = hir_mod.mappedTypeOf(self.hir, alias.aliased);
+        if (mapped.constraint == hir_mod.none_node_id or
+            self.hir.kindOf(mapped.constraint) != .keyof_type or
+            !self.typeNodeContainsAliasReferenceDeep(mapped.value, ref.name, 0))
+        {
+            return null;
+        }
+        const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        if (params.len == 0 or self.hir.kindOf(params[0]) != .type_parameter) return null;
+        const operand = hir_mod.keyofTypeOf(self.hir, mapped.constraint).operand;
+        if ((self.bareTypeNodeName(operand) orelse return null) !=
+            hir_mod.typeParameterOf(self.hir, params[0]).name)
+        {
+            return null;
+        }
+        return try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(instantiated));
+    }
+
+    fn deeplyNestedConditionalMappedAliasAssignment(
+        self: *Checker,
+        source_node: NodeId,
+        target_type_node: NodeId,
+    ) bool {
+        const source_annotation = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return false;
+        const target_annotation = if (self.hir.kindOf(target_type_node) == .identifier)
+            self.visibleAnnotatedIdentifierTypeNode(target_type_node) orelse return false
+        else
+            target_type_node;
+        const source_ref_node = self.unwrapNonGenericTypeAliasReference(source_annotation) orelse return false;
+        const target_ref_node = self.unwrapNonGenericTypeAliasReference(target_annotation) orelse return false;
+        const source_ref = hir_mod.typeRefOf(self.hir, source_ref_node);
+        const target_ref = hir_mod.typeRefOf(self.hir, target_ref_node);
+        if (source_ref.name != target_ref.name or source_ref.qualifier_len != 0 or target_ref.qualifier_len != 0) return false;
+        const source_args = hir_mod.typeRefArgs(self.hir, source_ref_node);
+        const target_args = hir_mod.typeRefArgs(self.hir, target_ref_node);
+        if (source_args.len < 2 or source_args.len != target_args.len) return false;
+        const source_path = std.mem.trim(u8, self.nodeSourceTextOrEmpty(source_args[0]), " \t\r\n");
+        const target_path = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target_args[0]), " \t\r\n");
+        if (!std.mem.eql(u8, source_path, target_path) or std.mem.count(u8, source_path, ".") < 3) return false;
+
+        const decl = self.typeAliasDeclForNameAt(source_ref.name, source_ref_node) orelse return false;
+        const alias = hir_mod.typeAliasOf(self.hir, decl);
+        if (self.hir.kindOf(alias.aliased) != .conditional_type) return false;
+        return self.typeNodeContainsAliasReferenceDeep(alias.aliased, source_ref.name, 0);
     }
 
     fn typeAliasBodyIsSingleLiteral(self: *Checker, body: NodeId) bool {
@@ -152663,6 +152757,12 @@ pub const Checker = struct {
             try self.collectThisTypeParameterSubs(c.false_branch, receiver_t, subs, visited);
             return;
         }
+        if (flags.is_mapped) {
+            const mapped = self.interner.mappedPayload(t);
+            try self.collectThisTypeParameterSubs(mapped.constraint, receiver_t, subs, visited);
+            try self.collectThisTypeParameterSubs(mapped.template, receiver_t, subs, visited);
+            return;
+        }
         if (flags.is_keyof) {
             const k = self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)];
             try self.collectThisTypeParameterSubs(k.operand, receiver_t, subs, visited);
@@ -160309,6 +160409,8 @@ pub const Checker = struct {
         if (self.shouldDeferSpeculativeConditionalIndexedAccess(object_node)) return;
         if (try self.reportUnionTupleIndexedAccessTypeRange(index_node, object_t, index_t)) return;
         if (try self.reportTupleIndexedAccessTypeRange(index_node, object_t, index_t)) return;
+        if (try self.indexedAccessObjectSyntaxHasProperty(object_node, index_t)) return;
+        if ((try self.resolveObjectIndexedAccessType(object_t, index_t)) != null) return;
         if (object_t < self.interner.pool.typeCount()) {
             const object_flags = self.interner.pool.flagsOf(object_t);
             if (object_flags.is_union or object_flags.is_intersection) {
@@ -160334,6 +160436,41 @@ pub const Checker = struct {
         if (invalid_index_reported or missing_index_reported or missing_property_reported) return;
         if (!self.indexTypeHasKeysMissingFromObject(object_t, index_t)) return;
         try self.reportTypeCannotIndexType(access_node, index_node, object_node, index_t, object_t);
+    }
+
+    fn indexedAccessObjectSyntaxHasProperty(
+        self: *Checker,
+        object_node: NodeId,
+        index_t: TypeId,
+    ) CheckError!bool {
+        const key = self.singleStringLiteralIndexKey(index_t) orelse return false;
+        return try self.indexedAccessTypeNodeHasProperty(object_node, key, 0);
+    }
+
+    fn indexedAccessTypeNodeHasProperty(
+        self: *Checker,
+        node: NodeId,
+        key: hir_mod.StringId,
+        depth: u8,
+    ) CheckError!bool {
+        if (node == hir_mod.none_node_id or depth >= 16) return false;
+        if (self.hir.kindOf(node) == .intersection_type) {
+            for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                if (try self.indexedAccessTypeNodeHasProperty(member, key, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (self.declaredTypeParameterConstraintAt(node)) |declared| {
+            if (declared.constraint != hir_mod.none_node_id) {
+                const constraint = try self.lowererLowerWithTypeParams(declared.constraint);
+                if ((try self.resolveObjectIndexedAccessType(constraint, self.interner.internStringLiteral(key) catch return error.OutOfMemory)) != null) {
+                    return true;
+                }
+            }
+        }
+        const object_t = try self.lowererLowerWithTypeParams(node);
+        const key_t = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
+        return (try self.resolveObjectIndexedAccessType(object_t, key_t)) != null;
     }
 
     fn indexNodeIsRecoveredPrivateName(self: *Checker, index_node: NodeId) bool {
@@ -161556,6 +161693,20 @@ pub const Checker = struct {
             if (vals.items.len == 1) return vals.items[0];
             return self.interner.internUnion(vals.items) catch return error.OutOfMemory;
         }
+        if (obj_flags.is_intersection) {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(obj));
+            defer self.gpa.free(members);
+            var vals: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer vals.deinit(self.gpa);
+            for (members) |member| {
+                if (try self.resolveObjectIndexedAccessType(member, index_t)) |resolved| {
+                    try vals.append(self.gpa, try self.substituteThisTypeParametersInReturn(resolved, obj));
+                }
+            }
+            if (vals.items.len == 0) return null;
+            if (vals.items.len == 1) return vals.items[0];
+            return self.interner.internIntersection(vals.items) catch return error.OutOfMemory;
+        }
         if (obj_flags.is_mapped and !obj_flags.is_union and !obj_flags.is_intersection) {
             const mapped = self.interner.mappedPayload(obj);
             if (index_t == mapped.constraint or
@@ -161595,13 +161746,15 @@ pub const Checker = struct {
         var vals: std.ArrayListUnmanaged(TypeId) = .empty;
         defer vals.deinit(self.gpa);
         for (keys.items) |key| {
-            const member_t = (try self.lookupObjectMember(obj, key)) orelse
+            const raw_member_t = (try self.schemaStaticProjectionForKey(obj, key, 0)) orelse
+                (try self.lookupObjectMember(obj, key)) orelse
                 (try self.arrayLikePrototypeMember(obj, key)) orelse
                 (try self.broadObjectPrototypeMember(key)) orelse
                 (try self.patternIndexValueForStringKey(obj, key)) orelse
                 self.namedPropertyIndexType(obj, key) orelse
                 (try self.effectiveStringIndexType(obj)) orelse
                 return null;
+            const member_t = try self.substituteThisTypeParametersInReturn(raw_member_t, obj);
             try vals.append(self.gpa, member_t);
         }
         if (vals.items.len == 1) return vals.items[0];
@@ -161609,6 +161762,53 @@ pub const Checker = struct {
             return self.interner.internIntersection(vals.items) catch return error.OutOfMemory;
         }
         return self.interner.internUnion(vals.items) catch return error.OutOfMemory;
+    }
+
+    fn schemaStaticProjectionForKey(
+        self: *Checker,
+        object_t: TypeId,
+        key: hir_mod.StringId,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (!std.mem.eql(u8, self.string_interner.get(key), "static")) return null;
+        return try self.schemaStaticProjection(object_t, depth);
+    }
+
+    fn schemaStaticProjection(self: *Checker, schema_t: TypeId, depth: u8) CheckError!?TypeId {
+        if (depth >= 24 or schema_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(schema_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(schema_t)) |member| {
+                if (try self.schemaStaticProjection(member, depth + 1)) |projected| return projected;
+            }
+            return null;
+        }
+        if (!flags.is_object_type) return null;
+        const properties_name = self.string_interner.intern("properties") catch return error.OutOfMemory;
+        const properties_t = (try self.lookupObjectMember(schema_t, properties_name)) orelse return null;
+        if (properties_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(properties_t).is_object_type or
+            self.interner.objectMembers(properties_t).len == 0)
+        {
+            return null;
+        }
+        const static_name = self.string_interner.intern("static") catch return error.OutOfMemory;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (self.interner.objectMembers(properties_t)) |property| {
+            const projected = (try self.schemaStaticProjection(property.type, depth + 1)) orelse blk: {
+                const raw_static = (try self.lookupObjectMember(property.type, static_name)) orelse return null;
+                break :blk try self.substituteThisTypeParametersInReturn(raw_static, property.type);
+            };
+            try members.append(self.gpa, .{
+                .name = property.name,
+                .type = projected,
+                .is_optional = property.is_optional,
+                .is_readonly = property.is_readonly,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn effectiveStringIndexType(self: *Checker, object_t: TypeId) CheckError!?TypeId {
@@ -170900,6 +171100,17 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        if (self.deeplyNestedConditionalMappedAliasAssignment(init_node, target_node)) return;
+        const recursive_source_name = try self.recursiveHomomorphicAliasExpansionNameForIdentifier(init_node);
+        const recursive_target_name = try self.recursiveHomomorphicAliasExpansionNameForIdentifier(target_node);
+        if (recursive_source_name != null and recursive_target_name != null) {
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ recursive_source_name.?, recursive_target_name.? },
+            );
+            return try self.report(node, TsCodes.type_not_assignable, message);
+        }
         if (try self.tryReportInstanceofLogicalAndVarDeclMismatch(node, init_node, target_node)) return;
         if (try self.tryReportPredicateLogicalAndVarDeclMismatch(node, init_node, target_node)) return;
         if (self.unnarrowedAnnotatedUnionType(init_node) != null) {
@@ -210050,6 +210261,46 @@ test "checker: nested recursive homomorphic mapped aliases preserve leaf mismatc
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'Id<{ x: { y: { z: { a: { b: { c: number; }; }; }; }; }; }>' is not assignable to type 'Id<{ x: { y: { z: { a: { b: { c: string; }; }; }; }; }; }>'."));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'Id2<{ x: { y: { z: { a: { b: { c: number; }; }; }; }; }; }>' is not assignable to type 'Id2<{ x: { y: { z: { a: { b: { c: string; }; }; }; }; }; }>'."));
+}
+
+test "checker: deeply nested recursive conditional mapped aliases use symbol cutoff" {
+    const s = try newSetup(
+        \\type NestedRecord<K extends string, V> = K extends `${infer K0}.${infer KR}` ? { [P in K0]: NestedRecord<KR, V> } : Record<K, V>;
+        \\type Bar1 = NestedRecord<"x.y.z.a.b.c", number>;
+        \\type Bar2 = NestedRecord<"x.y.z.a.b.c", string>;
+        \\declare const bar1: Bar1;
+        \\const bar2: Bar2 = bar1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: Static resolves constrained intersection properties and mapped Pick keys" {
+    const s = try newSetup(
+        \\declare const Kind: unique symbol;
+        \\interface TSchema { [Kind]: string; params: unknown[]; static: unknown; }
+        \\interface TString extends TSchema { [Kind]: 'String'; static: string; }
+        \\type TProperties = Record<string | number, TSchema>;
+        \\type Keys<T extends TProperties> = { [K in keyof T]: K }[keyof T];
+        \\type Reduce<T extends TProperties, R extends Record<keyof any, unknown>> = Pick<R, Keys<T>>;
+        \\type Static<T extends TSchema, P extends unknown[] = []> = (T & { params: P })['static'];
+        \\interface TObject<T extends TProperties = TProperties> extends TSchema { static: { [K in keyof T]: Static<T[K], this['params']> }; }
+        \\declare namespace Type { function Object<T extends TProperties>(value: T): TObject<T>; function String(): TString; }
+        \\const InputValue = Type.Object({ foo: Type.String() });
+        \\const OutputValue = Type.Object({ foo: Type.String(), bar: Type.String() });
+        \\type Input = Static<typeof InputValue>;
+        \\type Output = Static<typeof OutputValue>;
+        \\function f(values: Input[]): Output[] { return values; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: mappedTypeModifiers inline mapped annotation no spurious TS2403" {
