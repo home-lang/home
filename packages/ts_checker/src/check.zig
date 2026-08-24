@@ -145036,6 +145036,10 @@ pub const Checker = struct {
     }
 
     fn reportInvalidDestructuringAssignmentReference(self: *Checker, node: NodeId) CheckError!bool {
+        // Object-rest targets are checked by checkObjectDestructuringAssignment,
+        // which selects TS2501/TS2701 to match tsgo's checkReferenceAssignment.
+        // Do not also emit the generic TS2364 while walking the outer pattern.
+        if (self.nodeIsObjectRestAssignmentTarget(node)) return false;
         return switch (self.hir.kindOf(node)) {
             .assignment => self.reportInvalidAssignmentReference(
                 hir_mod.assignmentOf(self.hir, node).target,
@@ -188914,6 +188918,7 @@ test "checker: object rest assignment with non-reference target reports TS2701" 
     var saw_2701 = false;
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.object_rest_assignment_target_invalid) saw_2701 = true;
+        try T.expect(d.code != TsCodes.assignment_lhs_not_variable);
     }
     try T.expect(saw_2701);
 }
@@ -223208,6 +223213,7 @@ test "checker: TS2501 fires for binding-pattern rest in object destructuring ass
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.rest_element_cannot_contain_binding_pattern));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assignment_lhs_not_variable));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.rest_element_cannot_contain_binding_pattern) {
             try T.expectEqualStrings("A rest element cannot contain a binding pattern.", d.message);
