@@ -102550,8 +102550,14 @@ pub const Checker = struct {
                 }
                 const target_is_eval = target_kind == .identifier and
                     std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "eval");
+                const target_is_implicit_arguments = target_kind == .identifier and
+                    std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "arguments") and
+                    !self.immediateFunctionLocalsContain(a.target, hir_mod.identifierOf(self.hir, a.target).name) and
+                    self.hasNonArrowFunctionAncestor(a.target);
                 var target_t = if (target_is_eval)
                     types.Primitive.any
+                else if (target_is_implicit_arguments)
+                    try self.argumentsObjectType()
                 else if (target_kind == .identifier)
                     self.typeOfIdentifierDeclared(a.target)
                 else if (target_kind == .array_literal or target_kind == .object_literal)
@@ -102579,7 +102585,7 @@ pub const Checker = struct {
                         "The left-hand side of an assignment expression must be a variable or a property access.",
                     );
                 }
-                if (target_kind == .identifier) {
+                if (target_kind == .identifier and !target_is_implicit_arguments) {
                     if (self.visibleActiveAnnotatedIdentifierType(a.target)) |annotated_t| {
                         target_t = annotated_t;
                     } else if (self.visibleAnnotatedIdentifierType(a.target)) |annotated_t| {
@@ -124186,6 +124192,16 @@ pub const Checker = struct {
         return locals.contains(name);
     }
 
+    fn immediateFunctionLocalsContain(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            return self.functionLocalsContain(cur, name);
+        }
+        return false;
+    }
+
     fn collectConstructorLocalNames(
         self: *Checker,
         node: NodeId,
@@ -124350,6 +124366,15 @@ pub const Checker = struct {
         {
             self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.") catch {};
             return types.Primitive.any;
+        }
+
+        if (std.mem.eql(u8, name_str, "arguments") and
+            !self.immediateFunctionLocalsContain(node, id.name) and
+            self.hasNonArrowFunctionAncestor(node) and
+            !(self.sourceTargetMentionsEs5() and
+                (self.argumentsInsideArrowOnlyChain(node) or self.argumentsInsideAsyncNonArrowFunction(node))))
+        {
+            return self.argumentsObjectType() catch types.Primitive.any;
         }
 
         // Narrowed binding from an enclosing type-guard takes
@@ -257490,4 +257515,30 @@ test "checker: same-named namespace classes retain distinct static and diagnosti
     }
     try T.expect(saw_qualified_namespaces);
     try T.expect(saw_qualified_classes);
+}
+
+test "checker: class method arguments assignment keeps IArguments type" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\    interface = 10;
+        \\    public implements() { }
+        \\    public foo(arguments: any) { }
+        \\    private bar(eval: any) {
+        \\        arguments = "hello";
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setTsx(false);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    var found = false;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.eql(u8, diagnostic.message, "Type 'string' is not assignable to type 'IArguments'."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
