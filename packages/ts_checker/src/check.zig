@@ -151447,6 +151447,10 @@ pub const Checker = struct {
             }
             can_materialize = keys.items.len > 0;
         }
+        // A concrete source does not make a mapped type concrete when its
+        // key constraint is still generic. Preserve the mapping so call-site
+        // inference can later bind that key parameter.
+        if (self.containsFreeTypeParameter(constraint)) can_materialize = false;
         if (can_materialize and source_obj < self.interner.pool.typeCount()) {
             const source_flags = self.interner.pool.flagsOf(source_obj);
             // `keyof (Fixed & T)` is not closed over Fixed's known keys.
@@ -151464,6 +151468,7 @@ pub const Checker = struct {
             defer members.deinit(self.gpa);
             for (keys.items) |key| {
                 if (source_is_array_like and !self.isNumericStringId(key)) continue;
+                if (!try self.mappedConstraintAcceptsPropertyName(constraint, key)) continue;
                 const key_lit = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
                 var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer key_subs.deinit(self.gpa);
@@ -181511,13 +181516,17 @@ pub const Checker = struct {
 
     fn mappedTypeAcceptsPropertyName(self: *Checker, mapped_t: TypeId, key_name: hir_mod.StringId) CheckError!bool {
         const mapped = self.interner.mappedPayload(mapped_t);
-        if (mapped.constraint == types.Primitive.string_t) return !self.isSymbolNamedMember(key_name);
-        if (mapped.constraint == types.Primitive.number_t) return self.isNumericPropertyName(key_name);
-        if (mapped.constraint == types.Primitive.symbol_t) return self.isSymbolNamedMember(key_name);
-        if (self.isSymbolNamedMember(key_name)) return try self.checkerAssignableTo(types.Primitive.symbol_t, mapped.constraint);
+        return self.mappedConstraintAcceptsPropertyName(mapped.constraint, key_name);
+    }
+
+    fn mappedConstraintAcceptsPropertyName(self: *Checker, constraint: TypeId, key_name: hir_mod.StringId) CheckError!bool {
+        if (constraint == types.Primitive.string_t) return !self.isSymbolNamedMember(key_name);
+        if (constraint == types.Primitive.number_t) return self.isNumericPropertyName(key_name);
+        if (constraint == types.Primitive.symbol_t) return self.isSymbolNamedMember(key_name);
+        if (self.isSymbolNamedMember(key_name)) return try self.checkerAssignableTo(types.Primitive.symbol_t, constraint);
         const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
-        if (try self.templateLiteralSourceAssignableToTarget(key_lit, mapped.constraint)) return true;
-        return try self.checkerAssignableTo(key_lit, mapped.constraint);
+        if (try self.templateLiteralSourceAssignableToTarget(key_lit, constraint)) return true;
+        return try self.checkerAssignableTo(key_lit, constraint);
     }
 
     fn checkMappedTypeExcessProperties(self: *Checker, init_node: NodeId, mapped_t: TypeId) CheckError!void {
@@ -209111,6 +209120,7 @@ test "checker: generic Pick call inference keeps source and infers keys" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_literal_excess_property));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.type_not_assignable,
