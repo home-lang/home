@@ -4995,7 +4995,7 @@ pub fn ambientModuleExportFacts(
         if (name_id) |id| {
             const body = hir_mod_ns.namespaceBody(&compilation.hir, local);
             collectAmbientModuleExportFacts(&compilation.hir, id, body, true, &facts);
-            if (ambientExportAssignmentHasValueMember(&compilation.hir, body, id)) {
+            if (ambientExportAssignmentHasValueMember(gpa, &compilation.hir, &compilation.interner, body, id)) {
                 facts.exported_value = true;
             }
         }
@@ -5004,30 +5004,164 @@ pub fn ambientModuleExportFacts(
 }
 
 fn ambientExportAssignmentHasValueMember(
+    gpa: std.mem.Allocator,
     hir: *const hir_mod_ns.Hir,
+    interner: anytype,
     stmts: []const hir_mod_ns.NodeId,
     member_name: hir_mod_ns.StringId,
 ) bool {
-    const target_name = ambientExportAssignmentTargetName(hir, stmts) orelse return false;
+    var target_path: std.ArrayListUnmanaged(hir_mod_ns.StringId) = .empty;
+    defer target_path.deinit(gpa);
+    if (!appendAmbientExportAssignmentTargetPath(gpa, hir, stmts, &target_path)) return false;
+    if (ambientNamespacePathExportsMember(hir, interner, stmts, target_path.items, member_name)) return true;
+
+    const target_name = target_path.items[target_path.items.len - 1];
     const target_type = ambientNestedValueTypeName(hir, stmts, target_name) orelse return false;
     return ambientNestedInterfaceHasMember(hir, stmts, target_type, member_name);
 }
 
-fn ambientExportAssignmentTargetName(
+fn appendAmbientExportAssignmentTargetPath(
+    gpa: std.mem.Allocator,
     hir: *const hir_mod_ns.Hir,
     stmts: []const hir_mod_ns.NodeId,
-) ?hir_mod_ns.StringId {
+    out: *std.ArrayListUnmanaged(hir_mod_ns.StringId),
+) bool {
     for (stmts) |raw| {
         if (hir.kindOf(raw) != .export_decl) continue;
         const export_decl = hir_mod_ns.exportOf(hir, raw);
         if (!export_decl.is_export_equals or export_decl.decl == hir_mod_ns.none_node_id) continue;
-        return switch (hir.kindOf(export_decl.decl)) {
-            .identifier => hir_mod_ns.identifierOf(hir, export_decl.decl).name,
-            .member_access => hir_mod_ns.memberOf(hir, export_decl.decl).name,
-            else => null,
-        };
+        if (!appendAmbientEntityNamePath(gpa, hir, export_decl.decl, out)) return false;
+        if (out.items.len != 1) return true;
+        const alias_name = out.items[0];
+        for (stmts) |statement| {
+            if (hir.kindOf(statement) != .import_decl) continue;
+            const import_decl = hir_mod_ns.importOf(hir, statement);
+            if (import_decl.default_binding == hir_mod_ns.none_node_id or
+                hir.kindOf(import_decl.default_binding) != .identifier or
+                hir_mod_ns.identifierOf(hir, import_decl.default_binding).name != alias_name or
+                import_decl.import_equals == hir_mod_ns.none_node_id or
+                hir.kindOf(import_decl.import_equals) != .type_ref)
+            {
+                continue;
+            }
+            out.clearRetainingCapacity();
+            const reference = hir_mod_ns.typeRefOf(hir, import_decl.import_equals);
+            for (hir_mod_ns.typeRefQualifier(hir, import_decl.import_equals)) |qualifier| {
+                if (hir.kindOf(qualifier) != .identifier) return false;
+                out.append(gpa, hir_mod_ns.identifierOf(hir, qualifier).name) catch return false;
+            }
+            out.append(gpa, reference.name) catch return false;
+            return true;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn appendAmbientEntityNamePath(
+    gpa: std.mem.Allocator,
+    hir: *const hir_mod_ns.Hir,
+    node: hir_mod_ns.NodeId,
+    out: *std.ArrayListUnmanaged(hir_mod_ns.StringId),
+) bool {
+    switch (hir.kindOf(node)) {
+        .identifier => {
+            out.append(gpa, hir_mod_ns.identifierOf(hir, node).name) catch return false;
+            return true;
+        },
+        .member_access => {
+            const member = hir_mod_ns.memberOf(hir, node);
+            if (member.optional or !appendAmbientEntityNamePath(gpa, hir, member.object, out)) return false;
+            out.append(gpa, member.name) catch return false;
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn ambientNamespacePathExportsMember(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    stmts: []const hir_mod_ns.NodeId,
+    target_path: []const hir_mod_ns.StringId,
+    member_name: hir_mod_ns.StringId,
+) bool {
+    for (stmts) |raw| {
+        const declaration = if (hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(hir, raw).decl
+        else
+            raw;
+        if (declaration == hir_mod_ns.none_node_id or hir.kindOf(declaration) != .namespace_decl) continue;
+        const namespace = hir_mod_ns.namespaceOf(hir, declaration);
+        if (namespace.name == hir_mod_ns.none_node_id or hir.kindOf(namespace.name) != .identifier) continue;
+        const namespace_text = interner.get(hir_mod_ns.identifierOf(hir, namespace.name).name);
+
+        const consumed = ambientNamespaceNameConsumesPath(interner, namespace_text, target_path) orelse 0;
+        if (consumed == target_path.len) {
+            for (hir_mod_ns.namespaceBody(hir, declaration)) |member_raw| {
+                const member = if (hir.kindOf(member_raw) == .export_decl)
+                    hir_mod_ns.exportOf(hir, member_raw).decl
+                else
+                    member_raw;
+                if (member == hir_mod_ns.none_node_id or declarationName(hir, member) != member_name) continue;
+                if (declCreatesRuntimeValue(hir, member) or
+                    hir.kindOf(member) == .namespace_decl or
+                    hir.kindOf(member) == .module_decl) return true;
+            }
+        } else if (consumed > 0 and consumed < target_path.len and
+            ambientNamespacePathExportsMember(
+                hir,
+                interner,
+                hir_mod_ns.namespaceBody(hir, declaration),
+                target_path[consumed..],
+                member_name,
+            ))
+        {
+            return true;
+        }
+
+        if (ambientNamespaceNameHasProjectedMember(interner, namespace_text, target_path, member_name)) return true;
+    }
+    return false;
+}
+
+fn ambientNamespaceNameConsumesPath(
+    interner: anytype,
+    namespace_text: []const u8,
+    path: []const hir_mod_ns.StringId,
+) ?usize {
+    if (path.len == 0) return null;
+    var offset: usize = 0;
+    var consumed: usize = 0;
+    while (consumed < path.len) : (consumed += 1) {
+        const segment = interner.get(path[consumed]);
+        if (!std.mem.startsWith(u8, namespace_text[offset..], segment)) return null;
+        offset += segment.len;
+        if (offset == namespace_text.len) return consumed + 1;
+        if (namespace_text[offset] != '.') return null;
+        offset += 1;
     }
     return null;
+}
+
+fn ambientNamespaceNameHasProjectedMember(
+    interner: anytype,
+    namespace_text: []const u8,
+    target_path: []const hir_mod_ns.StringId,
+    member_name: hir_mod_ns.StringId,
+) bool {
+    var offset: usize = 0;
+    for (target_path) |segment_id| {
+        const segment = interner.get(segment_id);
+        if (!std.mem.startsWith(u8, namespace_text[offset..], segment)) return false;
+        offset += segment.len;
+        if (offset >= namespace_text.len or namespace_text[offset] != '.') return false;
+        offset += 1;
+    }
+    const member_text = interner.get(member_name);
+    if (!std.mem.startsWith(u8, namespace_text[offset..], member_text)) return false;
+    offset += member_text.len;
+    return offset == namespace_text.len or namespace_text[offset] == '.';
 }
 
 fn ambientNestedValueTypeName(
@@ -7215,6 +7349,25 @@ test "ambient export assignment projects declared global value members" {
     ;
     const facts = ambientModuleExportFacts(T.allocator, source, "node:console", "Console", false).?;
     try T.expect(facts.exported_value);
+}
+
+test "ambient export assignment projects qualified namespace values" {
+    const source =
+        \\declare module "nested" {
+        \\  namespace a1.a2 { class d {} }
+        \\  namespace a1.a2.n3 { class c {} }
+        \\  export = a1.a2;
+        \\}
+        \\declare module "renamed" {
+        \\  namespace a.b { class c {} }
+        \\  import d = a.b;
+        \\  export = d;
+        \\}
+    ;
+    try T.expect(ambientModuleExportFacts(T.allocator, source, "nested", "d", false).?.exported_value);
+    try T.expect(ambientModuleExportFacts(T.allocator, source, "nested", "n3", false).?.exported_value);
+    try T.expect(ambientModuleExportFacts(T.allocator, source, "renamed", "c", false).?.exported_value);
+    try T.expect(!ambientModuleExportFacts(T.allocator, source, "nested", "missing", false).?.exported_value);
 }
 
 test "module export facts follow explicit typesVersions back-references" {
