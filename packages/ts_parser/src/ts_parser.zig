@@ -4404,6 +4404,7 @@ pub const Parser = struct {
             break :blk try self.builder.addBlock(.{ .start = at.span.start, .end = at.span.start }, &.{});
         } else try self.builder.addBlock(.{ .start = start.span.start, .end = start.span.start }, &.{});
         var catch_param: NodeId = hir_mod.none_node_id;
+        var catch_type: NodeId = hir_mod.none_node_id;
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
             if (self.peek().kind == .open_paren) {
@@ -4426,25 +4427,8 @@ pub const Parser = struct {
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
                 };
                 if (self.peek().kind == .colon) {
-                    const colon = self.advance();
-                    var type_pos = colon.span.end;
-                    while (type_pos < self.source.len and (self.source[type_pos] == ' ' or self.source[type_pos] == '\t')) : (type_pos += 1) {}
-                    // Upstream tsc only emits TS1196 when the annotation
-                    // is something OTHER than `any` or `unknown`. Catch
-                    // bindings typed as `any`/`unknown` (or a type alias
-                    // for them) are valid; the checker handles non-alias
-                    // cases at parse time by inspecting the keyword.
-                    // Mirrors `catchClauseWithTypeAnnotation.ts` which
-                    // intentionally includes valid `: any` / `: unknown`
-                    // clauses that should NOT trigger TS1196.
-                    const ty_tok = self.peek();
-                    const is_simple_any_or_unknown =
-                        (ty_tok.kind == .kw_any or ty_tok.kind == .kw_unknown) and
-                        self.peekAt(1).kind == .close_paren;
-                    if (!is_simple_any_or_unknown) {
-                        try self.reportCodeAt(type_pos, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
-                    }
-                    try self.skipTypeAnnotation();
+                    _ = self.advance();
+                    catch_type = try self.parseTypeAnnotation();
                 }
                 // A catch binding may not have an initializer
                 // (`catch (e = 1)`). Upstream tsc's checkCatchClause
@@ -4475,7 +4459,7 @@ pub const Parser = struct {
             self.hir.spanOf(catch_block).end
         else
             self.hir.spanOf(block).end;
-        return try self.builder.addTry(.{ .start = start.span.start, .end = end_pos }, block, catch_param, catch_block, finally_block);
+        return try self.builder.addTry(.{ .start = start.span.start, .end = end_pos }, block, catch_param, catch_type, catch_block, finally_block);
     }
 
     fn parseSwitchStatement(self: *Parser) ParseError!NodeId {
@@ -24846,13 +24830,16 @@ test "parser: catch accepts object binding pattern target" {
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(tp.catch_param));
 }
 
-test "parser: catch type annotation reports TS1196" {
+test "parser: catch type annotation is preserved for checker validation" {
     var s = try newTestSetup("try {} catch (e: Error) {}");
     defer destroyTestSetup(s);
 
-    _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1196), s.parser.diagnostics.items[0].code);
+    const root = try s.parser.parseSourceFile();
+    const statement = hir_mod.blockStmts(&s.hir, root)[0];
+    const payload = hir_mod.tryOf(&s.hir, statement);
+    try T.expect(payload.catch_type != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(payload.catch_type));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: for-in multiple declarations reports TS1091 on the second binding" {

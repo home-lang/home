@@ -8979,11 +8979,24 @@ pub const Checker = struct {
                 if (ts.block != hir_mod.none_node_id) try self.checkStatement(ts.block);
                 if (ts.catch_param != hir_mod.none_node_id) {
                     const ck = self.hir.kindOf(ts.catch_param);
-                    const annotated_t = try self.checkJsDocCatchParameterType(ts.catch_param);
-                    const catch_t = annotated_t orelse if (self.strict_flags.use_unknown_in_catch_variables)
+                    const jsdoc_t = try self.checkJsDocCatchParameterType(ts.catch_param);
+                    var catch_t = jsdoc_t orelse if (self.strict_flags.use_unknown_in_catch_variables)
                         types.Primitive.unknown
                     else
                         types.Primitive.any;
+                    if (ts.catch_type != hir_mod.none_node_id) {
+                        const annotated_t = try self.lowererLowerWithTypeParams(ts.catch_type);
+                        if (annotated_t == types.Primitive.any or annotated_t == types.Primitive.unknown) {
+                            catch_t = annotated_t;
+                        } else {
+                            try self.report(
+                                ts.catch_type,
+                                TsCodes.catch_variable_annotation_must_be_any_or_unknown,
+                                "Catch clause variable type annotation must be 'any' or 'unknown' if specified.",
+                            );
+                            catch_t = types.Primitive.any;
+                        }
+                    }
                     if (ck == .identifier) {
                         self.hir.setType(ts.catch_param, catch_t);
                     } else if (ck == .object_pattern or ck == .array_pattern) {
@@ -10594,6 +10607,30 @@ pub const Checker = struct {
             },
             else => return false,
         }
+    }
+
+    fn enclosingCatchBindingType(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .try_stmt) continue;
+            const statement = hir_mod.tryOf(self.hir, cur);
+            if (statement.catch_param == hir_mod.none_node_id or
+                statement.catch_block == hir_mod.none_node_id or
+                !self.nodeIsAncestorOf(statement.catch_block, node) or
+                !self.bindingPatternDeclaresName(statement.catch_param, name))
+            {
+                continue;
+            }
+            const catch_t = if (self.hir.typeOf(statement.catch_param) != types.Primitive.none)
+                self.hir.typeOf(statement.catch_param)
+            else if (self.strict_flags.use_unknown_in_catch_variables)
+                types.Primitive.unknown
+            else
+                types.Primitive.any;
+            if (self.hir.kindOf(statement.catch_param) == .identifier) return catch_t;
+            return self.typeOfPatternBinding(statement.catch_param, catch_t, name) orelse types.Primitive.any;
+        }
+        return null;
     }
 
     fn nodeIsInClassStaticBlockBeforeFunction(self: *Checker, node: NodeId) bool {
@@ -21842,6 +21879,7 @@ pub const Checker = struct {
     ) CheckError!void {
         const decl_node = pending.get(name) orelse return;
         if (self.isPlainAssignmentTarget(ref_node)) return;
+        if (self.enclosingCatchBindingType(ref_node, name) != null) return;
         const may_be_unassigned_in_catch = self.varDeclMayBeUnassignedInCatch(decl_node, ref_node);
         if (self.sourceHasStrictFalseDirective() and
             !self.nodeHasAncestorKind(ref_node, .as_expr) and
@@ -95428,6 +95466,42 @@ pub const Checker = struct {
         }
     }
 
+    fn catchVarEnclosingParameterType(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        var inside_matching_catch = false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .try_stmt => {
+                    const statement = hir_mod.tryOf(self.hir, cur);
+                    if (statement.catch_param != hir_mod.none_node_id and
+                        statement.catch_block != hir_mod.none_node_id and
+                        self.nodeIsAncestorOf(statement.catch_block, node) and
+                        self.bindingPatternDeclaresName(statement.catch_param, name))
+                    {
+                        inside_matching_catch = true;
+                    }
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    if (!inside_matching_catch) return null;
+                    for (hir_mod.fnParams(self.hir, cur)) |param_node| {
+                        if (self.hir.kindOf(param_node) != .parameter) continue;
+                        const parameter = hir_mod.parameterOf(self.hir, param_node);
+                        if (!self.bindingPatternDeclaresName(parameter.name, name)) continue;
+                        const cached = self.hir.typeOf(param_node);
+                        if (cached != types.Primitive.none) return cached;
+                        if (parameter.type_annotation != hir_mod.none_node_id) {
+                            return try self.lowererLowerWithTypeParams(parameter.type_annotation);
+                        }
+                        return types.Primitive.any;
+                    }
+                    return null;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
     fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
         if (self.hir.kindOf(node) != .var_decl) return;
         const v = hir_mod.varDeclOf(self.hir, node);
@@ -95449,6 +95523,21 @@ pub const Checker = struct {
         // of the typeGuards conformance cluster.
         const scope = self.enclosingVarDeclScope(node);
         if (scope == hir_mod.none_node_id) return;
+        if (try self.catchVarEnclosingParameterType(node, id.name)) |prior| {
+            if (!self.repeatedVarTypesCompatible(prior, final_type)) {
+                const message = try self.formatSubsequentVarTypeMismatch(
+                    self.string_interner.get(id.name),
+                    prior,
+                    final_type,
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = v.name,
+                    .code = TsCodes.subsequent_var_type_mismatch,
+                    .message = message,
+                });
+            }
+            return;
+        }
         const key: VarDeclKey = .{
             .scope = scope,
             .name = id.name,
@@ -105226,6 +105315,7 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 var obj_t: TypeId = undefined;
+                var object_is_catch_binding = false;
                 if (self.nodeIsSuperReference(m.object)) {
                     const visible_super_t = if (self.superReferenceOwnedByNonDerivedClass(m.object))
                         null
@@ -105290,7 +105380,10 @@ pub const Checker = struct {
                     obj_t = try self.checkExpression(m.object);
                     if (self.hir.kindOf(m.object) == .identifier) {
                         const object_id = hir_mod.identifierOf(self.hir, m.object);
-                        if (self.lookupNarrow(object_id.name)) |flow_t| {
+                        if (self.enclosingCatchBindingType(m.object, object_id.name)) |catch_t| {
+                            object_is_catch_binding = true;
+                            obj_t = catch_t;
+                        } else if (self.lookupNarrow(object_id.name)) |flow_t| {
                             obj_t = flow_t;
                         } else if (self.sectionLocalIdentifierHasUnresolvedAnnotation(m.object)) {
                             obj_t = types.Primitive.any;
@@ -105307,7 +105400,8 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
-                if (obj_t == types.Primitive.any and
+                if (!object_is_catch_binding and
+                    obj_t == types.Primitive.any and
                     !self.nodeIsThisReference(m.object) and
                     !self.sectionLocalIdentifierHasUnresolvedAnnotation(m.object))
                 {
@@ -124375,6 +124469,12 @@ pub const Checker = struct {
                 (self.argumentsInsideArrowOnlyChain(node) or self.argumentsInsideAsyncNonArrowFunction(node))))
         {
             return self.argumentsObjectType() catch types.Primitive.any;
+        }
+
+        // Catch bindings shadow outer annotations and hoisted variables for
+        // the whole catch block, including nested functions.
+        if (!self.isDeclNameSlot(node)) {
+            if (self.enclosingCatchBindingType(node, id.name)) |catch_t| return catch_t;
         }
 
         // Narrowed binding from an enclosing type-guard takes
@@ -257541,4 +257641,22 @@ test "checker: class method arguments assignment keeps IArguments type" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: catch annotations retain aliases and unknown binding semantics" {
+    const b = try newBoundSetup(
+        \\type any1 = any;
+        \\type unknown1 = unknown;
+        \\function fn(x: boolean) {
+        \\    try {} catch (x: any1) { x.foo; }
+        \\    try {} catch (x: unknown1) { x.foo; }
+        \\    try {} catch (x: Error) {}
+        \\    try {} catch ({ x }: unknown) { console.log(x); }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.catch_variable_annotation_must_be_any_or_unknown));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
 }

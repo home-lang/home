@@ -478,6 +478,8 @@ pub const TryPayload = struct {
     block: NodeId,
     /// `none_node_id` if no catch clause.
     catch_param: NodeId,
+    /// `none_node_id` when the catch binding has no type annotation.
+    catch_type: NodeId,
     /// `none_node_id` if no catch clause.
     catch_block: NodeId,
     /// `none_node_id` if no finally clause.
@@ -1887,6 +1889,7 @@ pub const Builder = struct {
         span: Span,
         block: NodeId,
         catch_param: NodeId,
+        catch_type: NodeId,
         catch_block: NodeId,
         finally_block: NodeId,
     ) !NodeId {
@@ -1894,12 +1897,14 @@ pub const Builder = struct {
         try self.hir.try_payloads.append(self.hir.gpa, .{
             .block = block,
             .catch_param = catch_param,
+            .catch_type = catch_type,
             .catch_block = catch_block,
             .finally_block = finally_block,
         });
         const id = try self.newNode(.try_stmt, span, payload_idx);
         self.hir.setParent(block, id);
         if (catch_param != none_node_id) self.hir.setParent(catch_param, id);
+        if (catch_type != none_node_id) self.hir.setParent(catch_type, id);
         if (catch_block != none_node_id) self.hir.setParent(catch_block, id);
         if (finally_block != none_node_id) self.hir.setParent(finally_block, id);
         return id;
