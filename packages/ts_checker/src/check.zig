@@ -42853,6 +42853,7 @@ pub const Checker = struct {
                 for (implements) |impl_node| {
                     try self.reportUnresolvedTypeRefHeritage(impl_node, type_params);
                     const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
+                    if (self.typeIsAnyLike(target_t)) continue;
                     if (try self.reportClassImplementsGenericMethodConstraintMismatches(node, instance_t, target_t)) {
                         continue;
                     }
@@ -198133,6 +198134,18 @@ test "checker: class implements interface checks instance shape" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_base));
+}
+
+test "checker: unresolved implements target does not cascade TS2420" {
+    const s = try newSetup(
+        \\namespace Harness {
+        \\  export class C implements Services.MissingInterface {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_incorrectly_implements_interface));
 }
 
 test "checker: class implements weak interface reports TS2559 only without overlap" {
