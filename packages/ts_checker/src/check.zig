@@ -63706,6 +63706,9 @@ pub const Checker = struct {
             const ns_node = stack.items[i];
             const ns = hir_mod.namespaceOf(self.hir, ns_node);
             if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            // `declare global` augments the global scope; it does not add a
+            // named namespace component to declarations nested inside it.
+            if (self.namespaceNameIs(ns_node, "global")) continue;
             // A string-named ambient module (`module "X" { ... }`) is a
             // module-augmentation root: per tsc, `module "X"` always
             // refers to the global external module `"X"` regardless of
@@ -132110,13 +132113,16 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("resizeBy") catch return error.OutOfMemory, .type = sig_resize, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("resizeTo") catch return error.OutOfMemory, .type = sig_resize, .is_optional = false, .is_readonly = false, .is_method = true },
         };
-        const window_t = self.interner.internObjectType(&window_members) catch return error.OutOfMemory;
+        var window_t = self.interner.internObjectType(&window_members) catch return error.OutOfMemory;
+        const window_name = self.string_interner.intern("Window") catch return error.OutOfMemory;
+        if (self.type_names.get(window_name)) |declared_t| {
+            window_t = self.mergeInterfaceDeclarationType(window_t, declared_t) catch window_t;
+        }
         const global_members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("window") catch return error.OutOfMemory, .type = window_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("globalThis") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = true, .is_method = false },
         };
         const global_this_t = self.interner.internObjectType(&global_members) catch return error.OutOfMemory;
-        const window_name = self.string_interner.intern("Window") catch return error.OutOfMemory;
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
         try self.type_names.put(self.gpa, window_name, window_t);
         try self.type_names.put(self.gpa, global_name, global_this_t);
