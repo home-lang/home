@@ -144979,6 +144979,14 @@ pub const Checker = struct {
         allow_destructuring_pattern: bool,
     ) CheckError!bool {
         const kind = self.hir.kindOf(target);
+        if (self.has_parse_diagnostics and kind == .await_expr) {
+            const src = self.source orelse "";
+            const span = self.hir.spanOf(target);
+            if (span.end <= src.len and span.start <= span.end) {
+                const text = std.mem.trim(u8, src[span.start..span.end], " \t\r\n");
+                if (std.mem.startsWith(u8, text, "await using")) return false;
+            }
+        }
         switch (kind) {
             .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
                 const wrapped = hir_mod.asExpressionOf(self.hir, target).expr;
@@ -223231,6 +223239,18 @@ test "checker: TS2501 not emitted for identifier rest in object destructuring as
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.rest_element_cannot_contain_binding_pattern));
+}
+
+test "checker: recovered await-using assignment does not emit TS2364" {
+    const s = try newSetup(
+        \\{
+        \\  await using [a] = null;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHasParseDiagnostics(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.assignment_lhs_not_variable));
 }
 
 test "checker: decorated default class reads unassigned decorator var" {
