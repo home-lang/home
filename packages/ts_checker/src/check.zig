@@ -20535,8 +20535,23 @@ pub const Checker = struct {
 
     fn expandoReceiverDeclaredInOtherVirtualSection(self: *Checker, target: NodeId) bool {
         if (!self.sourceHasVirtualFilenameSections()) return false;
-        const declaration = self.expandoReceiverDeclaration(target) orelse return false;
-        return self.virtualSectionStartForNode(declaration) != self.virtualSectionStartForNode(target);
+        const target_section = self.virtualSectionStartForNode(target);
+        if (self.expandoReceiverDeclaration(target)) |declaration| {
+            if (self.virtualSectionStartForNode(declaration) != target_section) return true;
+        }
+        if (self.hir.kindOf(target) != .member_access) return false;
+        const object = hir_mod.memberOf(self.hir, target).object;
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
+        const object_name = hir_mod.identifierOf(self.hir, object).name;
+        const root = self.rootBlockFor(target);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if ((self.declarationName(declaration) orelse continue) != object_name) continue;
+            if (self.virtualSectionStartForNode(declaration) == target_section) continue;
+            if (self.hir.kindOf(declaration) == .fn_decl or self.declarationIsFunctionValuedVariable(declaration)) return true;
+        }
+        return false;
     }
 
     fn expressionReferencesWholeIdentifier(
@@ -228901,6 +228916,7 @@ test "checker: checkjs virtual constructor function merges with sibling class" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_redeclare_block_scoped);
     }
