@@ -76308,6 +76308,7 @@ pub const Checker = struct {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+        var default_fallback: ?TypeId = null;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             const matches_module = if (self.sourceHasVirtualFilenameSections())
                 self.virtualSectionMatchesSpecifier(self.source.?, raw, spec)
@@ -76317,13 +76318,17 @@ pub const Checker = struct {
             if (self.hir.kindOf(raw) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, raw);
             if (ex.is_default and leaf_name == default_name and ex.decl != hir_mod.none_node_id) {
-                if (self.hir.kindOf(ex.decl) == .identifier) {
+                const exported_t = if (self.hir.kindOf(ex.decl) == .identifier) blk: {
                     const local_name = hir_mod.identifierOf(self.hir, ex.decl).name;
-                    return (try self.localValueTypeInVirtualSection(raw, local_name)) orelse
+                    break :blk (try self.localValueTypeInVirtualSection(raw, local_name)) orelse
                         try self.checkExpression(ex.decl);
-                }
-                const exported_name = self.declarationName(ex.decl) orelse default_name;
-                return try self.exportedValueTypeForNamespaceMember(ex.decl, exported_name);
+                } else blk: {
+                    const exported_name = self.declarationName(ex.decl) orelse default_name;
+                    break :blk try self.exportedValueTypeForNamespaceMember(ex.decl, exported_name);
+                };
+                if (self.typeHasNonConstructCallSignature(exported_t)) return exported_t;
+                if (default_fallback == null) default_fallback = exported_t;
+                continue;
             }
             if (ex.is_namespace and
                 ex.namespace_alias != string_interner.empty_string_id and
@@ -76350,7 +76355,7 @@ pub const Checker = struct {
             if (!self.namespaceExportCreatesValue(decl)) continue;
             return try self.exportedValueTypeForNamespaceMember(decl, leaf_name);
         }
-        return null;
+        return default_fallback;
     }
 
     /// Find a type-producing declaration (enum / class / interface / type
@@ -238713,6 +238718,7 @@ test "checker: virtual default class function and value merge diagnostics" {
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.multiple_default_exports));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.class_cannot_implement_overload_list));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_body_merge_requires_ambient_class));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_only_constructable));
 
     const value_anchor = (std.mem.indexOf(u8, src, "export default x") orelse return error.TestUnexpectedResult) +
         "export default ".len;
