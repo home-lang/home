@@ -95,7 +95,7 @@ pub const Diagnostic = struct {
 pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
     if (!diagnostic.is_parse_error) return false;
     return switch (diagnostic.code) {
-        1013, 1014, 1015, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
+        1013, 1014, 1015, 1016, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
         1053, 1054, 1089, 1090, 1091, 1097, 1100, 1101, 1104, 1105, 1106,
         1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
         1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
@@ -2580,6 +2580,33 @@ pub const Parser = struct {
             return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner).end }, label_ident, inner);
         }
         return switch (t.kind) {
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .asterisk_asterisk_equal,
+            .less_less_equal,
+            .greater_greater_equal,
+            .greater_greater_greater_equal,
+            .ampersand_equal,
+            .pipe_equal,
+            .caret_equal,
+            .question_question_equal,
+            .pipe_pipe_equal,
+            .ampersand_ampersand_equal,
+            => blk: {
+                const operator = self.advance();
+                try self.reportCodeAt(operator.span.start, operator.line, 1128, "Declaration or statement expected.");
+                if (self.peek().kind != .semicolon and self.peek().kind != .eof) {
+                    _ = self.parseAssignmentExpression() catch {};
+                }
+                _ = self.match(.semicolon);
+                break :blk try self.builder.addLiteralNumber(
+                    .{ .start = operator.span.start, .end = operator.span.start },
+                    0,
+                );
+            },
             .kw_let, .kw_const, .kw_var => blk: {
                 if (t.kind == .kw_let and
                     self.namespace_depth > 0 and
@@ -5499,6 +5526,18 @@ pub const Parser = struct {
                     );
                 }
                 if (self.peek().kind == .close_paren) break; // trailing comma
+            }
+        }
+        if (params.items.len > 1) {
+            for (params.items[0 .. params.items.len - 1]) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (!param.flags.is_rest) continue;
+                const pos = self.hir.spanOf(param_node).start;
+                if (!self.hasDiagnosticAt(1014, pos)) {
+                    try self.reportCodeAt(pos, self.lineAt(pos), 1014, "A rest parameter must be last in a parameter list.");
+                }
+                break;
             }
         }
         if (!missing_close_reported) _ = try self.expectClosingMatch(.close_paren, "')' to close parameter list", open_paren.span.start, "(", ")");
@@ -11344,7 +11383,7 @@ pub const Parser = struct {
         // recovery (fixture `parserDestructuringAssignment*`).
         if (self.peek().kind == .equal) {
             const eq = self.peek();
-            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.");
+            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.");
             _ = self.advance();
         }
         return try self.builder.addBlock(span(open, close), stmts.items);
@@ -11545,6 +11584,16 @@ pub const Parser = struct {
             try self.reportCodeAt(previous.span.start, previous.line, 1434, "Unexpected keyword or identifier.");
             return;
         }
+        if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .equal and
+            self.hasDiagnosticAt(2809, self.tokens[self.cursor - 1].span.start))
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.parseAssignmentExpression() catch {};
+            _ = self.match(.semicolon);
+            return;
+        }
         if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "',' expected.");
             _ = self.advance();
@@ -11658,6 +11707,33 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             _ = self.advance();
+            return;
+        }
+        if (switch (t.kind) {
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .asterisk_asterisk_equal,
+            .less_less_equal,
+            .greater_greater_equal,
+            .greater_greater_greater_equal,
+            .ampersand_equal,
+            .pipe_equal,
+            .caret_equal,
+            .question_question_equal,
+            .pipe_pipe_equal,
+            .ampersand_ampersand_equal,
+            => true,
+            else => false,
+        }) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            if (self.peek().kind != .semicolon and self.peek().kind != .eof) {
+                _ = self.parseAssignmentExpression() catch {};
+            }
+            _ = self.match(.semicolon);
             return;
         }
         // A predicate-like tail after an `as` assertion is not type syntax:
@@ -15647,7 +15723,6 @@ pub const Parser = struct {
                 }
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
-                try self.reportInvalidAssignmentTarget(left);
                 try self.reportAssignmentPatternRestTrailingCommas(left);
                 const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
@@ -18121,7 +18196,6 @@ pub const Parser = struct {
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
         try self.reportInvalidStrictIdentifierNode(left);
-        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
         return try self.builder.addAssignment(sp, left, right, op);
@@ -18133,7 +18207,6 @@ pub const Parser = struct {
     fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
         try self.reportInvalidStrictIdentifierNode(left);
-        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const left_span = self.hir.spanOf(left);
         const op_span: Span = .{ .start = left_span.start, .end = self.hir.spanOf(right).end };
@@ -19795,6 +19868,11 @@ pub const Parser = struct {
             },
             .kw_super => {
                 _ = self.advance();
+                const next = self.peek().kind;
+                if (next != .open_paren and next != .dot and next != .open_bracket) {
+                    const invalid = self.peek();
+                    try self.reportCodeAt(invalid.span.start, invalid.line, 1034, "'super' must be followed by an argument list or member access.");
+                }
                 const super_id = self.interner.intern("super") catch return error.OutOfMemory;
                 return try self.builder.addIdentifier(tokenSpan(t), super_id);
             },
@@ -25285,6 +25363,18 @@ test "parser: rest parameter before another parameter reports TS1014" {
     try T.expectEqual(@as(u32, 1014), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: rest parameter before another parameter in overload reports TS1014" {
+    var s = try newTestSetup(
+        \\function fn(x: string, ...y: any[], z: string);
+        \\function fn() {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const diagnostic = findFirstDiagnosticOfCode(&s.parser, 1014) orelse return error.TestExpectedEqual;
+    try T.expectEqual(@as(u32, 23), diagnostic.pos);
+}
+
 test "parser: rest parameter trailing comma reports TS1013 outside ambient contexts" {
     var s = try newTestSetup(
         \\function f(...rest,) {}
@@ -27099,7 +27189,7 @@ test "parser: block statement followed by '=' reports TS2809" {
 
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 2809) orelse return error.TestExpectedEqual;
-    try T.expectEqualStrings("Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.", d.message);
+    try T.expectEqualStrings("Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.", d.message);
 }
 
 test "parser: parenthesized destructuring assignment stays clean (no TS2809)" {

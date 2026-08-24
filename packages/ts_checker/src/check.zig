@@ -102830,6 +102830,7 @@ pub const Checker = struct {
                 }
                 if (self.hir.kindOf(a.target) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, a.target);
+                    const target_name = self.string_interner.get(id.name);
                     _ = self.cond_aliases.remove(id.name);
                     _ = self.disc_aliases.remove(id.name);
                     try self.removeCondAliasesReferencing(id.name);
@@ -102854,13 +102855,12 @@ pub const Checker = struct {
                             .message = msg,
                         });
                     }
-                    // TS2628/TS2629/TS2631: enum/class/namespace names
-                    // are value declarations but cannot be assignment
-                    // targets. For `++E` / `C++`, tsc reports this
-                    // target diagnostic instead of the arithmetic
-                    // operand diagnostic.
-                    if (a.op == null or is_synth_update) {
-                        assignment_target_diag_fired = try self.reportIdentifierAssignmentTargetKind(a.target);
+                    // Declaration names remain readable values but are never
+                    // writable references. This check applies to simple,
+                    // compound, logical, and synthesized-update assignments.
+                    assignment_target_diag_fired = try self.reportIdentifierAssignmentTargetKind(a.target);
+                    if (std.mem.eql(u8, target_name, "super")) {
+                        assignment_target_diag_fired = true;
                     }
                 }
                 if (target_kind == .literal_undefined or self.nodeSourceTextIs(a.target, "undefined") or
@@ -102872,6 +102872,18 @@ pub const Checker = struct {
                 if (is_synth_update and self.updateOperandRequiresVariableDiagnostic(a.target, target_t)) {
                     try self.reportUpdateOperandRequiresVariable(a.target);
                     assignment_target_diag_fired = true;
+                }
+                const is_logical_assignment = a.op == .logical_and or
+                    a.op == .logical_or or
+                    a.op == .nullish_coalesce;
+                if (!assignment_target_diag_fired and
+                    !is_synth_update and
+                    (a.op == null or is_logical_assignment))
+                {
+                    assignment_target_diag_fired = try self.reportInvalidAssignmentReference(
+                        a.target,
+                        a.op == null,
+                    );
                 }
                 if (self.expressionIsOptionalChain(a.target)) {
                     // Distinguish synthetic update expressions
@@ -103269,7 +103281,13 @@ pub const Checker = struct {
                             {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
                             } else {
+                                const diagnostic_count = self.diagnostics.items.len;
                                 try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
+                                if (!is_synth_update and
+                                    self.diagnostics.items.len == diagnostic_count)
+                                {
+                                    assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
+                                }
                             }
                         },
                         .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
@@ -103298,10 +103316,19 @@ pub const Checker = struct {
                             // those as `any` and emits nothing.
                             const value_is_untyped_uninit = self.hir.kindOf(a.value) == .identifier and
                                 self.identifierIsUntypedUninitializedVar(a.value);
+                            const target_is_top_level_this = target_kind == .identifier and
+                                std.mem.eql(
+                                    u8,
+                                    self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name),
+                                    "this",
+                                ) and
+                                !self.nodeIsInsideFunctionLike(a.target);
+                            const target_arithmetic_allowed = self.isArithmeticOperandAllowed(target_t) and
+                                !target_is_top_level_this;
                             const target_shift_ok = !is_synth_update and
                                 !assignment_target_diag_fired and
                                 !self.typeIsExactNullish(target_t) and
-                                self.isArithmeticOperandAllowed(target_t);
+                                target_arithmetic_allowed;
                             const value_shift_ok = !is_synth_update and
                                 !value_is_untyped_uninit and
                                 !self.typeIsExactNullish(value_t) and
@@ -103314,8 +103341,18 @@ pub const Checker = struct {
                             } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
                             } else if (!is_synth_update and self.typeIsExactNullish(target_t)) {
-                                try self.reportNullishRelationalOperand(a.target, target_t);
-                            } else if (!assignment_target_diag_fired and !self.isArithmeticOperandAllowed(target_t)) {
+                                assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
+                                if (self.parenthesizedAssignmentTargetStart(a.target)) |pos| {
+                                    try self.diagnostics.append(self.gpa, .{
+                                        .node = a.target,
+                                        .pos = pos,
+                                        .code = TsCodes.object_possibly_null_2531,
+                                        .message = "Object is possibly 'null'.",
+                                    });
+                                } else {
+                                    try self.reportNullishRelationalOperand(a.target, target_t);
+                                }
+                            } else if (!assignment_target_diag_fired and !target_arithmetic_allowed) {
                                 try self.reportArithmeticOperand(a.target, arith_code, arith_msg);
                             }
                             // Skip the right-hand-side check for
@@ -103326,6 +103363,17 @@ pub const Checker = struct {
                                 try self.reportNullishRelationalOperand(a.value, value_t);
                             } else if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                            }
+                            const left_operand_ok = !self.typeIsExactNullish(target_t) and
+                                target_arithmetic_allowed;
+                            const right_operand_ok = value_is_untyped_uninit or
+                                (!self.typeIsExactNullish(value_t) and self.isArithmeticOperandAllowed(value_t));
+                            if (!is_synth_update and
+                                !assignment_target_diag_fired and
+                                left_operand_ok and
+                                right_operand_ok)
+                            {
+                                assignment_target_diag_fired = try self.reportInvalidAssignmentReference(a.target, false);
                             }
                             if (target_shift_ok and value_shift_ok) {
                                 try self.reportSimplifiableShiftCount(node, a.target, a.value, op);
@@ -144054,6 +144102,106 @@ pub const Checker = struct {
             .code = TsCodes.update_operand_not_variable,
             .message = "The operand of an increment or decrement operator must be a variable or a property access.",
         });
+    }
+
+    fn parenthesizedAssignmentTargetStart(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        var before = span.start;
+        while (before > 0 and std.ascii.isWhitespace(src[before - 1])) before -= 1;
+        var after = span.end;
+        while (after < src.len and std.ascii.isWhitespace(src[after])) after += 1;
+        if (before > 0 and after < src.len and src[before - 1] == '(' and src[after] == ')') {
+            return before - 1;
+        }
+        return null;
+    }
+
+    fn reportAssignmentReferenceError(self: *Checker, target: NodeId) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = target,
+            .pos = self.parenthesizedAssignmentTargetStart(target),
+            .code = TsCodes.assignment_lhs_not_variable,
+            .message = "The left-hand side of an assignment expression must be a variable or a property access.",
+        });
+    }
+
+    /// Port of tsgo's `checkReferenceExpression`. Parentheses and assertion
+    /// wrappers are transparent references; array/object literals are only
+    /// legal as unparenthesized simple-assignment patterns.
+    fn reportInvalidAssignmentReference(
+        self: *Checker,
+        target: NodeId,
+        allow_destructuring_pattern: bool,
+    ) CheckError!bool {
+        const kind = self.hir.kindOf(target);
+        switch (kind) {
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const wrapped = hir_mod.asExpressionOf(self.hir, target).expr;
+                return self.reportInvalidAssignmentReference(wrapped, false);
+            },
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, target);
+                const name = self.string_interner.get(id.name);
+                if (!std.mem.eql(u8, name, "this")) return false;
+                try self.reportAssignmentReferenceError(target);
+                return true;
+            },
+            .member_access, .element_access, .literal_undefined => return false,
+            .array_literal => {
+                if (!allow_destructuring_pattern or self.parenthesizedAssignmentTargetStart(target) != null) {
+                    try self.reportAssignmentReferenceError(target);
+                    return true;
+                }
+                var fired = false;
+                for (hir_mod.arrayLiteralElements(self.hir, target)) |element| {
+                    if (element == hir_mod.none_node_id) continue;
+                    fired = (try self.reportInvalidDestructuringAssignmentReference(element)) or fired;
+                }
+                return fired;
+            },
+            .object_literal => {
+                if (!allow_destructuring_pattern or self.parenthesizedAssignmentTargetStart(target) != null) {
+                    try self.reportAssignmentReferenceError(target);
+                    return true;
+                }
+                var fired = false;
+                for (hir_mod.objectLiteralProps(self.hir, target)) |property| {
+                    switch (self.hir.kindOf(property)) {
+                        .object_property => {
+                            const value = hir_mod.objectPropertyOf(self.hir, property).value;
+                            if (value != hir_mod.none_node_id) {
+                                fired = (try self.reportInvalidDestructuringAssignmentReference(value)) or fired;
+                            }
+                        },
+                        .spread => {
+                            fired = (try self.reportInvalidDestructuringAssignmentReference(
+                                hir_mod.spreadOf(self.hir, property).expression,
+                            )) or fired;
+                        },
+                        else => {},
+                    }
+                }
+                return fired;
+            },
+            else => {
+                try self.reportAssignmentReferenceError(target);
+                return true;
+            },
+        }
+    }
+
+    fn reportInvalidDestructuringAssignmentReference(self: *Checker, node: NodeId) CheckError!bool {
+        return switch (self.hir.kindOf(node)) {
+            .assignment => self.reportInvalidAssignmentReference(
+                hir_mod.assignmentOf(self.hir, node).target,
+                true,
+            ),
+            .spread => self.reportInvalidDestructuringAssignmentReference(
+                hir_mod.spreadOf(self.hir, node).expression,
+            ),
+            else => self.reportInvalidAssignmentReference(node, true),
+        };
     }
 
     fn updateOperandIsEnumBinaryExpression(self: *Checker, target: NodeId) bool {
@@ -186435,6 +186583,33 @@ test "checker: compound assignment target reads typed var for TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: assignment reference validity is checked semantically" {
+    const s = try newSetup(
+        \\var value: any;
+        \\this = value;
+        \\null = value;
+        \\0 = value;
+        \\['', ''] = value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.assignment_lhs_not_variable));
+}
+
+test "checker: compound assignment checks operands before references" {
+    const s = try newSetup(
+        \\var value: any;
+        \\this *= value;
+        \\this += value;
+        \\0 *= value;
+        \\true *= value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.arithmetic_left_operand_type));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.assignment_lhs_not_variable));
 }
 
 test "checker: assignment rhs reads typed var for TS2454" {
