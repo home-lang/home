@@ -849,6 +849,7 @@ pub const Program = struct {
                 self.gpa.destroy(compilation);
             }
             if (compilation.hir.kindOf(compilation.root) != .block_stmt) continue;
+            if (moduleRootHasEsmExportSyntax(&compilation.hir, compilation.root)) continue;
             for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
                 if (compilation.hir.kindOf(stmt) != .assignment) continue;
                 const assignment = hir_mod_ns.assignmentOf(&compilation.hir, stmt);
@@ -3842,13 +3843,15 @@ pub fn moduleExportsValueSpaceName(
         gpa.destroy(compilation);
     }
     const id = compilation.interner.lookup(name) orelse return false;
-    if (moduleRootCommonJsDefinePropertyReadonlyStatus(
-        &compilation.hir,
-        &compilation.interner,
-        compilation.root,
-        id,
-    ) != null) return true;
-    if (moduleRootHasCommonJsExportedRuntimeValue(&compilation.hir, &compilation.interner, compilation.root, id)) return true;
+    if (!moduleRootHasEsmExportSyntax(&compilation.hir, compilation.root)) {
+        if (moduleRootCommonJsDefinePropertyReadonlyStatus(
+            &compilation.hir,
+            &compilation.interner,
+            compilation.root,
+            id,
+        ) != null) return true;
+        if (moduleRootHasCommonJsExportedRuntimeValue(&compilation.hir, &compilation.interner, compilation.root, id)) return true;
+    }
     const sym = compilation.module.root.values.get(id) orelse return false;
     if (sym.flags.is_type) return false;
     return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
@@ -3979,6 +3982,15 @@ fn moduleRootHasCommonJsExportedRuntimeValue(
             continue;
         }
         return true;
+    }
+    return false;
+}
+
+fn moduleRootHasEsmExportSyntax(hir: *const hir_mod_ns.Hir, root: hir_mod_ns.NodeId) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        if (hir.kindOf(stmt) != .export_decl) continue;
+        if (!hir_mod_ns.exportOf(hir, stmt).is_export_equals) return true;
     }
     return false;
 }
@@ -4196,7 +4208,8 @@ pub fn moduleCommonJsExportAssignmentClassName(
         const name_start = cursor;
         cursor += 1;
         while (cursor < source.len and
-            (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) : (cursor += 1) {}
+            (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) : (cursor += 1)
+        {}
         return gpa.dupe(u8, source[name_start..cursor]) catch null;
     }
     return null;
@@ -4346,6 +4359,19 @@ fn moduleExportFactsFromResolvedModuleDepth(
         compilation.root,
         name,
     );
+    if (std.mem.eql(u8, name, "default") and
+        moduleRootHasDefaultValueExport(&compilation.hir, compilation.root))
+    {
+        facts.exported_value = true;
+    }
+    if (name.len != 0 and moduleRootExportAssignmentHasValueMember(
+        &compilation.hir,
+        &compilation.interner,
+        compilation.root,
+        name,
+    )) {
+        facts.exported_value = true;
+    }
     if (compilation.interner.lookup(name)) |name_id| {
         facts.exported_value_readonly = moduleRootCommonJsDefinePropertyReadonlyStatus(
             &compilation.hir,
@@ -4469,6 +4495,15 @@ fn moduleRootExportsCallOnlyFunction(
     root: hir_mod_ns.NodeId,
     name: []const u8,
 ) bool {
+    if (name.len == 0) {
+        for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+            if (hir.kindOf(raw) != .export_decl) continue;
+            const export_decl = hir_mod_ns.exportOf(hir, raw);
+            if (!export_decl.is_export_equals or export_decl.decl == hir_mod_ns.none_node_id) continue;
+            if (moduleRootValueIsFunction(hir, root, export_decl.decl)) return true;
+        }
+        return false;
+    }
     const name_id = interner.lookup(name) orelse return false;
     for (hir_mod_ns.blockStmts(hir, root)) |raw| {
         if (hir.kindOf(raw) == .assignment) {
@@ -4493,6 +4528,67 @@ fn moduleRootExportsCallOnlyFunction(
             if (exported.local != name_id) continue;
             if (moduleRootNamedValueIsFunction(hir, root, exported.imported)) return true;
         }
+    }
+    return false;
+}
+
+fn moduleRootHasDefaultValueExport(hir: *const hir_mod_ns.Hir, root: hir_mod_ns.NodeId) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        if (hir.kindOf(raw) != .export_decl) continue;
+        const export_decl = hir_mod_ns.exportOf(hir, raw);
+        if (!export_decl.is_default or export_decl.decl == hir_mod_ns.none_node_id) continue;
+        return switch (hir.kindOf(export_decl.decl)) {
+            .interface_decl, .type_alias_decl => false,
+            else => true,
+        };
+    }
+    return false;
+}
+
+fn moduleRootExportAssignmentHasValueMember(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    name: []const u8,
+) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        if (hir.kindOf(raw) != .export_decl) continue;
+        const export_decl = hir_mod_ns.exportOf(hir, raw);
+        if (!export_decl.is_export_equals or export_decl.decl == hir_mod_ns.none_node_id) continue;
+        if (moduleRootValueHasMember(hir, interner, root, export_decl.decl, name)) return true;
+    }
+    return false;
+}
+
+fn moduleRootValueHasMember(
+    hir: *const hir_mod_ns.Hir,
+    interner: anytype,
+    root: hir_mod_ns.NodeId,
+    value: hir_mod_ns.NodeId,
+    name: []const u8,
+) bool {
+    if (hir.kindOf(value) == .object_literal) {
+        for (hir_mod_ns.objectLiteralProps(hir, value)) |prop| {
+            if (hir.kindOf(prop) != .object_property) continue;
+            const key = hir_mod_ns.objectPropertyOf(hir, prop).key;
+            const key_name = moduleObjectPropertyName(hir, key) orelse continue;
+            if (std.mem.eql(u8, interner.get(key_name), name)) return true;
+        }
+        return false;
+    }
+    if (hir.kindOf(value) != .identifier) return false;
+    const value_name = hir_mod_ns.identifierOf(hir, value).name;
+    for (hir_mod_ns.blockStmts(hir, root)) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (decl == hir_mod_ns.none_node_id) continue;
+        const kind = hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+        const variable = hir_mod_ns.varDeclOf(hir, decl);
+        if (variable.name == hir_mod_ns.none_node_id or hir.kindOf(variable.name) != .identifier or
+            hir_mod_ns.identifierOf(hir, variable.name).name != value_name) continue;
+        return moduleRootValueHasMember(hir, interner, root, variable.init, name);
     }
     return false;
 }
@@ -6971,6 +7067,23 @@ test "module export facts distinguish scripts from external modules" {
     try T.expect(commonjs.module_is_external);
 }
 
+test "module export facts preserve default and export assignment shapes" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/esm.js", "export const x = 0; module.exports.y = 0;\n");
+    try vfs.addFile("/default.ts", "export default 0;\n");
+    try vfs.addFile("/object.ts", "export = { default: function() {} };\n");
+    try vfs.addFile("/callable.ts", "export = function() {};\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    try T.expect(moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/esm.js", "x").exported_value);
+    try T.expect(!moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/esm.js", "y").exported_value);
+    try T.expect(moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/default.ts", "default").exported_value);
+    try T.expect(moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/object.ts", "default").exported_value);
+    try T.expect(moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/callable.ts", "").call_only_function);
+}
+
 test "module export facts follow named reexports and destructured bindings" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -7141,6 +7254,21 @@ test "Program: records whole CommonJS export assignments" {
     }
     try T.expect(saw_whole);
     try T.expect(saw_f);
+}
+
+test "Program: excludes CommonJS expandos from ESM export tables" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/mod.js", "export const x = 0; module.exports.y = 0;\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/mod.js", "export const x = 0; module.exports.y = 0;\n");
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    try T.expectEqual(@as(usize, 0), exports.len);
 }
 
 test "Program: collects private export-assignment declaration types" {

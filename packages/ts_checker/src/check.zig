@@ -59302,12 +59302,15 @@ pub const Checker = struct {
         if (imp.is_type_only) return;
         if (imp.default_binding == hir_mod.none_node_id) return;
         if (self.importDeclIsRequireAssignment(node)) return;
-        if (!self.sourceHasVirtualFilenameSections()) return;
         // A CommonJS-format importing file (`.cjs`/`.cts`) synthesises a
         // default via CommonJS interop, so the missing-default diagnostic
         // does not apply there (it already reports TS1293/TS8002 for the
         // ESM syntax). Mirrors `modulePreserve4`'s `main3.cjs`.
         if (self.sectionFileIsCommonJsFormat(node)) return;
+        if (!self.sourceHasVirtualFilenameSections()) {
+            try self.checkProgramEsmDefaultImportHasDefaultExport(imp, spec);
+            return;
+        }
         const from = self.virtualSectionFilenameForNode(node) orelse return;
         // tsc resolves a `.mjs`/`.cjs`/`.js` import specifier to its TS
         // source counterpart (`.mts`/`.cts`/`.ts`). Strip the output
@@ -59433,6 +59436,31 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
             .related = related,
+        });
+    }
+
+    fn checkProgramEsmDefaultImportHasDefaultExport(
+        self: *Checker,
+        imp: hir_mod.ImportPayload,
+        spec: []const u8,
+    ) CheckError!void {
+        const resolver = self.external_resolver orelse return;
+        const resolved = resolver.resolve(spec, self.importer_path) orelse return;
+        if (!std.mem.endsWith(u8, resolved.path, ".mts") and
+            !std.mem.endsWith(u8, resolved.path, ".mjs")) return;
+        const info = resolver.moduleExport(spec, self.importer_path, "default") orelse return;
+        if (info.exported_value) return;
+        const display = stripProgramModuleExtension(resolved.path);
+        const module_name = try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{display});
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Module '{s}' has no default export.",
+            .{module_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = imp.default_binding,
+            .code = TsCodes.no_default_export,
+            .message = msg,
         });
     }
 
@@ -143948,12 +143976,22 @@ pub const Checker = struct {
         // runtime export table must not reintroduce typed namespace errors.
         if (try self.bareModuleResolvesToJsImplementation(object, spec)) return false;
         if (try self.programCommonJsModuleHasWholeExport(object, spec)) return false;
+        if (resolver.moduleExport(spec, self.importer_path, "")) |whole| {
+            if (whole.call_only_function) {
+                try self.reportPropertyDoesNotExistOnTypeText(node, member_name, "() => void");
+                return true;
+            }
+        }
         const info = resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name)) orelse return false;
         if (info.module_is_external == false or
             info.exported_value or
             (info.ambient_module and !info.ambient_module_exports_known)) return false;
 
-        const module_name = std.mem.trim(u8, info.module_name, "\"");
+        const resolved = resolver.resolve(spec, self.importer_path);
+        const module_name = if (resolved) |resolution|
+            stripProgramModuleExtension(resolution.path)
+        else
+            std.mem.trim(u8, info.module_name, "\"");
         const display = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "typeof import(\"{s}\")",
