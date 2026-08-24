@@ -86429,12 +86429,11 @@ pub const Checker = struct {
             if (self.isDeclNameSlot(candidate)) continue;
             if (hir_mod.identifierOf(self.hir, candidate).name != name) continue;
             if (self.capturedEvolvingAnyReferenceIsWrite(candidate)) continue;
+            const is_captured = self.enclosingFunctionLike(candidate) != owner or
+                self.evolvingAnyYieldFeedbackAssignment(candidate, name) != null;
+            if (!is_captured and (try self.definiteEvolvingAnyFlowTypeAt(candidate, name)) != null) continue;
             try reads.append(self.gpa, candidate);
-            if (self.enclosingFunctionLike(candidate) != owner or
-                self.evolvingAnyYieldFeedbackAssignment(candidate, name) != null)
-            {
-                has_captured_read = true;
-            }
+            if (is_captured) has_captured_read = true;
         }
         return has_captured_read;
     }
@@ -103583,7 +103582,6 @@ pub const Checker = struct {
                     self.nodeIsUndefinedLiteralish(a.value);
                 const target_is_untyped_uninitialized_var =
                     self.hir.kindOf(a.target) == .identifier and
-                    (target_t == types.Primitive.undefined_t or target_t == types.Primitive.null_t) and
                     !target_is_checked_js_undefined_any and
                     self.identifierIsUntypedUninitializedVar(a.target);
                 const commonjs_export_key = if (a.op == null and (target_kind == .member_access or target_kind == .element_access))
@@ -258777,6 +258775,32 @@ test "checker: conditional any branch absorbs concrete alternatives" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: evolving untyped bindings widen locally but stay any in closures" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\function local() {
+        \\    let value;
+        \\    if (condition) value = 1;
+        \\    if (condition) value = "text";
+        \\    const sameScope = value;
+        \\}
+        \\function captured() {
+        \\    let value;
+        \\    if (condition) value = 1;
+        \\    if (condition) value = "text";
+        \\    const sameScope = value;
+        \\    function nested() { const closureRead = value; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
 }
 
 test "checker: loop-carried evolving null binding narrows on the backedge" {
