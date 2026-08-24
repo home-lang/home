@@ -58630,6 +58630,11 @@ pub const Checker = struct {
                 continue;
             }
             if (!std.mem.startsWith(u8, spec, ".") and
+                try self.ambientModuleExportsNameForSpec(node, spec, sp.imported))
+            {
+                continue;
+            }
+            if (!std.mem.startsWith(u8, spec, ".") and
                 self.programAmbientModuleInterfaceExportsName(spec, sp.imported))
             {
                 if (imp.is_type_only or sp.is_type_only) continue;
@@ -59109,7 +59114,9 @@ pub const Checker = struct {
                     if (sp.local != name) continue;
                     if (imp.is_type_only or sp.is_type_only) return .type_only_alias;
                     if (!std.mem.startsWith(u8, spec, ".")) {
-                        if (self.programAmbientModuleInterfaceExportsName(spec, sp.imported)) return .type_only_decl;
+                        if (self.programAmbientModuleInterfaceExportsName(spec, sp.imported)) {
+                            return .type_only_decl;
+                        }
                         const status = self.externalModuleNamedExportRuntimeStatus(stmt, spec, sp.imported);
                         if (status != .unknown and status != .missing) return status;
                         continue;
@@ -59800,6 +59807,7 @@ pub const Checker = struct {
             const local = self.unwrapExportDecl(raw);
             if (self.namespaceDeclMatchesModule(local, spec)) {
                 if (try self.namespaceExportType(local, name)) |t| return t;
+                if (try self.ambientModuleExportAssignmentMemberType(local, name)) |t| return t;
                 continue;
             }
             if (self.hir.kindOf(raw) != .export_decl) continue;
@@ -62876,8 +62884,64 @@ pub const Checker = struct {
             const ns = hir_mod.namespaceOf(self.hir, local);
             if (!self.namespaceNameMatchesSpecifier(ns.name, spec)) continue;
             if (self.namespaceExportsName(local, exported_name)) return true;
+            if (try self.ambientModuleExportAssignmentMemberType(local, exported_name) != null) return true;
         }
         return false;
+    }
+
+    fn appendEntityNameExpressionPath(
+        self: *Checker,
+        out: *std.ArrayListUnmanaged(hir_mod.StringId),
+        node: NodeId,
+    ) CheckError!bool {
+        switch (self.hir.kindOf(node)) {
+            .identifier => {
+                try out.append(self.gpa, hir_mod.identifierOf(self.hir, node).name);
+                return true;
+            },
+            .member_access => {
+                const member = hir_mod.memberOf(self.hir, node);
+                if (member.optional or !try self.appendEntityNameExpressionPath(out, member.object)) return false;
+                try out.append(self.gpa, member.name);
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    fn ambientModuleExportAssignmentMemberType(
+        self: *Checker,
+        module_node: NodeId,
+        exported_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const body = hir_mod.namespaceBody(self.hir, module_node);
+        for (body) |statement| {
+            if (!self.isExportAssignmentDecl(statement)) continue;
+            const export_assignment = hir_mod.exportOf(self.hir, statement);
+            const expression = export_assignment.decl;
+            if (expression == hir_mod.none_node_id) continue;
+
+            var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer path.deinit(self.gpa);
+            if (self.hir.kindOf(expression) == .identifier) {
+                const root_name = hir_mod.identifierOf(self.hir, expression).name;
+                if (!try self.appendImportEqualsNamespacePathForLocal(&path, root_name, expression)) {
+                    try path.append(self.gpa, root_name);
+                }
+            } else if (!try self.appendEntityNameExpressionPath(&path, expression)) {
+                continue;
+            }
+
+            const target_namespace = self.findNamespaceByPath(body, path.items) orelse continue;
+            const target_type = try self.namespaceValueObjectType(target_namespace);
+            if (self.interner.objectMember(target_type, exported_name)) |member_type| return member_type;
+
+            try path.append(self.gpa, exported_name);
+            if (self.findNamespaceByPath(body, path.items)) |nested_namespace| {
+                return try self.namespaceValueObjectType(nested_namespace);
+            }
+        }
+        return null;
     }
 
     fn ambientModuleExportsName(
@@ -82502,7 +82566,20 @@ pub const Checker = struct {
             if (op.value == hir_mod.none_node_id) continue;
             var reported_primitive_computed_key = false;
             if (op.is_computed) {
+                const diagnostics_before_key = self.diagnostics.items.len;
                 const key_t = try self.checkExpression(op.key);
+                if (key_t == types.Primitive.any and self.hir.kindOf(op.key) == .call_expr) {
+                    var invalid_call_result = false;
+                    for (self.diagnostics.items[diagnostics_before_key..]) |diagnostic| {
+                        if (diagnostic.code == TsCodes.not_callable) {
+                            invalid_call_result = true;
+                            break;
+                        }
+                    }
+                    if (invalid_call_result) {
+                        try self.report(op.key, TsCodes.type_cannot_be_used_as_index, "Type 'any' cannot be used as an index type.");
+                    }
+                }
                 if (primitive_wrapper) |wrapper_name| {
                     const key_flags = if (key_t < self.interner.pool.typeCount())
                         self.interner.pool.flagsOf(key_t)
@@ -97919,6 +97996,13 @@ pub const Checker = struct {
 
     fn visibleAnnotatedSignatureIdentifierDiagnosticName(self: *Checker, node: NodeId, t: TypeId) CheckError!?[]const u8 {
         const source_display = (try self.visibleAnnotatedSignatureIdentifierTypeName(node)) orelse return null;
+        if (try self.allocVisibleSignatureExpandingIndexedMethodAliases(node)) |expanded| return expanded;
+        if (self.interner.isSignature(t) and
+            (std.mem.indexOf(u8, source_display, "typeof ") != null or
+                std.mem.indexOf(u8, source_display, "BivariantHack<") != null))
+        {
+            if (try self.allocCallableSignatureNameExpandingSignatureParams(t)) |expanded| return expanded;
+        }
         if (self.interner.isSignature(t) and std.mem.indexOf(u8, source_display, "...") != null) {
             if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
                 const kind = self.hir.kindOf(type_node);
@@ -97961,6 +98045,115 @@ pub const Checker = struct {
             if (try self.allocCallableSignatureNamePreservingGenericPrefix(t, source_display)) |signature_display| return signature_display;
         }
         return source_display;
+    }
+
+    fn allocVisibleSignatureExpandingIndexedMethodAliases(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        const type_node = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const kind = self.hir.kindOf(type_node);
+        if (kind != .fn_type and kind != .constructor_type) return null;
+        const function_type = hir_mod.fnTypeOf(self.hir, type_node);
+        const params = self.hir.childSlice(function_type.params_start, function_type.params_len);
+        var rendered: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        if (kind == .constructor_type) try rendered.appendSlice(arena, "new ");
+        try rendered.append(arena, '(');
+        var expanded_alias = false;
+        for (params, 0..) |parameter_node, index| {
+            if (self.hir.kindOf(parameter_node) != .parameter) return null;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.name == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.name) != .identifier or
+                parameter.type_annotation == hir_mod.none_node_id)
+            {
+                return null;
+            }
+            if (index > 0) try rendered.appendSlice(arena, ", ");
+            if (parameter.flags.is_rest) try rendered.appendSlice(arena, "...");
+            try rendered.appendSlice(arena, self.string_interner.get(hir_mod.identifierOf(self.hir, parameter.name).name));
+            if (parameter.flags.is_optional) try rendered.append(arena, '?');
+            try rendered.appendSlice(arena, ": ");
+            if (try self.allocIndexedMethodAliasSignatureName(parameter.type_annotation)) |alias_signature| {
+                try rendered.appendSlice(arena, alias_signature);
+                expanded_alias = true;
+            } else {
+                const annotation = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(parameter.type_annotation));
+                if (annotation.len == 0) return null;
+                try rendered.appendSlice(arena, annotation);
+            }
+        }
+        if (!expanded_alias or function_type.return_type == hir_mod.none_node_id) return null;
+        try rendered.appendSlice(arena, ") => ");
+        const return_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(function_type.return_type));
+        if (return_name.len == 0) return null;
+        try rendered.appendSlice(arena, return_name);
+        return rendered.items;
+    }
+
+    fn allocIndexedMethodAliasSignatureName(self: *Checker, type_node: NodeId) CheckError!?[]const u8 {
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0) return null;
+        const info = self.generic_aliases.get(reference.name) orelse return null;
+        if (info.body_node == hir_mod.none_node_id or self.hir.kindOf(info.body_node) != .indexed_access_type) return null;
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+        if (args.len == 0 or args.len != info.params.len) return null;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, info.body_node);
+        if (self.hir.kindOf(indexed.object) != .object_type) return null;
+
+        var method_type = hir_mod.none_node_id;
+        for (hir_mod.objectTypeMembers(self.hir, indexed.object)) |member_node| {
+            if (self.hir.kindOf(member_node) != .interface_member) continue;
+            const member = hir_mod.interfaceMemberOf(self.hir, member_node);
+            if (!member.is_method or !self.typeNodeIsStringLiteralName(indexed.index, member.name)) continue;
+            method_type = member.type_node;
+            break;
+        }
+        if (method_type == hir_mod.none_node_id or self.hir.kindOf(method_type) != .fn_type) return null;
+        const method = hir_mod.fnTypeOf(self.hir, method_type);
+        const method_params = self.hir.childSlice(method.params_start, method.params_len);
+        var rendered: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try rendered.append(arena, '(');
+        for (method_params, 0..) |parameter_node, index| {
+            if (self.hir.kindOf(parameter_node) != .parameter) return null;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.name == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.name) != .identifier or
+                parameter.type_annotation == hir_mod.none_node_id)
+            {
+                return null;
+            }
+            if (index > 0) try rendered.appendSlice(arena, ", ");
+            if (parameter.flags.is_rest) try rendered.appendSlice(arena, "...");
+            try rendered.appendSlice(arena, self.string_interner.get(hir_mod.identifierOf(self.hir, parameter.name).name));
+            if (parameter.flags.is_optional) try rendered.append(arena, '?');
+            try rendered.appendSlice(arena, ": ");
+            const parameter_name = (try self.genericAliasTypeNodeArgumentName(parameter.type_annotation, info.params, args)) orelse return null;
+            try rendered.appendSlice(arena, parameter_name);
+        }
+        if (method.return_type == hir_mod.none_node_id) return null;
+        try rendered.appendSlice(arena, ") => ");
+        const return_name = (try self.genericAliasTypeNodeArgumentName(method.return_type, info.params, args)) orelse return null;
+        try rendered.appendSlice(arena, return_name);
+        return rendered.items;
+    }
+
+    fn genericAliasTypeNodeArgumentName(
+        self: *Checker,
+        type_node: NodeId,
+        parameters: []const TypeId,
+        arguments: []const NodeId,
+    ) CheckError!?[]const u8 {
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0 or reference.args_len != 0) return null;
+        for (parameters, arguments) |parameter, argument| {
+            const parameter_name = self.interner.typeParameterName(parameter) orelse continue;
+            if (reference.name != parameter_name) continue;
+            const text = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(argument));
+            return if (text.len == 0) null else text;
+        }
+        return null;
     }
 
     fn normalizeSignatureArrayAnnotationText(
@@ -107899,6 +108092,10 @@ pub const Checker = struct {
                                     (try self.allocObjectTypeShape(obj_t)) orelse
                                     "{}";
                                 try self.reportElementImplicitAnyMissingIndexSignature(node, idx_t, idx_name, obj_name);
+                            } else if (self.hir.kindOf(e.object) == .object_literal and
+                                hir_mod.objectLiteralProps(self.hir, e.object).len == 0)
+                            {
+                                try self.reportPropertyDoesNotExistOnType(node, key_id, obj_t);
                             } else {
                                 const idx_name = try self.elementAccessIndexTypeName(e.index, idx_t, literal_string_key);
                                 const obj_name = (try self.allocSimpleTypeName(obj_t)) orelse
@@ -123788,10 +123985,10 @@ pub const Checker = struct {
     }
 
     fn declaredElementWriteTypeAfterNarrow(self: *Checker, access: NodeId) CheckError!?TypeId {
-        const key = (try self.elementAccessNarrowKey(access)) orelse return null;
-        if (self.lookupMemberNarrow(key) == null) return null;
+        if (self.hir.kindOf(access) != .element_access) return null;
         const element = hir_mod.elementOf(self.hir, access);
-        const object_t = self.typeOfIdentifierDeclared(element.object);
+        if (self.hir.kindOf(element.object) != .identifier) return null;
+        const object_t = self.visibleAnnotatedIdentifierType(element.object) orelse return null;
         var index_t = self.hir.typeOf(element.index);
         if (index_t == types.Primitive.none) return null;
         index_t = (try self.expressionNarrowLiteralType(element.index)) orelse index_t;
@@ -149235,6 +149432,22 @@ pub const Checker = struct {
         return if (reduced == t) null else reduced;
     }
 
+    fn instantiatedAliasSignature(self: *Checker, t: TypeId) CheckError!?TypeId {
+        const args = self.alias_type_args.get(t) orelse return null;
+        const alias_name = (try self.genericInstanceBaseName(t)) orelse return null;
+        const info = self.generic_aliases.get(alias_name) orelse return null;
+        if (args.len == 0 or info.params.len == 0) return null;
+
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        const count = @min(args.len, info.params.len);
+        for (info.params[0..count], args[0..count]) |parameter, argument| {
+            try substitutions.put(self.gpa, parameter, argument);
+        }
+        const instantiated = self.substituteType(info.body, &substitutions) catch return null;
+        return self.firstSignatureType(instantiated);
+    }
+
     fn reduceIndexForDisplay(self: *Checker, display: []const u8) CheckError!?TypeId {
         if (!std.mem.startsWith(u8, display, "IndexFor<")) return null;
         var members: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -156733,6 +156946,15 @@ pub const Checker = struct {
         param_t: TypeId,
         position: usize,
     ) CheckError![]const u8 {
+        if (try self.namedFunctionDeclarationDiagnosticName(arg_node)) |arg_name| {
+            if (try self.arraySortComparatorDiagnosticName(arg_node, param_t)) |param_name| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                    .{ arg_name, param_name },
+                );
+            }
+        }
         const parent = self.hir.parentOf(arg_node);
         if (parent != hir_mod.none_node_id and
             (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
@@ -156765,6 +156987,69 @@ pub const Checker = struct {
             );
         }
         return try self.formatArgumentNotAssignable(arg_t, param_t, position);
+    }
+
+    fn namedFunctionDeclarationDiagnosticName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const function_node = self.findFunctionDeclForNameNearNode(
+            node,
+            hir_mod.identifierOf(self.hir, node).name,
+        ) orelse return null;
+        const function = hir_mod.fnDeclOf(self.hir, function_node);
+        if (function.return_type == hir_mod.none_node_id) return null;
+
+        var rendered: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try rendered.append(arena, '(');
+        for (hir_mod.fnParams(self.hir, function_node), 0..) |parameter_node, index| {
+            if (self.hir.kindOf(parameter_node) != .parameter) return null;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.name == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.name) != .identifier or
+                parameter.type_annotation == hir_mod.none_node_id)
+            {
+                return null;
+            }
+            if (index > 0) try rendered.appendSlice(arena, ", ");
+            if (parameter.flags.is_rest) try rendered.appendSlice(arena, "...");
+            try rendered.appendSlice(arena, self.string_interner.get(hir_mod.identifierOf(self.hir, parameter.name).name));
+            if (parameter.flags.is_optional) try rendered.append(arena, '?');
+            try rendered.appendSlice(arena, ": ");
+            const annotation = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(parameter.type_annotation));
+            if (annotation.len == 0) return null;
+            try rendered.appendSlice(arena, annotation);
+        }
+        try rendered.appendSlice(arena, ") => ");
+        const return_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(function.return_type));
+        if (return_name.len == 0) return null;
+        try rendered.appendSlice(arena, return_name);
+        return rendered.items;
+    }
+
+    fn arraySortComparatorDiagnosticName(self: *Checker, arg_node: NodeId, param_t: TypeId) CheckError!?[]const u8 {
+        if (!self.interner.isSignature(param_t)) return null;
+        const call_node = self.hir.parentOf(arg_node);
+        if (call_node == hir_mod.none_node_id or self.hir.kindOf(call_node) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) != .member_access) return null;
+        const callee = hir_mod.memberOf(self.hir, call.callee);
+        if (!std.mem.eql(u8, self.string_interner.get(callee.name), "sort")) return null;
+        const params = self.interner.signatureParams(param_t);
+        if (params.len != 2) return null;
+
+        var rendered: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try rendered.appendSlice(arena, "(a: ");
+        const first_name = (try self.allocSignatureConstituentDisplayName(params[0])) orelse return null;
+        try rendered.appendSlice(arena, first_name);
+        try rendered.appendSlice(arena, ", b: ");
+        const second_name = (try self.allocSignatureConstituentDisplayName(params[1])) orelse return null;
+        try rendered.appendSlice(arena, second_name);
+        try rendered.appendSlice(arena, ") => ");
+        const return_type = self.interner.signatureReturn(param_t) orelse types.Primitive.any;
+        const return_name = (try self.allocSignatureConstituentDisplayName(return_type)) orelse return null;
+        try rendered.appendSlice(arena, return_name);
+        return rendered.items;
     }
 
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
@@ -174576,7 +174861,6 @@ pub const Checker = struct {
         // (the `(`) in upstream tsc, not at the inner identifier.
         // Mirrors `assignmentToParenthesizedIdentifiers.ts(5,1)` etc.
         const anchor_pos = self.assignmentMismatchDiagnosticAnchor(node, value_node, source, target);
-        if (try self.tryReportTopLevelSignatureParameterIncompatibility(node, anchor_pos, source, target)) return;
         // `undefined` / `null` assigned to a bare type-parameter target
         // is a plain TS2322 ("Type 'undefined' is not assignable to type
         // 'T'."), NOT the "could be instantiated with an arbitrary type"
@@ -174614,6 +174898,7 @@ pub const Checker = struct {
         const contextual_async_source_name = try self.contextualAsyncFunctionAssignmentDiagnosticName(value_node, target);
         const source_name = explicit_function_source_name orelse
             contextual_async_source_name orelse
+            (try self.allocVisibleSignatureExpandingIndexedMethodAliases(value_node)) orelse
             (try self.assignmentExpressionPredicateTypeName(value_node, source)) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(value_node)) orelse
             (try self.jsDocAssignmentIdentifierTypeName(value_node, source)) orelse
@@ -175374,39 +175659,6 @@ pub const Checker = struct {
         return if (hir_mod.literalBoolOf(self.hir, v.init)) types.Primitive.true_lit else types.Primitive.false_lit;
     }
 
-    fn tryReportTopLevelSignatureParameterIncompatibility(
-        self: *Checker,
-        node: NodeId,
-        anchor_pos: ?u32,
-        source: TypeId,
-        target: TypeId,
-    ) CheckError!bool {
-        if (!self.interner.isSignature(source) or !self.interner.isSignature(target)) return false;
-        if (self.generic_signature_params.get(source) != null or self.generic_signature_params.get(target) != null) return false;
-        if (self.alias_display_names.contains(source) or self.alias_display_names.contains(target)) return false;
-        const source_params = self.interner.signatureParams(source);
-        const target_params = self.interner.signatureParams(target);
-        if (source_params.len != 1 or target_params.len != 1) return false;
-        const source_param = source_params[0];
-        const target_param = target_params[0];
-        if (!self.interner.isSignature(source_param) or !self.interner.isSignature(target_param)) return false;
-        if (self.engine.isAssignableTo(target_param, source_param) catch true) return false;
-        const source_return = self.interner.signatureReturn(source_param) orelse types.Primitive.any;
-        const target_return = self.interner.signatureReturn(target_param) orelse types.Primitive.any;
-        if (source_return == target_return) return false;
-        if (!(self.engine.isAssignableTo(source_return, target_return) catch false)) return false;
-        if (self.engine.isAssignableTo(target_return, source_return) catch false) return false;
-        const source_param_name = try self.signatureParamNameAt(source, 0);
-        const target_param_name = try self.signatureParamNameAt(target, 0);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Types of parameters '{s}' and '{s}' are incompatible.",
-            .{ source_param_name, target_param_name },
-        );
-        try self.reportAt(node, anchor_pos, TsCodes.types_of_parameters_incompatible, msg);
-        return true;
-    }
-
     fn allocCallableSignatureNameExpandingSignatureParams(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         if (t >= self.interner.pool.typeCount()) return null;
         const sig_payload_idx = self.interner.pool.payloadOf(t);
@@ -175449,8 +175701,11 @@ pub const Checker = struct {
             if (is_optional) try sig_buf.append(arena, '?');
             try sig_buf.appendSlice(arena, ": ");
             const display_p = try self.signatureParameterDisplayType(p, is_optional);
-            const param_name = if (self.interner.isSignature(display_p))
-                (try self.allocCallableSignatureNameExpandingSignatureParams(display_p)) orelse
+            const reduced_display_p = (try self.reduceDisplayedAliasInstance(display_p)) orelse display_p;
+            const nested_param_signature = self.firstSignatureType(reduced_display_p) orelse
+                try self.instantiatedAliasSignature(display_p);
+            const param_name = if (nested_param_signature) |nested_signature|
+                (try self.allocCallableSignatureNameExpandingSignatureParams(nested_signature)) orelse
                     (try self.allocSignatureConstituentDisplayName(display_p)) orelse "any"
             else
                 (try self.allocSignatureConstituentDisplayName(display_p)) orelse "any";
@@ -251200,35 +251455,20 @@ test "checker: TS2328 fires end-to-end under an interface extends method clash" 
     }
 }
 
-test "checker: strict callback assignment can surface TS2328 as the top-level header" {
-    const s = try newSetup("const x = 1;");
-    defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .strict_function_types = true });
-    const animal_prop = try s.sint.intern("animal");
-    const dog_prop = try s.sint.intern("dog");
-    const f_name = try s.sint.intern("f");
-    const x_name = try s.sint.intern("x");
-    const animal_t = try s.ti.internObjectType(&[_]types.ObjectMember{
-        .{ .name = animal_prop, .type = types.Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
-    });
-    const dog_t = try s.ti.internObjectType(&[_]types.ObjectMember{
-        .{ .name = animal_prop, .type = types.Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
-        .{ .name = dog_prop, .type = types.Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
-    });
-    const source_cb = try s.ti.internSignature(&[_]TypeId{dog_t}, dog_t, false);
-    const target_cb = try s.ti.internSignature(&[_]TypeId{animal_t}, animal_t, false);
-    const source = try s.ti.internSignature(&[_]TypeId{source_cb}, types.Primitive.void_t, false);
-    const target = try s.ti.internSignature(&[_]TypeId{target_cb}, types.Primitive.void_t, false);
-    try s.checker.signature_param_names.put(s.checker.gpa, source_cb, try s.checker.gpa.dupe(hir_mod.StringId, &[_]hir_mod.StringId{x_name}));
-    try s.checker.signature_param_names.put(s.checker.gpa, target_cb, try s.checker.gpa.dupe(hir_mod.StringId, &[_]hir_mod.StringId{x_name}));
-    try s.checker.signature_param_names.put(s.checker.gpa, source, try s.checker.gpa.dupe(hir_mod.StringId, &[_]hir_mod.StringId{f_name}));
-    try s.checker.signature_param_names.put(s.checker.gpa, target, try s.checker.gpa.dupe(hir_mod.StringId, &[_]hir_mod.StringId{f_name}));
-    try T.expect(try s.checker.tryReportTopLevelSignatureParameterIncompatibility(s.root, null, source, target));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.types_of_parameters_incompatible));
-    try T.expectEqualStrings(
-        "Types of parameters 'f' and 'f' are incompatible.",
-        s.checker.diagnostics.items[0].message,
+test "checker: strict callback assignment keeps TS2328 beneath the tsgo TS2322 header" {
+    const s = try newSetup(
+        \\interface Animal { animal: void }
+        \\interface Dog extends Animal { dog: void }
+        \\declare let target: (f: (x: Animal) => Animal) => void;
+        \\declare let source: (f: (x: Dog) => Dog) => void;
+        \\target = source;
     );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.types_of_parameters_incompatible));
+    try T.expect(checkerFirstChainEntry(s, TsCodes.types_of_parameters_incompatible) != null);
 }
 
 test "checker: assignment signature display expands nested callable aliases" {
@@ -261144,4 +261384,133 @@ test "checker: catch annotations retain aliases and unknown binding semantics" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.catch_variable_annotation_must_be_any_or_unknown));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+}
+
+test "checker: parity 251 fresh empty object element access reports a missing property" {
+    const s = try newSetup("var value = {}[\"hello\"];");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'hello' does not exist on type '{}'.",
+    ));
+}
+
+test "checker: parity 251 invalid computed call result is not a destructuring index type" {
+    const s = try newSetup(
+        \\let foo = 1;
+        \\let bar: any;
+        \\[{ [foo()]: bar }] = [{ bar: "bar" }];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerCountCode(s, TsCodes.not_callable) >= 1);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_cannot_be_used_as_index,
+        "Type 'any' cannot be used as an index type.",
+    ));
+}
+
+test "checker: parity 251 ambient export assignment projects namespace members to named imports" {
+    const s = try newSetup(
+        \\declare module "nested" {
+        \\  namespace a1.a2 { class d {} }
+        \\  namespace a1.a2.n3 { class c {} }
+        \\  export = a1.a2;
+        \\}
+        \\declare module "renamed" {
+        \\  namespace a.b { class c {} }
+        \\  import d = a.b;
+        \\  export = d;
+        \\}
+        \\// @filename: /src/use.js
+        \\// @checkJs: true
+        \\import { n3, d } from "nested";
+        \\import { c } from "renamed";
+        \\class One extends n3.c {}
+        \\class Two extends d {}
+        \\class Three extends c {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_exported_member));
+}
+
+test "checker: parity 251 annotated indexed writes retain their declared element contract" {
+    const s = try newSetup(
+        \\interface IEye { color: number }
+        \\interface IFrenchEye { coleur: number }
+        \\let source: IEye[] = [];
+        \\let target: IFrenchEye[] = [];
+        \\declare let index: number;
+        \\target[index] = source[index];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'coleur' is missing in type 'IEye' but required in type 'IFrenchEye'.",
+    ));
+}
+
+test "checker: parity 251 sort comparator diagnostics preserve declaration aliases and parameter names" {
+    const s = try newSetup(
+        \\interface IEye { color: number }
+        \\interface IFrenchEye { coleur: number }
+        \\function compare(a: IFrenchEye, b: IFrenchEye): number { return 0; }
+        \\let eyes: IEye[] = [];
+        \\eyes.sort(compare);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '(a: IFrenchEye, b: IFrenchEye) => number' is not assignable to parameter of type '(a: IEye, b: IEye) => number'.",
+    ));
+}
+
+test "checker: parity 251 strict nested callback diagnostics expand typeof and bivariant aliases" {
+    const s = try newSetup(
+        \\interface Animal { animal: void }
+        \\interface Dog extends Animal { dog: void }
+        \\namespace n1 {
+        \\  class Foo {
+        \\    static f1(x: Animal): Animal { throw "wat"; }
+        \\    static f2(x: Dog): Animal { throw "wat"; }
+        \\  }
+        \\  declare let f1: (cb: typeof Foo.f1) => void;
+        \\  declare let f2: (cb: typeof Foo.f2) => void;
+        \\  f2 = f1;
+        \\}
+        \\namespace n2 {
+        \\  type BivariantHack<Input, Output> = { foo(x: Input): Output }["foo"];
+        \\  declare let f1: (cb: BivariantHack<Animal, Animal>) => void;
+        \\  declare let f2: (cb: BivariantHack<Dog, Animal>) => void;
+        \\  f2 = f1;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    var expanded_count: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Type '(cb: (x: Animal) => Animal) => void' is not assignable to type '(cb: (x: Dog) => Animal) => void'.",
+            ))
+        {
+            expanded_count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), expanded_count);
 }
