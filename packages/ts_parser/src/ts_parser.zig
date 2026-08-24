@@ -19869,7 +19869,8 @@ pub const Parser = struct {
             .kw_super => {
                 _ = self.advance();
                 const next = self.peek().kind;
-                if (next != .open_paren and next != .dot and next != .open_bracket) {
+                const has_call_type_args = next == .less_than and self.findCallTypeArgsEnd(self.cursor) != null;
+                if (!has_call_type_args and next != .open_paren and next != .dot and next != .open_bracket) {
                     const invalid = self.peek();
                     try self.reportCodeAt(invalid.span.start, invalid.line, 1034, "'super' must be followed by an argument list or member access.");
                 }
