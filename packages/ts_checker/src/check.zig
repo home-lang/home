@@ -112627,10 +112627,15 @@ pub const Checker = struct {
     /// separately); `{}` children anchor at the inner expression.
     fn checkJsxChildAssignableToChildrenType(self: *Checker, child: NodeId, child_index: usize, children_t: TypeId) CheckError!bool {
         if (self.typeIsAnyLike(children_t)) return false;
-        const target_t = if (self.actualTupleLength(children_t) != null)
+        const tuple_target = self.actualTupleLength(children_t) != null;
+        const array_element_t = if (!tuple_target)
+            try self.jsxArrayLikeChildrenElementType(children_t)
+        else
+            null;
+        const target_t = if (tuple_target)
             self.tupleElementType(children_t, child_index)
         else
-            (try self.jsxArrayLikeChildrenElementType(children_t)) orelse children_t;
+            array_element_t orelse children_t;
         if (target_t == types.Primitive.none) return false;
         if (self.typeIsAnyLike(target_t)) return false;
         const child_t = try self.checkedExpressionType(child);
@@ -112662,11 +112667,18 @@ pub const Checker = struct {
         }
         const child_kind = self.hir.kindOf(anchor);
         if (child_kind == .jsx_element or child_kind == .jsx_self_closing) {
-            if (try self.tryReportJsxChildMissingProperties(anchor, child_t, target_t)) return true;
+            if (!self.sourceHasReactJsxReference() and
+                try self.tryReportJsxChildMissingProperties(anchor, child_t, target_t)) return true;
             try self.reportTypeNotAssignable(anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
             return true;
         }
-        const missing_anchor = if (self.hir.kindOf(child) == .jsx_expression) child else anchor;
+        const whole_jsx_expression_anchor = array_element_t != null or
+            self.jsxQualifiedElementDiagnosticName(child_t) != null or
+            self.jsxQualifiedElementDiagnosticName(target_t) != null;
+        const missing_anchor = if (whole_jsx_expression_anchor and self.hir.kindOf(child) == .jsx_expression)
+            child
+        else
+            anchor;
         if (try self.tryReportJsxChildMissingProperties(missing_anchor, child_t, target_t)) return true;
         try self.reportTypeNotAssignable(anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
         return true;
