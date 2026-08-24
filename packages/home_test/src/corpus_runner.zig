@@ -57532,6 +57532,7 @@ const harness_prelude =
     \\  if (key === "content-length") return "Content-Length";
     \\  if (key === "content-type") return "Content-Type";
     \\  if (key === "connection") return "Connection";
+    \\  if (key === "transfer-encoding") return "Transfer-Encoding";
     \\  if (key === "sec-websocket-accept") return "Sec-WebSocket-Accept";
     \\  if (key === "set-cookie") return "Set-Cookie";
     \\  if (key === "upgrade") return "Upgrade";
@@ -60820,6 +60821,17 @@ const harness_prelude =
     \\    if (typeof callback === "function") callback(null);
     \\  });
     \\}
+    \\function __home_http_client_transport_error(phase, url, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "HTTP client transport failed"));
+    \\  const failure = new Error("node:http ClientRequest failed during " + String(phase || "transport") + ": " + String(underlying.message || underlying));
+    \\  failure.code = "ERR_HTTP_CLIENT_TRANSPORT";
+    \\  failure.operation = "node:http.ClientRequest.transport";
+    \\  failure.phase = String(phase || "transport");
+    \\  failure.url = String(url || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + failure.url + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
     \\function __home_http_emit_client_response(clientRequest, callback, statusCode, headers, body) {
     \\  const responseEvents = Object.assign(__home_http_event_target(), {
     \\    statusCode: Number(statusCode) || 200,
@@ -61071,7 +61083,8 @@ const harness_prelude =
     \\      const serveHandle = options.socketPath !== undefined && options.socketPath !== null
     \\        ? globalThis.__home_serve_handles_by_unix[String(options.socketPath)]
     \\        : globalThis.__home_serve_handles_by_origin[String(url.origin)];
-    \\      if (serveHandle && typeof serveHandle.fetch === "function") {
+    \\      const nodeHttpServer = __home_http_servers[port];
+    \\      if (serveHandle && typeof serveHandle.fetch === "function" && !nodeHttpServer) {
     \\        if (serveHandle.__home_self_signed && options.rejectUnauthorized !== false) {
     \\          Promise.resolve().then(() => clientRequest.emit("error", __home_tls_renegotiation_error()));
     \\          finishRequest();
@@ -61096,15 +61109,61 @@ const harness_prelude =
     \\        finishRequest();
     \\        return this;
     \\      }
-    \\      const server = __home_http_servers[port];
+    \\      const server = nodeHttpServer;
     \\      if (!server) {
+    \\        const rawServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\        if (rawServer) {
+    \\          const requestHeaders = __home_http_headers_object(clientRequest.__home_headers);
+    \\          const transferEncoding = String(requestHeaders["transfer-encoding"] || "").toLowerCase();
+    \\          const useChunked = transferEncoding.includes("chunked") || (chunks.length > 0 && requestHeaders["content-length"] === undefined);
+    \\          if (useChunked && requestHeaders["transfer-encoding"] === undefined) requestHeaders["transfer-encoding"] = "chunked";
+    \\          if (requestHeaders.host === undefined) requestHeaders.host = url.host;
+    \\          let requestText = String((options && options.method) || "GET").toUpperCase() + " " + (url.pathname || "/") + url.search + " HTTP/1.1\r\n";
+    \\          for (const name of Object.keys(requestHeaders)) requestText += __home_http_raw_header_name(name, clientRequest.__home_headers) + ": " + String(requestHeaders[name]) + "\r\n";
+    \\          requestText += "\r\n";
+    \\          if (useChunked) {
+    \\            for (const chunk of chunks) {
+    \\              const bytes = __home_http_body_event_chunk(chunk);
+    \\              requestText += __home_http_chunk_byte_length(chunk).toString(16) + "\r\n" + Buffer.from(bytes).toString("latin1") + "\r\n";
+    \\            }
+    \\            requestText += "0\r\n\r\n";
+    \\          } else requestText += __home_http_body_event_chunk(__home_http_body_bytes(chunks)).toString("latin1");
+    \\          const socket = __home_net_connect({ port, host: url.hostname });
+    \\          let responseText = "";
+    \\          let delivered = false;
+    \\          const deliver = terminal => {
+    \\            if (delivered) return;
+    \\            try {
+    \\              const headerEnd = responseText.indexOf("\r\n\r\n");
+    \\              if (headerEnd === -1) { if (!terminal) return; throw new Error("response headers were incomplete"); }
+    \\              const lines = responseText.slice(0, headerEnd).split("\r\n");
+    \\              const statusMatch = String(lines.shift() || "").match(/^HTTP\/1\.[01]\s+(\d{3})/);
+    \\              if (!statusMatch) throw new Error("response status line was invalid");
+    \\              const responseHeaders = {};
+    \\              for (const line of lines) { const colon = line.indexOf(":"); if (colon <= 0) throw new Error("response header was invalid"); responseHeaders[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim(); }
+    \\              const body = responseText.slice(headerEnd + 4);
+    \\              const expectedLength = responseHeaders["content-length"] === undefined ? null : Number(responseHeaders["content-length"]);
+    \\              if (!terminal && expectedLength !== null && body.length < expectedLength) return;
+    \\              delivered = true;
+    \\              __home_http_emit_client_response(clientRequest, callback, Number(statusMatch[1]), responseHeaders, expectedLength === null ? body : body.slice(0, expectedLength));
+    \\            } catch (cause) {
+    \\              delivered = true;
+    \\              clientRequest.emit("error", __home_http_client_transport_error("parse-response", url.href, cause));
+    \\            }
+    \\          };
+    \\          socket.on("data", chunk => { responseText += Buffer.from(chunk).toString("latin1"); deliver(false); });
+    \\          socket.on("end", () => deliver(true));
+    \\          socket.on("error", cause => { if (!delivered) { delivered = true; clientRequest.emit("error", __home_http_client_transport_error("socket", url.href, cause)); } });
+    \\          socket.write(Buffer.from(requestText, "latin1"));
+    \\          finishRequest();
+    \\          return this;
+    \\        }
     \\        Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED")));
     \\        finishRequest();
     \\        return this;
     \\      }
     \\      const requestHeaders = __home_http_headers_object(clientRequest.__home_headers);
-    \\      if (requestHeaders["transfer-encoding"] !== undefined) delete requestHeaders["content-length"];
-    \\      else if (chunks.length > 0 && requestHeaders["content-length"] === undefined) requestHeaders["transfer-encoding"] = "chunked";
+    \\      if (requestHeaders["transfer-encoding"] === undefined && chunks.length > 0 && requestHeaders["content-length"] === undefined) requestHeaders["transfer-encoding"] = "chunked";
     \\      const serverRequest = Object.assign(__home_http_event_target(), {
     \\        method: String((options && options.method) || "GET").toUpperCase(),
     \\        headers: requestHeaders,
@@ -104629,6 +104688,7 @@ test "bootstrap runner mirrors ClientRequest content length corpus" {
     const source =
         \\import { expect, test } from "bun:test";
         \\import http from "node:http";
+        \\import net from "node:net";
         \\
         \\async function post(headers, chunks) {
         \\  const { promise, resolve } = Promise.withResolvers();
@@ -104679,9 +104739,21 @@ test "bootstrap runner mirrors ClientRequest content length corpus" {
         \\  expect(result.bodyLength).toBe(6);
         \\});
         \\
+        \\test("raw transport preserves explicit length and chunk framing", async () => {
+        \\  const { promise, resolve } = Promise.withResolvers();
+        \\  const server = net.createServer(socket => { let raw = ""; socket.on("data", chunk => { raw += chunk.toString("latin1"); if (raw.endsWith("0\r\n\r\n")) { resolve(raw); socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); } }); });
+        \\  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        \\  try {
+        \\    const req = http.request({ hostname: "127.0.0.1", port: server.address().port, method: "POST", headers: { "Content-Length": "6", "Transfer-Encoding": "chunked" } });
+        \\    const done = new Promise((resolve, reject) => { req.on("error", reject); req.on("response", response => { response.resume(); response.on("end", resolve); }); });
+        \\    req.write(Buffer.from("abc")); req.end(Buffer.from("def"));
+        \\    const raw = await promise; expect(raw).toContain("Content-Length: 6"); expect(raw).toContain("Transfer-Encoding: chunked"); expect(raw.slice(raw.indexOf("\r\n\r\n") + 4)).toBe("3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n"); await done;
+        \\  } finally { server.close(); }
+        \\});
+        \\
         \\test("explicit Transfer-Encoding wins over Content-Length", async () => {
         \\  const result = await post({ "Content-Length": "6", "Transfer-Encoding": "chunked" }, [Buffer.from("abc"), Buffer.from("def")]);
-        \\  expect(result.contentLength).toBeUndefined();
+        \\  expect(result.contentLength).toBe("6");
         \\  expect(result.transferEncoding).toBe("chunked");
         \\  expect(result.bodyLength).toBe(6);
         \\});
@@ -104698,8 +104770,9 @@ test "bootstrap runner mirrors ClientRequest content length corpus" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    if (file_run.result.status() != .passed) std.debug.print("ClientRequest content length regression failed: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "Node path import rewrite lowers path fixtures import" {
