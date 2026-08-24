@@ -6023,6 +6023,28 @@ pub const Parser = struct {
                 try self.reportCodeAt(tok.span.start, tok.line, 1109, "Expression expected.");
                 // Leave `extends` unset (no base) so the checker doesn't try to
                 // resolve a synthetic name and mis-emit TS2304.
+            } else if (self.awaitIsExpressionKeyword() and self.peek().kind == .kw_await) {
+                const await_token = self.advance();
+                try self.reportCodeAt(await_token.span.start, await_token.line, 1109, "Expression expected.");
+                if (self.peek().kind == .less_than) {
+                    const less = self.advance();
+                    try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                    const primitive = self.peek();
+                    if (primitive.kind.isPrimitiveTypeKeyword()) {
+                        _ = self.advance();
+                        const primitive_name = self.source[primitive.span.start..primitive.span.end];
+                        const message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "A class cannot extend a primitive type like '{s}'. Classes can only extend constructable values.",
+                            .{primitive_name},
+                        );
+                        try self.reportCodeAt(primitive.span.start, primitive.line, 2863, message);
+                    }
+                    if (self.peek().kind == .greater_than) {
+                        const greater = self.advance();
+                        try self.reportCodeAt(greater.span.start, greater.line, 1005, "',' expected.");
+                    }
+                }
             } else {
                 extends = try self.parseLeftHandSideExpression();
             }
@@ -10201,6 +10223,16 @@ pub const Parser = struct {
         return try self.parseCallOrMemberExpression();
     }
 
+    fn awaitIsExpressionKeyword(self: *const Parser) bool {
+        if (self.async_function_depth > 0) return true;
+        return self.top_level_external_module_indicator and
+            !self.is_declaration_file and
+            self.ambient_depth == 0 and
+            self.function_depth == 0 and
+            self.namespace_depth == 0 and
+            self.static_block_depth == 0;
+    }
+
     /// Parse a decorator expression after the `@` sigil. `@foo`,
     /// `@foo.bar`, `@foo()`, `@foo(arg, arg)` — all valid.
     fn parseDecoratorExpression(self: *Parser) ParseError!NodeId {
@@ -10217,7 +10249,15 @@ pub const Parser = struct {
     }
 
     fn parseDecoratorExpressionBody(self: *Parser) ParseError!NodeId {
-        var node = try self.parsePrimaryExpression();
+        var node = if (self.awaitIsExpressionKeyword() and self.peek().kind == .kw_await) blk: {
+            const await_token = self.advance();
+            try self.reportCodeAt(await_token.span.start, await_token.line, 1109, "Expression expected.");
+            const missing = self.interner.intern("eval") catch return error.OutOfMemory;
+            break :blk try self.builder.addIdentifier(
+                .{ .start = await_token.span.start, .end = await_token.span.start },
+                missing,
+            );
+        } else try self.parsePrimaryExpression();
         while (true) {
             const t = self.peek();
             switch (t.kind) {
@@ -18662,8 +18702,40 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                const in_async = self.async_function_depth > 0;
+                const in_await_context = self.awaitIsExpressionKeyword();
                 const next_kind = self.peekAt(1).kind;
+                if (in_await_context and
+                    next_kind == .less_than and
+                    self.peekAt(3).kind == .comma and
+                    self.peekAt(5).kind == .greater_than and
+                    (self.peekAt(6).kind == .open_paren or
+                        self.peekAt(6).kind == .no_substitution_template or
+                        self.peekAt(6).kind == .template_head))
+                {
+                    const comma = self.peekAt(3);
+                    const value_token = self.peekAt(4);
+                    try self.reportCodeAt(comma.span.start, comma.line, 1005, "'>' expected.");
+                    if (value_token.kind.isPrimitiveTypeKeyword()) {
+                        const value_name = self.source[value_token.span.start..value_token.span.end];
+                        const message = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' only refers to a type, but is being used as a value here.",
+                            .{value_name},
+                        );
+                        try self.reportCodeAt(value_token.span.start, value_token.line, 2693, message);
+                    }
+                    _ = self.advance();
+                    var end_pos = t.span.end;
+                    while (self.peek().kind != .semicolon and
+                        self.peek().kind != .eof and
+                        !self.peek().flags.preceded_by_newline)
+                    {
+                        end_pos = self.advance().span.end;
+                    }
+                    if (self.peek().kind == .semicolon) end_pos = self.advance().span.end;
+                    const operand = try self.builder.addLiteralNumber(.{ .start = t.span.end, .end = t.span.end }, 0);
+                    return try self.builder.addAwaitExpr(.{ .start = t.span.start, .end = end_pos }, operand);
+                }
                 const terminator_follows = next_kind == .semicolon or
                     next_kind == .close_paren or
                     next_kind == .close_bracket or
@@ -18671,7 +18743,7 @@ pub const Parser = struct {
                     next_kind == .comma or
                     next_kind == .colon or
                     next_kind == .eof;
-                if (!in_async and self.static_block_depth == 0 and next_kind == .open_paren) {
+                if (!in_await_context and self.static_block_depth == 0 and next_kind == .open_paren) {
                     _ = self.advance();
                     const id = try self.internToken(t);
                     const callee = try self.builder.addIdentifier(tokenSpan(t), id);
@@ -18680,12 +18752,12 @@ pub const Parser = struct {
                     const close_pos = self.tokens[self.cursor - 1].span.end;
                     return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
                 }
-                if (terminator_follows and !in_async) {
+                if (terminator_follows and !in_await_context) {
                     _ = self.advance();
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                if (terminator_follows and in_async) {
+                if (terminator_follows and in_await_context) {
                     // `await)` / `await]` / `await,` inside an async
                     // function — `await` is a reserved keyword here,
                     // so treat it as an await-expression with a
@@ -29433,6 +29505,51 @@ test "parser: decorator before await produces a missing declaration" {
     try T.expectEqualStrings("Declaration expected.", declaration.message);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOfScalar(u8, src, '\n').?)), declaration.pos);
     try T.expectEqual(@as(u32, 0), countDiag(s, 1206));
+}
+
+test "parser: module await trailing comma recovery makes progress" {
+    var s = try newTestSetup("export {};\nawait (1,);\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2695));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1109));
+}
+
+test "parser: module await invalid type arguments make progress" {
+    var s = try newTestSetup("export {};\nawait <number, string>(1);\nawait <number, string> ``;\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 2), countDiag(s, 2693));
+}
+
+test "parser: module await heritage recovery makes progress" {
+    var s = try newTestSetup("export {};\nclass C extends await<string> {}\nconst done = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 2), countDiag(s, 1109));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 2863));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+}
+
+test "parser: module await decorator recovery makes progress" {
+    var s = try newTestSetup(
+        \\export {};
+        \\@(await) class C1 {}
+        \\@await(x) class C2 {}
+        \\@await class C3 {}
+        \\class C4 { @await ["m"]() {} }
+        \\class C5 { @await(1) ["m"]() {} }
+        \\class C6 { @(await) ["m"]() {} }
+        \\class C7 {
+        \\    method1(@await [x]) {}
+        \\    method2(@await(1) [x]) {}
+        \\    method3(@(await) [x]) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 9), countDiag(s, 1109));
 }
 
 test "parser: decorator accepts unparenthesized valid expression forms" {
