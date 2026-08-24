@@ -98678,7 +98678,9 @@ pub const Checker = struct {
             if (constraint == obj_t) return null;
             return try self.lookupObjectMember(constraint, name);
         }
-        if (try self.refreshedGenericAliasObjectMember(obj_t, name)) |t| return t;
+        if (try self.refreshedGenericAliasObjectMember(obj_t, name)) |t| {
+            return try self.refreshDeferredCallableReturns(t);
+        }
         if (flags.is_union) {
             // Recursive member lookup may intern result unions, which can
             // reallocate the shared member pool. Snapshot the constituent IDs
@@ -98754,7 +98756,9 @@ pub const Checker = struct {
             }
             return self.interner.internIntersection(resolved.items) catch return error.OutOfMemory;
         }
-        if (try self.overloadedObjectMemberValueType(obj_t, name)) |t| return t;
+        if (try self.overloadedObjectMemberValueType(obj_t, name)) |t| {
+            return try self.refreshDeferredCallableReturns(t);
+        }
         if (self.typeIsMappedPayloadType(obj_t)) {
             const mapped = self.interner.mappedPayload(obj_t);
             if (try self.mappedConstraintDefinitelyIncludesProperty(mapped.constraint, name)) {
@@ -98762,10 +98766,11 @@ pub const Checker = struct {
             }
         }
         if (self.interner.objectMember(obj_t, name)) |t| {
-            if (self.typeboxStaticMemberNeedsSynthesis(name, t)) {
+            const member_t = try self.refreshDeferredCallableReturns(t);
+            if (self.typeboxStaticMemberNeedsSynthesis(name, member_t)) {
                 if (try self.synthesizeTypeboxStaticMember(obj_t)) |static_t| return static_t;
             }
-            return self.recursiveAliasMemberSelfType(obj_t, t) orelse t;
+            return self.recursiveAliasMemberSelfType(obj_t, member_t) orelse member_t;
         }
         if (try self.synthesizeTypeboxStaticMemberForName(obj_t, name)) |static_t| return static_t;
         // Declaration-merge fallback: a `class C` instance also carries
@@ -98797,6 +98802,77 @@ pub const Checker = struct {
             if (try self.moduleInterfaceAugmentationMemberType(class_name, name, hir_mod.none_node_id)) |t| return t;
         }
         return null;
+    }
+
+    fn refreshDeferredCallableReturns(self: *Checker, callable: TypeId) CheckError!TypeId {
+        if (!self.interner.isSignature(callable)) {
+            if (callable >= self.interner.pool.typeCount()) return callable;
+            const flags = self.interner.pool.flagsOf(callable);
+            if (!flags.is_object_type or flags.is_union or flags.is_intersection) return callable;
+            const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(callable));
+            defer self.gpa.free(members);
+            var changed = false;
+            for (members) |*member| {
+                if (!self.syntheticSignatureMemberName(member.name) or
+                    !self.interner.isSignature(member.type)) continue;
+                const refreshed = try self.refreshDeferredCallableReturns(member.type);
+                if (refreshed == member.type) continue;
+                member.type = refreshed;
+                changed = true;
+            }
+            if (!changed) return callable;
+            return self.interner.internObjectTypeWithIndexAndSymbol(
+                members,
+                self.interner.objectStringIndex(callable),
+                self.interner.objectNumberIndex(callable),
+                self.interner.objectSymbolIndex(callable),
+            ) catch return error.OutOfMemory;
+        }
+        const signature = callable;
+        if ((self.interner.signatureReturn(signature) orelse return signature) != types.Primitive.unknown) return signature;
+        const decl = self.signatureDeclNode(signature);
+        if (decl == hir_mod.none_node_id) return signature;
+        const kind = self.hir.kindOf(decl);
+        if (kind != .fn_type and kind != .constructor_type) return signature;
+        const fn_type = hir_mod.fnTypeOf(self.hir, decl);
+        if (fn_type.return_type == hir_mod.none_node_id) return signature;
+        const return_t = self.lowererLowerWithTypeParams(fn_type.return_type) catch return signature;
+        if (return_t == types.Primitive.none or return_t == types.Primitive.unknown) return signature;
+
+        const payload_idx = self.interner.pool.payloadOf(signature);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len) return signature;
+        const payload = self.interner.pool.signature_payloads.items[payload_idx];
+        const params = self.interner.signatureParams(signature);
+        const this_t = self.signatureThisParam(signature);
+        const refreshed = if (this_t) |receiver|
+            self.interner.internSignatureWithThisType(
+                params,
+                return_t,
+                payload.is_construct,
+                payload.is_abstract_construct,
+                receiver,
+            ) catch return error.OutOfMemory
+        else
+            self.interner.internSignatureWithAbstract(
+                params,
+                return_t,
+                payload.is_construct,
+                payload.is_abstract_construct,
+            ) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(refreshed, signature);
+        try self.copySignatureNullishArrayDefaults(refreshed, signature);
+        if (self.rest_signatures.contains(signature)) try self.rest_signatures.put(self.gpa, refreshed, {});
+        if (self.signature_min_args.get(signature)) |min_required| {
+            try self.signature_min_args.put(self.gpa, refreshed, min_required);
+        }
+        if (self.signature_predicates.get(signature)) |predicate| {
+            try self.signature_predicates.put(self.gpa, refreshed, predicate);
+        }
+        if (self.generic_signature_params.get(signature)) |type_params| {
+            try self.recordGenericSignatureParams(refreshed, type_params);
+        }
+        if (this_t) |receiver| try self.signature_this_params.put(self.gpa, refreshed, receiver);
+        return refreshed;
     }
 
     fn mappedConstraintDefinitelyIncludesProperty(
@@ -202528,9 +202604,11 @@ test "checker: generic interface extends refreshes forward instantiation members
         \\betaOfNumber.takesArgOfT(5);
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.unknown_catch_variable);
     }
 }
 
