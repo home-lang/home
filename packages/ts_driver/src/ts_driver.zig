@@ -3402,8 +3402,11 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
 
 fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source: []const u8) bool {
     return switch (diagnostic.code) {
+        1029,
+        1030,
         1036,
         1048,
+        1089,
         1101,
         1104,
         1105,
@@ -3415,6 +3418,7 @@ fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source:
         1184,
         1210,
         1215,
+        1255,
         17012,
         18010,
         18019,
