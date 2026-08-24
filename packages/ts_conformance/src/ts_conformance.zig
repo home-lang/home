@@ -964,7 +964,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         // baseline entry, or because the fixture genuinely has no
         // baseline) shares the same need: any spurious TS5107 in the
         // actual stream must drop so the empty/empty comparison wins.
-        if (isOptionValidationDiagnostic(formatted)) continue;
+        if (shouldDropActualOptionValidationDiagnostic(formatted, c.expected_errors)) continue;
         if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
@@ -3897,7 +3897,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             // also needs the actual stream cleaned of these
             // option-validation entries so the empty/empty compare
             // succeeds.
-            if (isOptionValidationDiagnostic(formatted)) {
+            if (shouldDropActualOptionValidationDiagnostic(formatted, c.expected_errors)) {
                 gpa.free(formatted);
                 continue;
             }
@@ -8598,6 +8598,25 @@ fn isOptionValidationDiagnostic(line: []const u8) bool {
         std.mem.indexOf(u8, line, "error TS6504:") != null or
         std.mem.indexOf(u8, line, "error TS5056:") != null or
         std.mem.indexOf(u8, line, "error TS6054:") != null;
+}
+
+/// Drop option-validation diagnostics that do not belong to the selected
+/// tsgo baseline. Most option diagnostics are always filtered by
+/// `isOptionValidationDiagnostic`; target deprecations are retained only
+/// when the selected baseline explicitly contains the same TS5107 family.
+/// This matters for target matrices where emit selection and the accepted
+/// diagnostic variant are intentionally different.
+fn shouldDropActualOptionValidationDiagnostic(
+    line: []const u8,
+    expected_errors: []const u8,
+) bool {
+    if (isOptionValidationDiagnostic(line)) return true;
+    if (std.mem.indexOf(u8, line, "error TS5107:") == null or
+        std.mem.indexOf(u8, line, "Option 'target=") == null)
+    {
+        return false;
+    }
+    return std.mem.indexOf(u8, expected_errors, "error TS5107: Option 'target=") == null;
 }
 
 /// Returns true when a checker/driver diagnostic belongs to the
@@ -56262,6 +56281,20 @@ test "conformance: option-validation diagnostic filter recognizes outFile/AMD" {
         .code = @as(u32, 2322),
         .message = @as([]const u8, "Type X is not assignable to type Y."),
     }));
+}
+
+test "conformance: actual target deprecation follows selected baseline" {
+    const target = "error TS5107: Option 'target=ES5' is deprecated...";
+    try T.expect(shouldDropActualOptionValidationDiagnostic(target, ""));
+    try T.expect(!shouldDropActualOptionValidationDiagnostic(target, target));
+    try T.expect(shouldDropActualOptionValidationDiagnostic(
+        "error TS5107: Option 'module=AMD' is deprecated...",
+        "error TS5107: Option 'module=AMD' is deprecated...",
+    ));
+    try T.expect(!shouldDropActualOptionValidationDiagnostic(
+        "file.ts(1,1): error TS2322: Type mismatch.",
+        "",
+    ));
 }
 
 test "conformance: suppressOutputPathCheck suppresses allowJs virtual output-path model" {
