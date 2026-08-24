@@ -104280,6 +104280,16 @@ pub const Checker = struct {
                     args,
                     arg_types.items,
                 )) |ret| break :blk ret;
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const array_id = hir_mod.identifierOf(self.hir, c.callee);
+                    const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                    if (type_arg_nodes.len == 1 and
+                        std.mem.eql(u8, self.string_interner.get(array_id.name), "Array"))
+                    {
+                        const elem_t = self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.any;
+                        break :blk self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                    }
+                }
                 if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     if (self.hir.kindOf(c.callee) == .identifier) {
                         const class_name = hir_mod.identifierOf(self.hir, c.callee).name;
