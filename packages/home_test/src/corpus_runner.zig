@@ -6130,7 +6130,7 @@ const harness_prelude =
     \\    },
     \\  };
     \\  Promise.resolve().then(() => enqueueStderr("READY\n"));
-    \\  return {
+    \\  const child = {
     \\    stdout: {
     \\      text() {
     \\        return exited.promise.then(() => JSON.stringify(events));
@@ -6160,11 +6160,16 @@ const harness_prelude =
     \\    kill() {
     \\      if (!settled) {
     \\        settled = true;
+    \\        const waiters = stderrWaiters.splice(0);
+    \\        for (const waiter of waiters) waiter({ value: undefined, done: true });
     \\        exited.resolve(0);
     \\      }
     \\      return true;
     \\    },
+    \\    [Symbol.dispose]() { this.kill(); },
+    \\    [Symbol.asyncDispose]() { this.kill(); return exited.promise.then(() => undefined); },
     \\  };
+    \\  return __home_register_spawn_process(child);
     \\}
     \\function __home_spawn_11793_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
