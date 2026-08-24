@@ -150954,6 +150954,14 @@ pub const Checker = struct {
         }
         const source_index = first_index orelse return null;
         if (source_index >= args.len or source_index >= arg_types.len) return null;
+        const current_kind = self.hir.kindOf(args[param_index]);
+        if (current_kind == .literal_string or
+            current_kind == .literal_number or
+            current_kind == .literal_bool)
+        {
+            const current_literal = try self.literalizeForAsConst(args[param_index], arg_types[param_index]);
+            if (try self.widenFreshLiteralType(current_literal) == effective_param_t) return null;
+        }
         const source_kind = self.hir.kindOf(args[source_index]);
         if (source_kind != .literal_string and
             source_kind != .literal_number and
