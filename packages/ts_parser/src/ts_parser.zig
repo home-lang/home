@@ -184,6 +184,7 @@ pub const Parser = struct {
     nested_statement_depth: u32,
     unbraced_statement_block_depth: ?u32,
     labeled_declaration_statement_depth: ?u32,
+    suppress_eof_block_close_after_labeled_var_recovery: bool,
     unsupported_with_body_depth: u32,
     function_depth: u32,
     async_function_depth: u32,
@@ -370,6 +371,7 @@ pub const Parser = struct {
             .nested_statement_depth = 0,
             .unbraced_statement_block_depth = null,
             .labeled_declaration_statement_depth = null,
+            .suppress_eof_block_close_after_labeled_var_recovery = false,
             .unsupported_with_body_depth = 0,
             .function_depth = 0,
             .async_function_depth = 0,
@@ -6988,7 +6990,9 @@ pub const Parser = struct {
             self.advance()
         else blk: {
             const at = self.peek();
-            if (!self.hasDiagnosticAt(1005, at.span.start)) {
+            if (!self.suppress_eof_block_close_after_labeled_var_recovery and
+                !self.hasDiagnosticAt(1005, at.span.start))
+            {
                 try self.reportCodeAtWithMatchedPair(
                     at.span.start,
                     at.line,
@@ -10450,6 +10454,7 @@ pub const Parser = struct {
         // suppressed — tsc only reports the empty-list diagnostic on
         // fixtures like `VariableDeclaration1_es6` (`const` alone).
         var name_list_was_empty = false;
+        var recovered_missing_binding_name = false;
         const name_node: NodeId = if (self.peek().kind == .semicolon or self.peek().kind == .eof) blk: {
             const empty_pos = start.span.end;
             try self.reportCodeAt(empty_pos, start.line, 1123, "Variable declaration list cannot be empty.");
@@ -10458,6 +10463,25 @@ pub const Parser = struct {
             break :blk try self.builder.addIdentifier(.{ .start = empty_pos, .end = empty_pos }, empty_id);
         } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
             break :blk try self.parseBindingPattern();
+        } else if (start.kind == .kw_var and self.peek().kind == .open_paren) blk: {
+            const missing = self.peek();
+            var follows_disallowed_label = false;
+            for (self.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == 1344 and diagnostic.line == missing.line) {
+                    follows_disallowed_label = true;
+                    break;
+                }
+            }
+            try self.reportCodeAt(missing.span.start, missing.line, 1134, "Variable declaration expected.");
+            const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            recovered_missing_binding_name = true;
+            if (follows_disallowed_label) {
+                self.suppress_eof_block_close_after_labeled_var_recovery = true;
+            }
+            break :blk try self.builder.addIdentifier(
+                .{ .start = missing.span.start, .end = missing.span.start },
+                empty_id,
+            );
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
             // TS18029: ECMAScript `#name` identifiers may only
@@ -10626,7 +10650,7 @@ pub const Parser = struct {
             }
         }
         var recovered_initializer_arrow_tail = false;
-        var recovered_variable_list_boundary = false;
+        var recovered_variable_list_boundary = recovered_missing_binding_name;
         if (init_node != hir_mod.none_node_id and
             self.peek().kind == .kw_import and
             self.hasDiagnosticAt(1109, self.peek().span.start))
@@ -11239,6 +11263,9 @@ pub const Parser = struct {
         }
         if (self.peek().kind == .eof) {
             const at = self.peek();
+            if (self.suppress_eof_block_close_after_labeled_var_recovery) {
+                return try self.builder.addBlock(.{ .start = open.span.start, .end = at.span.start }, stmts.items);
+            }
             var missing_open_already_reported = false;
             for (self.diagnostics.items) |diagnostic| {
                 if (diagnostic.pos == at.span.start and diagnostic.code == 1005 and
@@ -11406,6 +11433,13 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (self.hasDiagnosticAt(1135, t.span.start)) {
+            // `parseDelimitedList(PCArgumentExpressions)` already owns this
+            // recovery point. Leave an outer statement keyword unread so the
+            // source-element list can reinterpret it without a duplicate
+            // missing-semicolon error at the same position.
+            return;
+        }
         if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
             self.cursor >= 2 and
             self.tokens[self.cursor - 1].kind == .kw_as and
@@ -11543,7 +11577,14 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        if ((t.kind == .identifier or isExpressionIdentifierToken(t.kind)) and
+            self.peekAt(1).kind == .colon)
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
         if (t.kind == .open_brace or t.kind == .open_paren) {
+            if (t.kind == .open_brace and self.hasDiagnosticAt(1005, t.span.start)) return;
             if (t.kind == .open_paren and
                 self.cursor >= 4 and
                 self.tokens[self.cursor - 2].kind == .dot and
@@ -19368,6 +19409,11 @@ pub const Parser = struct {
                     break;
                 }
                 if (start_tok.kind == .semicolon or start_tok.kind == .close_brace or start_tok.kind == .eof) break;
+                if (start_tok.kind == .kw_var) {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1135, "Argument expression expected.");
+                    missing_arg_before_statement = true;
+                    break;
+                }
                 const arg = if (self.peek().kind == .dot_dot_dot) blk: {
                     const dot_tok = self.advance();
                     const inner = try self.parseAssignmentExpression();
@@ -19381,6 +19427,11 @@ pub const Parser = struct {
                     continue;
                 }
                 if (!self.match(.comma)) {
+                    if (self.peek().kind.canStartExpression()) {
+                        const next_arg = self.peek();
+                        try self.reportCodeAt(next_arg.span.start, next_arg.line, 1005, "',' expected.");
+                        continue;
+                    }
                     if (self.peek().kind == .invalid) {
                         const bad = self.advance();
                         try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
@@ -19579,6 +19630,19 @@ pub const Parser = struct {
                     try self.reportCodeAtWithMatchedPair(
                         op_tok.span.start,
                         op_tok.line,
+                        1005,
+                        "')' expected.",
+                        t.span.start,
+                        "(",
+                        ")",
+                    );
+                    return e;
+                }
+                if (self.peek().kind == .open_brace) {
+                    const missing_close = self.peek();
+                    try self.reportCodeAtWithMatchedPair(
+                        missing_close.span.start,
+                        missing_close.line,
                         1005,
                         "')' expected.",
                         t.span.start,
@@ -33033,6 +33097,36 @@ test "parser: call argument list empty slot before eof reports close paren" {
     try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("')' expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: call argument list recovers missing comma before expression" {
+    var s = try newTestSetup(
+        \\foo(
+        \\  first
+        \\  second,
+        \\);
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: call argument list leaves statement keyword for outer recovery" {
+    var s = try newTestSetup(
+        \\foo(first:
+        \\var (--value));
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Argument expression expected.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: top-level close parens recover as declaration expected" {

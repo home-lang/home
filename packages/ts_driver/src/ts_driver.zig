@@ -3306,7 +3306,7 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
 
 fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic) bool {
     return switch (d.code) {
-        1125, 1127, 1160, 1199, 1487, 1488 => true,
+        1125, 1127, 1199, 1487, 1488 => true,
         else => false,
     };
 }
