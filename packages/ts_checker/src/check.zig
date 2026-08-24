@@ -80553,7 +80553,7 @@ pub const Checker = struct {
             // once and substituting afterward because recursive alias
             // arguments like `DeepReadonly<T[P]>` need `T[P]` to be
             // resolved before the nested alias instantiates.
-            const value_t = try self.lowerMappedPropertyValue(
+            var value_t = try self.lowerMappedPropertyValue(
                 node,
                 m,
                 tp.name,
@@ -80617,6 +80617,7 @@ pub const Checker = struct {
                 2 => false,
                 else => src_readonly,
             };
+            value_t = try self.mappedPropertyValueWithOptionality(value_t, is_optional, src_optional);
             try built.append(self.gpa, .{
                 .name = effective_name,
                 .type = value_t,
@@ -80645,6 +80646,22 @@ pub const Checker = struct {
             self.interner.setTypeSymbol(obj_t, @intCast(node));
         }
         return obj_t;
+    }
+
+    fn mappedPropertyValueWithOptionality(
+        self: *Checker,
+        value_t: TypeId,
+        is_optional: bool,
+        source_is_optional: bool,
+    ) CheckError!TypeId {
+        if (self.strict_flags.strict_null_checks and
+            !self.strict_flags.exact_optional_property_types and
+            !is_optional and
+            source_is_optional)
+        {
+            return self.subtractUndefined(value_t);
+        }
+        return value_t;
     }
 
     fn mappedTypeForHomomorphicTupleRest(
@@ -93251,14 +93268,15 @@ pub const Checker = struct {
                 .omit => if (key_set.contains(m.name)) continue,
                 else => {},
             }
+            const is_optional = switch (kind) {
+                .partial => true,
+                .required => false,
+                else => m.is_optional,
+            };
             try members.append(self.gpa, .{
                 .name = m.name,
-                .type = m.type,
-                .is_optional = switch (kind) {
-                    .partial => true,
-                    .required => false,
-                    else => m.is_optional,
-                },
+                .type = try self.mappedPropertyValueWithOptionality(m.type, is_optional, m.is_optional),
+                .is_optional = is_optional,
                 .is_readonly = switch (kind) {
                     .readonly => true,
                     else => m.is_readonly,
@@ -151335,7 +151353,7 @@ pub const Checker = struct {
                 var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer key_subs.deinit(self.gpa);
                 if (key_tp != types.Primitive.none) try key_subs.put(self.gpa, key_tp, key_lit);
-                const value_t = (if (self.isBuiltinMappedKeyTypeParameter(key_tp) and source_obj != types.Primitive.none)
+                var value_t = (if (self.isBuiltinMappedKeyTypeParameter(key_tp) and source_obj != types.Primitive.none)
                     try self.resolveObjectIndexedAccessType(source_obj, key_lit)
                 else
                     null) orelse
@@ -151354,6 +151372,11 @@ pub const Checker = struct {
                     .remove => false,
                     .none => if (source_member) |member| member.is_readonly else false,
                 };
+                value_t = try self.mappedPropertyValueWithOptionality(
+                    value_t,
+                    is_optional,
+                    if (source_member) |member| member.is_optional else false,
+                );
                 try members.append(self.gpa, .{
                     .name = key,
                     .type = value_t,
@@ -209150,6 +209173,32 @@ test "checker: Required<T> -? strips optional from source" {
     try T.expectEqual(@as(usize, 2), members.len);
     // Both members should NOT be optional (was: optional in source).
     for (members) |m| try T.expect(!m.is_optional);
+}
+
+test "checker: mapped required members strip implicit undefined only in non-exact mode" {
+    const source =
+        \\type Required<T> = { [K in keyof T]-?: T[K] };
+        \\type ToStringOrUnd<T> = { [P in keyof T]-?: string | undefined };
+        \\const obj1: Required<{ a?: string | undefined }> = { a: undefined };
+        \\const tup1: Required<[(string | undefined)?]> = [undefined];
+        \\const obj2: ToStringOrUnd<{ a: 1; b?: 2 }> = { a: "1", b: undefined };
+        \\const tup2: ToStringOrUnd<[1, 2?]> = ["1", undefined];
+    ;
+
+    const non_exact = try newSetup(source);
+    defer destroySetup(non_exact);
+    non_exact.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try non_exact.checker.checkSourceFile(non_exact.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(non_exact, TsCodes.type_not_assignable));
+
+    const exact = try newSetup(source);
+    defer destroySetup(exact);
+    exact.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .exact_optional_property_types = true,
+    });
+    try exact.checker.checkSourceFile(exact.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(exact, TsCodes.type_not_assignable));
 }
 
 test "checker: Mutable<T> -readonly strips readonly from source" {
