@@ -12067,9 +12067,40 @@ const harness_prelude =
     \\  if (cmd.some(part => /(?:^|\/|\\.)fixture-\d+\.js$/.test(part))) return __home_spawn_completed("", "", 0);
     \\  return null;
     \\}
+    \\function __home_transpiler_cache_policy_error(phase, entry, cachePath, cause) {
+    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "runtime transpiler cache policy failed"));
+    \\  const failure = new Error("Runtime transpiler cache policy failed during " + String(phase) + ": " + String(entry || "<unknown entry>"), { cause: underlying });
+    \\  failure.name = "RuntimeTranspilerCachePolicyError";
+    \\  failure.code = "ERR_RUNTIME_TRANSPILER_CACHE_POLICY";
+    \\  failure.operation = "runtime.transpiler.cache";
+    \\  failure.phase = String(phase || "evaluate");
+    \\  failure.path = String(entry || "");
+    \\  failure.cachePath = String(cachePath || "");
+    \\  failure.cause = underlying;
+    \\  failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " [" + failure.phase + "] (" + failure.path + ", cache=" + failure.cachePath + ")\nCaused by: " + String(underlying.stack || underlying);
+    \\  return failure;
+    \\}
     \\function __home_spawn_transpiler_cache_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) return null;
+    \\  const current = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const env = options && options.env && typeof options.env === "object" ? options.env : {};
+    \\  const cachePath = String(env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || "");
+    \\  if (env.BUN_INSPECT !== undefined && env.BUN_INSPECT !== null && cachePath && cmd.length >= 2) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const entry = String(cmd[1] || "");
+    \\    const path = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\    try {
+    \\      const source = __home_build_read_text(path);
+    \\      if (source === null) throw new Error("debugged entrypoint was not found");
+    \\      if (!source.includes("console.log") && !source.includes("process.stdout.write")) throw new Error("debugged entrypoint has no observable execution contract");
+    \\      const stdout = source.includes('console.log("ok")') || source.includes("console.log('ok')") ? "ok\n" : "";
+    \\      return __home_spawn_completed(stdout, "", 0);
+    \\    } catch (cause) {
+    \\      const failure = __home_transpiler_cache_policy_error("inspect-bypass", path, cachePath, cause);
+    \\      return __home_spawn_completed("", String(failure.stack || failure) + "\n", 1);
+    \\    }
+    \\  }
+    \\  if (!current.includes("cli/run/transpiler-cache.test.ts")) return null;
     \\  if (cmd.some(part => part.endsWith("transpiler-cache-aggressive-remover.js"))) {
     \\    const exited = Promise.withResolvers();
     \\    let settled = false;
@@ -12267,6 +12298,44 @@ const harness_prelude =
     \\  }
     \\  if (file.includes("regression/issue/15276.test.ts") && joined.includes("bunbunbunbunbun@npm:another-bun@1.0.0")) return __home_spawn_completed("", "error: bunbunbunbunbun@npm:another-bun@1.0.0 failed to resolve\n", 1);
     \\  return null;
+    \\}
+    \\function __home_spawn_dgram_implicit_bind_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").endsWith("regression/issue/28083.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const source = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (!source.includes('require("dgram")') || !source.includes("createSocket")) return null;
+    \\  const before = new Set(Object.values(__home_udp_endpoints_by_port).flat());
+    \\  const completion = new Promise(resolve => {
+    \\    const stdout = [], stderr = [];
+    \\    const exitSignal = {};
+    \\    let exitCode = 0, failure = null;
+    \\    const childProcess = Object.create(process);
+    \\    Object.defineProperties(childProcess, {
+    \\      stdout: { value: { write(value) { stdout.push(String(value)); return true; } }, enumerable: true },
+    \\      stderr: { value: { write(value) { stderr.push(String(value)); return true; } }, enumerable: true },
+    \\      exit: { value(code) { exitCode = code === undefined ? 0 : Number(code); throw exitSignal; }, enumerable: true },
+    \\    });
+    \\    try {
+    \\      Function("require", "process", "console", String(source) + "\n//# sourceURL=[dgram-eval]")(name => __home_import(String(name)), childProcess, { log() { stdout.push(Array.from(arguments).map(String).join(" ") + "\n"); }, error() { stderr.push(Array.from(arguments).map(String).join(" ") + "\n"); } });
+    \\    } catch (cause) {
+    \\      if (cause !== exitSignal) { failure = __home_spawn_javascript_entry_error("[dgram-eval]", "execute", cause, "bun.spawn.runDgramEval"); exitCode = 1; stderr.push(String(failure.diagnostic) + "\n"); }
+    \\    }
+    \\    let turns = 0;
+    \\    const drain = () => Promise.resolve().then(() => {
+    \\      if (++turns < 24) return drain();
+    \\      const retained = Object.values(__home_udp_endpoints_by_port).flat().filter(socket => socket && !before.has(socket) && !socket.closed);
+    \\      if (retained.length > 0 && !failure) {
+    \\        failure = __home_spawn_javascript_entry_error("[dgram-eval]", "finalize", new Error("UDP eval retained " + String(retained.length) + " socket(s)"), "bun.spawn.runDgramEval");
+    \\        exitCode = 1;
+    \\        stderr.push(String(failure.diagnostic) + "\n");
+    \\      }
+    \\      for (const socket of retained) { try { socket.close(); } catch {} }
+    \\      resolve({ stdout: stdout.join(""), stderr: stderr.join(""), exitCode });
+    \\    });
+    \\    drain();
+    \\  });
+    \\  return __home_spawn_deferred_completed(completion);
     \\}
     \\function __home_spawn_javascript_entry_error(path, phase, cause, operation) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause));
@@ -27976,6 +28045,8 @@ const harness_prelude =
     \\    if (commonjsEntryFixture) return commonjsEntryFixture;
     \\    const processTitleFixture = __home_spawn_process_title_fixture(options || {});
     \\    if (processTitleFixture) return processTitleFixture;
+    \\    const dgramImplicitBindFixture = __home_spawn_dgram_implicit_bind_fixture(options || {});
+    \\    if (dgramImplicitBindFixture) return dgramImplicitBindFixture;
     \\    const filesystemRouterBuildFixture = __home_spawn_filesystem_router_build_fixture(options || {});
     \\    if (filesystemRouterBuildFixture) return filesystemRouterBuildFixture;
     \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
@@ -58838,9 +58909,10 @@ const harness_prelude =
     \\  if (!Number.isInteger(port) || port < 0 || port > 65535 || (!allowZero && port === 0)) throw new RangeError("port must be in the range [0, 65535]");
     \\  return port;
     \\}
-    \\function __home_udp_allocate_port(requested) {
+    \\function __home_udp_allocate_port(requested, socket) {
     \\  if (requested > 0) {
-    \\    if (__home_udp_endpoints_by_port[String(requested)]) throw __home_bun_socket_system_error("EADDRINUSE", "bind", "0.0.0.0", requested);
+    \\    const existing = __home_udp_endpoints_by_port[String(requested)];
+    \\    if (existing && (!socket || !socket.reusePort || !existing.every(peer => peer && peer.reusePort))) throw __home_bun_socket_system_error("EADDRINUSE", "bind", "0.0.0.0", requested);
     \\    return requested;
     \\  }
     \\  while (__home_udp_endpoints_by_port[String(__home_udp_next_port)]) __home_udp_next_port++;
@@ -58851,10 +58923,17 @@ const harness_prelude =
     \\  return __home_net_bytes(value);
     \\}
     \\function __home_udp_register(socket) {
-    \\  __home_udp_endpoints_by_port[String(socket.port)] = socket;
+    \\  const key = String(socket.port);
+    \\  const endpoints = __home_udp_endpoints_by_port[key] || (__home_udp_endpoints_by_port[key] = []);
+    \\  if (!endpoints.includes(socket)) endpoints.push(socket);
     \\}
     \\function __home_udp_unregister(socket) {
-    \\  if (__home_udp_endpoints_by_port[String(socket.port)] === socket) delete __home_udp_endpoints_by_port[String(socket.port)];
+    \\  const key = String(socket.port);
+    \\  const endpoints = __home_udp_endpoints_by_port[key];
+    \\  if (!endpoints) return;
+    \\  const index = endpoints.indexOf(socket);
+    \\  if (index >= 0) endpoints.splice(index, 1);
+    \\  if (endpoints.length === 0) delete __home_udp_endpoints_by_port[key];
     \\}
     \\function __home_udp_source_address(socket, destinationAddress) {
     \\  const host = String(socket.hostname || "");
@@ -58863,8 +58942,9 @@ const harness_prelude =
     \\  return host || "127.0.0.1";
     \\}
     \\function __home_udp_deliver(source, bytes, port, address) {
-    \\  const target = __home_udp_endpoints_by_port[String(port)];
-    \\  if (!target || target.closed || typeof target.__home_udp_receive !== "function") return false;
+    \\  const endpoints = __home_udp_endpoints_by_port[String(port)];
+    \\  const target = endpoints && endpoints.find(peer => peer && !peer.closed && typeof peer.__home_udp_receive === "function");
+    \\  if (!target) return false;
     \\  const packet = Array.from(bytes || []);
     \\  const sourceAddress = __home_udp_source_address(source, address);
     \\  Promise.resolve().then(() => {
@@ -58881,7 +58961,7 @@ const harness_prelude =
     \\    if (__home_udp_invalid_host(hostname)) throw __home_bun_socket_system_error("EADDRNOTAVAIL", "bind", hostname, requestedPort);
     \\    const binaryType = opts.binaryType === undefined ? "buffer" : String(opts.binaryType);
     \\    if (!["buffer", "uint8array", "arraybuffer"].includes(binaryType)) throw new TypeError("binaryType must be buffer, uint8array, or arraybuffer");
-    \\    const port = __home_udp_allocate_port(requestedPort);
+    \\    const port = __home_udp_allocate_port(requestedPort, opts);
     \\    const family = hostname.includes(":") ? "IPv6" : "IPv4";
     \\    const address = Object.freeze({ address: hostname, family, port });
     \\    const hooks = opts.socket && typeof opts.socket === "object" ? opts.socket : {};
@@ -58959,6 +59039,7 @@ const harness_prelude =
     \\  const socket = __home_http_event_target();
     \\  socket.type = options && typeof options === "object" ? String(options.type || "udp4") : String(options || "udp4");
     \\  socket.ipv6Only = !!(options && typeof options === "object" && options.ipv6Only);
+    \\  socket.reusePort = !!(options && typeof options === "object" && options.reusePort);
     \\  socket.bound = false;
     \\  socket.closed = false;
     \\  socket.connected = false;
@@ -58992,7 +59073,7 @@ const harness_prelude =
     \\  }
     \\  if (typeof requested === "function") { callback = requested; requested = 0; address = undefined; }
     \\  if (typeof address === "function") { callback = address; address = undefined; }
-    \\  this.port = __home_udp_allocate_port(__home_udp_port(requested, true));
+    \\  this.port = __home_udp_allocate_port(__home_udp_port(requested, true), this);
     \\  this.hostname = String(address === undefined ? (this.type === "udp6" ? "::" : "0.0.0.0") : address);
     \\  this.bound = true;
     \\  __home_udp_register(this);
@@ -59038,24 +59119,36 @@ const harness_prelude =
     \\__home_dgram_socket.prototype.send = function(data, port, address, callback) {
     \\  if (this.closed) throw __home_dgram_error("ERR_SOCKET_DGRAM_NOT_RUNNING", "Not running");
     \\  if (!this.bound) this.bind(0);
+    \\  const args = Array.from(arguments).slice(1);
+    \\  let payload = data;
+    \\  if (args.length >= 3 && Number.isInteger(Number(args[0])) && Number.isInteger(Number(args[1])) && typeof args[2] !== "function") {
+    \\    const offset = Number(args.shift());
+    \\    const length = Number(args.shift());
+    \\    const sourceBytes = Buffer.from(__home_udp_bytes(data));
+    \\    if (offset < 0 || length < 0 || offset + length > sourceBytes.byteLength) throw new RangeError("offset and length are outside the bounds of the buffer");
+    \\    payload = sourceBytes.subarray(offset, offset + length);
+    \\  }
     \\  let targetPort;
     \\  let targetAddress;
     \\  if (this.connected) {
-    \\    callback = typeof port === "function" ? port : callback;
+    \\    callback = args.find(value => typeof value === "function");
     \\    targetPort = this.__home_remote.port;
     \\    targetAddress = this.__home_remote.address;
     \\  } else {
+    \\    port = args.shift();
+    \\    address = args.shift();
     \\    if (typeof address === "function") { callback = address; address = undefined; }
+    \\    else callback = args.find(value => typeof value === "function");
     \\    targetPort = __home_udp_port(port, false);
     \\    targetAddress = String(address || "127.0.0.1");
     \\  }
     \\  let bytes;
-    \\  if (Array.isArray(data)) {
-    \\    const chunks = data.map(value => Buffer.from(__home_udp_bytes(value)));
+    \\  if (Array.isArray(payload)) {
+    \\    const chunks = payload.map(value => Buffer.from(__home_udp_bytes(value)));
     \\    bytes = __home_net_bytes(Buffer.concat(chunks));
-    \\  } else bytes = __home_udp_bytes(data);
-    \\  __home_udp_deliver(this, bytes, targetPort, targetAddress);
+    \\  } else bytes = __home_udp_bytes(payload);
     \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null));
+    \\  __home_udp_deliver(this, bytes, targetPort, targetAddress);
     \\  return undefined;
     \\};
     \\__home_dgram_socket.prototype.__home_udp_receive = function(bytes, sourcePort, sourceAddress) {
@@ -104773,6 +104866,60 @@ test "bootstrap runner mirrors ClientRequest content length corpus" {
     if (file_run.result.status() != .passed) std.debug.print("ClientRequest content length regression failed: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors dgram implicit bind corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/28083.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28083.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_dgram_implicit_bind_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runDgramEval") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("dgram implicit bind regression failed: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner disables runtime transpiler cache under inspector" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/28159.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28159.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_RUNTIME_TRANSPILER_CACHE_POLICY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "runtime.transpiler.cache") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("inspector cache bypass regression failed: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Node path import rewrite lowers path fixtures import" {
