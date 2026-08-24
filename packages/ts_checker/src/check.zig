@@ -150307,7 +150307,7 @@ pub const Checker = struct {
         return self.interner.internUnion(augmented.items) catch return error.OutOfMemory;
     }
 
-    fn taggedTemplateRepeatedDirectLiteralTarget(
+    fn repeatedDirectLiteralInferenceTarget(
         self: *Checker,
         call_node: NodeId,
         args: []const NodeId,
@@ -150315,11 +150315,19 @@ pub const Checker = struct {
         param_index: usize,
         effective_param_t: TypeId,
     ) CheckError!?TypeId {
-        if (!self.callExprIsTaggedTemplate(call_node) or param_index >= args.len) return null;
+        if (param_index >= args.len) return null;
         const call = hir_mod.callOf(self.hir, call_node);
         if (call.callee == hir_mod.none_node_id) return null;
-        const raw_sig = self.hir.typeOf(call.callee);
-        if (!self.interner.isSignature(raw_sig)) return null;
+        const raw_callee_t = self.hir.typeOf(call.callee);
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        if (self.hir.kindOf(call_node) == .new_expr) {
+            try self.collectConstructSignatures(raw_callee_t, &signatures);
+        } else {
+            try self.collectCallSignatures(raw_callee_t, &signatures);
+        }
+        if (signatures.items.len != 1) return null;
+        const raw_sig = signatures.items[0];
         const raw_params = self.interner.signatureParams(raw_sig);
         if (param_index >= raw_params.len) return null;
         const raw_param = raw_params[param_index];
@@ -152186,7 +152194,7 @@ pub const Checker = struct {
             });
             var constrained_type_parameter_target: ?TypeId = null;
             if (self.taggedTemplateStringsArrayArg(call_node, args, i, param_t)) continue;
-            param_t = (try self.taggedTemplateRepeatedDirectLiteralTarget(
+            param_t = (try self.repeatedDirectLiteralInferenceTarget(
                 call_node,
                 args,
                 arg_types,
@@ -218887,6 +218895,27 @@ test "checker: tagged template repeated type parameters refine inference candida
         TsCodes.subsequent_var_type_mismatch,
         "Subsequent variable declarations must have the same type.  Variable 'empty' must be of type 'never[] | null | undefined', but here has type 'any[]'.",
     ));
+}
+
+test "checker: repeated generic parameters preserve literal mismatch diagnostics" {
+    const s = try newSetup(
+        \\declare function choose<T>(a: T, b: T, c: T): T;
+        \\choose("", 0, []);
+        \\interface Constructor { new <T>(a: T, b: T, c: T): T; }
+        \\declare const Constructor: Constructor;
+        \\new Constructor("", 0, []);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.argument_type_mismatch) continue;
+        try T.expectEqualStrings(
+            "Argument of type '0' is not assignable to parameter of type '\"\"'.",
+            diagnostic.message,
+        );
+    }
 }
 
 test "checker: tagged template callback can return object spread identity" {
