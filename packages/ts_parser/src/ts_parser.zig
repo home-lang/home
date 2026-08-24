@@ -3557,6 +3557,20 @@ pub const Parser = struct {
         const raw = self.interner.get(id.name);
         if (!std.mem.eql(u8, raw, "eval") and !std.mem.eql(u8, raw, "arguments")) return;
         const sp = self.hir.spanOf(node);
+        if (self.class_body_depth > 0) {
+            const message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{s}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode.",
+                .{raw},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = sp.start,
+                .line = self.lineAt(sp.start),
+                .code = 1210,
+                .message = message,
+            });
+            return;
+        }
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
         try self.diagnostics.append(self.gpa, .{
             .pos = sp.start,
@@ -7455,6 +7469,7 @@ pub const Parser = struct {
             kind == .number_literal or
             kind == .kw_constructor or
             kind == .kw_interface or
+            kind == .kw_implements or
             kind == .open_bracket or
             kind.isContextualKeyword();
     }
@@ -31638,6 +31653,29 @@ test "parser: strict mode restricted names and delete operands report diagnostic
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: class field named interface preserves following strict methods" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    interface = 10;
+        \\    public implements() { }
+        \\    public foo(arguments: any) { }
+        \\    private bar(eval: any) {
+        \\        arguments = "hello";
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1210: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 1210) count_1210 += 1;
+        try T.expect(diagnostic.code != 1435);
+        try T.expect(diagnostic.code != 1128);
+    }
+    try T.expectEqual(@as(usize, 3), count_1210);
 }
 
 test "parser: strict mode delete identifier reports TS1102 at operand" {
