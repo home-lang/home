@@ -55758,6 +55758,11 @@ pub const Checker = struct {
             std.mem.endsWith(u8, spec, ".mts") or
             std.mem.endsWith(u8, spec, ".cts");
         if (self.classicBareSiblingResolutionEnabled() and !has_ts_extension) {
+            // tsgo no longer carries classic resolution forward from the
+            // deprecated AMD/System/UMD module kinds. Keep explicit
+            // `moduleResolution: classic` behavior, but omit the inherited
+            // TS2792 when classic was selected only by module kind.
+            if (self.classicResolutionWasInferredFromLegacyModuleKind()) return;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Cannot find module '{s}'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?",
@@ -56809,6 +56814,13 @@ pub const Checker = struct {
     fn classicBareSiblingResolutionEnabled(self: *Checker) bool {
         return self.moduleResolutionIsClassic() or
             self.sourceDirectiveValueMentions("module", "amd") or
+            self.sourceDirectiveValueMentions("module", "system") or
+            self.sourceDirectiveValueMentions("module", "umd");
+    }
+
+    fn classicResolutionWasInferredFromLegacyModuleKind(self: *Checker) bool {
+        if (self.sourceHasDirective("moduleResolution")) return false;
+        return self.sourceDirectiveValueMentions("module", "amd") or
             self.sourceDirectiveValueMentions("module", "system") or
             self.sourceDirectiveValueMentions("module", "umd");
     }
@@ -231288,6 +231300,36 @@ test "checker: classic import-equals resolves generic export assignment" {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: inferred legacy classic resolution omits missing relative module diagnostics" {
+    const source =
+        \\// @module: amd
+        \\// @filename: somefolder/a.ts
+        \\import { x } from "./b";
+        \\// @filename: b.ts
+        \\export let x = 1;
+    ;
+    const inferred = try newSetup(source);
+    defer destroySetup(inferred);
+    inferred.checker.setModuleResolution("classic");
+    inferred.checker.setModuleKind("amd");
+    try inferred.checker.checkSourceFile(inferred.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(inferred, TsCodes.cannot_find_module_did_you_mean_nodenext));
+
+    const explicit = try newSetup(
+        \\// @module: amd
+        \\// @moduleResolution: classic
+        \\// @filename: somefolder/a.ts
+        \\import { x } from "./b";
+        \\// @filename: b.ts
+        \\export let x = 1;
+    );
+    defer destroySetup(explicit);
+    explicit.checker.setModuleResolution("classic");
+    explicit.checker.setModuleKind("amd");
+    try explicit.checker.checkSourceFile(explicit.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(explicit, TsCodes.cannot_find_module_did_you_mean_nodenext));
 }
 
 test "checker: declare global outside external module reports TS2669 and nonlocal export TS2661" {
