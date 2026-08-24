@@ -9282,18 +9282,14 @@ pub const Checker = struct {
                 self.strict_flags.strict_null_checks and
                 self.parameterSourceRequiresImplicitUndefined(param))
             {
-                try self.report(
-                    param,
-                    TsCodes.isolated_declarations_parameter_adds_undefined,
-                    "Declaration emit for this parameter requires implicitly adding undefined to its type. This is not supported with --isolatedDeclarations.",
-                );
+                try self.reportIsolatedDeclarationsParameterAddsUndefined(param, p.name);
                 continue;
             }
             if (p.type_annotation != hir_mod.none_node_id) continue;
             if (p.default_value != hir_mod.none_node_id) {
                 try self.checkIsolatedDeclarationsFunctionDefaultValue(p.default_value);
-                if (self.isolatedDeclarationsParameterDefaultInferenceAnchor(fn_node, params, param_index, p.default_value)) |anchor| {
-                    try self.reportIsolatedDeclarationsParameterMissingTypeAt(anchor, p.name);
+                if (self.isolatedDeclarationsParameterDefaultInferenceAnchor(fn_node, params, param_index, p.default_value) != null) {
+                    try self.reportIsolatedDeclarationsParameterAddsUndefined(param, p.name);
                     continue;
                 }
                 if (!self.isolatedDeclarationsParameterDefaultRequiresAnnotation(p.default_value)) continue;
@@ -10256,6 +10252,28 @@ pub const Checker = struct {
             },
             else => false,
         };
+    }
+
+    fn reportIsolatedDeclarationsParameterAddsUndefined(
+        self: *Checker,
+        parameter_node: NodeId,
+        parameter_name: NodeId,
+    ) CheckError!void {
+        try self.report(
+            parameter_node,
+            TsCodes.isolated_declarations_parameter_adds_undefined,
+            "Declaration emit for this parameter requires implicitly adding undefined to its type. This is not supported with --isolatedDeclarations.",
+        );
+        if (self.diagnostics.items.len == 0 or parameter_name == hir_mod.none_node_id) return;
+        const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
+        if (last.code != TsCodes.isolated_declarations_parameter_adds_undefined) return;
+        const related = try self.diag_arena.allocator().alloc(RelatedInfo, 1);
+        related[0] = .{
+            .node = parameter_name,
+            .code = TsCodes.add_type_annotation_to_parameter,
+            .message = try self.isolatedDeclarationsParameterRelatedMessage(parameter_name),
+        };
+        last.related = related;
     }
 
     fn isolatedDeclarationsComputedTypeKeyCanBeNamed(self: *Checker, key: NodeId) bool {
@@ -219622,7 +219640,7 @@ test "checker: TS9010 for exported variables needing declaration type inference"
     try T.expect(later_found);
 }
 
-test "checker: TS9011 for asserted default before required parameter under isolatedDeclarations" {
+test "checker: tsgo reports TS9025 for asserted default before required parameter" {
     const source =
         \\export function foo(p = (ip = 10, v: number): void => {}): void {}
         \\type T = number;
@@ -219636,10 +219654,11 @@ test "checker: TS9011 for asserted default before required parameter under isola
     var found = false;
     var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code != TsCodes.isolated_declarations_parameter_missing_type) continue;
+        try T.expect(d.code != TsCodes.isolated_declarations_parameter_missing_type);
+        if (d.code != TsCodes.isolated_declarations_parameter_adds_undefined) continue;
         count += 1;
         const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
-        try T.expectEqualStrings("T", source[pos .. pos + 1]);
+        try T.expect(std.mem.startsWith(u8, source[pos..], "ip = 10 as T"));
         try T.expect(d.related.len == 1);
         try T.expectEqual(TsCodes.add_type_annotation_to_parameter, d.related[0].code);
         const related_pos = s.checker.hir.spanOf(d.related[0].node).start;
