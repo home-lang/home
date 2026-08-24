@@ -105584,13 +105584,15 @@ pub const Checker = struct {
                             }
                             const rest_arr_t = param_ts[param_ts.len - 1];
                             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                                // A bare generic rest tuple (`...args: T`)
-                                // must infer from the whole argument list.
-                                // Until variadic tuple concatenation is
-                                // modeled, avoid binding T from just the
-                                // first rest argument, which would make
-                                // `f(1, ...tail)` check every later rest
-                                // element against `number`.
+                                if (try self.synthesizedRestArgumentListType(
+                                    node,
+                                    args,
+                                    arg_types.items,
+                                    fixed_count,
+                                    false,
+                                )) |rest_tuple_t| {
+                                    try call_subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                                }
                             } else {
                                 const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
                                 const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
@@ -150732,30 +150734,39 @@ pub const Checker = struct {
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                return;
-            }
-            const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
-            const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
-            if (rest_target_t < self.interner.pool.typeCount()) {
-                const rest_target_flags = self.interner.pool.flagsOf(rest_target_t);
-                const batched_object_inference = rest_target_flags.is_type_parameter and
-                    !rest_target_flags.is_union and
-                    !rest_target_flags.is_intersection and
-                    try self.inferNormalizedFreshObjectRestCandidates(
-                        rest_target_t,
-                        args,
-                        arg_types,
-                        fixed_count,
-                        subs,
-                    );
-                if (batched_object_inference) return;
-                var j: usize = fixed_count;
-                while (j < arg_types.len) : (j += 1) {
-                    var candidate_t = arg_types[j];
-                    if (self.hir.kindOf(args[j]) == .spread) {
-                        candidate_t = try self.iterableElementType(candidate_t);
+                if (try self.synthesizedRestArgumentListType(
+                    hir_mod.none_node_id,
+                    args,
+                    arg_types,
+                    fixed_count,
+                    false,
+                )) |rest_tuple_t| {
+                    try subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                }
+            } else {
+                const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
+                const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
+                if (rest_target_t < self.interner.pool.typeCount()) {
+                    const rest_target_flags = self.interner.pool.flagsOf(rest_target_t);
+                    const batched_object_inference = rest_target_flags.is_type_parameter and
+                        !rest_target_flags.is_union and
+                        !rest_target_flags.is_intersection and
+                        try self.inferNormalizedFreshObjectRestCandidates(
+                            rest_target_t,
+                            args,
+                            arg_types,
+                            fixed_count,
+                            subs,
+                        );
+                    if (batched_object_inference) return;
+                    var j: usize = fixed_count;
+                    while (j < arg_types.len) : (j += 1) {
+                        var candidate_t = arg_types[j];
+                        if (self.hir.kindOf(args[j]) == .spread) {
+                            candidate_t = try self.iterableElementType(candidate_t);
+                        }
+                        try self.inferFromArgument(rest_target_t, candidate_t, args[j], subs);
                     }
-                    try self.inferFromArgument(rest_target_t, candidate_t, args[j], subs);
                 }
             }
         } else {
@@ -222342,6 +222353,22 @@ test "checker: bare generic rest tuple does not bind from first argument only" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: curry infers a bare generic rest from the whole prefix" {
+    const s = try newSetup(
+        \\function curry<T extends unknown[], U extends unknown[], R>(f: (...args: [...T, ...U]) => R, ...a: T) {
+        \\  return (...b: U) => f(...a, ...b);
+        \\}
+        \\const fixed = (x: number, flag: boolean, ...values: string[]) => 0;
+        \\curry(fixed, 1, true, "a", "b");
+        \\const rest = (...values: string[]) => 0;
+        \\curry(rest);
+        \\curry(rest, "a", "b");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: callback params infer fixed generic rest tuple arity" {
