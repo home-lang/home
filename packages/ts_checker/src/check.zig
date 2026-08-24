@@ -17675,6 +17675,10 @@ pub const Checker = struct {
 
     fn checkAsyncJsDocReturnType(self: *Checker, node: NodeId, jsdoc_return: JsDocDeclaredReturn) CheckError!void {
         if (self.promisePayloadType(jsdoc_return.type) != null) return;
+        // Closure-style `function(...): T` in an @type tag is recovered for
+        // contextual typing after TS1005, but it is not a valid explicit
+        // async return annotation and must not produce a semantic cascade.
+        if (jsdoc_return.origin == .inline_function_type) return;
         // A named callable supplied through `@type` is a contextual target,
         // not an explicit return annotation. Infer the async Promise return
         // and let ordinary function assignability compare it with the target.
