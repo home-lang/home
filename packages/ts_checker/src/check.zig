@@ -85259,6 +85259,12 @@ pub const Checker = struct {
                     {
                         break :blk true;
                     }
+                    if (!init_fn.flags.is_generator and
+                        (try self.functionExpressionReturnMismatchSignature(v.init, declared_type)) != null and
+                        self.functionReturnMismatchAlreadyReported(v.init))
+                    {
+                        break :blk true;
+                    }
                     if (init_fn.return_type == hir_mod.none_node_id) {
                         if (self.firstSignatureType(declared_type)) |target_sig| {
                             if (self.signature_predicates.get(target_sig) != null) break :blk true;
@@ -135121,6 +135127,7 @@ pub const Checker = struct {
             const Entry = struct {
                 name: []const u8,
                 sort: UnionMemberSortKey,
+                is_nullish: bool,
             };
             var entries: std.ArrayListUnmanaged(Entry) = .empty;
             defer entries.deinit(self.gpa);
@@ -135130,6 +135137,7 @@ pub const Checker = struct {
                 try entries.append(self.gpa, .{
                     .name = name,
                     .sort = self.unionMemberSortKey(member, name),
+                    .is_nullish = member == types.Primitive.null_t or member == types.Primitive.undefined_t,
                 });
             }
             var i: usize = 1;
@@ -135142,9 +135150,14 @@ pub const Checker = struct {
             }
             var out: std.ArrayListUnmanaged(u8) = .empty;
             const arena = self.diag_arena.allocator();
-            for (entries.items, 0..) |entry, index| {
-                if (index > 0) try out.appendSlice(arena, " | ");
-                try out.appendSlice(arena, entry.name);
+            var first = true;
+            for ([_]bool{ false, true }) |nullish_pass| {
+                for (entries.items) |entry| {
+                    if (entry.is_nullish != nullish_pass) continue;
+                    if (!first) try out.appendSlice(arena, " | ");
+                    first = false;
+                    try out.appendSlice(arena, entry.name);
+                }
             }
             return out.items;
         }
@@ -168883,6 +168896,37 @@ pub const Checker = struct {
         );
     }
 
+    fn symbolicElementAccessAssignmentTargetName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .element_access) return null;
+        const e = hir_mod.elementOf(self.hir, node);
+        const index_t = if (self.hir.typeOf(e.index) != types.Primitive.none)
+            self.hir.typeOf(e.index)
+        else
+            try self.checkExpression(e.index);
+        if (index_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(index_t).is_type_parameter)
+        {
+            return null;
+        }
+        const object_t = if (self.hir.typeOf(e.object) != types.Primitive.none)
+            self.hir.typeOf(e.object)
+        else
+            try self.checkExpression(e.object);
+        if (object_t == types.Primitive.none) return null;
+        const object_name = (try self.allocObjectTypeShape(object_t)) orelse
+            (try self.elementAccessOperandAnnotationName(e.object)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(object_t)) orelse
+            return null;
+        const index_name = (try self.elementAccessOperandAnnotationName(e.index)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(index_t)) orelse
+            return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s}[{s}]",
+            .{ object_name, index_name },
+        );
+    }
+
     fn elementAccessOperandAnnotationName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
         const text = self.visibleAnnotatedIdentifierTypeText(node) orelse return null;
@@ -171952,6 +171996,7 @@ pub const Checker = struct {
             (try self.visibleSimpleAliasAnnotationNameForIdentifier(target_node, diagnostic_target)) orelse
             (try self.overloadedSignatureObjectAssignmentName(target_node, diagnostic_target)) orelse
             (try self.visibleGenericAssignmentAnnotationName(target_node, diagnostic_target)) orelse
+            (try self.symbolicElementAccessAssignmentTargetName(target_node)) orelse
             (try self.allocAssignmentDiagnosticTypeName(diagnostic_target)) orelse
             (try self.allocObjectTypeShape(diagnostic_target)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
@@ -257321,4 +257366,41 @@ test "checker: enum arithmetic updates require a writable reference" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.update_operand_not_variable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.arithmetic_operand_type));
+}
+
+test "checker: contextual arrow return mismatch owns its assignment diagnostic" {
+    const s = try newSetup(
+        \\declare function F(x: string): number;
+        \\var value: typeof F = (x) => 'a string';
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: nullish type arguments render after their constraint peers" {
+    const s = try newSetup(
+        \\type CheckBooleanOnly<T extends boolean> = T;
+        \\type Result = CheckBooleanOnly<boolean | undefined>;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqualStrings("Type 'boolean | undefined' does not satisfy the constraint 'boolean'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: generic indexed assignment target retains symbolic access name" {
+    const s = try newSetup(
+        \\declare const record: { a: string; b: string; [key: string]: string };
+        \\function write<Key extends keyof typeof record>(key: Key) {
+        \\    record[key] = undefined;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_unchecked_indexed_access = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqualStrings("Type 'undefined' is not assignable to type '{ [key: string]: string; a: string; b: string; }[Key]'.", s.checker.diagnostics.items[0].message);
 }
