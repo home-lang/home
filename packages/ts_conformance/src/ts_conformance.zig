@@ -801,6 +801,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
         .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
+        .react_namespace = directiveValue(directive_source, "reactNamespace"),
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
@@ -1025,6 +1026,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_duplicate_identifier_priority = a.code == 2300 and b.code == 2393;
             const b_duplicate_identifier_priority = b.code == 2300 and a.code == 2393;
             if (a_duplicate_identifier_priority != b_duplicate_identifier_priority) return a_duplicate_identifier_priority;
+            const a_missing_implementation_priority = a.code == 2300 and b.code == 2391;
+            const b_missing_implementation_priority = b.code == 2300 and a.code == 2391;
+            if (a_missing_implementation_priority != b_missing_implementation_priority) return a_missing_implementation_priority;
             if ((a.code == 2695 and b.code == 1005) or
                 (a.code == 1005 and b.code == 2695))
             {
@@ -3683,6 +3687,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
         .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
+        .react_namespace = directiveValue(directive_source, "reactNamespace"),
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,

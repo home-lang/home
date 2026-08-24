@@ -4599,6 +4599,7 @@ pub const Checker = struct {
     jsx_preserve_option: bool = false,
     jsx_transform_enabled: bool = false,
     jsx_factory_name: []const u8 = "React.createElement",
+    jsx_namespace_name: ?[]const u8 = null,
     jsx_fragment_factory_name: []const u8 = "React.Fragment",
     jsx_factory_compiler_option_present: bool = false,
     jsx_fragment_factory_compiler_option_present: bool = false,
@@ -4957,6 +4958,10 @@ pub const Checker = struct {
 
     pub fn setJsxFactoryName(self: *Checker, name: []const u8) void {
         self.jsx_factory_name = name;
+    }
+
+    pub fn setJsxNamespaceName(self: *Checker, name: ?[]const u8) void {
+        self.jsx_namespace_name = name;
     }
 
     pub fn setJsxFragmentFactoryContext(
@@ -24379,10 +24384,7 @@ pub const Checker = struct {
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = tp,
-                .pos = if (tps.len == 1)
-                    self.typeParameterListDiagnosticStart(tp)
-                else
-                    self.typeParameterNameDiagnosticStart(tp),
+                .pos = self.typeParameterNameDiagnosticStart(tp),
                 .code = TsCodes.declared_but_never_used,
                 .message = msg,
             });
@@ -24408,11 +24410,6 @@ pub const Checker = struct {
             offset = after;
         }
         return fallback;
-    }
-
-    fn typeParameterListDiagnosticStart(self: *Checker, tp: NodeId) u32 {
-        const sp = self.hir.spanOf(tp).start;
-        return if (sp > 0) sp - 1 else sp;
     }
 
     /// Declaration merging: a class and an interface with the same
@@ -109713,6 +109710,7 @@ pub const Checker = struct {
             if (self.jsxFactoryRootName(name)) |root| return root;
         }
         if (self.sourceDirectiveValue("reactNamespace")) |name| return name;
+        if (self.jsx_namespace_name) |name| return name;
         return self.jsxFactoryRootName(self.jsx_factory_name) orelse "React";
     }
 
@@ -113094,7 +113092,11 @@ pub const Checker = struct {
         else
             anchor;
         if (try self.tryReportJsxChildMissingProperties(missing_anchor, child_t, target_t)) return true;
-        try self.reportTypeNotAssignable(anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
+        const report_anchor = if (child_is_unknown and self.hir.kindOf(child) == .jsx_expression)
+            child
+        else
+            anchor;
+        try self.reportTypeNotAssignable(report_anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
         return true;
     }
 
@@ -191143,7 +191145,7 @@ test "checker: JSX text child is rejected by element-only children prop" {
 }
 
 test "checker: React18 intrinsic expression child is checked against ReactNode" {
-    const s = try newTsxSetup(
+    const src =
         \\/// <reference path="/.lib/react18/react18.d.ts" />
         \\/// <reference path="/.lib/react18/global.d.ts" />
         \\const a = (
@@ -191152,7 +191154,8 @@ test "checker: React18 intrinsic expression child is checked against ReactNode" 
         \\    <span />
         \\  </main>
         \\);
-    );
+    ;
+    const s = try newTsxSetup(src);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
@@ -191163,6 +191166,10 @@ test "checker: React18 intrinsic expression child is checked against ReactNode" 
             std.mem.indexOf(u8, d.message, "Type 'unknown' is not assignable to type 'ReactNode'.") != null)
         {
             found = true;
+            try T.expectEqual(
+                @as(u32, @intCast(std.mem.indexOf(u8, src, "{(<div />) as unknown}").?)),
+                d.pos orelse s.checker.hir.spanOf(d.node).start,
+            );
         }
     }
     try T.expect(found);
@@ -201206,14 +201213,14 @@ test "checker: noUnusedParameters checks declaration type parameters" {
         count_6196 += 1;
         if (std.mem.indexOf(u8, d.message, "'T' is declared but never used.") != null) {
             const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
-            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "Alias<T>").? + "Alias".len))) saw_alias = true;
-            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "I<T>").? + "I".len))) saw_interface = true;
-            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "C<T>").? + "C".len))) saw_class = true;
-            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "<T>() =>").?))) saw_arrow = true;
+            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "Alias<T>").? + "Alias<".len))) saw_alias = true;
+            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "I<T>").? + "I<".len))) saw_interface = true;
+            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "C<T>").? + "C<".len))) saw_class = true;
+            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "<T>() =>").? + 1))) saw_arrow = true;
         }
         if (std.mem.indexOf(u8, d.message, "'V' is declared but never used.") != null) {
             const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
-            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "m<V>").? + "m".len))) saw_method = true;
+            if (pos == @as(u32, @intCast(std.mem.indexOf(u8, src, "m<V>").? + "m<".len))) saw_method = true;
         }
     }
     try T.expectEqual(@as(usize, 6), count_6196);

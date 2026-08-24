@@ -298,6 +298,9 @@ pub const CompileOptions = struct {
     /// conformance directives or tsconfig. The checker uses this for
     /// emitted-extension suggestions in Node ESM module resolution.
     jsx_preserve_option: bool = false,
+    /// Effective legacy `reactNamespace` option when the caller has
+    /// already removed conformance directives from the parse source.
+    react_namespace: ?[]const u8 = null,
     /// Treat the source as a declaration file. Declaration files allow
     /// ambient forms such as `export const x: T;` without initializers.
     is_declaration_file: bool = false,
@@ -1639,6 +1642,7 @@ fn sourceHasReactJsxReference(source: []const u8) bool {
 
 fn classicJsxScopeName(source: []const u8, options: CompileOptions) []const u8 {
     if (compilerOptionDirectiveValue(source, "reactNamespace")) |name| return name;
+    if (options.react_namespace) |name| return name;
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.react_namespace) |name| return name;
     }
@@ -2162,6 +2166,7 @@ pub fn compileSource(
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
+    checker.setJsxNamespaceName(classicJsxScopeName(source, options));
     checker.setJsxFragmentFactoryContext(
         jsxTransformEnabled(source, options),
         jsxFactoryCompilerOptionPresent(source, options),
@@ -5869,6 +5874,25 @@ test "driver: reactNamespace satisfies classic JSX scope" {
         \\import Element = require("react");
         \\export const FooComponent = <div></div>;
     , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2874);
+    }
+}
+
+test "driver: resolved reactNamespace survives stripped runner directives" {
+    var c = try compileSource(T.allocator,
+        \\import Element = require("react");
+        \\export const FooComponent = <div></div>;
+    , .{
+        .is_tsx = true,
+        .jsx_option_present = true,
+        .react_namespace = "Element",
+        .no_emit = true,
+    });
     defer {
         c.deinit();
         T.allocator.destroy(c);
