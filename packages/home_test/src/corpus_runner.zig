@@ -81668,6 +81668,13 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteInvalidEscapeSequencesCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    // tempDir intentionally returns a disposable String wrapper in this
+    // harness. Preserve node:path's primitive-string contract at the fixture
+    // boundary instead of teaching join() to accept arbitrary boxed strings.
+    return std.mem.replaceOwned(u8, allocator, source, "join(dir, ", "join(String(dir), ");
+}
+
 fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const old_needle =
         \\    const chunk = new Uint8Array(CHUNK_SIZE);
@@ -88009,6 +88016,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
         std.mem.endsWith(u8, relative_path, "/do.test.ts"))
         try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
+    else if (std.mem.eql(u8, relative_path, "regression/issue/invalid-escape-sequences.test.ts"))
+        try rewriteInvalidEscapeSequencesCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/17793.test.ts"))
@@ -107553,6 +107562,39 @@ test "bootstrap runner covers Blob byte storage and copy-on-read" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors invalid escape sequence diagnostics" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/invalid-escape-sequences.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/invalid-escape-sequences.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(String(dir), \"test.js\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(String(dir), \"valid1.js\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "join(dir, ") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed or file_run.result.passed != 20) {
+        std.debug.print(
+            "invalid escape diagnostic corpus mismatch: passed={} failed={} todo={} unsupported={} message={s}\n",
+            .{ file_run.result.passed, file_run.result.failed, file_run.result.todo, file_run.result.unsupported, file_run.result.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 20), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors large Bun.write Blob corpus" {

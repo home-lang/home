@@ -820,8 +820,10 @@ pub const Lexer = struct {
             switch (iter.c) {
                 '\r' => {
 
-                    // Convert '\r\n' into '\n'
-                    if (iter.i < text.len and text[iter.i] == '\n') {
+                    // Convert '\r\n' into '\n'. The cursor is positioned at
+                    // the carriage return, so inspect the following byte.
+                    const next_i: usize = iter.i + 1;
+                    if (next_i < text.len and text[next_i] == '\n') {
                         iter.i += 1;
                     }
 
@@ -843,7 +845,7 @@ pub const Lexer = struct {
                             continue;
                         },
                         'f' => {
-                            buf.append(9) catch unreachable;
+                            buf.append(12) catch unreachable;
                             continue;
                         },
                         'n' => {
@@ -861,7 +863,7 @@ pub const Lexer = struct {
                             continue;
                         },
                         't' => {
-                            buf.append(12) catch unreachable;
+                            buf.append(9) catch unreachable;
                             continue;
                         },
                         'r' => {
@@ -871,7 +873,7 @@ pub const Lexer = struct {
 
                         // legacy octal literals
                         '0'...'7' => {
-                            const octal_start = (iter.i + width2) - 2;
+                            const octal_start = (iter.i + width2) -| 2;
 
                             // 1-3 digit octal
                             var is_bad = false;
@@ -937,7 +939,7 @@ pub const Lexer = struct {
                         // 2-digit hexadecimal
                         'x' => {
                             if (comptime allow_multiline) {
-                                lexer.end = start + iter.i - width2;
+                                lexer.end = (start + iter.i) -| width2;
                                 try lexer.syntaxError();
                             }
 
@@ -959,7 +961,7 @@ pub const Lexer = struct {
                                     value = value * 16 | (c3 + 10 - 'A');
                                 },
                                 else => {
-                                    lexer.end = start + iter.i - width3;
+                                    lexer.end = (start + iter.i) -| width3;
                                     return lexer.syntaxError();
                                 },
                             }
@@ -978,7 +980,7 @@ pub const Lexer = struct {
                                     value = value * 16 | (c3 + 10 - 'A');
                                 },
                                 else => {
-                                    lexer.end = start + iter.i - width3;
+                                    lexer.end = (start + iter.i) -| width3;
                                     return lexer.syntaxError();
                                 },
                             }
@@ -996,7 +998,7 @@ pub const Lexer = struct {
 
                             // variable-length
                             if (c3 == '{') {
-                                const hex_start = iter.i - width - width2 - width3;
+                                const hex_start = ((iter.i -| width) -| width2) -| width3;
                                 var is_first = true;
                                 var is_out_of_range = false;
                                 variableLength: while (true) {
@@ -1015,13 +1017,13 @@ pub const Lexer = struct {
                                         },
                                         '}' => {
                                             if (is_first) {
-                                                lexer.end = start + iter.i - width3;
+                                                lexer.end = (start + iter.i) -| width3;
                                                 return lexer.syntaxError();
                                             }
                                             break :variableLength;
                                         },
                                         else => {
-                                            lexer.end = start + iter.i - width3;
+                                            lexer.end = (start + iter.i) -| width3;
                                             return lexer.syntaxError();
                                         },
                                     }
@@ -1036,7 +1038,7 @@ pub const Lexer = struct {
 
                                 if (is_out_of_range) {
                                     try lexer.addRangeError(
-                                        .{ .loc = .{ .start = @as(i32, @intCast(start + hex_start)) }, .len = @as(i32, @intCast((iter.i - hex_start))) },
+                                        .{ .loc = .{ .start = @as(i32, @intCast(start + hex_start)) }, .len = @as(i32, @intCast(iter.i -| hex_start)) },
                                         "Unicode escape sequence is out of range",
                                         .{},
                                     );
@@ -1060,7 +1062,7 @@ pub const Lexer = struct {
                                             value = value * 16 | (c3 + 10 - 'A');
                                         },
                                         else => {
-                                            lexer.end = start + iter.i - width3;
+                                            lexer.end = (start + iter.i) -| width3;
                                             return lexer.syntaxError();
                                         },
                                     }
@@ -1078,12 +1080,13 @@ pub const Lexer = struct {
                         },
                         '\r' => {
                             if (comptime !allow_multiline) {
-                                lexer.end = start + iter.i - width2;
+                                lexer.end = (start + iter.i) -| width2;
                                 try lexer.addDefaultError("Unexpected end of line");
                             }
 
                             // Ignore line continuations. A line continuation is not an escaped newline.
-                            if (iter.i < text.len and text[iter.i + 1] == '\n') {
+                            const next_i: usize = iter.i + 1;
+                            if (next_i < text.len and text[next_i] == '\n') {
                                 // Make sure Windows CRLF counts as a single newline
                                 iter.i += 1;
                             }
@@ -1092,7 +1095,7 @@ pub const Lexer = struct {
                         '\n', 0x2028, 0x2029 => {
                             // Ignore line continuations. A line continuation is not an escaped newline.
                             if (comptime !allow_multiline) {
-                                lexer.end = start + iter.i - width2;
+                                lexer.end = (start + iter.i) -| width2;
                                 try lexer.addDefaultError("Unexpected end of line");
                             }
                             continue;
