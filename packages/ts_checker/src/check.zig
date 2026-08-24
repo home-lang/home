@@ -101915,7 +101915,10 @@ pub const Checker = struct {
             try self.arrayLiteralTupleDisplayName(args[1], expected_args_t)
         else
             (try self.simpleDiagnosticTypeName(arg_types[1])) orelse "any";
-        const expected_text = (try self.signatureParameterTupleDisplayName(sig)) orelse
+        const expected_text = (if (self.strict_flags.strict_bind_call_apply)
+            try self.signatureParameterTupleDisplayName(sig)
+        else
+            null) orelse
             (try self.tupleDiagnosticDisplayName(expected_args_t)) orelse
             "[]";
         const msg = try std.fmt.allocPrint(
