@@ -140228,11 +140228,12 @@ pub const Checker = struct {
             const instance_t = (self.constructReturnType(imported_t) catch null) orelse return null;
             return instance_t;
         }
-        if (self.strict_flags.no_implicit_any and object_literal_owner == null) {
-            const constructor = self.jsConstructorFunctionDeclForName(node, owner);
-            if (constructor != null and !self.fnHasJsDocClassOrConstructorTag(constructor.?)) {
-                return self.priorCheckJsPrototypeObjectType(node, owner);
-            }
+        // Current tsgo keeps bare/variable checked-JS functions ordinary
+        // under noImplicitAny, even when they assign through `this` or carry
+        // a legacy @constructor tag. Their prototype object supplies the
+        // contextual `this` shape; constructor-body fields do not merge in.
+        if (self.strict_flags.no_implicit_any) {
+            return self.priorCheckJsPrototypeObjectType(node, owner);
         }
         const constructor_instance = self.jsConstructorInstanceTypeForHeritage(node, owner) catch null;
         if (constructor_instance) |instance_t| return instance_t;
@@ -140250,6 +140251,7 @@ pub const Checker = struct {
         if (!self.nodeIsThisReference(access.object)) return null;
         const owner = self.checkJsPrototypeObjectLiteralOwnerName(node) orelse
             self.checkJsComputedPrototypeObjectLiteralOwnerName(node) orelse return null;
+        if (self.strict_flags.no_implicit_any) return null;
         if (!self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_this) {
             return types.Primitive.any;
         }
@@ -229187,7 +229189,7 @@ test "checker: checked JS default null and empty array parameters report implici
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
-test "checker: nested checked JS constructor instances include whole-object prototype members" {
+test "checker: strict checked JS prototype objects exclude variable-constructor fields" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -229196,8 +229198,8 @@ test "checker: nested checked JS constructor instances include whole-object prot
         \\(function container() {
         \\  var Multimap = function() { this._map = {}; };
         \\  Multimap.prototype = {
-        \\    set: function() {},
-        \\    get() {}
+        \\    set: function() { this._map; },
+        \\    get() { this._map; }
         \\  };
         \\  Multimap.prototype.addon = function() {};
         \\  var mm = new Multimap();
@@ -229210,7 +229212,8 @@ test "checker: nested checked JS constructor instances include whole-object prot
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property '_map' does not exist on type '{ set: () => void; get(): void; }'."));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'addon' does not exist on type '{ set: () => void; get(): void; }'."));
 }
 
