@@ -3411,6 +3411,7 @@ fn parserDiagnosticSurvivesParseErrors(diagnostic: ts_parser.Diagnostic, source:
         1115,
         1116,
         1123,
+        1163,
         1184,
         1210,
         1215,
