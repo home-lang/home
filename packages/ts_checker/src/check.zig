@@ -21197,6 +21197,7 @@ pub const Checker = struct {
     }
 
     fn varDeclIsUsedBeforeAssignCandidate(self: *Checker, node: NodeId) bool {
+        if (!self.strict_flags.strict_null_checks) return false;
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => {},
             else => return false,
@@ -193220,6 +193221,27 @@ test "checker: use-before-assign emits TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: use-before-assign requires strict null checks" {
+    const loose = try newSetup(
+        \\class M { foo: string; }
+        \\var m: M;
+        \\var r: string = m.foo;
+    );
+    defer destroySetup(loose);
+    try loose.checker.checkSourceFile(loose.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(loose, TsCodes.used_before_assignment));
+
+    const strict = try newSetup(
+        \\class M { foo: string; }
+        \\var m: M;
+        \\var r: string = m.foo;
+    );
+    defer destroySetup(strict);
+    strict.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try strict.checker.checkSourceFile(strict.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(strict, TsCodes.used_before_assignment));
 }
 
 test "checker: residual parity ambient var merge is initialized" {
