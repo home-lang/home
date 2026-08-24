@@ -106918,6 +106918,17 @@ pub const Checker = struct {
                     // miss. Tuple positional access above is exempt
                     // because the arity is statically known.
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
+                    // A numeric index uses the numeric index signature even
+                    // when the object also has a string index signature. This
+                    // includes numeric enums and `any`, matching
+                    // `getApplicableIndexInfoForName` in tsgo.
+                    if (self.typeEntirelyNumberIndexLike(idx_t)) {
+                        const v = self.interner.objectNumberIndex(obj_t);
+                        if (v != types.Primitive.none) break :blk try self.optionalChainResult(
+                            self.uncheckedIndexedAccessResult(obj_t, idx_t, v),
+                            element_is_optional_chain,
+                        );
+                    }
                     if (self.typeMaybeStringLike(idx_t) or self.typeMaybeNumberIndexLike(idx_t)) {
                         const v = (try self.effectiveStringIndexType(obj_t)) orelse types.Primitive.none;
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(
@@ -106930,13 +106941,6 @@ pub const Checker = struct {
                                 element_is_optional_chain,
                             );
                         }
-                    }
-                    if (self.typeEntirelyNumberIndexLike(idx_t)) {
-                        const v = self.interner.objectNumberIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk try self.optionalChainResult(
-                            self.uncheckedIndexedAccessResult(obj_t, idx_t, v),
-                            element_is_optional_chain,
-                        );
                     }
                     if (self.strict_flags.no_implicit_any) {
                         if (self.typeParameterConstraint(obj_t)) |constraint_t| {
@@ -127609,22 +127613,62 @@ pub const Checker = struct {
         const boolean_t = types.Primitive.boolean_t;
         const string_arr = self.interner.internArrayType(self.string_interner, string_t) catch return error.OutOfMemory;
         const any_arr = self.interner.internArrayType(self.string_interner, any_t) catch return error.OutOfMemory;
-        const optional_boolean_t = self.interner.internUnion(&.{ boolean_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
-        const options_t = self.interner.internObjectType(&.{.{
-            .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory,
-            .type = optional_boolean_t,
-            .is_optional = true,
-            .is_readonly = false,
-            .is_method = false,
-        }}) catch return error.OutOfMemory;
+        const undefined_t = types.Primitive.undefined_t;
+        const optional_string_t = self.interner.internUnion(&.{ string_t, undefined_t }) catch return error.OutOfMemory;
+        const optional_number_t = self.interner.internUnion(&.{ number_t, undefined_t }) catch return error.OutOfMemory;
+
+        const style_t = try self.intlStringLiteralUnion(&.{ "decimal", "percent", "currency" }, true);
+        const currency_display_t = try self.intlStringLiteralUnion(&.{ "code", "symbol", "name" }, true);
+        const use_grouping_t = try self.intlStringLiteralUnionWithBase(
+            &.{ "true", "false", "min2", "auto", "always" },
+            boolean_t,
+            true,
+        );
+        const sign_display_t = try self.intlStringLiteralUnion(&.{ "auto", "never", "always", "exceptZero", "negative" }, true);
+        const rounding_priority_t = try self.intlStringLiteralUnion(&.{ "auto", "morePrecision", "lessPrecision" }, true);
+        const rounding_mode_t = try self.intlStringLiteralUnion(
+            &.{ "ceil", "floor", "expand", "trunc", "halfCeil", "halfFloor", "halfExpand", "halfTrunc", "halfEven" },
+            true,
+        );
+        const trailing_zero_display_t = try self.intlStringLiteralUnion(&.{ "auto", "stripIfInteger" }, true);
+
+        const options_t = self.interner.internObjectType(&.{
+            .{ .name = self.string_interner.intern("localeMatcher") catch return error.OutOfMemory, .type = optional_string_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("style") catch return error.OutOfMemory, .type = style_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("currency") catch return error.OutOfMemory, .type = optional_string_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("currencyDisplay") catch return error.OutOfMemory, .type = currency_display_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory, .type = use_grouping_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("minimumIntegerDigits") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("minimumFractionDigits") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("maximumFractionDigits") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("minimumSignificantDigits") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("maximumSignificantDigits") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("signDisplay") catch return error.OutOfMemory, .type = sign_display_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingPriority") catch return error.OutOfMemory, .type = rounding_priority_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingIncrement") catch return error.OutOfMemory, .type = optional_number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingMode") catch return error.OutOfMemory, .type = rounding_mode_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("trailingZeroDisplay") catch return error.OutOfMemory, .type = trailing_zero_display_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        }) catch return error.OutOfMemory;
         try self.alias_display_names.put(self.gpa, options_t, "NumberFormatOptions");
-        const resolved_options_t = self.interner.internObjectType(&.{.{
-            .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory,
-            .type = boolean_t,
-            .is_optional = false,
-            .is_readonly = false,
-            .is_method = false,
-        }}) catch return error.OutOfMemory;
+        const resolved_use_grouping_t = try self.intlStringLiteralUnionWithBase(
+            &.{ "min2", "auto", "always" },
+            boolean_t,
+            false,
+        );
+        const resolved_rounding_priority_t = try self.intlStringLiteralUnion(&.{ "auto", "morePrecision", "lessPrecision" }, false);
+        const resolved_rounding_mode_t = try self.intlStringLiteralUnion(
+            &.{ "ceil", "floor", "expand", "trunc", "halfCeil", "halfFloor", "halfExpand", "halfTrunc", "halfEven" },
+            false,
+        );
+        const resolved_trailing_zero_display_t = try self.intlStringLiteralUnion(&.{ "auto", "stripIfInteger" }, false);
+        const resolved_options_t = self.interner.internObjectType(&.{
+            .{ .name = self.string_interner.intern("useGrouping") catch return error.OutOfMemory, .type = resolved_use_grouping_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("signDisplay") catch return error.OutOfMemory, .type = sign_display_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingPriority") catch return error.OutOfMemory, .type = resolved_rounding_priority_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingIncrement") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("roundingMode") catch return error.OutOfMemory, .type = resolved_rounding_mode_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("trailingZeroDisplay") catch return error.OutOfMemory, .type = resolved_trailing_zero_display_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        }) catch return error.OutOfMemory;
         try self.alias_display_names.put(self.gpa, resolved_options_t, "ResolvedNumberFormatOptions");
         const sig_construct = self.interner.internSignature(&[_]TypeId{ any_t, options_t }, any_t, true) catch return error.OutOfMemory;
         try self.recordSignatureMinArgs(sig_construct, &.{ true, true });
@@ -127649,6 +127693,34 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("supportedLocalesOf") catch return error.OutOfMemory, .type = sig_supported, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn intlStringLiteralUnion(self: *Checker, values: []const []const u8, include_undefined: bool) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer members.deinit(self.gpa);
+        for (values) |value| {
+            const sid = self.string_interner.intern(value) catch return error.OutOfMemory;
+            try members.append(self.gpa, self.interner.internStringLiteral(sid) catch return error.OutOfMemory);
+        }
+        if (include_undefined) try members.append(self.gpa, types.Primitive.undefined_t);
+        return self.interner.internUnion(members.items) catch return error.OutOfMemory;
+    }
+
+    fn intlStringLiteralUnionWithBase(
+        self: *Checker,
+        values: []const []const u8,
+        base: TypeId,
+        include_undefined: bool,
+    ) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer members.deinit(self.gpa);
+        try members.append(self.gpa, base);
+        for (values) |value| {
+            const sid = self.string_interner.intern(value) catch return error.OutOfMemory;
+            try members.append(self.gpa, self.interner.internStringLiteral(sid) catch return error.OutOfMemory);
+        }
+        if (include_undefined) try members.append(self.gpa, types.Primitive.undefined_t);
+        return self.interner.internUnion(members.items) catch return error.OutOfMemory;
     }
 
     fn intlDateTimeFormatType(self: *Checker) CheckError!TypeId {
@@ -188772,21 +188844,43 @@ test "checker: modern shared-memory and intl globals are recognized" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
-test "checker: Intl NumberFormat validates useGrouping options" {
+test "checker: Intl NumberFormat composes ES2023 options" {
     const s = try newSetup(
         \\new Intl.NumberFormat("en-GB", { useGrouping: true });
         \\new Intl.NumberFormat("en-GB", { useGrouping: "true" });
         \\new Intl.NumberFormat("en-GB", { useGrouping: "always" });
-        \\const { useGrouping } = new Intl.NumberFormat("en-GB").resolvedOptions();
+        \\new Intl.NumberFormat("en-GB", {
+        \\  style: "currency",
+        \\  currency: "EUR",
+        \\  maximumFractionDigits: 0,
+        \\  signDisplay: "negative",
+        \\  roundingPriority: "lessPrecision",
+        \\  roundingIncrement: 100,
+        \\  roundingMode: "trunc",
+        \\  trailingZeroDisplay: "stripIfInteger",
+        \\});
+        \\const { useGrouping, roundingPriority, roundingIncrement, roundingMode, trailingZeroDisplay } =
+        \\  new Intl.NumberFormat("en-GB").resolvedOptions();
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.type_not_assignable,
-        "Type 'string' is not assignable to type 'boolean | undefined'.",
-    ));
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: numeric and any element keys prefer number index signatures" {
+    const s = try newSetup(
+        \\class A { a!: number; }
+        \\class B extends A { b!: number; }
+        \\enum Compass { North, South, East, West }
+        \\declare const both: { [key: string]: A; [key: number]: B };
+        \\var enumValue = both[Compass.East];
+        \\var enumValue: B;
+        \\var anyValue = both[null as any];
+        \\var anyValue: B;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: Atomics waitAsync requires the es2024 library" {
