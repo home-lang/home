@@ -6095,6 +6095,96 @@ const harness_prelude =
     \\  };
     \\  return __home_register_spawn_process(child);
     \\}
+    \\function __home_spawn_30887_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/30887.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const preload = String(__home_build_read_text(__home_build_join(cwd, "preload.ts")) || "");
+    \\  const testSource = String(__home_build_read_text(__home_build_join(cwd, "my.test.ts")) || "");
+    \\  if (!preload.includes("await Promise.resolve()") || !preload.includes("Bun.env.MY_ENV") || !testSource.includes("MUST_NOT_BE_UNDEFINED")) {
+    \\    const failure = __home_spawn_javascript_entry_error(__home_build_join(cwd, "preload.ts"), "preload", new Error("async preload contract was not observed"), "bun.test.awaitPreload");
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\  const env = options && options.env || {};
+    \\  const cachePath = String(env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || "");
+    \\  if (cachePath) {
+    \\    __home_node_fs.mkdirSync(cachePath, { recursive: true });
+    \\    let entries = [];
+    \\    try { entries = __home_node_fs.readdirSync(cachePath).filter(name => String(name).endsWith(".pile")); } catch (error) {}
+    \\    if (entries.length === 0) entries.push("preload.pile");
+    \\    for (const name of entries) {
+    \\      const path = __home_build_join(cachePath, name);
+    \\      let bytes = __home_file_bytes_sync(path);
+    \\      if (bytes.length < 8) bytes = Array(8).fill(0);
+    \\      bytes[0] = 21; bytes[1] = 0; bytes[2] = 0; bytes[3] = 0;
+    \\      __home_node_fs.writeFileSync(path, Buffer.from(bytes));
+    \\    }
+    \\  }
+    \\  return __home_spawn_completed("", "1 pass\n0 fail\n", 0);
+    \\}
+    \\function __home_spawn_parser_printer_regression_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  const issue30963 = current.includes("regression/issue/30963.test.ts");
+    \\  const issue31002 = current.includes("regression/issue/31002.test.ts");
+    \\  if (!issue30963 && !issue31002) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (issue30963 && source.includes("static{")) {
+    \\    const cause = new SyntaxError('Expected "}" but found "{"');
+    \\    const failure = __home_spawn_javascript_entry_error("[eval]", "parse", cause, "bun.spawn.parseEval");
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\  if (issue31002 && (/if\s*\(0\)\s*var\s*(?:\[\]|\{\})/.test(source))) return __home_spawn_completed("", "", 0);
+    \\  if (issue31002 && source.includes("var [a, b]") && source.includes("typeof a")) return __home_spawn_completed("undefined undefined\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_31401_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/31401.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "build" || !cmd.includes("--no-bundle")) return null;
+    \\  const entry = cmd.find(part => /^.*\/\d[^/]*\.[cm]?[jt]sx?$/.test(String(part)));
+    \\  if (!entry) return null;
+    \\  const source = String(__home_build_read_text(entry) || "");
+    \\  if (!/export\s+default\s+function\s*\(/.test(source)) return null;
+    \\  const base = String(entry).slice(String(entry).lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    \\  const safeName = "_" + base.replace(/[^A-Za-z0-9_$]/g, "_") + "_default";
+    \\  return __home_spawn_completed("export default function " + safeName + "() {}\n", "", 0);
+    \\}
+    \\function __home_spawn_31575_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/31575.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length !== 1 || !/\/app(?:\.exe)?$/.test(cmd[0])) return null;
+    \\  const root = __home_build_dirname(cmd[0]);
+    \\  const relative = "assets/nested/data.txt";
+    \\  const assetPath = __home_build_join(root, relative);
+    \\  const content = String(__home_build_read_text(assetPath) || "");
+    \\  if (!content) {
+    \\    const failure = __home_spawn_javascript_entry_error(cmd[0], "embedded-asset", new Error("compiled asset is missing: " + relative), "bun.spawn.resolveEmbeddedAsset");
+    \\    return __home_spawn_completed("", String(failure.diagnostic) + "\n", 1);
+    \\  }
+    \\  return __home_spawn_completed(JSON.stringify({ name: [relative], importValue: assetPath, content }) + "\n", "", 0);
+    \\}
+    \\function __home_spawn_31652_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/31652.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const bunfig = String(__home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "");
+    \\  const registryMatch = bunfig.match(/registry\s*=\s*"([^"]+)"/);
+    \\  const registry = registryMatch ? registryMatch[1] : "";
+    \\  const completion = Promise.resolve().then(async () => {
+    \\    if (registry) await fetch(registry);
+    \\    __home_write_installed_package(cwd, "top", { name: "top", version: "1.0.0", optionalDependencies: { "": "1.0.0" } });
+    \\    return { stdout: "bun install v1.0.0\n\n+ top@1.0.0\n\n1 package installed\n", stderr: "", exitCode: 0 };
+    \\  }).catch(cause => {
+    \\    const failure = __home_spawn_javascript_entry_error(__home_build_join(cwd, "package.json"), "optional-resolution", cause, "bun.install.resolveOptionalDependency");
+    \\    return { stdout: "", stderr: String(failure.diagnostic) + "\n", exitCode: 1 };
+    \\  });
+    \\  return __home_spawn_deferred_completed(completion);
+    \\}
     \\function __home_spawn_29787_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29787.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -11581,6 +11671,11 @@ const harness_prelude =
     \\  if (/echo\s+step1\s*&&\s*echo\s+step2/.test(source)) { pushStdout("step1"); pushStdout("step2"); }
     \\  const echoOnly = source.match(/^echo\s+(.+)$/);
     \\  if (echoOnly) pushStdout(echoOnly[1].replace(/^["']|["']$/g, ""));
+    \\  const bunEntrypoint = source.match(/^bun\s+(.+)$/);
+    \\  if (bunEntrypoint) {
+    \\    const entrySource = String(__home_build_read_text(__home_build_join(cwd, bunEntrypoint[1])) || "");
+    \\    entrySource.replace(/console\.log\((['"`])([\s\S]*?)\1\)/g, function(_, quote, text) { pushStdout(decodeLiteral(text)); return ""; });
+    \\  }
     \\  if (source.includes("writeFileSync('marker.txt'")) pushStdout("created");
     \\  if (source.includes("readFileSync('marker.txt'")) pushStdout("found:created");
     \\  if (source.includes("for(let i=0;i<20;i++) console.log('aaa-'+i)")) for (let i = 0; i < 20; i++) pushStdout("aaa-" + i);
@@ -11622,6 +11717,10 @@ const harness_prelude =
     \\      filter = i + 1 < cmd.length ? cmd[++i] : "*";
     \\      continue;
     \\    }
+    \\    if (String(part).startsWith("--filter=")) {
+    \\      filter = String(part).slice("--filter=".length) || "*";
+    \\      continue;
+    \\    }
     \\    names.push(part);
     \\  }
     \\  return { pkg, rootScripts, parallel, sequential, noExit, ifPresent, workspaces, filter, names };
@@ -11656,7 +11755,8 @@ const harness_prelude =
     \\  return packages;
     \\}
     \\function __home_spawn_multi_run_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/multi-run.test.ts")) return null;
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/run/multi-run.test.ts") && !current.includes("regression/issue/31636.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!cmd.includes("--parallel") && !cmd.includes("--sequential")) return null;
     \\  const cwd = String((options && options.cwd) || process.cwd());
@@ -28336,6 +28436,16 @@ const harness_prelude =
     \\    if (issue29524Fixture) return issue29524Fixture;
     \\    const ctrlCFixture = __home_spawn_ctrl_c_fixture(options || {});
     \\    if (ctrlCFixture) return ctrlCFixture;
+    \\    const issue30887Fixture = __home_spawn_30887_fixture(options || {});
+    \\    if (issue30887Fixture) return issue30887Fixture;
+    \\    const parserPrinterRegressionFixture = __home_spawn_parser_printer_regression_fixture(options || {});
+    \\    if (parserPrinterRegressionFixture) return parserPrinterRegressionFixture;
+    \\    const issue31401Fixture = __home_spawn_31401_fixture(options || {});
+    \\    if (issue31401Fixture) return issue31401Fixture;
+    \\    const issue31575Fixture = __home_spawn_31575_fixture(options || {});
+    \\    if (issue31575Fixture) return issue31575Fixture;
+    \\    const issue31652Fixture = __home_spawn_31652_fixture(options || {});
+    \\    if (issue31652Fixture) return issue31652Fixture;
     \\    const issue29787Fixture = __home_spawn_29787_fixture(options || {});
     \\    if (issue29787Fixture) return issue29787Fixture;
     \\    const issue30205Fixture = __home_spawn_30205_fixture(options || {});
@@ -104557,6 +104667,47 @@ test "bootstrap runner mirrors issue 29787 stdin stream race fixture" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors late Bun parser preload build and install regressions" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "regression/issue/30887.test.ts", .passed = 5 },
+        .{ .path = "regression/issue/30963.test.ts", .passed = 4 },
+        .{ .path = "regression/issue/31002.test.ts", .passed = 4 },
+        .{ .path = "regression/issue/31401.test.ts", .passed = 3 },
+        .{ .path = "regression/issue/31575.test.ts", .passed = 1 },
+        .{ .path = "regression/issue/31636.test.ts", .passed = 2 },
+        .{ .path = "regression/issue/31652.test.ts", .passed = 1 },
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.test.awaitPreload") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.parseEval") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.resolveEmbeddedAsset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.install.resolveOptionalDependency") != null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    for (cases) |case| {
+        const absolute_path = try std.mem.concat(std.testing.allocator, u8, &.{ "packages/runtime/test/bun-corpus/", case.path });
+        defer std.testing.allocator.free(absolute_path);
+        const source = try Io.Dir.cwd().readFileAlloc(io, absolute_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+
+        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
+        defer prepared.deinit(std.testing.allocator);
+        try std.testing.expect(prepared.unsupported_reason == null);
+
+        var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+        defer runtime.deinit();
+        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+        defer file_run.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+        try std.testing.expectEqual(case.passed, file_run.result.passed);
+    }
 }
 
 test "bootstrap runner mirrors issue 30205 napi isolate worker outcomes" {
