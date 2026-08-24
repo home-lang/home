@@ -1022,6 +1022,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const a_jsdoc_heritage_priority = a.code == 8023 and b.code == 1003;
             const b_jsdoc_heritage_priority = b.code == 8023 and a.code == 1003;
             if (a_jsdoc_heritage_priority != b_jsdoc_heritage_priority) return a_jsdoc_heritage_priority;
+            const a_duplicate_identifier_priority = a.code == 2300 and b.code == 2393;
+            const b_duplicate_identifier_priority = b.code == 2300 and a.code == 2393;
+            if (a_duplicate_identifier_priority != b_duplicate_identifier_priority) return a_duplicate_identifier_priority;
             if ((a.code == 2695 and b.code == 1005) or
                 (a.code == 1005 and b.code == 2695))
             {

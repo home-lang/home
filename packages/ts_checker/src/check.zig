@@ -172844,8 +172844,8 @@ pub const Checker = struct {
                 .{self.string_interner.get(class_name)},
             );
         }
-        return (try self.allocObjectTypeShape(t)) orelse
-            (try self.allocSimpleTypeName(t));
+        return (try self.allocSimpleTypeName(t)) orelse
+            (try self.allocObjectTypeShape(t));
     }
 
     fn missingPropertyTypeNameAt(self: *Checker, t: TypeId, anchor: NodeId) CheckError!?[]const u8 {
@@ -203075,6 +203075,21 @@ test "checker: tuple contextual object element reports missing property" {
             try T.expect(std.mem.indexOf(u8, d.message, "Type '[{}, number]' is not assignable") == null);
         }
     }
+}
+
+test "checker: missing property diagnostics collapse lone call signatures" {
+    const s = try newSetup(
+        \\declare let x: { (): string; prop: number };
+        \\declare let y: { (): string };
+        \\x = y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'prop' is missing in type '() => string' but required in type '{ (): string; prop: number; }'.",
+    ));
 }
 
 test "checker: missing property diagnostics name class static sources" {

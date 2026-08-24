@@ -2462,6 +2462,14 @@ fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
             {
                 return a.code == 2300;
             }
+            // Duplicate variable/function declarations carry both the
+            // binder's TS2300 and the checker's TS2393 at the function name.
+            // tsgo preserves binder order before considering span length.
+            if ((a.code == 2300 and b.code == 2393) or
+                (a.code == 2393 and b.code == 2300))
+            {
+                return a.code == 2300;
+            }
             // A malformed JSDoc heritage tag is first checked against the
             // class heritage clause, then recovered as a missing type name.
             // Both diagnostics share the same zero-width start in tsgo.
@@ -3963,6 +3971,32 @@ test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
 
     try T.expectEqual(@as(u32, 2695), diags[0].code);
     try T.expectEqual(@as(u32, 1005), diags[1].code);
+}
+
+test "driver: duplicate identifiers sort before duplicate implementations" {
+    var diags = [_]Diagnostic{
+        .{
+            .phase = .emit,
+            .pos = 10,
+            .line = 0,
+            .span_len = 2,
+            .code = 2393,
+            .message = "Duplicate function implementation.",
+        },
+        .{
+            .phase = .bind,
+            .pos = 10,
+            .line = 0,
+            .span_len = 12,
+            .code = 2300,
+            .message = "Duplicate identifier 'foo'.",
+        },
+    };
+
+    sortDiagnosticsBySourceOrder(diags[0..]);
+
+    try T.expectEqual(@as(u32, 2300), diags[0].code);
+    try T.expectEqual(@as(u32, 2393), diags[1].code);
 }
 
 test "driver: empty source produces empty JS" {
