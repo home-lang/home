@@ -80897,6 +80897,16 @@ pub const Checker = struct {
             {
                 return;
             }
+            if (declared.constraint != hir_mod.none_node_id) {
+                const declared_t = self.lowererLowerWithTypeParams(declared.constraint) catch types.Primitive.unknown;
+                if (self.typeIsPropertyKeyDomain(declared_t, 0)) return;
+                if (self.declaredTypeParameterConstraintAt(declared.constraint)) |outer| {
+                    if (outer.constraint != hir_mod.none_node_id) {
+                        const outer_t = self.lowererLowerWithTypeParams(outer.constraint) catch types.Primitive.unknown;
+                        if (self.typeIsPropertyKeyDomain(outer_t, 0)) return;
+                    }
+                }
+            }
         }
         if (self.typeNodeIsHomomorphicMappedKeyProjection(node)) return;
         if (!self.interner.pool.flagsOf(constraint_t).is_type_parameter) {
@@ -209098,6 +209108,16 @@ test "checker: mapped type rejects unconstrained key parameter outside condition
         TsCodes.type_not_assignable,
         "Type 'T' is not assignable to type 'string | number | symbol'.",
     ));
+}
+
+test "checker: mapped keys follow enclosing property-key constraints" {
+    const s = try newSetup(
+        \\type ImageHolder<K extends string> = { [P in K]: string };
+        \\type NumberHolder<K extends number> = { [P in K]: number };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: Pick validates generic key constraints against source keys" {
