@@ -163538,7 +163538,9 @@ pub const Checker = struct {
             self.hir.typeOf(f.body)
         else
             try self.checkExpression(f.body);
-        return self.tryReportSinglePropertyMissing(f.body, f.body, source_ret, target_ret);
+        const reported = try self.tryReportSinglePropertyMissing(f.body, f.body, source_ret, target_ret);
+        if (reported) self.removePriorDiagnosticsInNodeSpan(arg_node, TsCodes.type_not_assignable);
+        return reported;
     }
 
     fn contextualFunctionSignatureAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
