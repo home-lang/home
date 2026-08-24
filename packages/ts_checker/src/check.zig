@@ -108641,6 +108641,7 @@ pub const Checker = struct {
                         continue;
                     }
                     if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                        const fp = hir_mod.fnDeclOf(self.hir, cur);
                         if (inside_decorator) {
                             // Skip this function ÃÂ¢ÃÂÃÂ decorators run
                             // outside it. The next .decorator boundary
@@ -108662,20 +108663,15 @@ pub const Checker = struct {
                             // check above (their own fn_decl appears
                             // BELOW the class_decl in the walk).
                             //
-                            // Suppress when the await is inside a
-                            // class-field computed key ÃÂ¢ÃÂÃÂ TS1166 (
-                            // `must have a simple literal type`) is
-                            // already emitted there and upstream tsc
-                            // does NOT cascade an extra TS1308 in
-                            // that position. Mirrors
-                            // `awaitAndYieldInProperty.ts` baseline.
-                            if (!self.in_computed_property_name) {
+                            // Computed names execute where the class is
+                            // declared, so they inherit an outer async
+                            // function. Field initializers never do.
+                            if (!self.in_computed_property_name or !fp.flags.is_async) {
                                 try self.report(node, TsCodes.await_only_in_async, "'await' expressions are only allowed within async functions and at the top levels of modules.");
                                 await_has_context_error = true;
                             }
                             break;
                         }
-                        const fp = hir_mod.fnDeclOf(self.hir, cur);
                         if (!fp.flags.is_async) {
                             // tsc attaches a TS1356 "Did you mean to mark
                             // this function as 'async'?" related-info on
@@ -108702,6 +108698,14 @@ pub const Checker = struct {
                         }
                         break;
                     }
+                }
+                if (!await_has_context_error and !self.has_parse_diagnostics and
+                    crossed_class_body and self.in_computed_property_name and
+                    (self.nodeHasAncestorKind(node, .namespace_decl) or
+                        self.nodeHasAncestorKind(node, .module_decl)))
+                {
+                    try self.report(node, TsCodes.await_only_in_async, "'await' expressions are only allowed within async functions and at the top levels of modules.");
+                    await_has_context_error = true;
                 }
                 if (!await_has_context_error and !self.has_parse_diagnostics and
                     !self.nodeIsInsideFunctionLike(node) and
@@ -211759,6 +211763,28 @@ test "checker: TS1308 `await` only allowed in async functions" {
     }
     try T.expect(found_in_sync);
     try T.expect(!found_in_async);
+}
+
+test "checker: computed class keys inherit declaration await context" {
+    const s = try newSetup(
+        \\declare const x: string;
+        \\namespace N {
+        \\  class A { [await x]() {} }
+        \\  export class B { [await x]() {}; static [await x]() {} }
+        \\}
+        \\export class C { [await x]() {}; static [await x]() {} }
+        \\{ class D { [await x]() {} } }
+        \\function f() { class E { [await x]() {}; static [await x]() {} } }
+        \\async function af() { class F { [await x]() {}; static [await x]() {} } }
+        \\function* gf() { class G { [await x]() {} } }
+        \\async function* agf() { class H { [await x]() {} } }
+        \\function switchSync() { switch (0) { case 0: class I { [await x]() {} } } }
+        \\async function switchAsync() { switch (0) { case 0: class J { [await x]() {} } } }
+        \\export {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.await_only_in_async));
 }
 
 test "checker: checkjs await in non-async function reports TS1308" {
