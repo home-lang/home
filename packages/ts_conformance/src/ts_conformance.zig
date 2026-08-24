@@ -7036,6 +7036,16 @@ pub fn loadDirectoryWithOptions(
             baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.fallback_baseline_root, stem, src);
         }
         defer if (baseline_path) |p| gpa.free(p);
+        // Clean compiler cases have no errors baseline, but their emitted-JS
+        // baseline still identifies which target expansion tsgo retained.
+        // Use it so a source matrix like `ES5, ES2015` does not fall back to
+        // the first (now-deprecated and absent) target.
+        const emit_baseline_path = if (baseline_path == null)
+            try sourceSelectedBaselinePath(gpa, options.baseline_root, stem, src, ".js")
+        else
+            null;
+        defer if (emit_baseline_path) |p| gpa.free(p);
+        const selected_baseline_path = baseline_path orelse emit_baseline_path;
         const baseline_only_option_deprecation = if (baseline_path) |bp|
             try baselineHasOnlyOptionDeprecation(gpa, bp)
         else
@@ -7222,8 +7232,8 @@ pub fn loadDirectoryWithOptions(
             directiveBool(directive_source, "deduplicatePackages") orelse
             true;
         const allow_importing_ts_extensions = baselineOptionBool(baseline_path, "allowimportingtsextensions");
-        const emit_target = selectedEmitTarget(directive_source, baseline_path);
-        const target_selection_explicit = baselineEmitTarget(baseline_path) != null or
+        const emit_target = selectedEmitTarget(directive_source, selected_baseline_path);
+        const target_selection_explicit = baselineEmitTarget(selected_baseline_path) != null or
             directiveValue(directive_source, "target") != null;
         try out.append(gpa, .{
             .name = name,
@@ -8668,9 +8678,9 @@ fn parseEmitTarget(raw: []const u8) ?ts_driver.EsTarget {
 
 fn baselineEmitTarget(path: ?[]const u8) ?ts_driver.EsTarget {
     const p = path orelse return null;
-    const suffix_end = std.mem.lastIndexOf(u8, p, ").errors.txt") orelse return null;
-    const options_start = std.mem.lastIndexOfScalar(u8, p[0..suffix_end], '(') orelse return null;
-    var options = std.mem.splitScalar(u8, p[options_start + 1 .. suffix_end], ',');
+    const options_end = std.mem.lastIndexOfScalar(u8, p, ')') orelse return null;
+    const options_start = std.mem.lastIndexOfScalar(u8, p[0..options_end], '(') orelse return null;
+    var options = std.mem.splitScalar(u8, p[options_start + 1 .. options_end], ',');
     while (options.next()) |raw_option| {
         const option = std.mem.trim(u8, raw_option, " \t");
         if (!std.mem.startsWith(u8, option, "target=")) continue;
@@ -8705,6 +8715,10 @@ test "conformance: selected emit target follows baseline variants and directives
         "case(target=es2021).errors.txt",
     ));
     try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("// @target: es6", null));
+    try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget(
+        "// @target: es5, es2015",
+        "case(target=es2015).js",
+    ));
     try T.expectEqual(ts_driver.EsTarget.es2015, selectedEmitTarget("\xEF\xBB\xBF//@target: es6\r\rconst x = 1;", null));
     try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("const x = 1;", null));
     try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2024", null));
