@@ -99613,6 +99613,19 @@ pub const Checker = struct {
         return null;
     }
 
+    fn constructSignatureOfType(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature and self.interner.isSignature(t) and self.signatureIsConstruct(t)) return t;
+        if (!flags.is_object_type) return null;
+        const construct_id = self.string_interner.intern("__construct") catch return null;
+        for (self.interner.objectMembers(t)) |member| {
+            if (member.name != construct_id) continue;
+            if (self.interner.isSignature(member.type) and self.signatureIsConstruct(member.type)) return member.type;
+        }
+        return null;
+    }
+
     fn typeHasConstructSignature(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
@@ -100755,6 +100768,9 @@ pub const Checker = struct {
         if (self.nonConstructCallSignatureOfType(obj_t)) |sig| {
             if (try self.signaturePrototypeMember(sig, name)) |member_t| return member_t;
         }
+        if (self.constructSignatureOfType(obj_t)) |sig| {
+            if (try self.signaturePrototypeMember(sig, name)) |member_t| return member_t;
+        }
         const function_name = self.string_interner.intern("Function") catch return error.OutOfMemory;
         if (self.type_names.get(function_name)) |function_t| {
             if (try self.lookupObjectMember(function_t, name)) |member_t| return member_t;
@@ -101668,19 +101684,30 @@ pub const Checker = struct {
 
         const params = self.interner.signatureParams(sig);
         const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+        const is_construct = self.signatureIsConstruct(sig);
+        const this_arg_t = if (is_construct)
+            ret
+        else if (self.signatureThisParam(sig)) |raw_this_t|
+            self.signaturePrototypeThisArgumentType(sig, raw_this_t)
+        else
+            types.Primitive.unknown;
 
         if (std.mem.eql(u8, name_str, "call")) {
             var call_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer call_params.deinit(self.gpa);
-            try call_params.append(self.gpa, types.Primitive.any);
+            try call_params.append(self.gpa, this_arg_t);
             try call_params.appendSlice(self.gpa, params);
-            return try self.interner.internSignature(call_params.items, ret, false);
+            return try self.interner.internSignature(
+                call_params.items,
+                if (is_construct) types.Primitive.void_t else ret,
+                false,
+            );
         }
 
         if (std.mem.eql(u8, name_str, "bind")) {
             var bind_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer bind_params.deinit(self.gpa);
-            try bind_params.append(self.gpa, types.Primitive.any);
+            try bind_params.append(self.gpa, if (is_construct) types.Primitive.any else this_arg_t);
             try bind_params.appendSlice(self.gpa, params);
             const bind_sig = try self.interner.internSignature(bind_params.items, types.Primitive.any, false);
             var omittable: std.ArrayListUnmanaged(bool) = .empty;
@@ -101693,12 +101720,31 @@ pub const Checker = struct {
         }
 
         var apply_params: [2]TypeId = undefined;
-        apply_params[0] = types.Primitive.any;
+        apply_params[0] = this_arg_t;
         apply_params[1] = if (self.rest_signatures.contains(sig) and params.len == 1)
             params[0]
         else
             try self.internTupleFromTypes(params, false);
-        return try self.interner.internSignature(&apply_params, ret, false);
+        return try self.interner.internSignature(
+            &apply_params,
+            if (is_construct) types.Primitive.void_t else ret,
+            false,
+        );
+    }
+
+    fn signaturePrototypeThisArgumentType(self: *Checker, sig: TypeId, raw_this_t: TypeId) TypeId {
+        if (self.isThisTypeParameter(raw_this_t)) {
+            const decl = self.signatureDeclNode(sig);
+            if (decl != hir_mod.none_node_id) {
+                const class_node = self.enclosingClassNode(decl);
+                if (class_node != hir_mod.none_node_id) {
+                    if (self.declarationName(class_node)) |class_name| {
+                        if (self.class_instance_types.get(class_name)) |instance_t| return instance_t;
+                    }
+                }
+            }
+        }
+        return self.thisTypeMarkerConstraint(raw_this_t) orelse raw_this_t;
     }
 
     fn checkFunctionApplyArgumentTuple(
@@ -101715,21 +101761,32 @@ pub const Checker = struct {
             self.hir.typeOf(m.object)
         else
             try self.checkExpression(m.object);
-        const sig = self.nonConstructCallSignatureOfType(receiver_t) orelse return;
+        const sig = self.nonConstructCallSignatureOfType(receiver_t) orelse
+            self.constructSignatureOfType(receiver_t) orelse return;
         const params = self.interner.signatureParams(sig);
         const expected_args_t = if (self.rest_signatures.contains(sig) and params.len == 1)
             params[0]
         else
             try self.internTupleFromTypes(params, false);
-        if (self.hir.kindOf(args[1]) == .array_literal and
-            try self.arrayLiteralAssignableToTupleTarget(args[1], expected_args_t, false))
-        {
-            return;
+        if (self.hir.kindOf(args[1]) == .array_literal) {
+            if (try self.arrayLiteralAssignableToTupleTarget(args[1], expected_args_t, false)) return;
+            const source_len = try self.fixedArrayLiteralTupleLength(args[1]);
+            const target_len = self.fixedTupleLength(expected_args_t);
+            if (source_len != null and target_len != null and source_len.? == target_len.?) {
+                // Same-width literals are elaborated by the ordinary argument
+                // checker, which anchors TS2322 on the mismatching element.
+                return;
+            }
         }
         if (self.engine.isAssignableTo(arg_types[1], expected_args_t) catch true) return;
         if (self.diagnosticExistsOnNode(args[1], TsCodes.argument_type_mismatch)) return;
-        const arg_text = (try self.simpleDiagnosticTypeName(arg_types[1])) orelse "any";
-        const expected_text = (try self.simpleDiagnosticTypeName(expected_args_t)) orelse "[]";
+        const arg_text = if (self.hir.kindOf(args[1]) == .array_literal)
+            try self.arrayLiteralTupleDisplayName(args[1], expected_args_t)
+        else
+            (try self.simpleDiagnosticTypeName(arg_types[1])) orelse "any";
+        const expected_text = (try self.signatureParameterTupleDisplayName(sig)) orelse
+            (try self.tupleDiagnosticDisplayName(expected_args_t)) orelse
+            "[]";
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -101740,6 +101797,58 @@ pub const Checker = struct {
             .code = TsCodes.argument_type_mismatch,
             .message = msg,
         });
+    }
+
+    fn signatureParameterTupleDisplayName(self: *Checker, sig: TypeId) CheckError!?[]const u8 {
+        if (!self.interner.isSignature(sig)) return null;
+        const params = self.interner.signatureParams(sig);
+        const names = self.signature_param_names.get(sig);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.append(arena, '[');
+        for (params, 0..) |param_t, index| {
+            if (index > 0) try buf.appendSlice(arena, ", ");
+            if (names) |param_names| {
+                if (index < param_names.len) {
+                    try buf.appendSlice(arena, self.string_interner.get(param_names[index]));
+                    try buf.appendSlice(arena, ": ");
+                }
+            }
+            try buf.appendSlice(arena, (try self.allocSimpleTypeName(param_t)) orelse "any");
+        }
+        try buf.append(arena, ']');
+        return buf.items;
+    }
+
+    fn rewriteStrictBindThisMismatch(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        sig: TypeId,
+        diagnostic_start: usize,
+    ) void {
+        if (!self.strict_flags.strict_bind_call_apply or args.len == 0) return;
+        if (self.hir.kindOf(call_node) != .call_expr) return;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) != .member_access) return;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        if (!std.mem.eql(u8, self.string_interner.get(member.name), "bind")) return;
+        if (diagnostic_start >= self.diagnostics.items.len) return;
+        for (self.diagnostics.items[diagnostic_start..]) |*diagnostic| {
+            if (diagnostic.node != args[0] or diagnostic.code != TsCodes.argument_type_mismatch) continue;
+            diagnostic.code = TsCodes.no_overload_matches;
+            diagnostic.message = "No overload matches this call.";
+            diagnostic.chain = &.{};
+            diagnostic.related = &.{};
+            const params = self.interner.signatureParams(sig);
+            if (params.len > 0 and
+                params[0] < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(params[0]).is_literal)
+            {
+                diagnostic.pos = self.hir.spanOf(call_node).start;
+            }
+            return;
+        }
     }
 
     fn diagnosticExistsOnNode(self: *Checker, node: NodeId, code: u32) bool {
@@ -105246,7 +105355,9 @@ pub const Checker = struct {
                             }
                         }
                     }
+                    const strict_bind_diag_start = self.diagnostics.items.len;
                     try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
+                    self.rewriteStrictBindThisMismatch(node, args, effective_callee_t, strict_bind_diag_start);
                     if (self.interner.signatureReturn(effective_callee_t)) |ret| {
                         if (failed_contextual_generic_return_inference) {
                             break :blk try self.optionalChainResult(types.Primitive.unknown, call_is_optional_chain);
@@ -220388,6 +220499,46 @@ test "checker: array literal spread uses fixed parameter context and arity" {
         if (diagnostic.code == TsCodes.expected_n_arguments) break diagnostic;
     } else return error.MissingDiagnostic;
     try T.expectEqualStrings("Expected 0-1 arguments, but got 2.", arity.message);
+}
+
+test "checker: strict bind call apply preserves this tuples and constructors" {
+    const b = try newBoundSetup(
+        \\declare function foo(a: number, b: string): string;
+        \\foo.apply(undefined, [10]);
+        \\foo.apply(undefined, [10, 20]);
+        \\class C {
+        \\  constructor(a: number, b: string) {}
+        \\  foo(this: this, a: number, b: string): string { return ""; }
+        \\}
+        \\declare const c: C;
+        \\c.foo.bind(undefined);
+        \\c.foo.call(undefined, 10, "ok");
+        \\C.call(c, 10);
+        \\C.apply(c, [10, 20]);
+        \\function bindLiteral(callback: (this: 1) => void) {
+        \\  callback.bind(2);
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_bind_call_apply = true,
+        .strict_null_checks = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.no_overload_matches));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.expected_n_arguments));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '[number]' is not assignable to parameter of type '[a: number, b: string]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'undefined' is not assignable to parameter of type 'C'.",
+    ));
 }
 
 test "checker: spread tuple fixed prefix satisfies required parameter count" {
