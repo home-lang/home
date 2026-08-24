@@ -88376,11 +88376,9 @@ pub const Checker = struct {
         }
         const target_index = self.interner.objectStringIndex(target_t);
         if (target_index == types.Primitive.none) return null;
-        const target_number_index = self.interner.objectNumberIndex(target_t);
-        if (target_number_index != types.Primitive.none and !self.typeIsAnyLike(target_number_index)) return null;
         const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
         defer self.gpa.free(source_members);
-        if (source_members.len == 0) return null;
+        if (source_members.len == 0) return true;
         for (source_members) |member| {
             if (self.isSymbolNamedMember(member.name)) continue;
             if (!try self.checkerAssignableTo(member.type, target_index)) return false;
@@ -136404,6 +136402,7 @@ pub const Checker = struct {
             if (try self.jsDocConstrainedTypeAssignable(comparable_arg, constraint, 0)) return;
             if (try self.tryReportTypeArgSingleMissingProperty(arg_node, comparable_arg, constraint, false)) return;
         }
+        if (try self.genericConstraintAssignable(arg_t, constraint)) return;
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
@@ -209858,6 +209857,20 @@ test "checker: named objects satisfy compatible generic string index constraints
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: finite objects satisfy compatible generic string index constraints" {
+    const s = try newSetup(
+        \\type Indexed<T extends { [key: string]: boolean }> = T;
+        \\type Empty = Indexed<{}>;
+        \\type Known = Indexed<{ enabled: true }>;
+        \\type NamedEmpty = {};
+        \\type AlsoEmpty = Indexed<NamedEmpty>;
+        \\type Bad = Indexed<{ label: string }>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: remapped and inferred mapped keys use their resulting key domain" {
