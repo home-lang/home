@@ -87928,6 +87928,13 @@ pub const Checker = struct {
         }
         if (self.sameNonGenericClassInstanceDeclaration(source_t, target_t)) return true;
         if (self.namedObjectIsTargetUnionMember(source_t, target_t)) return true;
+        if (target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_union)
+        {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (source_t == member) return true;
+            }
+        }
         const normalized_source_t = try self.normalizeKeyofAlgebra(source_t);
         if (normalized_source_t != source_t) return self.checkerAssignableTo(normalized_source_t, target_t);
         const normalized_target_t = try self.normalizeKeyofAlgebra(target_t);
@@ -167712,7 +167719,11 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.contextualGeneratorFunctionAssignableToParam(op.value, value_t, tm.type)) continue;
-            if (try self.checkerAssignableExpressionTo(op.value, value_t, tm.type)) continue;
+            const relation_target_t = if (include_optional_undefined and tm.is_optional)
+                contextual_target_t
+            else
+                tm.type;
+            if (try self.checkerAssignableExpressionTo(op.value, value_t, relation_target_t)) continue;
             if (self.hir.kindOf(op.value) == .array_literal) {
                 if (try self.tryReportArrayLiteralArrayElementMismatch(op.value, tm.type)) {
                     emitted = true;
