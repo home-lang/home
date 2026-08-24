@@ -29510,6 +29510,15 @@ pub const Checker = struct {
         args: []const NodeId,
     ) ?TypeId {
         const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call_node) == .new_expr) {
+            if (self.hir.kindOf(call.callee) == .identifier) {
+                const name = hir_mod.identifierOf(self.hir, call.callee).name;
+                if (self.class_constructor_overload_sigs.get(name)) |overload_list| {
+                    if (overload_list.items.len > 0) return overload_list.items[0];
+                }
+            }
+            if (self.firstConstructSignatureType(callee_t)) |signature| return signature;
+        }
         if (self.hir.kindOf(call.callee) == .identifier) {
             const name = hir_mod.identifierOf(self.hir, call.callee).name;
             if (std.mem.eql(u8, self.string_interner.get(name), "super")) {
@@ -102630,6 +102639,7 @@ pub const Checker = struct {
         class_name: hir_mod.StringId,
         constructor_sig: TypeId,
         type_arg_nodes: []const NodeId,
+        check_constraints: bool,
     ) CheckError!TypeId {
         const info = self.generic_aliases.get(class_name) orelse return constructor_sig;
         if (info.params.len == 0 or type_arg_nodes.len == 0) return constructor_sig;
@@ -102637,10 +102647,15 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         const count = @min(type_arg_nodes.len, info.params.len);
+        var constraint_failed = false;
         for (0..count) |i| {
             const explicit = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
             try subs.put(self.gpa, info.params[i], explicit);
-            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], info.params[i], explicit);
+            if (check_constraints and !constraint_failed) {
+                const diagnostic_start = self.diagnostics.items.len;
+                try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], info.params[i], explicit);
+                constraint_failed = self.diagnostics.items.len != diagnostic_start;
+            }
         }
         if (subs.count() == 0) return constructor_sig;
         return self.substituteType(constructor_sig, &subs) catch constructor_sig;
@@ -104873,6 +104888,19 @@ pub const Checker = struct {
                             const overload_type_arg_count_matches = overload_type_arg_nodes.len == 0 or
                                 self.overloadTypeArgCountMatchesAny(overloads, overload_type_arg_nodes.len);
                             if (overload_type_arg_nodes.len > 0) {
+                                if (self.overloadTypeArgBoundarySignature(overloads, overload_type_arg_nodes.len)) |boundary_sig| {
+                                    var used_explicit_type_args = false;
+                                    const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(
+                                        node,
+                                        boundary_sig,
+                                        overload_type_arg_nodes,
+                                        &used_explicit_type_args,
+                                    );
+                                    if (self.interner.signatureReturn(effective_sig)) |ret| {
+                                        break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                                    }
+                                    break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
+                                }
                                 if (self.overloadTypeArgArityError(overloads, overload_type_arg_nodes.len)) |ar| {
                                     const msg = try std.fmt.allocPrint(
                                         self.diag_arena.allocator(),
@@ -104888,10 +104916,36 @@ pub const Checker = struct {
                                     break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                                 }
                             }
+                            var explicit_constraint_candidate_count: usize = 0;
+                            var last_explicit_count_match: TypeId = types.Primitive.none;
+                            if (overload_type_arg_nodes.len > 0 and overload_type_arg_count_matches) {
+                                for (overloads) |sig| {
+                                    if (!self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
+                                    last_explicit_count_match = sig;
+                                    if (try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, overload_type_arg_nodes)) {
+                                        explicit_constraint_candidate_count += 1;
+                                    }
+                                }
+                                if (explicit_constraint_candidate_count == 0 and last_explicit_count_match != types.Primitive.none) {
+                                    var used_explicit_type_args = false;
+                                    const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(
+                                        node,
+                                        last_explicit_count_match,
+                                        overload_type_arg_nodes,
+                                        &used_explicit_type_args,
+                                    );
+                                    if (self.interner.signatureReturn(effective_sig)) |ret| {
+                                        break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                                    }
+                                    break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
+                                }
+                            }
                             var unique_arity_sig: TypeId = types.Primitive.none;
                             for (overloads) |sig| {
                                 if (overload_type_arg_nodes.len > 0 and overload_type_arg_count_matches and
                                     !self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
+                                if (overload_type_arg_nodes.len > 0 and
+                                    !try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, overload_type_arg_nodes)) continue;
                                 if (!self.callArityFitsSignature(node, sig, args)) continue;
                                 if (unique_arity_sig != types.Primitive.none) {
                                     unique_arity_sig = types.Primitive.any;
@@ -104923,9 +104977,11 @@ pub const Checker = struct {
                             for (overloads) |sig| {
                                 if (overload_type_arg_nodes.len > 0 and overload_type_arg_count_matches and
                                     !self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
+                                if (overload_type_arg_nodes.len > 0 and
+                                    !try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, overload_type_arg_nodes)) continue;
                                 const effective_sig = if (overload_type_arg_nodes.len > 0) blk_eff: {
                                     var used_explicit_type_args = false;
-                                    break :blk_eff try self.instantiateSignatureWithExplicitTypeArgs(node, sig, overload_type_arg_nodes, &used_explicit_type_args);
+                                    break :blk_eff try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, sig, overload_type_arg_nodes, &used_explicit_type_args);
                                 } else try self.instantiateSignatureFromArgs(sig, args, arg_types.items);
                                 const prefers_rest_for_array_spread =
                                     self.callHasNonTupleSpread(args, arg_types.items) and
@@ -117903,6 +117959,7 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!?TypeId {
+        const construct_diagnostic_start = self.diagnostics.items.len;
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
         try self.collectConstructSignatures(callee_t, &construct_sigs);
@@ -117920,14 +117977,87 @@ pub const Checker = struct {
         if (construct_sigs.items.len == 0) return null;
 
         const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+        const has_generic_class_record = if (callee_node != hir_mod.none_node_id and
+            self.hir.kindOf(callee_node) == .identifier)
+            self.generic_aliases.contains(hir_mod.identifierOf(self.hir, callee_node).name)
+        else
+            false;
+        var explicit_class_constraint_failed = false;
+        if (type_arg_nodes.len > 0 and has_generic_class_record) {
+            const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
+            const class_info = self.generic_aliases.get(class_name).?;
+            if (type_arg_nodes.len != class_info.params.len) {
+                return (try self.instantiateGenericClassForNew(class_name, type_arg_nodes)) orelse
+                    (self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any);
+            }
+            const diagnostic_start = self.diagnostics.items.len;
+            _ = try self.instantiateGenericClassConstructorSignatureForNew(
+                class_name,
+                construct_sigs.items[0],
+                type_arg_nodes,
+                true,
+            );
+            explicit_class_constraint_failed = self.diagnostics.items.len != diagnostic_start;
+        }
+        if (type_arg_nodes.len > 0 and !has_generic_class_record) {
+            if (self.overloadTypeArgBoundarySignature(construct_sigs.items, type_arg_nodes.len)) |boundary_sig| {
+                var used_explicit_type_args = false;
+                const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(
+                    node,
+                    boundary_sig,
+                    type_arg_nodes,
+                    &used_explicit_type_args,
+                );
+                return self.interner.signatureReturn(effective_sig) orelse types.Primitive.any;
+            }
+            if (self.overloadTypeArgArityError(construct_sigs.items, type_arg_nodes.len)) |ar| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "No overload expects {d} type arguments, but overloads do exist that expect either {d} or {d} type arguments.",
+                    .{ ar.arg_count, ar.max_below, ar.min_above },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = type_arg_nodes[0],
+                    .code = TsCodes.no_overload_expects_n_type_args_but_others_exist,
+                    .message = msg,
+                });
+                return self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+            }
+
+            var matching_constraint_count: usize = 0;
+            var last_count_match: TypeId = types.Primitive.none;
+            for (construct_sigs.items) |sig| {
+                if (!self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) continue;
+                last_count_match = sig;
+                if (try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, type_arg_nodes)) {
+                    matching_constraint_count += 1;
+                }
+            }
+            if (matching_constraint_count == 0 and last_count_match != types.Primitive.none) {
+                var used_explicit_type_args = false;
+                const effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(
+                    node,
+                    last_count_match,
+                    type_arg_nodes,
+                    &used_explicit_type_args,
+                );
+                return self.interner.signatureReturn(effective_sig) orelse types.Primitive.any;
+            }
+        }
         var selected_sig: TypeId = construct_sigs.items[0];
         var selected_decl_sig: TypeId = construct_sigs.items[0];
         var found_applicable = false;
         var saw_generic_record = false;
+        var considered_candidate_count: usize = 0;
 
         for (construct_sigs.items) |sig| {
             var effective_sig = sig;
             const sig_is_generic = self.generic_signature_params.get(sig) != null;
+            if (type_arg_nodes.len > 0 and !has_generic_class_record) {
+                if (!self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) continue;
+                if (!try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, type_arg_nodes)) continue;
+            }
+            considered_candidate_count += 1;
             if (type_arg_nodes.len > 0) {
                 if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
                     const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
@@ -117936,16 +118066,17 @@ pub const Checker = struct {
                             class_name,
                             sig,
                             type_arg_nodes,
+                            false,
                         );
                         saw_generic_record = true;
                     } else {
                         var used_explicit_type_args = false;
-                        effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
+                        effective_sig = try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, sig, type_arg_nodes, &used_explicit_type_args);
                         if (sig_is_generic) saw_generic_record = true;
                     }
                 } else {
                     var used_explicit_type_args = false;
-                    effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
+                    effective_sig = try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, sig, type_arg_nodes, &used_explicit_type_args);
                     if (sig_is_generic) saw_generic_record = true;
                 }
             } else {
@@ -117963,7 +118094,10 @@ pub const Checker = struct {
                 }
             }
 
-            if (try self.signatureAccepts(node, effective_sig, args, arg_types)) {
+            const inferred_constraints_satisfied = type_arg_nodes.len > 0 or
+                !sig_is_generic or
+                try self.inferredCallSatisfiesGenericConstraints(sig, args, arg_types);
+            if (inferred_constraints_satisfied and try self.signatureAccepts(node, effective_sig, args, arg_types)) {
                 selected_sig = effective_sig;
                 selected_decl_sig = sig;
                 found_applicable = true;
@@ -117996,7 +118130,20 @@ pub const Checker = struct {
             });
         }
 
-        if (!found_applicable and construct_sigs.items.len > 1) {
+        const argument_diagnostic_start = self.diagnostics.items.len;
+        const already_reported_argument_mismatch = self.diagnosticCodeInNodeSpan(
+            node,
+            TsCodes.argument_type_mismatch,
+        );
+        if (!found_applicable and considered_candidate_count == 1) {
+            if (!already_reported_argument_mismatch and
+                !explicit_class_constraint_failed and
+                !self.newCalleeIsAbstractClass(callee_node) and
+                !selected_is_abstract_construct)
+            {
+                try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
+            }
+        } else if (!found_applicable and construct_sigs.items.len > 1) {
             var report_no_overload = true;
             var reported_arity = false;
             if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
@@ -118020,28 +118167,43 @@ pub const Checker = struct {
                 }
             }
             if (report_no_overload) {
-                const report_node = if (args.len > 0)
-                    args[0]
-                else if (callee_node != hir_mod.none_node_id)
-                    callee_node
-                else
-                    node;
-                try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
-            } else if (!reported_arity and !self.newCalleeIsAbstractClass(callee_node) and !selected_is_abstract_construct) {
+                try self.reportNoOverloadMatchesWithOverloads(
+                    node,
+                    args,
+                    arg_types,
+                    construct_sigs.items,
+                );
+            } else if (!reported_arity and
+                !already_reported_argument_mismatch and
+                !explicit_class_constraint_failed and
+                !self.newCalleeIsAbstractClass(callee_node) and
+                !selected_is_abstract_construct)
+            {
                 try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
             }
-        } else if (!self.newCalleeIsAbstractClass(callee_node) and !selected_is_abstract_construct) {
+        } else if (!already_reported_argument_mismatch and
+            !explicit_class_constraint_failed and
+            !self.newCalleeIsAbstractClass(callee_node) and
+            !selected_is_abstract_construct)
+        {
             // Skip arg-arity / arg-type checks (TS2554/TS2345) when
             // constructing an abstract class ÃÂ¢ÃÂÃÂ tsc reports only
             // TS2511 in that case. See `classAbstractInstantiations1`.
             try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
         }
-        if (type_arg_nodes.len == 0) {
+        if (type_arg_nodes.len == 0 and self.diagnostics.items.len == argument_diagnostic_start) {
             try self.checkInferredGenericClassConstructorConstraints(
                 callee_node,
                 selected_decl_sig,
                 args,
                 arg_types,
+            );
+        }
+        if (type_arg_nodes.len == 0 and has_generic_class_record) {
+            self.retainFirstDiagnosticCodeInNodeSpan(
+                node,
+                TsCodes.argument_type_mismatch,
+                construct_diagnostic_start,
             );
         }
 
@@ -119871,6 +120033,7 @@ pub const Checker = struct {
         const prev_type_arg_constraint_subs = self.current_type_arg_constraint_subs;
         self.current_type_arg_constraint_subs = &subs;
         defer self.current_type_arg_constraint_subs = prev_type_arg_constraint_subs;
+        var constraint_failed = false;
         for (0..n) |i| {
             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
             // TS2344: Verify the explicit type arg satisfies the
@@ -119878,8 +120041,10 @@ pub const Checker = struct {
             // `nonPrimitiveInGeneric.ts(25,8)` where
             // `bound2<number>()` violates `T extends object`.
             try subs.put(self.gpa, type_params[i], explicit_t);
-            if (check_constraints) {
+            if (check_constraints and !constraint_failed) {
+                const diagnostic_start = self.diagnostics.items.len;
                 try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                constraint_failed = self.diagnostics.items.len != diagnostic_start;
             }
             try explicit_types.append(self.gpa, explicit_t);
         }
@@ -151608,6 +151773,48 @@ pub const Checker = struct {
         return false;
     }
 
+    fn explicitTypeArgsSatisfySignatureConstraints(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        type_arg_nodes: []const NodeId,
+    ) CheckError!bool {
+        if (!self.signatureTypeArgCountMatches(sig, type_arg_nodes.len)) return false;
+        const diagnostic_start = self.diagnostics.items.len;
+        var used = false;
+        _ = try self.instantiateSignatureWithExplicitTypeArgs(call_node, sig, type_arg_nodes, &used);
+        const satisfies = self.diagnostics.items.len == diagnostic_start;
+        self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
+        return satisfies;
+    }
+
+    fn overloadTypeArgBoundarySignature(
+        self: *Checker,
+        overloads: []const TypeId,
+        arg_count: usize,
+    ) ?TypeId {
+        if (overloads.len == 0) return null;
+        var min_count: usize = std.math.maxInt(usize);
+        var max_count: usize = 0;
+        var min_sig: TypeId = types.Primitive.none;
+        var max_sig: TypeId = types.Primitive.none;
+        for (overloads) |sig| {
+            const count = self.signatureTypeArgCount(sig);
+            if (count == arg_count) return null;
+            if (count < min_count) {
+                min_count = count;
+                min_sig = sig;
+            }
+            if (count >= max_count) {
+                max_count = count;
+                max_sig = sig;
+            }
+        }
+        if (arg_count < min_count) return if (min_sig == types.Primitive.none) null else min_sig;
+        if (arg_count > max_count) return if (max_sig == types.Primitive.none) null else max_sig;
+        return null;
+    }
+
     fn overloadTypeArgArityError(
         self: *Checker,
         overloads: []const TypeId,
@@ -160343,6 +160550,41 @@ pub const Checker = struct {
                     _ = self.diagnostics.orderedRemove(i);
                     continue;
                 }
+            }
+            i += 1;
+        }
+    }
+
+    fn retainFirstDiagnosticCodeInNodeSpan(
+        self: *Checker,
+        node: NodeId,
+        code: u32,
+        diagnostic_index_start: usize,
+    ) void {
+        if (node == hir_mod.none_node_id) return;
+        const span = self.hir.spanOf(node);
+        var first_start: ?u32 = null;
+        if (diagnostic_index_start >= self.diagnostics.items.len) return;
+        for (self.diagnostics.items[diagnostic_index_start..]) |diagnostic| {
+            if (diagnostic.code != code) continue;
+            const pos = self.diagnosticStart(diagnostic);
+            if (pos < span.start or pos > span.end) continue;
+            if (first_start == null or pos < first_start.?) first_start = pos;
+        }
+        const keep_start = first_start orelse return;
+        var kept = false;
+        var i = diagnostic_index_start;
+        while (i < self.diagnostics.items.len) {
+            const diagnostic = self.diagnostics.items[i];
+            const pos = self.diagnosticStart(diagnostic);
+            if (diagnostic.code == code and pos >= span.start and pos <= span.end) {
+                if (!kept and pos == keep_start) {
+                    kept = true;
+                    i += 1;
+                    continue;
+                }
+                _ = self.diagnostics.orderedRemove(i);
+                continue;
             }
             i += 1;
         }
@@ -241235,6 +241477,35 @@ test "checker: overload call with matching type arg count skips nonmatching gene
         try T.expect(d.code != TsCodes.expected_n_type_arguments);
         try T.expect(d.code != TsCodes.no_overload_expects_n_type_args_but_others_exist);
     }
+}
+
+test "checker: explicit overload resolution filters type arity and constraints once" {
+    const s = try newSetup(
+        \\declare function pick<T extends string, U extends number>(a: T, b: U): void;
+        \\declare function pick<T extends number, U extends string>(a: T, b: U): void;
+        \\pick<string, number>(1, "");
+        \\pick<boolean, Date>(null, null);
+        \\declare function sized<T>(a: T): void;
+        \\declare function sized<T, U>(a: T, b: U): void;
+        \\sized<number, string, boolean>();
+        \\interface Factory {
+        \\    new<T extends string, U extends number>(a: T, b: U): unknown;
+        \\    new<T extends number, U extends string>(a: T, b: U): unknown;
+        \\}
+        \\declare const Factory: Factory;
+        \\new Factory<string, number>(1, "");
+        \\new Factory<boolean, Date>(null, null);
+        \\class Box<T extends string, U extends number> {
+        \\    constructor(a: T, b: U) {}
+        \\}
+        \\new Box<number, string>("", 1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
 }
 
 test "checker: TS2632 fires when assigning to a named import" {
