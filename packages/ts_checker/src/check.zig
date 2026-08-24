@@ -79454,6 +79454,12 @@ pub const Checker = struct {
             }};
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
+        if (std.mem.eql(u8, name, "Window")) {
+            if (self.sourceLibDirectiveExcludesDomElement()) return null;
+            _ = self.windowGlobalType() catch return types.Primitive.unknown;
+            const window_name = self.string_interner.intern("Window") catch return types.Primitive.unknown;
+            return self.type_names.get(window_name) orelse types.Primitive.unknown;
+        }
         if (std.mem.eql(u8, name, "Animation")) {
             return self.animationType() catch types.Primitive.unknown;
         }
@@ -95769,6 +95775,7 @@ pub const Checker = struct {
                     break :blk true;
                 }
                 if ((prior == types.Primitive.any or final_type == types.Primitive.any) and prior != final_type) break :blk false;
+                if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
                 const different_private_origins = self.repeatedVarTypesHaveDifferentPrivateOrigins(prior, final_type);
                 if (different_private_origins) {
                     if (qualified_private_text_mismatch) |texts| annotation_text_mismatch = texts;
@@ -95789,7 +95796,6 @@ pub const Checker = struct {
                     !try self.repeatedVarAssertedInferredTypesCompatible(prior, final_type) and
                     !try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk false;
                 if (self.repeatedVarArrayElementMismatch(prior, final_type)) break :blk false;
-                if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
                 if (try self.repeatedVarObjectMembersIdentical(prior, final_type)) break :blk true;
                 if (self.engine.isIdenticalTo(prior, final_type) catch true) break :blk true;
                 if ((self.engine.isAssignableTo(prior, final_type) catch true) and
@@ -105145,11 +105151,13 @@ pub const Checker = struct {
                 }
                 var used_explicit_type_args = false;
                 var callee_had_generic_record = false;
+                var explicit_type_arg_resolution_failed = false;
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
                         callee_had_generic_record = true;
                         if (type_arg_nodes.len != type_params.len) {
+                            explicit_type_arg_resolution_failed = true;
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Expected {d} type arguments, but got {d}.",
@@ -105172,10 +105180,16 @@ pub const Checker = struct {
                         self.current_type_arg_constraint_subs = &subs;
                         defer self.current_type_arg_constraint_subs = prev_type_arg_constraint_subs;
                         const n = @min(type_params.len, type_arg_nodes.len);
+                        var constraint_failed = false;
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
                             try subs.put(self.gpa, type_params[i], explicit_t);
-                            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                            if (!constraint_failed) {
+                                const diagnostic_start = self.diagnostics.items.len;
+                                try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                                constraint_failed = self.diagnostics.items.len != diagnostic_start;
+                                explicit_type_arg_resolution_failed = explicit_type_arg_resolution_failed or constraint_failed;
+                            }
                         }
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
@@ -105187,6 +105201,7 @@ pub const Checker = struct {
                     if (self.generic_signature_params.get(effective_callee_t)) |type_params| {
                         callee_had_generic_record = true;
                         if (type_arg_nodes.len != type_params.len) {
+                            explicit_type_arg_resolution_failed = true;
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Expected {d} type arguments, but got {d}.",
@@ -105204,10 +105219,16 @@ pub const Checker = struct {
                         self.current_type_arg_constraint_subs = &subs;
                         defer self.current_type_arg_constraint_subs = prev_type_arg_constraint_subs;
                         const n = @min(type_params.len, type_arg_nodes.len);
+                        var constraint_failed = false;
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
                             try subs.put(self.gpa, type_params[i], explicit_t);
-                            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                            if (!constraint_failed) {
+                                const diagnostic_start = self.diagnostics.items.len;
+                                try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                                constraint_failed = self.diagnostics.items.len != diagnostic_start;
+                                explicit_type_arg_resolution_failed = explicit_type_arg_resolution_failed or constraint_failed;
+                            }
                         }
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(effective_callee_t, &subs) catch effective_callee_t;
@@ -105423,12 +105444,18 @@ pub const Checker = struct {
                                 }
                             }
                         }
+                        try self.applyParameterlessCallbackConstraintFallback(
+                            effective_callee_t,
+                            param_ts,
+                            args,
+                            &call_subs,
+                        );
                         try self.checkUnconstrainedGenericArgumentConstraints(args, arg_types.items, effective_callee_t);
                         if (!self.rest_signatures.contains(effective_callee_t)) {
                             try self.checkGenericSignatureArgumentConstraints(args, arg_types.items, param_ts, &call_subs);
                         }
                         try self.inferDescriptorLikeReturnTypeParameter(effective_callee_t, arg_types.items, &call_subs);
-                        try self.refineTaggedTemplateDirectInferences(node, param_ts, args, arg_types.items, &call_subs);
+                        try self.refineRepeatedDirectInferences(param_ts, args, arg_types.items, &call_subs);
                         if (self.interner.signatureReturn(effective_callee_t)) |raw_return_t| {
                             failed_contextual_generic_return_inference = try self.callHasFailedContextualGenericReturnInference(
                                 param_ts,
@@ -105448,9 +105475,13 @@ pub const Checker = struct {
                             }
                         }
                     }
-                    const strict_bind_diag_start = self.diagnostics.items.len;
-                    try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
-                    self.rewriteStrictBindThisMismatch(node, args, effective_callee_t, strict_bind_diag_start);
+                    const repeated_direct_candidates_are_accepted = !used_explicit_type_args and
+                        self.repeatedDirectInferenceArgumentsAreAccepted(callee_t, args, arg_types.items);
+                    if (!explicit_type_arg_resolution_failed and !repeated_direct_candidates_are_accepted) {
+                        const strict_bind_diag_start = self.diagnostics.items.len;
+                        try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
+                        self.rewriteStrictBindThisMismatch(node, args, effective_callee_t, strict_bind_diag_start);
+                    }
                     if (self.interner.signatureReturn(effective_callee_t)) |ret| {
                         if (failed_contextual_generic_return_inference) {
                             break :blk try self.optionalChainResult(types.Primitive.unknown, call_is_optional_chain);
@@ -120154,6 +120185,46 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!void {
         const declared_params = self.generic_signature_params.get(sig) orelse &.{};
+        for (declared_params) |declared_param| {
+            if (subs.contains(declared_param)) continue;
+            const declared_name = self.typeParameterName(declared_param) orelse continue;
+            var iterator = subs.iterator();
+            var matching_candidate: ?TypeId = null;
+            while (iterator.next()) |entry| {
+                if (self.typeParameterName(entry.key_ptr.*) != declared_name) continue;
+                matching_candidate = entry.value_ptr.*;
+                break;
+            }
+            if (matching_candidate) |candidate| try subs.put(self.gpa, declared_param, candidate);
+        }
+        var name_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer name_params.deinit(self.gpa);
+        var name_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer name_candidates.deinit(self.gpa);
+        var name_iterator = subs.iterator();
+        while (name_iterator.next()) |entry| {
+            const param_t = entry.key_ptr.*;
+            const name = self.typeParameterName(param_t) orelse continue;
+            var already_recorded = false;
+            for (name_params.items) |recorded| {
+                if (self.typeParameterName(recorded) == name) {
+                    already_recorded = true;
+                    break;
+                }
+            }
+            if (already_recorded) continue;
+            try name_params.append(self.gpa, param_t);
+            try name_candidates.append(self.gpa, entry.value_ptr.*);
+        }
+        if (name_params.items.len > 0) {
+            try self.addExplicitTypeArgNameSubstitutions(
+                sig,
+                name_params.items,
+                name_candidates.items,
+                subs,
+                true,
+            );
+        }
         for (self.interner.signatureParams(sig)) |param_t| {
             if (param_t >= self.interner.pool.typeCount()) continue;
             const param_flags = self.interner.pool.flagsOf(param_t);
@@ -135739,6 +135810,18 @@ pub const Checker = struct {
         return (try self.allocSimpleTypeName(t)) orelse (try self.allocObjectTypeShape(t));
     }
 
+    fn typeParameterConstraintSourceName(self: *Checker, param_t: TypeId) CheckError!?[]const u8 {
+        const resolved = self.resolvedTypeParameterPlaceholder(param_t);
+        const declaration = self.type_parameter_decl_nodes.get(param_t) orelse
+            self.type_parameter_decl_nodes.get(resolved) orelse return null;
+        if (self.hir.kindOf(declaration) != .type_parameter) return null;
+        const constraint_node = hir_mod.typeParameterOf(self.hir, declaration).constraint;
+        if (constraint_node == hir_mod.none_node_id) return null;
+        const text = self.nodeSourceTextOrEmpty(constraint_node);
+        if (text.len == 0) return null;
+        return try self.normalizedTypeAnnotationText(text);
+    }
+
     fn typeArgConstraintTypeNameAtNode(
         self: *Checker,
         node: NodeId,
@@ -135884,9 +135967,11 @@ pub const Checker = struct {
     ) CheckError!void {
         if (arg_node == hir_mod.none_node_id) return;
         if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) return;
-        if (param_t >= self.interner.pool.typeCount()) return;
-        if (!self.interner.pool.flagsOf(param_t).is_type_parameter) return;
-        const raw_constraint = self.typeParameterConstraint(param_t) orelse return;
+        const constraint_param = self.resolvedTypeParameterPlaceholder(param_t);
+        if (constraint_param >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(constraint_param).is_type_parameter) return;
+        const raw_constraint = self.typeParameterConstraint(constraint_param) orelse
+            self.typeParameterConstraint(param_t) orelse return;
         const constraint = if (self.current_type_arg_constraint_subs) |subs|
             self.substituteType(raw_constraint, subs) catch raw_constraint
         else
@@ -135919,6 +136004,7 @@ pub const Checker = struct {
         // conditional-type alias bodies.
         if (try self.checkUnionTypeArgSatisfiesConstraint(arg_node, constraint)) return;
         if (self.jsdoc_constrained_type_params.contains(param_t) or
+            self.jsdoc_constrained_type_params.contains(constraint_param) or
             self.typeArgBelongsToVisibleJsDocTypedef(arg_node))
         {
             const comparable_arg = if (arg_t < self.interner.pool.typeCount() and
@@ -135955,12 +136041,14 @@ pub const Checker = struct {
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
-        const constraint_text = if (self.jsdoc_constraint_display_names.get(param_t)) |display|
+        const constraint_text = if (self.jsdoc_constraint_display_names.get(param_t) orelse
+            self.jsdoc_constraint_display_names.get(constraint_param)) |display|
             display
         else if (signature_constraint) |info|
             (try self.allocTypeArgSignatureConstraintHeaderName(info)) orelse return
         else
-            (try self.typeArgConstraintTypeName(constraint, false)) orelse return;
+            (try self.typeArgConstraintTypeName(constraint, false)) orelse
+                (try self.typeParameterConstraintSourceName(constraint_param)) orelse return;
         // Special-case the upstream wording for `extends object`:
         // null and undefined are excluded from the `object` type even
         // though they pass our default `isAssignableTo` heuristic.
@@ -150294,19 +150382,78 @@ pub const Checker = struct {
                 try self.inferFromArgument(param_t, arg_t, args[i], subs);
             }
         }
+        try self.applyParameterlessCallbackConstraintFallback(sig, param_ts, args, subs);
+        try self.refineRepeatedDirectInferences(param_ts, args, arg_types, subs);
         try self.inferDescriptorLikeReturnTypeParameter(sig, arg_types, subs);
     }
 
-    fn refineTaggedTemplateDirectInferences(
+    fn applyParameterlessCallbackConstraintFallback(
         self: *Checker,
-        call_node: NodeId,
+        sig: TypeId,
+        param_ts: []const TypeId,
+        args: []const NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const count = @min(param_ts.len, args.len);
+        for (param_ts[0..count], args[0..count]) |param_t, arg_node| {
+            if (!self.isContextualFunctionExpressionLike(arg_node)) continue;
+            if (!self.interner.isSignature(param_t) or self.interner.signatureParams(param_t).len != 0) continue;
+            var source_param_count: usize = 0;
+            for (hir_mod.fnParams(self.hir, arg_node)) |source_param| {
+                if (self.hir.kindOf(source_param) == .parameter and !self.isThisParameter(source_param)) {
+                    source_param_count += 1;
+                }
+            }
+            if (source_param_count != 0) continue;
+            const return_t = self.interner.signatureReturn(param_t) orelse continue;
+            if (return_t >= self.interner.pool.typeCount()) continue;
+            const return_flags = self.interner.pool.flagsOf(return_t);
+            if (!return_flags.is_type_parameter or return_flags.is_union or return_flags.is_intersection) continue;
+            const return_name = self.typeParameterName(return_t) orelse continue;
+            const declared_params = self.generic_signature_params.get(sig) orelse continue;
+            var declared_param: ?TypeId = null;
+            for (declared_params) |candidate_param| {
+                if (self.typeParameterName(candidate_param) == return_name) {
+                    declared_param = candidate_param;
+                    break;
+                }
+            }
+            const constraint_param = declared_param orelse continue;
+            const resolved_constraint_param = self.resolvedTypeParameterPlaceholder(constraint_param);
+            const resolved_return = self.resolvedTypeParameterPlaceholder(return_t);
+            const candidate = subs.get(return_t) orelse
+                subs.get(resolved_return) orelse
+                subs.get(constraint_param) orelse
+                subs.get(resolved_constraint_param) orelse blk: {
+                var iterator = subs.iterator();
+                while (iterator.next()) |entry| {
+                    if (self.typeParameterName(entry.key_ptr.*) == return_name) break :blk entry.value_ptr.*;
+                }
+                continue;
+            };
+            const raw_constraint = self.typeParameterConstraint(resolved_constraint_param) orelse
+                self.typeParameterConstraint(constraint_param) orelse continue;
+            if (raw_constraint == types.Primitive.any or
+                raw_constraint == types.Primitive.unknown or
+                raw_constraint == types.Primitive.none)
+            {
+                continue;
+            }
+            const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+            if (self.engine.isAssignableTo(candidate, constraint) catch false) continue;
+            try subs.put(self.gpa, return_t, constraint);
+            if (resolved_return != return_t) try subs.put(self.gpa, resolved_return, constraint);
+        }
+    }
+
+    fn refineRepeatedDirectInferences(
+        self: *Checker,
         param_ts: []const TypeId,
         args: []const NodeId,
         arg_types: []const TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!void {
         if (args.len == 0) return;
-        if (!self.callExprIsTaggedTemplate(call_node)) return;
 
         const count = @min(param_ts.len, @min(args.len, arg_types.len));
         for (param_ts[0..count], 0..) |type_param, param_i| {
@@ -150324,11 +150471,12 @@ pub const Checker = struct {
 
             var matching_count: usize = 0;
             var saw_any = false;
-            var all_object_or_nullish = true;
+            var all_object_nullish_or_empty_array = true;
             var object_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
             defer object_candidates.deinit(self.gpa);
             var nullish_candidates: std.ArrayListUnmanaged(TypeId) = .empty;
             defer nullish_candidates.deinit(self.gpa);
+            var empty_array_candidate: ?TypeId = null;
             for (param_ts[0..count], 0..) |candidate_param, arg_i| {
                 if (candidate_param != type_param) continue;
                 matching_count += 1;
@@ -150349,19 +150497,36 @@ pub const Checker = struct {
                     }
                     continue;
                 }
-                all_object_or_nullish = false;
+                if (self.hir.kindOf(args[arg_i]) == .array_literal and
+                    hir_mod.arrayLiteralElements(self.hir, args[arg_i]).len == 0)
+                {
+                    empty_array_candidate = if (self.strict_flags.strict_null_checks)
+                        self.interner.internArrayType(
+                            self.string_interner,
+                            types.Primitive.never,
+                        ) catch return error.OutOfMemory
+                    else
+                        arg_types[arg_i];
+                    continue;
+                }
+                all_object_nullish_or_empty_array = false;
             }
             if (matching_count < 2) continue;
             if (saw_any) {
                 try subs.put(self.gpa, type_param, types.Primitive.any);
                 continue;
             }
-            if (all_object_or_nullish and object_candidates.items.len > 0) {
+            if (all_object_nullish_or_empty_array and
+                object_candidates.items.len > 0 and
+                empty_array_candidate == null)
+            {
                 const object_union = try self.taggedInferenceObjectUnion(object_candidates.items);
                 var union_members: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer union_members.deinit(self.gpa);
                 try union_members.append(self.gpa, object_union);
-                try union_members.appendSlice(self.gpa, nullish_candidates.items);
+                if (self.strict_flags.strict_null_checks) {
+                    try union_members.appendSlice(self.gpa, nullish_candidates.items);
+                }
                 const inferred = if (union_members.items.len == 1)
                     union_members.items[0]
                 else
@@ -150369,7 +150534,51 @@ pub const Checker = struct {
                 try subs.put(self.gpa, type_param, inferred);
                 continue;
             }
+            if (all_object_nullish_or_empty_array and object_candidates.items.len == 0) {
+                const empty_array = empty_array_candidate orelse continue;
+                var union_members: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer union_members.deinit(self.gpa);
+                try union_members.append(self.gpa, empty_array);
+                if (self.strict_flags.strict_null_checks) {
+                    try union_members.appendSlice(self.gpa, nullish_candidates.items);
+                }
+                const inferred = if (union_members.items.len == 1)
+                    union_members.items[0]
+                else
+                    self.interner.internUnion(union_members.items) catch return error.OutOfMemory;
+                try subs.put(self.gpa, type_param, inferred);
+            }
         }
+    }
+
+    fn repeatedDirectInferenceArgumentsAreAccepted(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) bool {
+        if (!self.interner.isSignature(sig) or args.len < 2 or args.len != arg_types.len) return false;
+        const params = self.interner.signatureParams(sig);
+        if (params.len < args.len) return false;
+        const type_param = params[0];
+        if (type_param >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(type_param);
+        if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return false;
+        var saw_structural_candidate = false;
+        for (args, 0..) |arg, index| {
+            if (params[index] != type_param) return false;
+            if (self.hir.kindOf(arg) == .object_literal) {
+                saw_structural_candidate = true;
+                continue;
+            }
+            if (self.hir.kindOf(arg) == .array_literal and hir_mod.arrayLiteralElements(self.hir, arg).len == 0) {
+                saw_structural_candidate = true;
+                continue;
+            }
+            if (self.typeIsNullishOnly(arg_types[index])) continue;
+            return false;
+        }
+        return saw_structural_candidate;
     }
 
     fn widenedMutableObjectLiteralInferenceType(
@@ -150389,6 +150598,15 @@ pub const Checker = struct {
                 self.hir.typeOf(property.value)
             else
                 try self.checkExpression(property.value);
+            if (self.hir.kindOf(property.value) == .identifier and
+                std.mem.eql(
+                    u8,
+                    self.string_interner.get(hir_mod.identifierOf(self.hir, property.value).name),
+                    "window",
+                ))
+            {
+                self.builtin_object_names.put(self.gpa, value_t, "Window & typeof globalThis") catch {};
+            }
             const widened = if (self.hir.kindOf(property.value) == .object_literal)
                 try self.widenedMutableObjectLiteralInferenceType(property.value, value_t)
             else blk: {
@@ -152696,8 +152914,44 @@ pub const Checker = struct {
                 self.callbackHasQualifiedTypeofInstantiationReturn(args[i]);
             const inferred_generic_callback_identity = inferred_generic_callback and
                 !inferred_instantiation_boundary and arg_t == param_t;
+            const loose_nullish_callback_return = !self.strict_flags.strict_null_checks and
+                self.isContextualFunctionExpressionLike(args[i]) and blk: {
+                const source_sig = self.firstSignatureType(arg_t) orelse break :blk false;
+                const target_sig = self.firstSignatureType(param_t) orelse break :blk false;
+                const source_return = self.interner.signatureReturn(source_sig) orelse break :blk false;
+                const target_return = self.interner.signatureReturn(target_sig) orelse break :blk false;
+                break :blk self.typeIsNullishOnly(source_return) and target_return != types.Primitive.never;
+            };
             if (inferred_generic_callback_identity) {
                 _ = self.discardCallArgumentContextualReturnDiagnostics(args[i], true);
+            }
+            var preserve_parameterless_contextual_return = false;
+            if (self.isContextualFunctionExpressionLike(args[i])) {
+                if (self.firstSignatureType(param_t)) |contextual_sig| {
+                    var source_param_count: usize = 0;
+                    for (hir_mod.fnParams(self.hir, args[i])) |source_param| {
+                        if (self.hir.kindOf(source_param) == .parameter and !self.isThisParameter(source_param)) {
+                            source_param_count += 1;
+                        }
+                    }
+                    const contextual_return = self.interner.signatureReturn(contextual_sig) orelse types.Primitive.any;
+                    const inferred_source_return = if (self.firstSignatureType(arg_t)) |source_sig|
+                        self.interner.signatureReturn(source_sig) orelse types.Primitive.any
+                    else
+                        types.Primitive.any;
+                    if (source_param_count == 0 and
+                        self.interner.signatureParams(contextual_sig).len == 0 and
+                        contextual_return != types.Primitive.void_t and
+                        contextual_return != types.Primitive.any and
+                        contextual_return != types.Primitive.unknown and
+                        (self.strict_flags.strict_null_checks or !self.typeIsNullishOnly(inferred_source_return)) and
+                        !self.containsFreeTypeParameter(contextual_sig))
+                    {
+                        try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                        preserve_parameterless_contextual_return =
+                            self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
+                    }
+                }
             }
             const inferred_contextual_return_error = inferred_generic_callback and
                 self.contextualFunctionReturnDiagnosticAlreadyEmitted(args[i]);
@@ -152705,6 +152959,8 @@ pub const Checker = struct {
             const arg_diag_start = self.diagnostics.items.len;
             const imported_class_parameter_match = try self.argumentMatchesImportedClassParameter(sig, fixed_pos, arg_t);
             const structurally_assignable = if (imported_class_parameter_match)
+                true
+            else if (loose_nullish_callback_return)
                 true
             else if (inferred_generic_callback_identity)
                 true
@@ -152731,7 +152987,7 @@ pub const Checker = struct {
             else
                 true;
             const ok = satisfies_context_ok or (structurally_assignable and predicate_assignable);
-            if (!ok) {
+            if (!ok and !preserve_parameterless_contextual_return) {
                 _ = self.discardCallArgumentContextualReturnDiagnostics(args[i], inferred_generic_callback);
             }
             const contextual_ok = if (!ok)
@@ -153021,7 +153277,8 @@ pub const Checker = struct {
                     else if (instantiation_boundary_msg) |boundary_msg|
                         boundary_msg
                     else
-                        try self.formatArgumentNotAssignable(
+                        try self.formatCallArgumentNotAssignable(
+                            args[i],
                             diagnostic_arg_t,
                             display_param_t,
                             i,
@@ -155458,6 +155715,47 @@ pub const Checker = struct {
         return param_t;
     }
 
+    fn formatCallArgumentNotAssignable(
+        self: *Checker,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        param_t: TypeId,
+        position: usize,
+    ) CheckError![]const u8 {
+        const parent = self.hir.parentOf(arg_node);
+        if (parent != hir_mod.none_node_id and
+            (self.hir.kindOf(parent) == .call_expr or self.hir.kindOf(parent) == .new_expr) and
+            hir_mod.callTypeArgs(self.hir, parent).len > 0 and
+            self.interner.isSignature(param_t))
+        {
+            if (try self.simpleDiagnosticTypeName(arg_t)) |arg_name| {
+                const donor = self.contextualCallParameterSignatureForArgument(arg_node);
+                if (try self.allocCallSignatureFnTypeNameInner(param_t, position, null, true, donor)) |param_name| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_name, param_name },
+                    );
+                }
+            }
+        }
+        if (self.isContextualFunctionExpressionLike(arg_node) and
+            self.interner.isSignature(arg_t) and
+            self.interner.isSignature(param_t))
+        {
+            const arg_name = (try self.allocCallSignatureFnTypeNameInner(arg_t, null, null, true, null)) orelse
+                return try self.formatArgumentNotAssignable(arg_t, param_t, position);
+            const param_name = (try self.allocCallSignatureFnTypeName(param_t, position)) orelse
+                return try self.formatArgumentNotAssignable(arg_t, param_t, position);
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ arg_name, param_name },
+            );
+        }
+        return try self.formatArgumentNotAssignable(arg_t, param_t, position);
+    }
+
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
         const reduced_param_t = try self.reduceNeverIntersectionsForAssignability(param_t);
         if (reduced_param_t != param_t) {
@@ -155566,6 +155864,18 @@ pub const Checker = struct {
                     );
                 }
             }
+            if (display_arg_t == types.Primitive.null_t or
+                display_arg_t == types.Primitive.undefined_t or
+                display_arg_t == types.Primitive.void_t)
+            {
+                if (try self.allocObjectTypeShapeWithUndefined(param_t)) |param_text| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_text, param_text },
+                    );
+                }
+            }
             if (try self.allocUnwrapThisIndexedConditionalName(param_t)) |param_text| {
                 return try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -155575,6 +155885,17 @@ pub const Checker = struct {
             }
             if (self.propertyKeyLiteralUnionPart(param_t)) |literal_param_t| {
                 if (try self.simpleDiagnosticTypeName(literal_param_t)) |param_text| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_text, param_text },
+                    );
+                }
+            }
+        }
+        if (self.interner.isSignature(display_arg_t)) {
+            if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
+                if (try self.allocCallSignatureFnTypeName(display_arg_t, null)) |arg_text| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -156686,7 +157007,7 @@ pub const Checker = struct {
     /// Returns null when any constituent type isn't nameable so
     /// callers fall through to the positional placeholder.
     fn allocCallSignatureFnTypeName(self: *Checker, t: TypeId, occurrence_index: ?usize) CheckError!?[]const u8 {
-        return self.allocCallSignatureFnTypeNameWithPredicate(t, occurrence_index, null);
+        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, null, false, null);
     }
 
     fn allocCallSignatureFnTypeNameWithPredicate(
@@ -156694,6 +157015,17 @@ pub const Checker = struct {
         t: TypeId,
         occurrence_index: ?usize,
         predicate: ?FnPredicate,
+    ) CheckError!?[]const u8 {
+        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, predicate, false, null);
+    }
+
+    fn allocCallSignatureFnTypeNameInner(
+        self: *Checker,
+        t: TypeId,
+        occurrence_index: ?usize,
+        predicate: ?FnPredicate,
+        omit_type_parameters: bool,
+        parameter_name_donor: ?TypeId,
     ) CheckError!?[]const u8 {
         if (!self.interner.isSignature(t)) return null;
         if (t >= self.interner.pool.typeCount()) return null;
@@ -156703,7 +157035,7 @@ pub const Checker = struct {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         if (sig.is_construct) try buf.appendSlice(arena, "new ");
-        try self.appendCallableSignatureTypeParameters(&buf, arena, t);
+        if (!omit_type_parameters) try self.appendCallableSignatureTypeParameters(&buf, arena, t);
         try buf.append(arena, '(');
         const params = self.interner.signatureParams(t);
         const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
@@ -156715,6 +157047,11 @@ pub const Checker = struct {
             const is_rest = has_rest and is_last;
             const is_positional_optional = !is_rest and i >= min_required;
             const name_text: []const u8 = blk: {
+                if (parameter_name_donor) |donor| {
+                    if (self.signature_param_names.get(donor)) |names| {
+                        if (i < names.len) break :blk self.string_interner.get(names[i]);
+                    }
+                }
                 if (occurrence_index) |idx| {
                     if (params.len == 1) {
                         if (self.signature_param_name_occurrences.get(t)) |occurrences| {
@@ -219137,6 +219474,58 @@ test "checker: tagged template repeated type parameters refine inference candida
         TsCodes.subsequent_var_type_mismatch,
         "Subsequent variable declarations must have the same type.  Variable 'empty' must be of type 'never[] | null | undefined', but here has type 'any[]'.",
     ));
+}
+
+test "checker: constrained inference refines callback and repeated direct candidates" {
+    const s = try newSetup(
+        \\function constrained<T extends Window>(producer: () => T) {}
+        \\constrained(() => "");
+        \\constrained<Window>(() => undefined);
+        \\constrained<number>(() => 3);
+        \\declare function common<T extends any>(a: T, b: T, c: T): T;
+        \\var objects = common(undefined, { x: 6, z: window }, { x: 6, y: "" });
+        \\var objects: {};
+        \\var empty = common([], null, undefined);
+        \\var empty: any[];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type 'number' does not satisfy the constraint 'Window'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'objects' must be of type '{ x: number; z: Window & typeof globalThis; y?: undefined; } | { z?: undefined; x: number; y: string; } | undefined', but here has type '{}'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'empty' must be of type 'never[] | null | undefined', but here has type 'any[]'.",
+    ));
+}
+
+test "checker: constrained inference keeps non-strict construct callbacks nullish" {
+    const s = try newSetup(
+        \\interface Factory { new <T>(producer: () => T); }
+        \\declare var Factory: Factory;
+        \\new Factory<Window>(() => undefined);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
 }
 
 test "checker: repeated generic parameters preserve literal mismatch diagnostics" {
