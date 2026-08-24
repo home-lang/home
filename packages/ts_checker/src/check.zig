@@ -5853,7 +5853,6 @@ pub const Checker = struct {
             if (!std.mem.startsWith(u8, target_text, "new ")) continue;
             const init_name = hir_mod.identifierOf(self.hir, declaration.init).name;
             if (self.checkJsFunctionVariableInitializer(declaration.init, init_name) == null) continue;
-            if (self.diagnosticExists(declaration.name, TsCodes.type_not_assignable)) continue;
             const init_t = self.hir.typeOf(declaration.init);
             const source_name = (try self.allocSimpleTypeName(init_t)) orelse
                 (try self.allocObjectTypeShapeWithUndefined(init_t)) orelse continue;
@@ -5862,6 +5861,13 @@ pub const Checker = struct {
                 "Type '{s}' is not assignable to type '{s}'.",
                 .{ source_name, target_text },
             );
+            var rewrote_existing = false;
+            for (self.diagnostics.items) |*diagnostic| {
+                if (diagnostic.node != declaration.name or diagnostic.code != TsCodes.type_not_assignable) continue;
+                diagnostic.message = message;
+                rewrote_existing = true;
+            }
+            if (rewrote_existing) continue;
             try self.report(declaration.name, TsCodes.type_not_assignable, message);
         }
     }
@@ -246510,6 +246516,25 @@ test "checker: propertyless JSDoc constructor is construct-only" {
         "Value of type 'typeof Dependency' is not callable. Did you mean to include 'new'?",
     ));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+}
+
+test "checker: JSDoc construct target preserves invalid return reference display" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\var f = function() { return 12; };
+        \\f.prototype.a = "a";
+        \\/** @type {new () => f} */
+        \\var x = f;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '() => number' is not assignable to type 'new () => f'.",
+    ));
 }
 
 test "checker: JSDoc class with self-return remains callable under tsgo semantics" {
