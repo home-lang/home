@@ -89241,11 +89241,21 @@ pub const Checker = struct {
         if (source_t == target_t) return true;
         if (self.class_name_by_static.get(source_t)) |source_name| {
             if (self.class_name_by_static.get(target_t)) |target_name| {
-                var cur = source_name;
-                var steps: usize = 0;
-                while (steps < 1024) : (steps += 1) {
-                    if (cur == target_name) return true;
-                    cur = self.class_parent.get(cur) orelse break;
+                if (source_name == target_name) {
+                    const source_instance = try self.constructReturnType(source_t);
+                    const target_instance = try self.constructReturnType(target_t);
+                    if (source_instance != null and target_instance != null) {
+                        const source_decl = self.class_decl_by_instance.get(source_instance.?);
+                        const target_decl = self.class_decl_by_instance.get(target_instance.?);
+                        if (source_decl != null and target_decl != null and source_decl.? == target_decl.?) return true;
+                    }
+                } else {
+                    var cur = source_name;
+                    var steps: usize = 0;
+                    while (steps < 1024) : (steps += 1) {
+                        if (cur == target_name) return true;
+                        cur = self.class_parent.get(cur) orelse break;
+                    }
                 }
             }
         }
@@ -156549,6 +156559,17 @@ pub const Checker = struct {
         if (std.mem.indexOfScalar(u8, display, '.') == null) return false;
         if (std.mem.indexOfScalar(u8, display, '<') != null) return false;
         if (self.classNameForInstanceType(t) == null) return false;
+        var instances = self.class_name_by_instance.iterator();
+        while (instances.next()) |entry| {
+            const other_t = entry.key_ptr.*;
+            if (other_t == t or entry.value_ptr.* != type_name) continue;
+            const other_display = self.alias_display_names.get(other_t) orelse continue;
+            if (std.mem.indexOfScalar(u8, other_display, '.') != null and
+                !std.mem.eql(u8, display, other_display))
+            {
+                return false;
+            }
+        }
         if (self.type_names.get(type_name)) |named_t| {
             return named_t == t;
         }
@@ -168586,6 +168607,7 @@ pub const Checker = struct {
         }
         if (try self.tryReportElementAccessVarDeclTypeNotAssignable(node, init_node, source, target)) return;
         if (try self.tryReportAnnotatedCallableIntersectionVarDeclMismatch(node, target_node, source, target)) return;
+        if (try self.tryReportNamespaceVarDeclTypeNotAssignable(node, init_node, target_node)) return;
         if (target == types.Primitive.never or self.intersectionReducesToNeverForAssignability(target)) {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
@@ -168594,6 +168616,36 @@ pub const Checker = struct {
         }
         if (try self.tryReportConditionalFunctionVarDeclMismatch(node, init_node, target_node, target)) return;
         try self.reportTypeNotAssignable(node, source, target, fallback);
+    }
+
+    fn tryReportNamespaceVarDeclTypeNotAssignable(
+        self: *Checker,
+        node: NodeId,
+        init_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!bool {
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .identifier) return false;
+        const source_name = hir_mod.identifierOf(self.hir, init_node).name;
+        const source_path = [_]hir_mod.StringId{source_name};
+        const source_namespace = self.findVisibleNamespaceByPath(init_node, &source_path) orelse return false;
+        if (!self.namespaceHasRuntimeValue(source_namespace)) return false;
+
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return false;
+        if (self.hir.kindOf(annotation) != .typeof_type) return false;
+        const operand = hir_mod.typeofTypeOf(self.hir, annotation).operand;
+        if (operand == hir_mod.none_node_id or self.hir.kindOf(operand) != .identifier) return false;
+        const target_name = hir_mod.identifierOf(self.hir, operand).name;
+        const target_path = [_]hir_mod.StringId{target_name};
+        const target_namespace = self.findVisibleNamespaceByPath(target_node, &target_path) orelse return false;
+        if (!self.namespaceHasRuntimeValue(target_namespace)) return false;
+
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type 'typeof {s}' is not assignable to type 'typeof {s}'.",
+            .{ self.string_interner.get(source_name), self.string_interner.get(target_name) },
+        );
+        try self.report(node, TsCodes.type_not_assignable, message);
+        return true;
     }
 
     fn tryReportConditionalFunctionVarDeclMismatch(
@@ -170811,6 +170863,11 @@ pub const Checker = struct {
         if (self.class_name_by_instance.get(t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
             if (self.alias_display_names.get(t)) |display| {
+                if (std.mem.indexOfScalar(u8, display, '.') != null and
+                    !self.qualifiedClassDisplayCanUseBareName(t, class_name, display))
+                {
+                    return display;
+                }
                 if (std.mem.indexOfScalar(u8, display, '<')) |args_start| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -257403,4 +257460,34 @@ test "checker: generic indexed assignment target retains symbolic access name" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqualStrings("Type 'undefined' is not assignable to type '{ [key: string]: string; a: string; b: string; }[Key]'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: same-named namespace classes retain distinct static and diagnostic identities" {
+    const s = try newSetup(
+        \\namespace M { export class A { name: string; } }
+        \\namespace N { export class A { id: number; } }
+        \\var moduleValue: typeof M = N;
+        \\var classValue: M.A = new N.A();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_missing_required));
+    var saw_qualified_classes = false;
+    var saw_qualified_namespaces = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.type_not_assignable and
+            std.mem.eql(u8, diagnostic.message, "Type 'typeof N' is not assignable to type 'typeof M'."))
+        {
+            saw_qualified_namespaces = true;
+        }
+        if (diagnostic.code == TsCodes.property_missing_required and
+            std.mem.eql(u8, diagnostic.message, "Property 'name' is missing in type 'N.A' but required in type 'M.A'."))
+        {
+            saw_qualified_classes = true;
+        }
+    }
+    try T.expect(saw_qualified_namespaces);
+    try T.expect(saw_qualified_classes);
 }
