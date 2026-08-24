@@ -49785,6 +49785,12 @@ pub const Checker = struct {
             return self.heritageMemberAssignable(child_t, parent_t);
         }
 
+        // A derived method may accept fewer arguments than its base method,
+        // but it cannot make an additional argument mandatory: callers typed
+        // as the base are still allowed to omit it. Parameter types remain
+        // bivariant below, matching TypeScript's method-specific relation.
+        if (self.methodOverrideHasExtraRequiredParams(child_t, parent_t)) return false;
+
         const child_ret = self.interner.signatureReturn(child_t) orelse types.Primitive.any;
         const parent_ret = self.interner.signatureReturn(parent_t) orelse types.Primitive.any;
         if (parent_ret != types.Primitive.void_t and
@@ -242576,6 +242582,22 @@ test "checker: method overriding base method stays clean of TS2425/TS2426" {
         try T.expect(d.code != TsCodes.property_overridden_by_method);
         try T.expect(d.code != TsCodes.accessor_overridden_by_method);
     }
+}
+
+test "checker: method override cannot add required parameters" {
+    const b = try newBoundSetup(
+        \\class Base {
+        \\    value() { return 0; }
+        \\    consume(n: number) { return n; }
+        \\}
+        \\class Derived extends Base {
+        \\    value(n: number) { return n; }
+        \\    consume() { return 0; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_not_assignable_to_base));
 }
 
 // ---- TS7029 (Fallthrough case in switch) ---------------------------
