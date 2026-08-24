@@ -112661,7 +112661,11 @@ pub const Checker = struct {
     fn checkJsxChildAssignableToChildrenType(self: *Checker, child: NodeId, child_index: usize, children_t: TypeId) CheckError!bool {
         if (self.typeIsAnyLike(children_t)) return false;
         const tuple_target = self.actualTupleLength(children_t) != null;
-        const array_element_t = if (!tuple_target)
+        const preserves_react_node = if (self.alias_display_names.get(children_t)) |display|
+            std.mem.eql(u8, display, "ReactNode")
+        else
+            false;
+        const array_element_t = if (!tuple_target and !preserves_react_node)
             try self.jsxArrayLikeChildrenElementType(children_t)
         else
             null;
