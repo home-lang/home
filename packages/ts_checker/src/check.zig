@@ -13420,12 +13420,23 @@ pub const Checker = struct {
                 hir_mod.interfaceMemberOf(self.hir, b_member)
             else
                 continue;
-            if (bp.name == 0 or bp.is_method) continue;
+            if (bp.name == 0) continue;
             for (a_members) |a_member| {
                 if (self.hir.kindOf(a_member) != .interface_member) continue;
                 const ap = hir_mod.interfaceMemberOf(self.hir, a_member);
-                if (ap.name == 0 or ap.is_method) continue;
+                if (ap.name == 0) continue;
                 if (ap.name != bp.name) continue;
+                if (ap.is_method or bp.is_method) {
+                    if (ap.is_method != bp.is_method) {
+                        if (!self.diagnosticExistsOnNode(a_member, TsCodes.duplicate_identifier)) {
+                            try self.reportDuplicateIdentifierWithOther(a_member, ap.name, b_member);
+                        }
+                        if (!self.diagnosticExistsOnNode(b_member, TsCodes.duplicate_identifier)) {
+                            try self.reportDuplicateIdentifierWithOther(b_member, bp.name, a_member);
+                        }
+                    }
+                    continue;
+                }
                 if (ap.is_optional != bp.is_optional) {
                     try self.reportDeclarationsMustHaveIdenticalModifiers(a_member, ap.name);
                     try self.reportDeclarationsMustHaveIdenticalModifiers(b_member, bp.name);
@@ -199772,6 +199783,24 @@ test "checker: merged interface method overloads do not trigger TS2300" {
             try T.expect(std.mem.indexOf(u8, d.message, "'foo'") == null);
         }
     }
+}
+
+test "checker: merged interface properties and methods report both duplicate identifiers" {
+    const s = try newSetup(
+        \\interface A { foo: () => string; }
+        \\interface A { foo(): number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var duplicate_count: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.duplicate_identifier) continue;
+        if (std.mem.indexOf(u8, diagnostic.message, "'foo'") == null) continue;
+        duplicate_count += 1;
+        try T.expectEqual(@as(usize, 1), diagnostic.related.len);
+        try T.expectEqual(TsCodes.was_also_declared_here, diagnostic.related[0].code);
+    }
+    try T.expectEqual(@as(usize, 2), duplicate_count);
 }
 
 // ---- Usage-based implicit-any SUGGESTIONS (TS7043-TS7050) ----

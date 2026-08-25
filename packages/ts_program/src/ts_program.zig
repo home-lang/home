@@ -422,6 +422,7 @@ pub const Program = struct {
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
         try self.appendProgramGlobalDeclareVarDiagnostics();
+        try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendMergedAmbientModuleExportDiagnostics();
 
         try self.resolveImports();
@@ -565,6 +566,7 @@ pub const Program = struct {
             callback(ctx, f.path, c.diagnostics.items);
         }
 
+        try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendRootDirDiagnostics(options);
 
         try self.resolveImports();
@@ -2957,6 +2959,7 @@ pub const Program = struct {
             return error.ParseError;
         }
 
+        try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendRootDirDiagnostics(options);
 
         try self.resolveImports();
@@ -3646,6 +3649,14 @@ pub const Program = struct {
         type_text: []const u8,
     };
 
+    const ProgramGlobalInterfaceMember = struct {
+        file_index: usize,
+        interface_name: []const u8,
+        member_name: []const u8,
+        pos: u32,
+        is_method: bool,
+    };
+
     const ProgramAmbientExportBinding = struct {
         file_index: usize,
         module_name: []const u8,
@@ -3824,6 +3835,110 @@ pub const Program = struct {
                 c.has_errors = true;
             }
         }
+    }
+
+    fn appendProgramGlobalInterfaceMemberDiagnostics(self: *Program) ProgramError!void {
+        var members: std.ArrayListUnmanaged(ProgramGlobalInterfaceMember) = .empty;
+        defer members.deinit(self.gpa);
+
+        for (self.files.items, 0..) |file, file_index| {
+            if (file.redirect_target != null or sourceLooksExternalModule(file.source)) continue;
+            const compilation = file.compilation orelse continue;
+            if (compilation.hir.kindOf(compilation.root) != .block_stmt) continue;
+            for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |statement| {
+                if (compilation.hir.kindOf(statement) != .interface_decl) continue;
+                const interface_decl = hir_mod_ns.interfaceOf(&compilation.hir, statement);
+                if (interface_decl.name == hir_mod_ns.none_node_id or
+                    compilation.hir.kindOf(interface_decl.name) != .identifier) continue;
+                const interface_name = compilation.interner.get(
+                    hir_mod_ns.identifierOf(&compilation.hir, interface_decl.name).name,
+                );
+                for (hir_mod_ns.interfaceMembers(&compilation.hir, statement)) |member_node| {
+                    if (compilation.hir.kindOf(member_node) != .interface_member) continue;
+                    const member = hir_mod_ns.interfaceMemberOf(&compilation.hir, member_node);
+                    if (member.name == 0) continue;
+                    const member_name = compilation.interner.get(member.name);
+                    if (std.mem.startsWith(u8, member_name, "__")) continue;
+                    try members.append(self.gpa, .{
+                        .file_index = file_index,
+                        .interface_name = interface_name,
+                        .member_name = member_name,
+                        .pos = compilation.hir.spanOf(member_node).start,
+                        .is_method = member.is_method,
+                    });
+                }
+            }
+        }
+
+        for (members.items, 0..) |member, i| {
+            for (members.items[0..i]) |previous| {
+                if (member.file_index == previous.file_index or
+                    member.is_method == previous.is_method or
+                    !std.mem.eql(u8, member.interface_name, previous.interface_name) or
+                    !std.mem.eql(u8, member.member_name, previous.member_name)) continue;
+                try self.appendProgramGlobalInterfaceMemberDiagnostic(previous, member);
+                try self.appendProgramGlobalInterfaceMemberDiagnostic(member, previous);
+            }
+        }
+    }
+
+    fn appendProgramGlobalInterfaceMemberDiagnostic(
+        self: *Program,
+        member: ProgramGlobalInterfaceMember,
+        other: ProgramGlobalInterfaceMember,
+    ) ProgramError!void {
+        const file = self.files.items[member.file_index];
+        const other_file = self.files.items[other.file_index];
+        const compilation = file.compilation orelse return;
+        if (diagnosticExistsAt(compilation, 2300, member.pos)) return;
+
+        const related = try self.gpa.alloc(ts_driver.RelatedInfo, 1);
+        const related_message = std.fmt.allocPrint(
+            self.gpa,
+            "'{s}' was also declared here.",
+            .{member.member_name},
+        ) catch |err| {
+            self.gpa.free(related);
+            return err;
+        };
+        const related_file = self.gpa.dupe(u8, other_file.path) catch |err| {
+            self.gpa.free(related_message);
+            self.gpa.free(related);
+            return err;
+        };
+        related[0] = .{
+            .code = 6203,
+            .message = related_message,
+            .pos = other.pos,
+            .span_len = @intCast(other.member_name.len),
+            .file = related_file,
+        };
+        const message = std.fmt.allocPrint(
+            self.gpa,
+            "Duplicate identifier '{s}'.",
+            .{member.member_name},
+        ) catch |err| {
+            self.gpa.free(related_file);
+            self.gpa.free(related_message);
+            self.gpa.free(related);
+            return err;
+        };
+        compilation.diagnostics.append(self.gpa, .{
+            .phase = .bind,
+            .pos = member.pos,
+            .line = 0,
+            .span_len = @intCast(member.member_name.len),
+            .code = 2300,
+            .message = message,
+            .related = related,
+        }) catch |err| {
+            self.gpa.free(message);
+            self.gpa.free(related_file);
+            self.gpa.free(related_message);
+            self.gpa.free(related);
+            return err;
+        };
+        compilation.has_errors = true;
     }
 
     const ParsedDeclareVar = struct {
@@ -8390,6 +8505,47 @@ test "Program: records any-typed declaration export assignments" {
     try T.expectEqual(@as(usize, 1), exports.len);
     try T.expect(exports[0].whole_export_is_any);
     try T.expectEqualStrings("", exports[0].private_type_name);
+}
+
+test "Program: global interface property and method declarations collide across files" {
+    const file1_source =
+        \\interface TopLevel {
+        \\    duplicate1: () => string;
+        \\    duplicate2: () => string;
+        \\    duplicate3: () => string;
+        \\}
+    ;
+    const file2_source =
+        \\interface TopLevel {
+        \\    duplicate1(): number;
+        \\    duplicate2(): number;
+        \\    duplicate3(): number;
+        \\}
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/file1.ts", file1_source);
+    try vfs.addFile("/file2.ts", file2_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const file1_id = try p.add("/file1.ts", file1_source);
+    const file2_id = try p.add("/file2.ts", file2_source);
+
+    try p.compileAll(.{ .no_emit = true });
+    for ([_]FileId{ file1_id, file2_id }) |file_id| {
+        const compilation = p.fileById(file_id).compilation.?;
+        var duplicate_count: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != 2300) continue;
+            duplicate_count += 1;
+            try T.expectEqual(@as(usize, 1), diagnostic.related.len);
+            try T.expectEqual(@as(u32, 6203), diagnostic.related[0].code);
+            try T.expect(diagnostic.related[0].file != null);
+        }
+        try T.expectEqual(@as(usize, 3), duplicate_count);
+    }
 }
 
 test "Program: checked JS classifies ambient interface imports and re-exports as types" {
