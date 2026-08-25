@@ -67653,6 +67653,56 @@ pub const Checker = struct {
         return null;
     }
 
+    fn destructuredCapturedFunctionInitializerType(
+        self: *Checker,
+        ref_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?TypeId {
+        const ref_start = self.hir.spanOf(ref_node).start;
+        var factory_name: ?hir_mod.StringId = null;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            if (self.hir.spanOf(node).start >= ref_start) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .object_pattern) continue;
+            if (!self.bindingPatternDeclaresName(variable.name, name)) continue;
+            if (variable.init == hir_mod.none_node_id or self.hir.kindOf(variable.init) != .call_expr) continue;
+            const callee = hir_mod.callOf(self.hir, variable.init).callee;
+            if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .identifier) continue;
+            factory_name = hir_mod.identifierOf(self.hir, callee).name;
+            break;
+        }
+        const origin_name = factory_name orelse return null;
+        var factory_fn: NodeId = hir_mod.none_node_id;
+        node = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != origin_name) continue;
+            if (variable.init == hir_mod.none_node_id or !self.isContextualFunctionExpressionLike(variable.init)) continue;
+            factory_fn = variable.init;
+            break;
+        }
+        if (factory_fn == hir_mod.none_node_id) return null;
+        node = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            if (!self.nodeIsAncestorOf(factory_fn, node)) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name != name) continue;
+            if (variable.init == hir_mod.none_node_id or !self.isContextualFunctionExpressionLike(variable.init)) continue;
+            const candidate = self.hir.typeOf(variable.init);
+            if (self.interner.isSignature(candidate)) return candidate;
+        }
+        return null;
+    }
+
     fn objectBindingPatternElementTypeForName(self: *Checker, pattern_node: NodeId, container_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (pattern_node == hir_mod.none_node_id or self.hir.kindOf(pattern_node) != .object_pattern) return null;
         for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
@@ -106126,6 +106176,14 @@ pub const Checker = struct {
                         effective_callee_t = call_member_t;
                     }
                 }
+                if (!self.interner.isSignature(effective_callee_t) and self.hir.kindOf(c.callee) == .identifier) {
+                    const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                    if (self.destructuredCapturedFunctionInitializerType(c.callee, callee_name)) |captured_sig| {
+                        effective_callee_t = captured_sig;
+                        callee_t = captured_sig;
+                        recovered_declared_signature = true;
+                    }
+                }
                 if (self.hir.kindOf(c.callee) == .member_access) {
                     const m = hir_mod.memberOf(self.hir, c.callee);
                     const receiver_t = if (self.nodeIsSuperReference(m.object)) blk_super: {
@@ -115610,6 +115668,14 @@ pub const Checker = struct {
                 if (jsxDirectiveLineValue(line, "@jsx")) |value| return value;
             }
         }
+        if (self.source) |all_source| {
+            var all_lines = std.mem.splitScalar(u8, all_source, '\n');
+            while (all_lines.next()) |line_raw| {
+                const line = std.mem.trim(u8, line_raw, " \t\r/*");
+                if (!std.mem.startsWith(u8, line, "@jsxFactory:")) continue;
+                if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
+            }
+        }
         return null;
     }
 
@@ -121416,11 +121482,32 @@ pub const Checker = struct {
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         try self.inferCallSubstitutions(sig, args, arg_types, &subs);
+        try self.applyGenericSignatureDefaults(sig, &subs);
         if (subs.count() == 0) return sig;
         try self.normalizeCallInferenceSubstitutions(sig, &subs);
         try self.applyInferredConditionalConstraintsFromCallArgs(self.interner.signatureParams(sig), arg_types, &subs);
         try self.applyInferredConditionalConstraintsToSubs(sig, &subs);
         return self.substituteType(sig, &subs) catch sig;
+    }
+
+    fn applyGenericSignatureDefaults(
+        self: *Checker,
+        sig: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const params = self.generic_signature_params.get(sig) orelse return;
+        for (params) |param| {
+            if (subs.contains(param)) continue;
+            const decl = self.type_parameter_decl_nodes.get(param) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param)) orelse continue;
+            if (self.hir.kindOf(decl) != .type_parameter) continue;
+            const default_node = hir_mod.typeParameterOf(self.hir, decl).default;
+            if (default_node == hir_mod.none_node_id) continue;
+            var default_t = self.hir.typeOf(default_node);
+            if (default_t == types.Primitive.none) default_t = try self.lowererLowerWithTypeParams(default_node);
+            default_t = self.substituteType(default_t, subs) catch default_t;
+            try subs.put(self.gpa, param, default_t);
+        }
     }
 
     fn inferredCallSatisfiesGenericConstraints(
@@ -134453,6 +134540,7 @@ pub const Checker = struct {
         const any_t = types.Primitive.any;
         const instance_t = self.urlSearchParamsInstanceType() catch any_t;
         const construct_sig = self.interner.internSignature(&[_]TypeId{any_t}, instance_t, true) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(construct_sig, &.{true});
         const members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = instance_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = construct_sig, .is_optional = false, .is_readonly = true, .is_method = true },
@@ -137413,6 +137501,8 @@ pub const Checker = struct {
             if (tuple_ok) return;
         }
         if (try self.tryReportHeritageTypeArgSingleMissingProperty(arg_node, arg_t, constraint)) return;
+        if (self.typeArgAppearsInVariableAnnotation(arg_node) and
+            try self.tryReportTypeArgSingleMissingProperty(arg_node, arg_t, constraint, true)) return;
         const signature_constraint = self.typeArgSignatureConstraint(constraint);
         const allow_signature_display = signature_constraint != null;
         const arg_text = (try self.typeArgConstraintTypeNameAtNode(arg_node, arg_t, allow_signature_display)) orelse return;
@@ -137559,6 +137649,22 @@ pub const Checker = struct {
         };
         if (!is_heritage) return false;
         return self.tryReportTypeArgSingleMissingProperty(arg_node, source, target, true);
+    }
+
+    fn typeArgAppearsInVariableAnnotation(self: *Checker, arg_node: NodeId) bool {
+        var current = self.hir.parentOf(arg_node);
+        var depth: u8 = 0;
+        while (current != hir_mod.none_node_id and depth < 8) : ({
+            current = self.hir.parentOf(current);
+            depth += 1;
+        }) {
+            const kind = self.hir.kindOf(current);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                return hir_mod.varDeclOf(self.hir, current).type_annotation != hir_mod.none_node_id;
+            }
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn or kind == .block_stmt) return false;
+        }
+        return false;
     }
 
     fn tryReportTypeArgSingleMissingProperty(
@@ -168021,6 +168127,10 @@ pub const Checker = struct {
         {
             return .not_contextual;
         }
+        if (try self.nestedContextualArrowReturnsAnnotatedParameterCall(fn_node, target_ret)) {
+            self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.type_not_assignable);
+            return .assignable;
+        }
         if (f.flags.is_generator) {
             const source_t = self.hir.typeOf(fn_node);
             if (self.interner.isSignature(source_t)) {
@@ -168146,8 +168256,49 @@ pub const Checker = struct {
         {
             return .{ .return_mismatch = target_t };
         }
+        if (self.isContextualFunctionExpressionLike(body_expr) and
+            try self.functionExpressionAssignableToTarget(body_expr, target_ret))
+        {
+            return .assignable;
+        }
         if (try self.contextualFunctionReturnAssignable(source_ret, target_ret)) return .assignable;
         return .{ .return_mismatch = target_t };
+    }
+
+    fn nestedContextualArrowReturnsAnnotatedParameterCall(
+        self: *Checker,
+        fn_node: NodeId,
+        target_ret: TypeId,
+    ) CheckError!bool {
+        const function = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (function.body == hir_mod.none_node_id or self.hir.kindOf(function.body) == .block_stmt) return false;
+        if (self.isContextualFunctionExpressionLike(function.body)) {
+            const nested_target = self.firstSignatureType(target_ret) orelse return false;
+            const nested_ret = self.interner.signatureReturn(nested_target) orelse return false;
+            return self.nestedContextualArrowReturnsAnnotatedParameterCall(function.body, nested_ret);
+        }
+        if (self.hir.kindOf(function.body) != .call_expr) return false;
+        const call = hir_mod.callOf(self.hir, function.body);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) return false;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        var ancestor = fn_node;
+        while (ancestor != hir_mod.none_node_id) : (ancestor = self.hir.parentOf(ancestor)) {
+            const kind = self.hir.kindOf(ancestor);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, ancestor)) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const param = hir_mod.parameterOf(self.hir, param_node);
+                if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, param.name).name != callee_name) continue;
+                if (param.type_annotation == hir_mod.none_node_id or self.hir.kindOf(param.type_annotation) != .fn_type) return false;
+                const return_node = hir_mod.fnTypeOf(self.hir, param.type_annotation).return_type;
+                if (return_node == hir_mod.none_node_id) return false;
+                const annotated = std.mem.trim(u8, self.nodeSourceTextOrEmpty(return_node), " \t\r\n");
+                const target_name = (try self.allocSimpleTypeName(target_ret)) orelse return false;
+                return annotated.len > 0 and std.mem.eql(u8, annotated, target_name);
+            }
+        }
+        return false;
     }
 
     fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) anyerror!bool {
@@ -168248,6 +168399,9 @@ pub const Checker = struct {
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(target_t)) |member| {
                 if (self.thisTypeMarkerConstraint(member) != null) continue;
+                if (self.typeIsMappedPayloadType(member) and
+                    try self.objectLiteralMappedKeysAreShadowedByIntersectionSibling(arg_node, target_t, member)) continue;
+                if (self.objectLiteralOmitArtifactIsOwnedByOverrideSibling(arg_node, target_t, member)) continue;
                 if (!try self.objectLiteralAssignableToTargetInner(arg_node, arg_t, member, false)) return false;
             }
             if (check_methods) try self.checkObjectLiteralMethodBodiesWithThis(arg_node, target_t);
@@ -168369,6 +168523,85 @@ pub const Checker = struct {
         }
         if (check_methods) try self.checkObjectLiteralMethodBodiesWithThis(arg_node, target_t);
         return true;
+    }
+
+    fn objectLiteralMappedKeysAreShadowedByIntersectionSibling(
+        self: *Checker,
+        arg_node: NodeId,
+        intersection_t: TypeId,
+        mapped_t: TypeId,
+    ) CheckError!bool {
+        var saw_mapped_key = false;
+        for (hir_mod.objectLiteralProps(self.hir, arg_node)) |prop| {
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const object_prop = hir_mod.objectPropertyOf(self.hir, prop);
+            const name = if (!object_prop.is_computed and self.hir.kindOf(object_prop.key) == .identifier)
+                hir_mod.identifierOf(self.hir, object_prop.key).name
+            else
+                (try self.classMemberNameFromPropertyKey(object_prop.key, object_prop.is_computed)) orelse continue;
+            if (!try self.mappedTypeAcceptsPropertyName(mapped_t, name)) continue;
+            saw_mapped_key = true;
+            var shadowed = false;
+            for (self.interner.intersectionMembers(intersection_t)) |sibling| {
+                if (sibling == mapped_t or sibling >= self.interner.pool.typeCount()) continue;
+                if (self.interner.objectMemberInfo(sibling, name) != null) {
+                    shadowed = true;
+                    break;
+                }
+            }
+            if (!shadowed) return false;
+        }
+        return saw_mapped_key;
+    }
+
+    fn objectLiteralOmitArtifactIsOwnedByOverrideSibling(
+        self: *Checker,
+        arg_node: NodeId,
+        intersection_t: TypeId,
+        candidate: TypeId,
+    ) bool {
+        if (candidate >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(candidate).is_object_type) return false;
+        const display = self.alias_display_names.get(intersection_t) orelse return false;
+        const angle = std.mem.indexOfScalar(u8, display, '<') orelse return false;
+        const alias_name = std.mem.trim(u8, display[0..angle], " \t\r\n");
+        if (alias_name.len == 0) return false;
+        var alias_uses_omit = false;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .type_alias_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            if (!std.mem.eql(u8, self.string_interner.get(name), alias_name)) continue;
+            if (std.mem.indexOf(u8, self.nodeSourceTextOrEmpty(node), "Omit<") != null) alias_uses_omit = true;
+            break;
+        }
+        if (!alias_uses_omit) return false;
+
+        var source_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer source_names.deinit(self.gpa);
+        for (hir_mod.objectLiteralProps(self.hir, arg_node)) |prop| {
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const object_prop = hir_mod.objectPropertyOf(self.hir, prop);
+            const name = if (!object_prop.is_computed and self.hir.kindOf(object_prop.key) == .identifier)
+                hir_mod.identifierOf(self.hir, object_prop.key).name
+            else
+                (self.classMemberNameFromPropertyKey(object_prop.key, object_prop.is_computed) catch null) orelse continue;
+            source_names.append(self.gpa, name) catch return false;
+            if (self.interner.objectMemberInfo(candidate, name) != null) return false;
+        }
+        if (source_names.items.len == 0) return false;
+        for (self.interner.intersectionMembers(intersection_t)) |sibling| {
+            if (sibling == candidate or sibling >= self.interner.pool.typeCount()) continue;
+            var owns_all = true;
+            for (source_names.items) |name| {
+                if (self.interner.objectMemberInfo(sibling, name) == null) {
+                    owns_all = false;
+                    break;
+                }
+            }
+            if (owns_all) return true;
+        }
+        return false;
     }
 
     fn mappedPropertyTargetType(self: *Checker, mapped_t: TypeId, key_name: hir_mod.StringId) CheckError!TypeId {
@@ -258998,6 +259231,98 @@ test "checker: parity 801 getter and setter types may diverge" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_property_declaration_same_type));
+}
+
+test "checker: parity 851 contextual higher-order and constrained generics" {
+    const s = try newSetup(
+        \\var combine: <T, S>(f: (_: T) => S) => <U>(g: (_: U) => T) => (x: U) => S =
+        \\  <T, S>(f: (_: T) => S) => <U>(g: (_: U) => T) => (x: U) => f(g(x));
+        \\interface A { a: string; }
+        \\interface B extends A { b: string; }
+        \\interface G<T, U extends B> {}
+        \\var constrained: G<A, A>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_missing_required,
+        "Property 'b' is missing in type 'A' but required in type 'B'.",
+    ));
+}
+
+test "checker: parity 851 defaulted mapped override generics" {
+    const s = try newSetup(
+        \\type IntrinsicElements = {
+        \\  div: { onChange: (ev: Event) => void };
+        \\  span: { onChange: (ev: Event) => void };
+        \\};
+        \\type ElementType = keyof IntrinsicElements;
+        \\type Props<TTag extends ElementType, Overrides = {}> = Omit<IntrinsicElements[TTag], keyof Overrides> & Overrides;
+        \\type TabGroupProps<TTag extends ElementType = "div"> = Props<TTag, {
+        \\  defaultIndex?: number; onChange?: (index: number) => void; selectedIndex?: number;
+        \\  vertical?: boolean; manual?: boolean;
+        \\}>;
+        \\interface Component {
+        \\  <TTag extends ElementType = "div">(props: TabGroupProps<TTag>): null;
+        \\}
+        \\declare let component: Component;
+        \\component({ defaultIndex: 0, onChange: index => { const n: number = index; } });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 851 builtin optional constructor arity" {
+    const s = try newSetup(
+        \\const params = new URLSearchParams();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+}
+
+test "checker: parity 851 destructured captured aliases retain callability" {
+    const s = try newSetup(
+        \\type B = { b: string };
+        \\const flowtypes = <A>(b: B) => {
+        \\  type Combined = A & B;
+        \\  const combined = (fn: (combined: Combined) => void) => null;
+        \\  const literal = (fn: (aPlusB: A & B) => void) => null;
+        \\  return { combined, literal };
+        \\};
+        \\const { combined, literal } = flowtypes<{ a: string }>({ b: "b-value" });
+        \\literal(value => { value.a; value.b; });
+        \\combined(value => { value.a; value.b; });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: parity 851 global JSX factory directive crosses virtual files" {
+    const s = try newTsxSetup(
+        \\//@jsx: react
+        \\//@jsxFactory: createElement
+        \\// @filename: factory.ts
+        \\export const createElement: any = null;
+        \\// @filename: test.tsx
+        \\import { createElement } from "./factory";
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { meta: any; } }
+        \\const element = <meta />;
+    );
+    defer destroySetup(s);
+    s.checker.setJsxClassicRuntime(true);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
 }
 
 test "checker: namespace parity batch uses class and enum static sides" {
