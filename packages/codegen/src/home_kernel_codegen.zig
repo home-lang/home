@@ -422,6 +422,8 @@ pub const HomeKernelCodegen = struct {
     import_arena: std.heap.ArenaAllocator,
     /// Files already pulled in, so a cycle or a diamond import is visited once.
     imported_files: std.StringHashMap(void),
+    /// Interned `*T` names, so pointerTo can return a stable slice.
+    pointer_type_names: std.StringHashMap([]const u8),
     /// Struct declarations from imported modules, awaiting layout alongside
     /// this file's own. Each carries the qualified name it is written as.
     pending_structs: std.ArrayList(PendingStruct),
@@ -458,6 +460,7 @@ pub const HomeKernelCodegen = struct {
         result.import_arena = std.heap.ArenaAllocator.init(allocator);
         result.imported_files = std.StringHashMap(void).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
+        result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
         return result;
     }
 
@@ -480,6 +483,7 @@ pub const HomeKernelCodegen = struct {
         self.enum_values.deinit();
         self.imported_files.deinit();
         self.pending_structs.deinit(self.allocator);
+        self.pointer_type_names.deinit();
         self.import_arena.deinit();
         self.string_literals.deinit(self.allocator);
     }
@@ -1043,6 +1047,16 @@ pub const HomeKernelCodegen = struct {
         return null;
     }
 
+    /// `*T` for a given T, interned in the import arena so the returned name
+    /// outlives the call. Falls back to T if the name cannot be built, which
+    /// only loses precision rather than correctness.
+    fn pointerTo(self: *HomeKernelCodegen, inner: []const u8) []const u8 {
+        if (self.pointer_type_names.get(inner)) |cached| return cached;
+        const name = std.fmt.allocPrint(self.import_arena.allocator(), "*{s}", .{inner}) catch return inner;
+        self.pointer_type_names.put(inner, name) catch return name;
+        return name;
+    }
+
     /// The declared type of an lvalue expression, or null if unknown.
     fn typeOfLValue(self: *HomeKernelCodegen, expr: *const ast.Expr) ?[]const u8 {
         switch (expr.*) {
@@ -1075,7 +1089,12 @@ pub const HomeKernelCodegen = struct {
                 const inner = self.typeOfLValue(u.operand) orelse return null;
                 return switch (u.op) {
                     .Deref => pointeeType(inner),
-                    .AddressOf, .Borrow, .BorrowMut => inner,
+                    // `&x` is a pointer to x, not an x. Reporting the inner
+                    // type made `let e = &table[i]` look like storage, so the
+                    // binding was sized for a whole struct and initialized by
+                    // an aggregate copy — from an address-of expression, which
+                    // is a value and has no address of its own to copy from.
+                    .AddressOf, .Borrow, .BorrowMut => self.pointerTo(inner),
                     else => null,
                 };
             },
