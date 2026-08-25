@@ -3196,6 +3196,11 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
+    // Give the resolver the Io context. Parser.init has to construct it with
+    // null — it has no access to g_io — but the kernel backend reads imported
+    // modules through this resolver to pick up their type declarations, and
+    // without an Io it cannot open a file at all.
+    parser.module_resolver.io = g_io;
 
     const program = try parser.parse();
 

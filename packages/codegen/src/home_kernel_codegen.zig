@@ -9,6 +9,8 @@ const Parser = parser_mod.Parser;
 const SymbolTable = parser_mod.SymbolTable;
 const ModuleResolver = parser_mod.ModuleResolver;
 const Symbol = parser_mod.Symbol;
+const Lexer = @import("lexer").Lexer;
+const Io = std.Io;
 const kernel_codegen = @import("kernel_codegen.zig");
 
 /// String literal entry for .rodata section
@@ -41,6 +43,13 @@ const FieldInfo = struct {
     type_name: []const u8,
     offset: usize,
     size: usize,
+};
+
+/// A struct declaration imported from another module, with the qualified
+/// name the importing file writes it as.
+const PendingStruct = struct {
+    decl: *const ast.StructDecl,
+    qualified: []const u8,
 };
 
 /// A struct type laid out in memory. Fields are placed in declaration order,
@@ -281,6 +290,14 @@ pub const HomeKernelCodegen = struct {
     enum_sizes: std.StringHashMap(usize),
     /// Enum variant values, keyed "EnumName.VariantName".
     enum_values: std.StringHashMap(i64),
+    /// Arena holding every imported module's source and AST. Type names are
+    /// slices into that source, so it must outlive code generation.
+    import_arena: std.heap.ArenaAllocator,
+    /// Files already pulled in, so a cycle or a diamond import is visited once.
+    imported_files: std.StringHashMap(void),
+    /// Struct declarations from imported modules, awaiting layout alongside
+    /// this file's own. Each carries the qualified name it is written as.
+    pending_structs: std.ArrayList(PendingStruct),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -311,6 +328,9 @@ pub const HomeKernelCodegen = struct {
         result.structs = std.StringHashMap(StructInfo).init(allocator);
         result.enum_sizes = std.StringHashMap(usize).init(allocator);
         result.enum_values = std.StringHashMap(i64).init(allocator);
+        result.import_arena = std.heap.ArenaAllocator.init(allocator);
+        result.imported_files = std.StringHashMap(void).init(allocator);
+        result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         return result;
     }
 
@@ -331,6 +351,9 @@ pub const HomeKernelCodegen = struct {
         var ev_it = self.enum_values.keyIterator();
         while (ev_it.next()) |k| self.allocator.free(k.*);
         self.enum_values.deinit();
+        self.imported_files.deinit();
+        self.pending_structs.deinit(self.allocator);
+        self.import_arena.deinit();
         self.string_literals.deinit(self.allocator);
     }
 
@@ -449,6 +472,124 @@ pub const HomeKernelCodegen = struct {
         return @min(size, @as(usize, 8));
     }
 
+    /// Maximum import depth. Kernel modules import their direct dependencies
+    /// and little else; a few levels covers the real graph, and the bound
+    /// means a pathological graph degrades to "some types unresolved" rather
+    /// than a hang.
+    const MAX_IMPORT_DEPTH: usize = 4;
+
+    /// Pull struct, enum, and constant declarations from imported modules into
+    /// scope, registered under the importing alias so `spinlock.Spinlock`
+    /// resolves. Recurses, because an imported module's structs may themselves
+    /// have fields from a further module.
+    fn collectImports(self: *HomeKernelCodegen, program: *const ast.Program, depth: usize) anyerror!void {
+        if (depth >= MAX_IMPORT_DEPTH) return;
+        const arena = self.import_arena.allocator();
+
+        for (program.statements) |stmt| {
+            if (stmt != .ImportDecl) continue;
+            const decl = stmt.ImportDecl;
+
+            const resolved = self.module_resolver.resolve(decl.path) catch continue;
+            // A Zig module has no Home declarations to read.
+            if (resolved.is_zig) continue;
+
+            // Visit each file once: kernel modules form a diamond around
+            // core/foundation.home, and cycles exist.
+            if (self.imported_files.contains(resolved.file_path)) continue;
+            const key = arena.dupe(u8, resolved.file_path) catch continue;
+            self.imported_files.put(key, {}) catch continue;
+
+            // The resolver carries the Io context. Without one no file can be
+            // opened, so every type from this module would silently go
+            // missing — and a missing type is not an error at its own site,
+            // it is an unlayoutable struct three files away. Say so here.
+            const io = self.module_resolver.io orelse {
+                try self.print("# ERROR: no Io context; cannot read imported module {s}\n", .{resolved.file_path});
+                continue;
+            };
+            const source = Io.Dir.cwd().readFileAlloc(
+                io,
+                resolved.file_path,
+                arena,
+                Io.Limit.limited(16 * 1024 * 1024),
+            ) catch {
+                try self.print("# ERROR: cannot read imported module {s}\n", .{resolved.file_path});
+                continue;
+            };
+
+            var lexer = Lexer.init(arena, source);
+            const tokens = lexer.tokenize() catch continue;
+            var parser = Parser.init(arena, tokens.items) catch continue;
+            parser.source_text = source;
+            parser.source_file = resolved.file_path;
+            parser.module_resolver.setSourceRoot(resolved.file_path) catch {};
+            // A module that does not fully parse still yields the declarations
+            // that did, which is better than treating every type in it as
+            // unknown.
+            const imported = parser.parse() catch continue;
+
+            // The alias the importing file uses, or the module's own name.
+            const alias = decl.alias orelse resolved.name;
+
+            try self.registerImportedDecls(imported, alias);
+            try self.collectImports(imported, depth + 1);
+        }
+    }
+
+    /// Register one imported module's types under `alias`, both qualified
+    /// (`spinlock.Spinlock`, which is how the type is written at the use site)
+    /// and bare, so a struct field written without the qualifier still
+    /// resolves. A bare name already taken by the importing file is never
+    /// overwritten: the local declaration wins.
+    fn registerImportedDecls(
+        self: *HomeKernelCodegen,
+        program: *const ast.Program,
+        alias: []const u8,
+    ) !void {
+        const arena = self.import_arena.allocator();
+
+        for (program.statements) |stmt| {
+            switch (stmt) {
+                .StructDecl => |decl| {
+                    const qualified = try std.fmt.allocPrint(arena, "{s}.{s}", .{ alias, decl.name });
+                    try self.pending_structs.append(self.allocator, .{
+                        .decl = decl,
+                        .qualified = qualified,
+                    });
+                },
+                .EnumDecl => |decl| {
+                    const size = if (decl.tag_type) |t| (sizeOfPrimitive(t) orelse 4) else 4;
+                    const qualified = try std.fmt.allocPrint(arena, "{s}.{s}", .{ alias, decl.name });
+                    if (!self.enum_sizes.contains(qualified)) try self.enum_sizes.put(qualified, size);
+                    if (!self.enum_sizes.contains(decl.name)) try self.enum_sizes.put(decl.name, size);
+
+                    var next: i64 = 0;
+                    for (decl.variants) |v| {
+                        const value = v.value orelse next;
+                        next = value + 1;
+                        for ([_][]const u8{ qualified, decl.name }) |owner| {
+                            const key = try std.fmt.allocPrint(arena, "{s}.{s}", .{ owner, v.name });
+                            if (!self.enum_values.contains(key)) try self.enum_values.put(key, value);
+                        }
+                    }
+                },
+                .LetDecl => |decl| {
+                    // Only constants cross a module boundary here. Imported
+                    // *storage* would need a symbol reference, which is the
+                    // linker's business and a separate step.
+                    if (decl.is_mutable) continue;
+                    const value = decl.value orelse continue;
+                    const folded = self.foldConst(value) orelse continue;
+                    const qualified = try std.fmt.allocPrint(arena, "{s}.{s}", .{ alias, decl.name });
+                    if (!self.globals.contains(qualified)) try self.globals.put(qualified, folded);
+                    if (!self.globals.contains(decl.name)) try self.globals.put(decl.name, folded);
+                },
+                else => {},
+            }
+        }
+    }
+
     /// Fold module-level constants before anything that depends on them.
     /// Runs to a fixed point so a constant may be defined in terms of one
     /// declared later in the file.
@@ -506,49 +647,76 @@ pub const HomeKernelCodegen = struct {
         var progress = true;
         while (progress) {
             progress = false;
+            // This file's own structs first, so a local declaration wins any
+            // bare-name collision with an imported one.
             for (program.statements) |stmt| {
                 if (stmt != .StructDecl) continue;
-                const decl = stmt.StructDecl;
-                if (self.structs.contains(decl.name)) continue;
-
-                // Every field must have a known size before this struct does.
-                var resolvable = true;
-                for (decl.fields) |f| {
-                    if (self.sizeOf(f.type_name) == null) {
-                        resolvable = false;
-                        break;
-                    }
-                }
-                if (!resolvable) continue;
-
-                var fields = try self.allocator.alloc(FieldInfo, decl.fields.len);
-                var offset: usize = 0;
-                var max_align: usize = 1;
-                for (decl.fields, 0..) |f, i| {
-                    const fsize = self.sizeOf(f.type_name).?;
-                    // `packed` means exactly what it says: no padding.
-                    const falign = if (decl.layout == .Packed) 1 else self.alignOf(f.type_name);
-                    max_align = @max(max_align, falign);
-                    offset = (offset + falign - 1) / falign * falign;
-                    fields[i] = .{
-                        .name = f.name,
-                        .type_name = f.type_name,
-                        .offset = offset,
-                        .size = fsize,
-                    };
-                    offset += fsize;
-                }
-                // Tail padding, so an array of this struct strides correctly.
-                const total = (offset + max_align - 1) / max_align * max_align;
-                try self.structs.put(decl.name, .{
-                    .name = decl.name,
-                    .size = total,
-                    .alignment = max_align,
-                    .fields = fields,
-                });
-                progress = true;
+                if (try self.layoutOneStruct(stmt.StructDecl, null)) progress = true;
+            }
+            // Then imported structs, registered under both their qualified
+            // name (how the use site writes them) and their bare name.
+            for (self.pending_structs.items) |pending| {
+                if (try self.layoutOneStruct(pending.decl, pending.qualified)) progress = true;
             }
         }
+    }
+
+    /// Lay out one struct if every field can be sized. Returns true when it
+    /// made progress, so the caller's fixed-point loop knows to go again.
+    fn layoutOneStruct(
+        self: *HomeKernelCodegen,
+        decl: *const ast.StructDecl,
+        qualified: ?[]const u8,
+    ) !bool {
+        const primary = qualified orelse decl.name;
+        if (self.structs.contains(primary)) return false;
+
+        // Every field must have a known size before this struct does. A
+        // struct with one unsizable field is left out entirely rather than
+        // laid out with a guessed offset, which would misplace every field
+        // after it.
+        for (decl.fields) |f| {
+            if (self.sizeOf(f.type_name) == null) return false;
+        }
+
+        var fields = try self.allocator.alloc(FieldInfo, decl.fields.len);
+        var offset: usize = 0;
+        var max_align: usize = 1;
+        for (decl.fields, 0..) |f, i| {
+            const fsize = self.sizeOf(f.type_name).?;
+            // `packed` means exactly what it says: no padding.
+            const falign = if (decl.layout == .Packed) 1 else self.alignOf(f.type_name);
+            max_align = @max(max_align, falign);
+            offset = (offset + falign - 1) / falign * falign;
+            fields[i] = .{
+                .name = f.name,
+                .type_name = f.type_name,
+                .offset = offset,
+                .size = fsize,
+            };
+            offset += fsize;
+        }
+        // Tail padding, so an array of this struct strides correctly.
+        const total = (offset + max_align - 1) / max_align * max_align;
+        const info: StructInfo = .{
+            .name = primary,
+            .size = total,
+            .alignment = max_align,
+            .fields = fields,
+        };
+        try self.structs.put(primary, info);
+
+        // Also register the bare name, unless this file already declares one.
+        if (qualified != null and !self.structs.contains(decl.name)) {
+            const copy = try self.allocator.dupe(FieldInfo, fields);
+            try self.structs.put(decl.name, .{
+                .name = decl.name,
+                .size = total,
+                .alignment = max_align,
+                .fields = copy,
+            });
+        }
+        return true;
     }
 
     /// True for types whose value is their address: arrays and structs.
@@ -1147,6 +1315,11 @@ pub const HomeKernelCodegen = struct {
                 try self.collectAssignedNames(stmt.FnDecl.body.statements);
             }
         }
+        // Imported type declarations first: a struct in this file may have a
+        // field of a type declared in another module, and until that type can
+        // be sized the *whole* struct is unlayoutable — not just the field.
+        try self.collectImports(program, 0);
+
         try self.foldModuleConstants(program);
         try self.collectEnums(program);
         try self.layoutStructs(program);
