@@ -113,6 +113,11 @@ fn isSliceType(type_name: []const u8) bool {
     return type_name.len > 2 and type_name[0] == '[' and type_name[1] == ']';
 }
 
+/// `[*]T` — a pointer you may index, carrying no length.
+fn isManyPointer(type_name: []const u8) bool {
+    return std.mem.startsWith(u8, type_name, "[*]");
+}
+
 fn sliceElem(type_name: []const u8) ?[]const u8 {
     if (!isSliceType(type_name)) return null;
     const e = std.mem.trim(u8, type_name[2..], " ");
@@ -123,14 +128,51 @@ fn sliceElem(type_name: []const u8) ?[]const u8 {
 const SLICE_LEN_OFFSET: usize = 8;
 const SLICE_SIZE: usize = 16;
 
+/// Parse an array type whose length is a named constant rather than a
+/// literal — `[MAGAZINE_SIZE]u64` or `[u64; MAGAZINE_SIZE]`. The name is
+/// resolved against the constants table by the codegen, which has it.
+fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, elem_type: []const u8 } {
+    if (type_name.len < 3 or type_name[0] != '[') return null;
+    const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
+    const inside = std.mem.trim(u8, type_name[1..close], " ");
+
+    const isIdent = struct {
+        fn f(t: []const u8) bool {
+            if (t.len == 0) return false;
+            if (!std.ascii.isAlphabetic(t[0]) and t[0] != '_') return false;
+            for (t) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+            }
+            return true;
+        }
+    }.f;
+
+    if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi| {
+        const elem_name = std.mem.trim(u8, inside[0..semi], " ");
+        const count_name = std.mem.trim(u8, inside[semi + 1 ..], " ");
+        if (elem_name.len == 0 or !isIdent(count_name)) return null;
+        return .{ .count_name = count_name, .elem_type = elem_name };
+    }
+
+    const elem_name = std.mem.trim(u8, type_name[close + 1 ..], " ");
+    if (elem_name.len == 0 or !isIdent(inside)) return null;
+    return .{ .count_name = inside, .elem_type = elem_name };
+}
+
 /// True if the type is a pointer. Indexing one strides by the pointee.
 fn isPointerType(type_name: []const u8) bool {
+    // `[*]T` is a many-item pointer: an address you may index, with no length.
+    if (std.mem.startsWith(u8, type_name, "[*]")) return true;
     return type_name.len > 1 and (type_name[0] == '*' or type_name[0] == '&');
 }
 
 /// The type a pointer or array refers to.
 fn pointeeType(raw: []const u8) ?[]const u8 {
     const type_name = splitAlign(raw).bare;
+    if (std.mem.startsWith(u8, type_name, "[*]")) {
+        const e = std.mem.trim(u8, type_name[3..], " ");
+        return if (e.len == 0) null else e;
+    }
     if (isSliceType(type_name)) return sliceElem(type_name);
     if (isPointerType(type_name)) {
         var rest = type_name[1..];
@@ -141,6 +183,7 @@ fn pointeeType(raw: []const u8) ?[]const u8 {
         return if (trimmed.len == 0) null else trimmed;
     }
     if (parseArrayType(type_name)) |arr| return arr.elem_type;
+    if (parseArrayTypeNamed(type_name)) |named| return named.elem_type;
     return null;
 }
 
@@ -338,12 +381,26 @@ pub const HomeKernelCodegen = struct {
     // guessing a stride and silently reading the wrong memory.
 
     /// Size of a type as written: primitive, struct, array, or pointer.
+    /// Parse an array type, resolving a length written as a named constant.
+    /// `[MAGAZINE_SIZE]u64` is how this tree sizes most of its tables, and a
+    /// struct containing one cannot be laid out until the name resolves.
+    fn arrayType(self: *HomeKernelCodegen, raw: []const u8) ?struct { count: usize, elem_type: []const u8 } {
+        const type_name = splitAlign(raw).bare;
+        if (parseArrayType(type_name)) |arr| return .{ .count = arr.count, .elem_type = arr.elem_type };
+        if (parseArrayTypeNamed(type_name)) |named| {
+            const value = self.globals.get(named.count_name) orelse return null;
+            if (value < 0) return null;
+            return .{ .count = @intCast(value), .elem_type = named.elem_type };
+        }
+        return null;
+    }
+
     fn sizeOf(self: *HomeKernelCodegen, raw: []const u8) ?usize {
         const type_name = splitAlign(raw).bare;
         if (sizeOfPrimitive(type_name)) |n| return n;
         if (isPointerType(type_name)) return 8;
         if (isSliceType(type_name)) return SLICE_SIZE;
-        if (parseArrayType(type_name)) |arr| {
+        if (self.arrayType(type_name)) |arr| {
             const elem = self.sizeOf(arr.elem_type) orelse return null;
             return arr.count * elem;
         }
@@ -363,10 +420,32 @@ pub const HomeKernelCodegen = struct {
         if (split.alignment) |explicit| return explicit;
         const type_name = split.bare;
         if (self.structs.get(type_name)) |info| return info.alignment;
-        if (parseArrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
+        if (self.arrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
         if (isSliceType(type_name)) return 8;
         const size = self.sizeOf(type_name) orelse 8;
         return @min(size, @as(usize, 8));
+    }
+
+    /// Fold module-level constants before anything that depends on them.
+    /// Runs to a fixed point so a constant may be defined in terms of one
+    /// declared later in the file.
+    fn foldModuleConstants(self: *HomeKernelCodegen, program: *const ast.Program) !void {
+        var progress = true;
+        while (progress) {
+            progress = false;
+            for (program.statements) |stmt| {
+                if (stmt != .LetDecl) continue;
+                const decl = stmt.LetDecl;
+                if (decl.is_mutable) continue;
+                if (self.assigned_names.contains(decl.name)) continue;
+                if (self.globals.contains(decl.name)) continue;
+                const value = decl.value orelse continue;
+                if (self.foldConst(value)) |folded| {
+                    try self.globals.put(decl.name, folded);
+                    progress = true;
+                }
+            }
+        }
     }
 
     /// Lay out every struct declared in the program. Runs to a fixed point so
@@ -425,7 +504,7 @@ pub const HomeKernelCodegen = struct {
     /// True for types whose value is their address: arrays and structs.
     fn isStorageType(self: *HomeKernelCodegen, raw: []const u8) bool {
         const type_name = splitAlign(raw).bare;
-        return parseArrayType(type_name) != null or
+        return self.arrayType(type_name) != null or
             isSliceType(type_name) or
             self.structs.contains(type_name);
     }
@@ -535,7 +614,7 @@ pub const HomeKernelCodegen = struct {
                     return "usize";
                 }
                 // An array's length is known at compile time.
-                if (parseArrayType(splitAlign(base_type).bare)) |arr| {
+                if (self.arrayType(splitAlign(base_type).bare)) |arr| {
                     if (std.mem.eql(u8, m.member, "len")) {
                         try self.print("    # ERROR: {s}.len is a compile-time constant; use it as a value, not an address\n", .{m.member});
                         _ = arr;
@@ -587,7 +666,7 @@ pub const HomeKernelCodegen = struct {
     /// An array or struct loads as its own address: it is storage, not a
     /// value that fits in a register.
     fn emitLoadFromAddress(self: *HomeKernelCodegen, type_name: []const u8) !void {
-        if (parseArrayType(type_name) != null or self.structs.contains(type_name)) return;
+        if (self.arrayType(type_name) != null or self.structs.contains(type_name)) return;
         const size = self.sizeOf(type_name) orelse 8;
         const ld = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a value of type {s} ({d} bytes)\n", .{ type_name, size });
@@ -606,6 +685,23 @@ pub const HomeKernelCodegen = struct {
         value: *const ast.Expr,
     ) !void {
         const size = self.sizeOf(type_name) orelse 8;
+
+        // A struct or array does not fit in a register: assigning one is a
+        // memory copy. Both sides are addresses.
+        if (self.isStorageType(type_name)) {
+            try self.writeAll("    pushq %rax\n");           // destination
+            _ = try self.emitAddress(value) orelse {
+                try self.writeAll("    addq $8, %rsp\n");
+                return;
+            };
+            try self.writeAll("    movq %rax, %rsi\n");      // source
+            try self.writeAll("    popq %rdi\n");            // destination
+            try self.print("    movq ${d}, %rcx\n", .{size});
+            try self.writeAll("    cld\n");
+            try self.writeAll("    rep movsb\n");
+            return;
+        }
+
         const st = storeFor(size) orelse {
             try self.print("    # ERROR: cannot store a value of type {s} ({d} bytes)\n", .{ type_name, size });
             return;
@@ -624,7 +720,7 @@ pub const HomeKernelCodegen = struct {
     fn declareGlobalVar(self: *HomeKernelCodegen, decl: *const ast.LetDecl) !bool {
         const type_name = decl.type_name orelse return false;
 
-        if (parseArrayType(type_name)) |arr| {
+        if (self.arrayType(type_name)) |arr| {
             const elem = self.sizeOf(arr.elem_type) orelse return false;
             try self.global_vars.put(decl.name, .{
                 .name = decl.name,
@@ -787,7 +883,7 @@ pub const HomeKernelCodegen = struct {
                 try self.writeAll("    pushq %rax\n");
                 return 2;
             }
-            if (parseArrayType(bare)) |arr| {
+            if (self.arrayType(bare)) |arr| {
                 // A fixed array decays to (pointer, length).
                 try self.print("    movq ${d}, %rax\n", .{arr.count});
                 try self.writeAll("    pushq %rax\n");
@@ -976,13 +1072,11 @@ pub const HomeKernelCodegen = struct {
             \\
         );
 
-        // Lay out struct types first: sizing a global, an array stride, or a
-        // field offset all depend on knowing them.
-        try self.layoutStructs(program);
-
-        // Collect declared function names before generating anything, so a
-        // call to a function defined later in the file is still recognised
-        // as a program function rather than an intrinsic.
+        // Pre-passes, in dependency order. Each one needs the previous:
+        //   names assigned to  ->  which bindings are constants
+        //   constants          ->  array lengths written as `[SIZE]T`
+        //   array lengths      ->  struct field sizes and offsets
+        //   struct layouts     ->  global sizes, strides, field offsets
         for (program.statements) |stmt| {
             if (stmt == .FnDecl) {
                 try self.declared_fns.put(stmt.FnDecl.name, {});
@@ -992,6 +1086,8 @@ pub const HomeKernelCodegen = struct {
                 try self.collectAssignedNames(stmt.FnDecl.body.statements);
             }
         }
+        try self.foldModuleConstants(program);
+        try self.layoutStructs(program);
 
         // Generate code for each statement
         for (program.statements) |stmt| {
@@ -1160,7 +1256,20 @@ pub const HomeKernelCodegen = struct {
                 // An array local is storage, not a value: its slot holds the
                 // elements themselves, so there is nothing to store into it.
                 if (decl.type_name) |tn| {
-                    if (self.isStorageType(tn)) return;
+                    if (self.isStorageType(tn)) {
+                        // `let buf: [N]u8 = undefined` reserves storage and
+                        // initializes nothing. An initializer that is itself
+                        // an aggregate is copied into the slot.
+                        if (decl.value) |value| {
+                            if (self.typeOfLValue(value) != null) {
+                                if (self.locals.get(decl.name)) |slot| {
+                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emitStoreToAddress(tn, value);
+                                }
+                            }
+                        }
+                        return;
+                    }
                 }
                 if (decl.value) |value| {
                     try self.generateExpr(value);
@@ -1469,7 +1578,7 @@ pub const HomeKernelCodegen = struct {
                     const m = expr.MemberExpr;
                     if (std.mem.eql(u8, m.member, "len")) {
                         if (self.typeOfLValue(m.object)) |bt| {
-                            if (parseArrayType(splitAlign(bt).bare)) |arr| {
+                            if (self.arrayType(splitAlign(bt).bare)) |arr| {
                                 try self.print("    movq ${d}, %rax\n", .{arr.count});
                                 return;
                             }
