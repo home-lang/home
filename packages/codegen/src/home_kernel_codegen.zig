@@ -34,6 +34,27 @@ pub const HomeKernelCodegen = struct {
     stack_offset: i32,
     /// String literals to emit in .rodata section: (label_num, content)
     string_literals: std.ArrayList(StringLiteral),
+    /// Monotonic label counter. Labels were previously derived from AST node
+    /// addresses, which made output non-deterministic across runs — the same
+    /// source produced a different .s file every build, so nothing downstream
+    /// could be cached or byte-compared.
+    next_label: usize,
+    /// Name of the function being generated, for its epilogue label.
+    current_fn: []const u8,
+    /// Innermost loop's labels, for break/continue. Empty when not in a loop.
+    loop_break: []const u8,
+    loop_continue: []const u8,
+    /// Every function declared in this program. An intrinsic name that the
+    /// program also defines resolves to the program's definition, so adding
+    /// intrinsics can never silently redirect an existing call.
+    declared_fns: std.StringHashMap(void),
+    /// Module-level integer constants, folded at compile time and substituted
+    /// at each use. A kernel's register addresses and bit masks live here;
+    /// they must not become stack slots, and before this existed a top-level
+    /// `const` emitted stores to %rbp outside any function at all.
+    globals: std.StringHashMap(i64),
+    /// True while generating statements outside any function body.
+    at_top_level: bool,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -49,18 +70,200 @@ pub const HomeKernelCodegen = struct {
         result.locals = std.StringHashMap(i32).init(allocator);
         result.stack_offset = -8; // Start at -8 from %rbp (first local variable)
         result.string_literals = .{ .items = &[_]StringLiteral{}, .capacity = 0 };
+        result.next_label = 0;
+        result.current_fn = "";
+        result.loop_break = "";
+        result.loop_continue = "";
+        result.declared_fns = std.StringHashMap(void).init(allocator);
+        result.globals = std.StringHashMap(i64).init(allocator);
+        result.at_top_level = true;
         return result;
     }
 
     pub fn deinit(self: *HomeKernelCodegen) void {
         self.output.deinit(self.allocator);
         self.locals.deinit();
+        self.declared_fns.deinit();
+        self.globals.deinit();
         self.string_literals.deinit(self.allocator);
     }
 
     /// Helper to write string to output
     fn writeAll(self: *HomeKernelCodegen, bytes: []const u8) !void {
         try self.output.appendSlice(self.allocator, bytes);
+    }
+
+    /// Fold an expression to an integer at compile time, or null if it is not
+    /// a constant. Handles literals, references to already-folded module
+    /// constants, and the arithmetic and bitwise operators over them — enough
+    /// for the register addresses and bit masks a kernel declares.
+    fn foldConst(self: *HomeKernelCodegen, expr: *const ast.Expr) ?i64 {
+        switch (expr.*) {
+            // Literals are parsed as i128; anything outside i64 cannot become
+            // a 64-bit immediate, so it is simply not a constant here.
+            .IntegerLiteral => |lit| return std.math.cast(i64, lit.value),
+            .BooleanLiteral => |lit| return if (lit.value) @as(i64, 1) else @as(i64, 0),
+            .Identifier => |id| return self.globals.get(id.name),
+            .UnaryExpr => |unary| {
+                const v = self.foldConst(unary.operand) orelse return null;
+                return switch (unary.op) {
+                    .Neg => -v,
+                    .BitNot => ~v,
+                    .Not => if (v == 0) @as(i64, 1) else @as(i64, 0),
+                    else => null,
+                };
+            },
+            .BinaryExpr => |binary| {
+                const l = self.foldConst(binary.left) orelse return null;
+                const r = self.foldConst(binary.right) orelse return null;
+                return switch (binary.op) {
+                    .Add => l +% r,
+                    .Sub => l -% r,
+                    .Mul => l *% r,
+                    .Div, .IntDiv => if (r == 0) null else @divTrunc(l, r),
+                    .Mod => if (r == 0) null else @rem(l, r),
+                    .BitAnd => l & r,
+                    .BitOr => l | r,
+                    .BitXor => l ^ r,
+                    .LeftShift => if (r < 0 or r > 63) null else l << @intCast(r),
+                    .RightShift => if (r < 0 or r > 63) null else l >> @intCast(r),
+                    else => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    /// Emit a kernel intrinsic, or return false if `name` is not one.
+    ///
+    /// Argument values are computed into %rax one at a time and parked in the
+    /// register the instruction needs, right-to-left so the last computation
+    /// does not clobber an earlier one. Intrinsics take simple operands in
+    /// practice, but this ordering keeps a nested call correct.
+    fn generateIntrinsic(
+        self: *HomeKernelCodegen,
+        name: []const u8,
+        args: []const *const ast.Expr,
+    ) !bool {
+        const Kind = enum { none, out, in, plain, mmio_read, mmio_write };
+        var kind: Kind = .none;
+        var suffix: []const u8 = "";   // b / w / l / q
+        var acc: []const u8 = "";      // al / ax / eax / rax
+        var plain_insn: []const u8 = "";
+
+        if (std.mem.eql(u8, name, "outb")) { kind = .out; suffix = "b"; acc = "al"; }
+        else if (std.mem.eql(u8, name, "outw")) { kind = .out; suffix = "w"; acc = "ax"; }
+        else if (std.mem.eql(u8, name, "outl")) { kind = .out; suffix = "l"; acc = "eax"; }
+        else if (std.mem.eql(u8, name, "inb")) { kind = .in; suffix = "b"; acc = "al"; }
+        else if (std.mem.eql(u8, name, "inw")) { kind = .in; suffix = "w"; acc = "ax"; }
+        else if (std.mem.eql(u8, name, "inl")) { kind = .in; suffix = "l"; acc = "eax"; }
+        else if (std.mem.eql(u8, name, "hlt")) { kind = .plain; plain_insn = "hlt"; }
+        else if (std.mem.eql(u8, name, "cli")) { kind = .plain; plain_insn = "cli"; }
+        else if (std.mem.eql(u8, name, "sti")) { kind = .plain; plain_insn = "sti"; }
+        else if (std.mem.eql(u8, name, "nop")) { kind = .plain; plain_insn = "nop"; }
+        else if (std.mem.eql(u8, name, "pause")) { kind = .plain; plain_insn = "pause"; }
+        else if (std.mem.eql(u8, name, "mfence")) { kind = .plain; plain_insn = "mfence"; }
+        else if (std.mem.eql(u8, name, "mmio_read8")) { kind = .mmio_read; suffix = "b"; acc = "al"; }
+        else if (std.mem.eql(u8, name, "mmio_read16")) { kind = .mmio_read; suffix = "w"; acc = "ax"; }
+        else if (std.mem.eql(u8, name, "mmio_read32")) { kind = .mmio_read; suffix = "l"; acc = "eax"; }
+        else if (std.mem.eql(u8, name, "mmio_read64")) { kind = .mmio_read; suffix = "q"; acc = "rax"; }
+        else if (std.mem.eql(u8, name, "mmio_write8")) { kind = .mmio_write; suffix = "b"; acc = "cl"; }
+        else if (std.mem.eql(u8, name, "mmio_write16")) { kind = .mmio_write; suffix = "w"; acc = "cx"; }
+        else if (std.mem.eql(u8, name, "mmio_write32")) { kind = .mmio_write; suffix = "l"; acc = "ecx"; }
+        else if (std.mem.eql(u8, name, "mmio_write64")) { kind = .mmio_write; suffix = "q"; acc = "rcx"; }
+        else return false;
+
+        switch (kind) {
+            .plain => {
+                if (args.len != 0) {
+                    try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                    return false;
+                }
+                try self.print("    {s}\n", .{plain_insn});
+            },
+            .out => {
+                // out<suffix> %acc, %dx  —  port in %dx, value in the accumulator.
+                if (args.len != 2) {
+                    try self.print("    # {s}(port, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+                    return false;
+                }
+                try self.generateExpr(args[1]);
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(args[0]);
+                try self.writeAll("    movq %rax, %rdx\n");
+                try self.writeAll("    popq %rax\n");
+                try self.print("    out{s} %{s}, %dx\n", .{ suffix, acc });
+            },
+            .in => {
+                if (args.len != 1) {
+                    try self.print("    # {s}(port) needs 1 argument, {d} given\n", .{ name, args.len });
+                    return false;
+                }
+                try self.generateExpr(args[0]);
+                try self.writeAll("    movq %rax, %rdx\n");
+                try self.writeAll("    xorq %rax, %rax\n");
+                try self.print("    in{s} %dx, %{s}\n", .{ suffix, acc });
+            },
+            .mmio_read => {
+                if (args.len != 1) {
+                    try self.print("    # {s}(addr) needs 1 argument, {d} given\n", .{ name, args.len });
+                    return false;
+                }
+                try self.generateExpr(args[0]);
+                try self.writeAll("    movq %rax, %rdx\n");
+                try self.writeAll("    xorq %rax, %rax\n");
+                try self.print("    mov{s} (%rdx), %{s}\n", .{ suffix, acc });
+            },
+            .mmio_write => {
+                if (args.len != 2) {
+                    try self.print("    # {s}(addr, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+                    return false;
+                }
+                try self.generateExpr(args[1]);
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(args[0]);
+                try self.writeAll("    movq %rax, %rdx\n");
+                try self.writeAll("    popq %rcx\n");
+                try self.print("    mov{s} %{s}, (%rdx)\n", .{ suffix, acc });
+            },
+            .none => unreachable,
+        }
+        return true;
+    }
+
+    /// Emit a comparison: %rax <op> %rcx, result 0 or 1 in %rax.
+    fn emitCompare(self: *HomeKernelCodegen, setcc: []const u8) !void {
+        try self.writeAll("    cmpq %rcx, %rax\n");
+        try self.print("    {s} %al\n", .{setcc});
+        try self.writeAll("    movzbq %al, %rax\n");
+    }
+
+    /// Allocate a fresh, deterministic label number.
+    fn freshLabel(self: *HomeKernelCodegen) usize {
+        self.next_label += 1;
+        return self.next_label;
+    }
+
+    /// Count `let` declarations reachable in a statement list, including
+    /// nested blocks, so the prologue can reserve a slot for each. All
+    /// declarations in a function share one flat frame — shadowing in inner
+    /// scopes reuses the outer slot, which is a known limitation recorded in
+    /// the codegen ladder (home-lang/home-os#38) rather than a silent one.
+    fn countLetDecls(statements: []const ast.Stmt) usize {
+        var n: usize = 0;
+        for (statements) |stmt| {
+            switch (stmt) {
+                .LetDecl => n += 1,
+                .IfStmt => |s2| {
+                    n += countLetDecls(s2.then_block.statements);
+                    if (s2.else_block) |eb| n += countLetDecls(eb.statements);
+                },
+                .WhileStmt => |s2| n += countLetDecls(s2.body.statements),
+                .BlockStmt => |s2| n += countLetDecls(s2.statements),
+                else => {},
+            }
+        }
+        return n;
     }
 
     /// Helper to format and write to output
@@ -74,12 +277,24 @@ pub const HomeKernelCodegen = struct {
     pub fn generate(self: *HomeKernelCodegen, program: *const ast.Program) ![]const u8 {
 
         // Emit assembly header
+        // `.global` is emitted per function from its declaration. This header
+        // used to hardcode `.global kernel_main`, which produced a duplicate
+        // directive for the one function that needs it and no directive at
+        // all for any other exported function.
         try self.writeAll(
             \\.section .text
-            \\.global kernel_main
             \\
             \\
         );
+
+        // Collect declared function names before generating anything, so a
+        // call to a function defined later in the file is still recognised
+        // as a program function rather than an intrinsic.
+        for (program.statements) |stmt| {
+            if (stmt == .FnDecl) {
+                try self.declared_fns.put(stmt.FnDecl.name, {});
+            }
+        }
 
         // Generate code for each statement
         for (program.statements) |stmt| {
@@ -91,8 +306,14 @@ pub const HomeKernelCodegen = struct {
             try self.writeAll("\n.section .rodata\n");
 
             for (self.string_literals.items) |str_lit| {
-                try self.print(".L_str_{d}:", .{str_lit.label});
+                try self.print(".L_str_{d}:\n", .{str_lit.label});
                 try self.print("    .asciz \"{s}\"\n", .{str_lit.content});
+                // Byte-width loads do not exist yet, so reading a character
+                // means a 64-bit load masked to its low byte. Seven bytes of
+                // padding make that load in-bounds at every offset of the
+                // string, including the last. Remove when the backend grows
+                // sized loads (home-lang/home-os#38).
+                try self.writeAll("    .zero 7\n");
             }
         }
 
@@ -104,59 +325,119 @@ pub const HomeKernelCodegen = struct {
             .FnDecl => |func| {
                 // Forward declarations (issue #17) bind the name only.
                 if (func.is_forward_decl) return;
-                // Check if this is an exported function (like kernel_main)
-                // For now, export functions that start with "kernel_" or are named "main"
-                const is_export = std.mem.startsWith(u8, func.name, "kernel_") or
-                    std.mem.eql(u8, func.name, "main");
+
+                // Respect the `export` keyword. The previous heuristic — any
+                // name starting with "kernel_", plus "main" — both missed
+                // genuinely exported functions and exported private helpers
+                // that happened to be named kernel_something.
+                const is_export = func.is_exported or
+                    std.mem.eql(u8, func.name, "main") or
+                    std.mem.eql(u8, func.name, "kernel_main");
 
                 if (is_export) {
                     try self.print(".global {s}\n", .{func.name});
                 }
-
                 try self.print("{s}:\n", .{func.name});
 
-                // Function prologue
-                const attrs = kernel_codegen.FunctionAttributes{
-                    .noreturn = if (func.return_type) |rt|
-                        std.mem.eql(u8, rt, "never")
-                    else
-                        false,
-                };
+                const noreturn_fn = if (func.return_type) |rt|
+                    std.mem.eql(u8, rt, "never")
+                else
+                    false;
+
+                // Each function gets a fresh frame. Previously `locals` and
+                // `stack_offset` were never reset, so one function's variables
+                // resolved inside the next one at meaningless offsets.
+                self.locals.clearRetainingCapacity();
+                self.stack_offset = 0;
+                self.current_fn = func.name;
+                const was_top = self.at_top_level;
+                self.at_top_level = false;
+                defer self.at_top_level = was_top;
+
+                // Reserve one 8-byte slot per parameter and per `let` in the
+                // body, up front. Locals used to be created with `pushq`,
+                // which meant their recorded offset was only correct if no
+                // expression had pushed a temporary first — and expression
+                // codegen pushes temporaries constantly. Fixed slots relative
+                // to %rbp are correct regardless of what %rsp is doing.
+                var slots: usize = func.params.len;
+                slots += countLetDecls(func.body.statements);
+                // Keep %rsp 16-byte aligned at the call boundary.
+                const frame_size: usize = ((slots * 8) + 15) / 16 * 16;
 
                 try self.writeAll("    pushq %rbp\n");
                 try self.writeAll("    movq %rsp, %rbp\n");
+                if (frame_size > 0) {
+                    try self.print("    subq ${d}, %rsp\n", .{frame_size});
+                }
 
-                // Generate function body
+                // Spill incoming arguments into their slots. Without this,
+                // every parameter reference emitted a "# not in locals"
+                // comment and read whatever happened to be in %rax.
+                const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
+                for (func.params, 0..) |param, i| {
+                    self.stack_offset -= 8;
+                    try self.locals.put(param.name, self.stack_offset);
+                    if (i < arg_regs.len) {
+                        try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[i], self.stack_offset });
+                    } else {
+                        // Arguments 7+ arrive above the return address.
+                        const caller_offset = 16 + (i - arg_regs.len) * 8;
+                        try self.print("    movq {d}(%rbp), %rax\n", .{caller_offset});
+                        try self.print("    movq %rax, {d}(%rbp)\n", .{self.stack_offset});
+                    }
+                }
+
                 for (func.body.statements) |body_stmt| {
                     try self.generateStmt(body_stmt);
                 }
 
-                // Function epilogue (if not noreturn)
-                if (!attrs.noreturn) {
+                // One epilogue per function, reached by `ret` jumping here.
+                // Returns used to inline a full epilogue each, and a function
+                // ending in `return` then got a second one appended.
+                if (!noreturn_fn) {
+                    try self.print(".L_epilogue_{s}:\n", .{func.name});
                     try self.writeAll("    movq %rbp, %rsp\n");
                     try self.writeAll("    popq %rbp\n");
                     try self.writeAll("    ret\n");
                 }
 
+                self.current_fn = "";
                 try self.writeAll("\n");
             },
             .ExprStmt => |expr| {
                 try self.generateExpr(expr);
             },
             .LetDecl => |decl| {
-                // Variable declaration
+                // At module scope there is no frame to store into. An
+                // immutable binding with a compile-time integer value becomes
+                // a constant substituted at each use; anything else at this
+                // scope is not representable yet and says so rather than
+                // emitting stores against a nonexistent %rbp.
+                if (self.at_top_level) {
+                    if (decl.value) |value| {
+                        if (self.foldConst(value)) |folded| {
+                            if (!decl.is_mutable) {
+                                try self.globals.put(decl.name, folded);
+                                return;
+                            }
+                        }
+                    }
+                    try self.print("# unsupported module-level binding: {s}\n", .{decl.name});
+                    return;
+                }
+                // The slot was reserved by the prologue; store into it. The
+                // old code used `pushq`, which recorded an offset that was
+                // only right when no expression temporary had been pushed
+                // first — and expression codegen pushes constantly.
                 if (decl.value) |value| {
-                    // Generate the initial value expression (result in %rax)
                     try self.generateExpr(value);
-
-                    // Push the value onto the stack
-                    try self.writeAll("    pushq %rax\n");
-
-                    // Track this variable's stack offset
-                    try self.locals.put(decl.name, self.stack_offset);
-
-                    // Update stack offset for next variable (stack grows downward)
-                    self.stack_offset -= 8; // 8 bytes for a 64-bit value
+                    const slot = if (self.locals.get(decl.name)) |existing| existing else blk: {
+                        self.stack_offset -= 8;
+                        try self.locals.put(decl.name, self.stack_offset);
+                        break :blk self.stack_offset;
+                    };
+                    try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
                 }
             },
             .IfStmt => |if_stmt| {
@@ -166,8 +447,7 @@ pub const HomeKernelCodegen = struct {
                 // Test condition (result in %rax)
                 try self.writeAll("    testq %rax, %rax\n");
 
-                // Generate unique labels
-                const label_num = @intFromPtr(if_stmt);
+                const label_num = self.freshLabel();
                 try self.print("    jz .L_else_{d}\n", .{label_num});
 
                 // Then block
@@ -189,34 +469,62 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .WhileStmt => |while_stmt| {
-                const label_num = @intFromPtr(while_stmt);
+                const label_num = self.freshLabel();
 
-                try self.print(".L_while_start_{d}:\n", .{label_num});
+                const start = try std.fmt.allocPrint(self.allocator, ".L_while_start_{d}", .{label_num});
+                defer self.allocator.free(start);
+                const end = try std.fmt.allocPrint(self.allocator, ".L_while_end_{d}", .{label_num});
+                defer self.allocator.free(end);
 
-                // Condition
+                try self.print("{s}:\n", .{start});
                 try self.generateExpr(while_stmt.condition);
                 try self.writeAll("    testq %rax, %rax\n");
-                try self.print("    jz .L_while_end_{d}\n", .{label_num});
+                try self.print("    jz {s}\n", .{end});
 
-                // Body
+                // break/continue inside the body target this loop; restore the
+                // enclosing loop's labels afterwards so nesting works.
+                const prev_break = self.loop_break;
+                const prev_continue = self.loop_continue;
+                self.loop_break = end;
+                self.loop_continue = start;
+
                 for (while_stmt.body.statements) |body_stmt| {
                     try self.generateStmt(body_stmt);
                 }
 
-                try self.print("    jmp .L_while_start_{d}\n", .{label_num});
-                try self.print(".L_while_end_{d}:\n", .{label_num});
+                self.loop_break = prev_break;
+                self.loop_continue = prev_continue;
+
+                try self.print("    jmp {s}\n", .{start});
+                try self.print("{s}:\n", .{end});
             },
             .ReturnStmt => |return_stmt| {
-                // Generate return statement
-                // If there's a return value, evaluate it (result goes in %rax)
+                // Value in %rax, then jump to the function's one epilogue.
                 if (return_stmt.value) |value| {
                     try self.generateExpr(value);
                 }
-
-                // Restore stack frame and return
-                try self.writeAll("    movq %rbp, %rsp\n");
-                try self.writeAll("    popq %rbp\n");
-                try self.writeAll("    ret\n");
+                if (self.current_fn.len > 0) {
+                    try self.print("    jmp .L_epilogue_{s}\n", .{self.current_fn});
+                } else {
+                    try self.writeAll("    movq %rbp, %rsp\n");
+                    try self.writeAll("    popq %rbp\n");
+                    try self.writeAll("    ret\n");
+                }
+            },
+            .BreakStmt => {
+                if (self.loop_break.len > 0) {
+                    try self.print("    jmp {s}\n", .{self.loop_break});
+                }
+            },
+            .ContinueStmt => {
+                if (self.loop_continue.len > 0) {
+                    try self.print("    jmp {s}\n", .{self.loop_continue});
+                }
+            },
+            .BlockStmt => |block| {
+                for (block.statements) |inner| {
+                    try self.generateStmt(inner);
+                }
             },
             else => {
                 // Unsupported statement type - skip for now
@@ -227,8 +535,19 @@ pub const HomeKernelCodegen = struct {
     fn generateExpr(self: *HomeKernelCodegen, expr: *const ast.Expr) anyerror!void {
         switch (expr.*) {
             .IntegerLiteral => |lit| {
-                // Load immediate value into %rax
-                try self.print("    movq ${d}, %rax\n", .{lit.value});
+                // Literals are i128 in the AST. `movq $imm` takes a 32-bit
+                // sign-extended immediate; anything wider needs movabsq, and
+                // anything past 64 bits is not representable at all.
+                if (std.math.cast(i64, lit.value)) |v| {
+                    if (v >= -2147483648 and v <= 2147483647) {
+                        try self.print("    movq ${d}, %rax\n", .{v});
+                    } else {
+                        try self.print("    movabsq ${d}, %rax\n", .{v});
+                    }
+                } else {
+                    try self.print("    # ERROR: integer literal {d} does not fit in 64 bits\n", .{lit.value});
+                    try self.writeAll("    movq $0, %rax\n");
+                }
             },
             .BooleanLiteral => |lit| {
                 // Load boolean as integer (0 or 1) into %rax
@@ -239,15 +558,26 @@ pub const HomeKernelCodegen = struct {
                 try self.print("    {s}\n", .{asm_node.instruction});
             },
             .StringLiteral => |lit| {
-                // Create string constant in .rodata
-                const label_num = @intFromPtr(lit.value.ptr);
+                // Intern by content: labels used to be the literal's pointer
+                // address, so identical strings got separate .rodata copies
+                // and every build produced different label numbers.
+                var label_num: usize = 0;
+                var found = false;
+                for (self.string_literals.items) |existing| {
+                    if (std.mem.eql(u8, existing.content, lit.value)) {
+                        label_num = existing.label;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    label_num = self.freshLabel();
+                    try self.string_literals.append(self.allocator, .{
+                        .label = label_num,
+                        .content = lit.value,
+                    });
+                }
                 try self.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
-
-                // Collect this string literal for emission later
-                try self.string_literals.append(self.allocator, .{
-                    .label = label_num,
-                    .content = lit.value,
-                });
             },
             .CallExpr => |call| {
                 // Check if this is a module member call (e.g., serial.init())
@@ -270,6 +600,16 @@ pub const HomeKernelCodegen = struct {
                 } else if (call.callee.* == .Identifier) {
                     // Direct function call
                     const func_name = call.callee.Identifier.name;
+
+                    // Kernel intrinsics (MASTER_PLAN milestone A3): port I/O,
+                    // control instructions, and volatile MMIO. These are the
+                    // operations a kernel cannot express in portable source
+                    // and that this project previously reached into the Home
+                    // repo's asm.zig for. A program that declares a function
+                    // of the same name wins — see declared_fns.
+                    if (!self.declared_fns.contains(func_name)) {
+                        if (try self.generateIntrinsic(func_name, call.args)) return;
+                    }
 
                     // Check if it's a known symbol
                     if (self.symbol_table.lookupSymbol(func_name)) |symbol| {
@@ -307,42 +647,111 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .BinaryExpr => |binary| {
-                // Evaluate right operand
-                try self.generateExpr(binary.right);
-                try self.writeAll("    pushq %rax\n");
+                // `&&` and `||` must short-circuit, so they cannot use the
+                // evaluate-both-operands shape below.
+                if (binary.op == .And or binary.op == .Or) {
+                    const label_num = self.freshLabel();
+                    try self.generateExpr(binary.left);
+                    try self.writeAll("    testq %rax, %rax\n");
+                    if (binary.op == .And) {
+                        try self.print("    jz .L_logic_short_{d}\n", .{label_num});
+                    } else {
+                        try self.print("    jnz .L_logic_short_{d}\n", .{label_num});
+                    }
+                    try self.generateExpr(binary.right);
+                    try self.writeAll("    testq %rax, %rax\n");
+                    try self.writeAll("    setne %al\n");
+                    try self.writeAll("    movzbq %al, %rax\n");
+                    try self.print("    jmp .L_logic_end_{d}\n", .{label_num});
+                    try self.print(".L_logic_short_{d}:\n", .{label_num});
+                    // Short-circuited: the answer is the left operand's truth.
+                    try self.print("    movq ${d}, %rax\n", .{if (binary.op == .And) @as(i64, 0) else @as(i64, 1)});
+                    try self.print(".L_logic_end_{d}:\n", .{label_num});
+                    return;
+                }
 
-                // Evaluate left operand
+                // Left in %rax, right in %rcx. Evaluate left first and stash
+                // it, so operand order matches source order — the previous
+                // code evaluated the right operand first, which is observable
+                // as soon as either side has a side effect.
                 try self.generateExpr(binary.left);
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(binary.right);
+                try self.writeAll("    movq %rax, %rcx\n");
+                try self.writeAll("    popq %rax\n");
 
-                // Pop right operand
-                try self.writeAll("    popq %rcx\n");
-
-                // Perform operation
                 switch (binary.op) {
-                    .Add => try self.writeAll("    addq %rcx, %rax\n"),
-                    .Sub => try self.writeAll("    subq %rcx, %rax\n"),
-                    .Equal => {
-                        try self.writeAll("    cmpq %rcx, %rax\n");
+                    .Add, .CheckedAdd => try self.writeAll("    addq %rcx, %rax\n"),
+                    .Sub, .CheckedSub => try self.writeAll("    subq %rcx, %rax\n"),
+                    .Mul, .CheckedMul => try self.writeAll("    imulq %rcx, %rax\n"),
+                    .Div, .IntDiv, .CheckedDiv => {
+                        // cqto sign-extends %rax into %rdx:%rax for idivq.
+                        try self.writeAll("    cqto\n");
+                        try self.writeAll("    idivq %rcx\n");
+                    },
+                    .Mod => {
+                        try self.writeAll("    cqto\n");
+                        try self.writeAll("    idivq %rcx\n");
+                        try self.writeAll("    movq %rdx, %rax\n");
+                    },
+                    .BitAnd => try self.writeAll("    andq %rcx, %rax\n"),
+                    .BitOr => try self.writeAll("    orq %rcx, %rax\n"),
+                    .BitXor => try self.writeAll("    xorq %rcx, %rax\n"),
+                    // Shift counts must be in %cl.
+                    .LeftShift => try self.writeAll("    shlq %cl, %rax\n"),
+                    .RightShift => try self.writeAll("    sarq %cl, %rax\n"),
+                    .Equal => try self.emitCompare("sete"),
+                    .NotEqual => try self.emitCompare("setne"),
+                    .Less => try self.emitCompare("setl"),
+                    .LessEq => try self.emitCompare("setle"),
+                    .Greater => try self.emitCompare("setg"),
+                    .GreaterEq => try self.emitCompare("setge"),
+                    else => {
+                        try self.print("    # unsupported binary operator: {s}\n", .{@tagName(binary.op)});
+                    },
+                }
+            },
+            .UnaryExpr => |unary| {
+                try self.generateExpr(unary.operand);
+                switch (unary.op) {
+                    .Neg => try self.writeAll("    negq %rax\n"),
+                    .BitNot => try self.writeAll("    notq %rax\n"),
+                    .Not => {
+                        try self.writeAll("    testq %rax, %rax\n");
                         try self.writeAll("    sete %al\n");
                         try self.writeAll("    movzbq %al, %rax\n");
                     },
-                    .NotEqual => {
-                        try self.writeAll("    cmpq %rcx, %rax\n");
-                        try self.writeAll("    setne %al\n");
-                        try self.writeAll("    movzbq %al, %rax\n");
+                    .Deref => try self.writeAll("    movq (%rax), %rax\n"),
+                    else => {
+                        try self.print("    # unsupported unary operator: {s}\n", .{@tagName(unary.op)});
                     },
-                    else => {},
+                }
+            },
+            .AssignmentExpr => |assign| {
+                try self.generateExpr(assign.value);
+                if (assign.target.* == .Identifier) {
+                    const name = assign.target.Identifier.name;
+                    if (self.locals.get(name)) |offset| {
+                        try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                    } else {
+                        try self.print("    # assignment to unknown variable {s}\n", .{name});
+                    }
+                } else {
+                    try self.writeAll("    # unsupported assignment target\n");
                 }
             },
             .Identifier => |id| {
-                // Load variable from stack
                 if (self.locals.get(id.name)) |offset| {
-                    // Load from stack at offset from %rbp into %rax
                     try self.print("    movq {d}(%rbp), %rax\n", .{offset});
+                } else if (self.globals.get(id.name)) |value| {
+                    try self.print("    movq ${d}, %rax\n", .{value});
                 } else {
-                    // Variable not found in locals - might be global or parameter
-                    // For now, just emit a comment
-                    try self.print("    # Load variable {s} (not in locals)\n", .{id.name});
+                    // Emitting a comment and carrying on leaves %rax holding
+                    // whatever the last expression left there, which reads as
+                    // a working build that computes nonsense. Say so loudly
+                    // in the output instead.
+                    try self.print("    # ERROR: undefined variable {s}\n", .{id.name});
+                    try self.writeAll("    movq $0, %rax\n");
                 }
             },
             else => {
