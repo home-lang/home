@@ -1558,8 +1558,40 @@ pub const HomeKernelCodegen = struct {
             try self.print("    # ERROR: array element type {s} has unknown size\n", .{arr.elem_type});
             return;
         };
+        // Elements too wide for a register — an array of structs — are each
+        // written as an aggregate into their own slot.
         const st = storeFor(elem_size) orelse {
-            try self.print("    # ERROR: cannot store array elements of {d} bytes\n", .{elem_size});
+            if (!self.isStorageType(arr.elem_type)) {
+                try self.print("    # ERROR: cannot store array elements of {d} bytes\n", .{elem_size});
+                return;
+            }
+            try self.writeAll("    pushq %rax\n"); // base address
+            var idx: usize = 0;
+            while (idx < arr.count) : (idx += 1) {
+                const element: ?*const ast.Expr = switch (value.*) {
+                    .ArrayLiteral => |lit| if (idx < lit.elements.len) lit.elements[idx] else null,
+                    .ArrayRepeat => |rep| rep.value,
+                    else => null,
+                };
+                try self.writeAll("    movq (%rsp), %rax\n");
+                if (idx > 0) try self.print("    addq ${d}, %rax\n", .{idx * elem_size});
+                if (element) |e| {
+                    if (e.* == .StructLiteral) {
+                        try self.writeAll("    pushq %rax\n");
+                        try self.emitStructLiteralToMemory(arr.elem_type, e.StructLiteral);
+                    } else {
+                        try self.emitStoreToAddress(arr.elem_type, e);
+                    }
+                } else {
+                    // Unmentioned elements read as zero.
+                    try self.writeAll("    movq %rax, %rdi\n");
+                    try self.print("    movq ${d}, %rcx\n", .{elem_size});
+                    try self.writeAll("    xorq %rax, %rax\n");
+                    try self.writeAll("    cld\n");
+                    try self.writeAll("    rep stosb\n");
+                }
+            }
+            try self.writeAll("    popq %rax\n");
             return;
         };
 
