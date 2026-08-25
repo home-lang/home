@@ -9823,6 +9823,7 @@ fn baselineHasStrictNullDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]con
         "Object is possibly 'undefined'",
         "is possibly 'null'",
         "is possibly 'undefined'",
+        "TS2454",
         "TS18047",
         "TS18048",
     };
@@ -55999,6 +56000,25 @@ test "conformance: inferFixtureStrictOn keeps strict on when baseline expects TS
         .baseline_path = baseline_path,
         .gpa = T.allocator,
     }));
+}
+
+test "conformance: TS2454 baseline restores strict null checks after property inference" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "usedBeforeAssignment.errors.txt", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(
+            io,
+            "usedBeforeAssignment.ts(4,1): error TS2454: Variable 'value' is used before being assigned.",
+        );
+    }
+    const baseline_path = try tmp.dir.realPathFileAlloc(io, "usedBeforeAssignment.errors.txt", T.allocator);
+    defer T.allocator.free(baseline_path);
+
+    try T.expect(baselineHasStrictNullDiagnostic(T.allocator, baseline_path));
 }
 
 test "conformance: bare variable scan detects TS7005 shape" {

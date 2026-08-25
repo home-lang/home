@@ -22136,8 +22136,7 @@ pub const Checker = struct {
                 !self.nodeHasAncestorKind(ref_node, .object_literal) and
                 !self.nodeHasAncestorKind(ref_node, .for_of_stmt) and
                 !(self.nodeHasAncestorKind(ref_node, .member_access) and
-                    self.varDeclHasTypeAnnotation(decl_node) and
-                    !self.nodeIsObjectOfCallCalleeMemberAccess(ref_node)) and
+                    self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .element_access) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .binary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
@@ -22173,16 +22172,6 @@ pub const Checker = struct {
                 self.nodeIsAncestorOf(t.catch_block, ref_node)) return true;
         }
         return false;
-    }
-
-    fn nodeIsObjectOfCallCalleeMemberAccess(self: *Checker, node: NodeId) bool {
-        const parent = self.hir.parentOf(node);
-        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .member_access) return false;
-        const member = hir_mod.memberOf(self.hir, parent);
-        if (member.object != node) return false;
-        const grandparent = self.hir.parentOf(parent);
-        if (grandparent == hir_mod.none_node_id or self.hir.kindOf(grandparent) != .call_expr) return false;
-        return hir_mod.callOf(self.hir, grandparent).callee == parent;
     }
 
     /// True when `node` sits inside a top-level expression statement
@@ -104014,6 +104003,45 @@ pub const Checker = struct {
         return path;
     }
 
+    fn recursiveSelfFieldAssignmentSourceType(
+        self: *Checker,
+        target_node: NodeId,
+        value_node: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!?TypeId {
+        if (source_t != types.Primitive.unknown or
+            self.hir.kindOf(target_node) != .identifier or
+            self.hir.kindOf(value_node) != .member_access)
+        {
+            return null;
+        }
+        const value = hir_mod.memberOf(self.hir, value_node);
+        if (self.hir.kindOf(value.object) != .identifier) return null;
+        const target = hir_mod.identifierOf(self.hir, target_node);
+        const object = hir_mod.identifierOf(self.hir, value.object);
+        if (target.name != object.name) return null;
+
+        const class_name = self.class_name_by_instance.get(target_t) orelse return null;
+        const class_decl = self.class_decl_by_instance.get(target_t) orelse
+            self.findVisibleNamedClassDecl(target_node, class_name) orelse return null;
+        for (hir_mod.classMembers(self.hir, class_decl)) |member_node| {
+            if (self.hir.kindOf(member_node) != .object_property) continue;
+            const member = hir_mod.objectPropertyOf(self.hir, member_node);
+            if ((try self.classMemberNameFromPropertyKey(member.key, member.is_computed)) != value.name or
+                member.type_annotation == hir_mod.none_node_id or
+                self.hir.kindOf(member.type_annotation) != .type_ref)
+            {
+                continue;
+            }
+            const annotation = hir_mod.typeRefOf(self.hir, member.type_annotation);
+            if (annotation.qualifier_len == 0 and annotation.args_len == 0 and annotation.name == class_name) {
+                return target_t;
+            }
+        }
+        return null;
+    }
+
     /// Type an expression. Returns its TypeId and also records it
     /// TS80008 — an integer numeric literal whose value is ≥ 2^53 can't
     /// be represented accurately. Skips fractional (`9e15.5`) and
@@ -104589,6 +104617,9 @@ pub const Checker = struct {
                     if (truthy != types.Primitive.never) try self.recordNarrow(target_id.name, truthy);
                     break :logical_rhs try self.checkExpression(a.value);
                 } else try self.checkExpression(a.value);
+                if (try self.recursiveSelfFieldAssignmentSourceType(a.target, a.value, value_t, target_t)) |recursive_t| {
+                    value_t = recursive_t;
+                }
                 var target_from_prior_jsdoc_property_type = false;
                 if (!target_has_explicit_jsdoc_property_type and a.op == null and
                     target_kind == .member_access and self.sourceHasCheckJsDirective())
@@ -190479,6 +190510,84 @@ test "checker: TS2454 fires for every use of unassigned typed var" {
         if (d.code == TsCodes.used_before_assignment) count += 1;
     }
     try T.expect(count >= 3);
+}
+
+test "checker: parity parser spans reports TS2454 for method call receivers" {
+    const s = try newSetup(
+        \\interface i1 {
+        \\  i1_p1: number;
+        \\  i1_f1(): void;
+        \\  i1_l1: () => void;
+        \\  i1_nc_p1: number;
+        \\  i1_nc_f1(): void;
+        \\  i1_nc_l1: () => void;
+        \\  p1: number;
+        \\  f1(): void;
+        \\  l1: () => void;
+        \\  nc_p1: number;
+        \\  nc_f1(): void;
+        \\  nc_l1: () => void;
+        \\}
+        \\class c1 implements i1 {
+        \\  i1_p1!: number;
+        \\  i1_f1() {}
+        \\  i1_l1!: () => void;
+        \\  i1_nc_p1!: number;
+        \\  i1_nc_f1() {}
+        \\  i1_nc_l1!: () => void;
+        \\  p1!: number;
+        \\  f1() {}
+        \\  l1!: () => void;
+        \\  nc_p1!: number;
+        \\  nc_f1() {}
+        \\  nc_l1!: () => void;
+        \\}
+        \\var i1_i: i1;
+        \\i1_i.i1_f1();
+        \\i1_i.i1_nc_f1();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
+test "checker: parity parser real source preserves recursive class fields in loops" {
+    const s = try newSetup(
+        \\namespace TypeScript {
+        \\  export class AST { type: Type = null; }
+        \\  export class FuncDecl extends AST {
+        \\    hint: string = null;
+        \\    fncFlags = FncFlags.None;
+        \\    returnTypeAnnotation: AST = null;
+        \\    symbols: IHashTable;
+        \\    variableArgList = false;
+        \\    signature: Signature;
+        \\    envids: Identifier[];
+        \\    jumpRefs: Identifier[] = null;
+        \\    internalNameCache: string = null;
+        \\    tmp1Declared = false;
+        \\    enclosingFnc: FuncDecl = null;
+        \\    freeVariables: Symbol[] = [];
+        \\    classDecl: NamedDeclaration = null;
+        \\    boundToProperty: VarDecl = null;
+        \\    innerStaticFuncs: FuncDecl[] = [];
+        \\    scopeType: Type = null;
+        \\    walk(sym: Symbol) {
+        \\      var outerFnc = this.enclosingFnc;
+        \\      while (outerFnc && outerFnc.type.symbol != sym.container) {
+        \\        outerFnc.addJumpRef(sym);
+        \\        outerFnc = outerFnc.enclosingFnc;
+        \\      }
+        \\    }
+        \\    addJumpRef(sym: Symbol): void {}
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: TS2454 prunes dead branches for short-circuit constant conditions" {
