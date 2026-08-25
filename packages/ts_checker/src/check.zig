@@ -60579,9 +60579,12 @@ pub const Checker = struct {
         const target = (try self.virtualExportAssignmentTargetDecl(anchor, specifier)) orelse return null;
         const target_name = self.declarationName(target) orelse return null;
         try self.ensureExportAssignmentTargetChecked(target);
-        if (self.class_instance_types.get(target_name)) |t| return t;
+        if (self.class_static_type_by_node.get(target)) |static_t| {
+            if (try self.constructReturnType(static_t)) |instance_t| return instance_t;
+        }
         const t = self.hir.typeOf(target);
-        return if (t != types.Primitive.none) t else types.Primitive.any;
+        if (t != types.Primitive.none) return t;
+        return self.class_instance_types.get(target_name) orelse types.Primitive.any;
     }
 
     /// True when `node` is the raw `export = <value>` form, detected from
@@ -60646,6 +60649,7 @@ pub const Checker = struct {
         const target = (try self.virtualExportAssignmentTargetDecl(anchor, specifier)) orelse return null;
         const target_name = self.declarationName(target) orelse return null;
         try self.ensureExportAssignmentTargetChecked(target);
+        if (self.class_static_type_by_node.get(target)) |t| return t;
         if (self.class_static_types.get(target_name)) |t| return t;
         const t = self.hir.typeOf(target);
         return if (t != types.Primitive.none) t else types.Primitive.any;
@@ -73946,6 +73950,15 @@ pub const Checker = struct {
                     if (try self.circularTypeArgReference(r.name)) return types.Primitive.any;
                     const name_str = self.string_interner.get(r.name);
                     if (isPrimitiveTypeNameText(name_str)) return try self.lowerer.lower(type_node);
+                    // Recursive references in deferred positions already have
+                    // a stable symbolic placeholder from pre-registration.
+                    // Once circularTypeArgReference has ruled out an eager
+                    // type-argument cycle, avoid repeating the full lexical,
+                    // module, and forward-declaration resolution pipeline for
+                    // every occurrence in a large recursive union.
+                    if (self.alias_lower_in_progress.contains(r.name)) {
+                        if (self.type_names.get(r.name)) |t| return t;
+                    }
                     if (std.mem.eql(u8, name_str, "this")) {
                         if (try self.boundThisTypeForNode(type_node, r.name)) |t| return t;
                         return try self.freshThisTypeParameter(r.name);
@@ -76539,9 +76552,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         _ = self.source orelse return null;
         const spec = self.string_interner.get(specifier);
-        if (!std.mem.startsWith(u8, spec, ".")) return null;
-        const from = self.relativeModuleFilenameForNode(anchor) orelse return null;
-        const resolved = try self.resolveVirtualRelativePath(from, stripJsOutputExtension(spec));
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -76626,9 +76637,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         _ = self.source orelse return null;
         const spec = self.string_interner.get(specifier);
-        if (!std.mem.startsWith(u8, spec, ".")) return null;
-        const from = self.relativeModuleFilenameForNode(anchor) orelse return null;
-        const resolved = try self.resolveVirtualRelativePath(from, stripJsOutputExtension(spec));
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -78083,6 +78092,14 @@ pub const Checker = struct {
         allow_infer_match: bool,
         is_distributive: bool,
     ) CheckError!TypeId {
+        // Keep a conditional whose extends-side still depends on an ordinary
+        // generic parameter intact. Distributing a large concrete check union
+        // here would manufacture one deferred conditional per member, even
+        // though none can resolve until that parameter is substituted.
+        // Genuine `infer` placeholders still need per-member matching below.
+        if (self.containsFreeTypeParameter(ext) and !self.containsInferTypeParameter(ext)) {
+            return self.interner.internConditionalWithDistribution(check, ext, tt, ff, is_distributive) catch return error.OutOfMemory;
+        }
         // Distribute over a union check.
         if (is_distributive and self.interner.pool.flagsOf(check).is_union) {
             const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(check));
@@ -79296,6 +79313,85 @@ pub const Checker = struct {
         }
         if (flags.is_string_mapping) {
             return self.containsFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
+        }
+        return false;
+    }
+
+    fn containsInferTypeParameter(self: *Checker, t: TypeId) bool {
+        return self.containsInferTypeParameterInner(t, 0);
+    }
+
+    fn containsInferTypeParameterInner(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth == 64 or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.containsInferTypeParameterInner(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.containsInferTypeParameterInner(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_type_parameter) return self.infer_type_parameters.contains(t);
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| {
+                if (self.containsInferTypeParameterInner(member.type, depth + 1)) return true;
+            }
+            const string_index = self.interner.objectStringIndex(t);
+            if (string_index != types.Primitive.none and
+                self.containsInferTypeParameterInner(string_index, depth + 1)) return true;
+            const number_index = self.interner.objectNumberIndex(t);
+            return number_index != types.Primitive.none and
+                self.containsInferTypeParameterInner(number_index, depth + 1);
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |param| {
+                if (self.containsInferTypeParameterInner(param, depth + 1)) return true;
+            }
+            if (self.interner.signatureReturn(t)) |return_t| {
+                return self.containsInferTypeParameterInner(return_t, depth + 1);
+            }
+            return false;
+        }
+        if (flags.is_keyof) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
+            return self.containsInferTypeParameterInner(
+                self.interner.pool.keyof_payloads.items[payload_idx].operand,
+                depth + 1,
+            );
+        }
+        if (flags.is_indexed_access) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
+            const indexed = self.interner.pool.indexed_access_payloads.items[payload_idx];
+            return self.containsInferTypeParameterInner(indexed.object, depth + 1) or
+                self.containsInferTypeParameterInner(indexed.index, depth + 1);
+        }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            return self.containsInferTypeParameterInner(conditional.check_type, depth + 1) or
+                self.containsInferTypeParameterInner(conditional.extends_type, depth + 1) or
+                self.containsInferTypeParameterInner(conditional.true_branch, depth + 1) or
+                self.containsInferTypeParameterInner(conditional.false_branch, depth + 1);
+        }
+        if (flags.is_mapped) {
+            const mapped = self.interner.mappedPayload(t);
+            return self.containsInferTypeParameterInner(mapped.constraint, depth + 1) or
+                self.containsInferTypeParameterInner(mapped.template, depth + 1);
+        }
+        if (flags.is_template_literal) {
+            for (self.interner.templateLiteralTypes(t)) |part| {
+                if (self.containsInferTypeParameterInner(part, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_string_mapping) {
+            return self.containsInferTypeParameterInner(self.interner.stringMappingPayload(t).inner, depth + 1);
         }
         return false;
     }
@@ -113773,6 +113869,12 @@ pub const Checker = struct {
             }
             const contextual_ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
             const ret_t = if (f.flags.is_async) self.evalAwaited(contextual_ret_t) else contextual_ret_t;
+            const body_assignable = if (!check_return_assignability)
+                true
+            else if (self.isContextualFunctionExpressionLike(f.body))
+                try self.functionExpressionAssignableToTarget(f.body, ret_t)
+            else
+                try self.contextualFunctionReturnAssignable(body_t, ret_t);
             if (check_return_assignability and
                 ret_t != types.Primitive.void_t and
                 ret_t != types.Primitive.any and
@@ -113780,7 +113882,7 @@ pub const Checker = struct {
                 body_t != types.Primitive.none and
                 body_t != types.Primitive.any and
                 body_t != types.Primitive.unknown and
-                !(self.engine.isAssignableTo(body_t, ret_t) catch true))
+                !body_assignable)
             {
                 const src_text = (try self.simpleDiagnosticTypeName(body_t)) orelse "type";
                 const target_text = (try self.simpleDiagnosticTypeName(ret_t)) orelse "type";
@@ -148883,6 +148985,15 @@ pub const Checker = struct {
                     try subs.put(self.gpa, param_t, merged);
                     return;
                 }
+                if (self.inferenceEnumDeclarationName(existing)) |existing_enum| {
+                    if (self.inferenceEnumDeclarationName(inferred)) |inferred_enum| {
+                        if (existing_enum == inferred_enum) {
+                            const combined = self.interner.internUnion(&.{ existing, inferred }) catch return error.OutOfMemory;
+                            try subs.put(self.gpa, param_t, combined);
+                            return;
+                        }
+                    }
+                }
                 // Array/tuple candidates are excluded from the supertype
                 // merge: their inference is driven by dedicated paths
                 // (e.g. `inferRestTupleFromSignatureParams` for variadic
@@ -149071,6 +149182,21 @@ pub const Checker = struct {
             flags.is_boolean or
             flags.is_bigint or
             flags.is_symbol;
+    }
+
+    fn inferenceEnumDeclarationName(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.interner.enumLiteralInfo(t)) |info| return info.enum_name;
+        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return null;
+        var enum_name: ?hir_mod.StringId = null;
+        for (self.interner.unionMembers(t)) |member| {
+            const member_name = self.inferenceEnumDeclarationName(member) orelse return null;
+            if (enum_name) |existing| {
+                if (existing != member_name) return null;
+            } else {
+                enum_name = member_name;
+            }
+        }
+        return enum_name;
     }
 
     fn inferFromSameGenericInstantiation(
@@ -151265,6 +151391,16 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (param_t >= self.interner.pool.typeCount()) return false;
         const c = self.interner.conditionalPayloadOrNull(param_t) orelse return false;
+        if (c.false_branch == c.check_type and c.true_branch == types.Primitive.never and
+            try self.conditionalExtendsRelation(arg_t, c.extends_type))
+        {
+            return true;
+        }
+        if (c.true_branch == c.check_type and c.false_branch == types.Primitive.never and
+            !try self.conditionalExtendsRelation(arg_t, c.extends_type))
+        {
+            return true;
+        }
         var conditional_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer conditional_subs.deinit(self.gpa);
         try self.copyInferSubs(subs, &conditional_subs);
@@ -261948,4 +262084,65 @@ test "checker: parity 551 class annotations remain instance-sided in static meth
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 601 contextual conditional callbacks keep callable returns" {
+    const s = try newSetup(
+        \\declare function useState1<S>(initialState: (S extends (() => any) ? never : S) | (() => S)): S;
+        \\declare function useState2<S>(initialState: (S extends ((...args: any[]) => any) ? never : S) | (() => S)): S;
+        \\const func1 = useState1(() => () => 0);
+        \\const func2 = useState2(() => () => 0);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 601 same-enum union branches contribute inference candidates" {
+    const s = try newSetup(
+        \\enum Enum { A, B, C }
+        \\interface Interface<T extends Enum> { type: T; }
+        \\function foo<T extends Enum>(x: Interface<T>) {}
+        \\function bar(x: Interface<Enum.A | Enum.B> | Interface<Enum.C>) { foo(x); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 601 import-equals class constructors stay section-scoped" {
+    const s = try newSetup(
+        \\// @filename: externalModuleAssignToVar_core.ts
+        \\import ext = require('externalModuleAssignToVar_core_require');
+        \\var y1: { C: new() => ext.C; } = ext;
+        \\y1 = ext;
+        \\import ext2 = require('externalModuleAssignToVar_core_require2');
+        \\var y2: new() => ext2 = ext2;
+        \\y2 = ext2;
+        \\// @filename: externalModuleAssignToVar_core_require.ts
+        \\export class C { bar: string; }
+        \\// @filename: externalModuleAssignToVar_core_require2.ts
+        \\class C { baz: string; }
+        \\export = C;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parity 601 unresolved conditional discriminants defer union expansion" {
+    const s = try newSetup(
+        \\type BigUnion =
+        \\  | { name: 'a'; children: BigUnion[] }
+        \\  | { name: 'b'; children: BigUnion[] }
+        \\  | { name: 'c'; children: BigUnion[] };
+        \\type DiscriminateUnion<T, K extends keyof T, V> = T extends Record<K, V> ? T : never;
+        \\type WithName<T extends BigUnion['name']> = DiscriminateUnion<BigUnion, 'name', T>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const alias_name = try s.sint.intern("WithName");
+    const alias = s.checker.generic_aliases.get(alias_name).?;
+    try T.expect(s.checker.interner.pool.flagsOf(alias.body).is_conditional);
 }
