@@ -8401,6 +8401,17 @@ pub const Checker = struct {
                         const return_annotation_name: ?[]const u8 = if (self.current_function_return_node != hir_mod.none_node_id and
                             self.hir.kindOf(self.current_function_return_node) == .type_ref)
                         blk: {
+                            const return_ref = hir_mod.typeRefOf(self.hir, self.current_function_return_node);
+                            const qualifiers = hir_mod.typeRefQualifier(self.hir, self.current_function_return_node);
+                            if (qualifiers.len > 0 and self.hir.kindOf(qualifiers[0]) == .identifier) {
+                                const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+                                if (self.requireSpecifierForLocal(root_name, self.current_function_return_node) != null) {
+                                    break :blk self.string_interner.get(return_ref.name);
+                                }
+                            }
+                            if (self.class_name_by_instance.get(declared)) |class_name| {
+                                break :blk self.string_interner.get(class_name);
+                            }
                             const text = std.mem.trim(
                                 u8,
                                 self.nodeSourceTextOrEmpty(self.current_function_return_node),
@@ -100076,6 +100087,20 @@ pub const Checker = struct {
         for (members, 0..) |member, member_index| {
             const start = signatures.items.len;
             try self.collectSignaturesOfKind(member, is_construct, &signatures);
+            var write = start;
+            for (signatures.items[start..]) |signature| {
+                var duplicate = false;
+                for (signatures.items[start..write]) |existing| {
+                    if (existing == signature) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                signatures.items[write] = signature;
+                write += 1;
+            }
+            signatures.shrinkRetainingCapacity(write);
             const len = signatures.items.len - start;
             if (len == 0) return true;
             for (signatures.items[start .. start + len]) |signature| {
@@ -128240,7 +128265,7 @@ pub const Checker = struct {
         const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
         const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
         if (qualifiers.len == 0) {
-            return self.unqualifiedImportEqualsTargetHasRuntimeValue(r.name, depth + 1);
+            return self.unqualifiedImportEqualsTargetHasRuntimeValue(import_node, r.name, depth + 1);
         }
         const target = self.importEqualsTargetDecl(imp.import_equals) orelse return false;
         if (self.declCreatesRuntimeValue(target, depth + 1)) return true;
@@ -128270,18 +128295,26 @@ pub const Checker = struct {
         return false;
     }
 
-    fn unqualifiedImportEqualsTargetHasRuntimeValue(self: *Checker, name: hir_mod.StringId, depth: u8) bool {
+    fn unqualifiedImportEqualsTargetHasRuntimeValue(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+        depth: u8,
+    ) bool {
         if (depth > 32) return false;
-        const root = if (self.hir.nodeCount() > 1) self.rootBlockFor(1) else hir_mod.none_node_id;
-        const stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
-            hir_mod.blockStmts(self.hir, root)
-        else
-            &[_]NodeId{};
-        for (stmts) |raw| {
-            const decl = self.unwrapExportDecl(raw);
-            const decl_name = self.declarationName(decl) orelse continue;
-            if (decl_name != name) continue;
-            if (self.declCreatesRuntimeValue(decl, depth + 1)) return true;
+        var scope = self.hir.parentOf(anchor);
+        while (scope != hir_mod.none_node_id) : (scope = self.hir.parentOf(scope)) {
+            const statements: []const NodeId = switch (self.hir.kindOf(scope)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, scope),
+                .namespace_decl, .module_decl => hir_mod.namespaceBody(self.hir, scope),
+                else => continue,
+            };
+            for (statements) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name != name) continue;
+                if (self.declCreatesRuntimeValue(decl, depth + 1)) return true;
+            }
         }
         return false;
     }
@@ -262145,4 +262178,51 @@ test "checker: parity 601 unresolved conditional discriminants defer union expan
     const alias_name = try s.sint.intern("WithName");
     const alias = s.checker.generic_aliases.get(alias_name).?;
     try T.expect(s.checker.interner.pool.flagsOf(alias.body).is_conditional);
+}
+
+test "checker: parity 651 shared union methods combine callable signatures" {
+    const s = try newSetup(
+        \\function outer() {
+        \\  type A = 'foo' | 'bar';
+        \\  type B = 'baz' | 'bar';
+        \\  interface Left { getValue(name: A): number; }
+        \\  interface Right { getValue(name: B): string; }
+        \\  function test(value: Left | Right) { value.getValue('bar'); }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: parity 651 imported class nullish returns use canonical symbol names" {
+    const s = try newSetup(
+        \\// @filename: source.ts
+        \\export class d { value: string; }
+        \\// @filename: consumer.ts
+        \\import m4 = require('./source');
+        \\export function foo(): m4.d { return null; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'null' is not assignable to type 'd'.",
+    ));
+}
+
+test "checker: parity 651 namespace-local import-equals aliases retain runtime values" {
+    const s = try newSetup(
+        \\namespace m {
+        \\  export namespace c { export class c {} }
+        \\  import x = c;
+        \\  export var a: typeof x;
+        \\}
+        \\export = m;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.namespace_as_value));
 }
