@@ -29666,7 +29666,32 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_index: usize,
     ) CheckError!?TypeId {
-        const params = self.interner.signatureParams(sig);
+        const effective_sig = blk: {
+            if (arg_index == 0 or
+                self.hir.kindOf(callee_node) != .member_access or
+                self.generic_signature_params.get(sig) == null) break :blk sig;
+            var stable_count = arg_index;
+            for (args[0..arg_index], 0..) |prior_arg, prior_index| {
+                if (!self.expressionHasContextSensitiveFunction(prior_arg)) continue;
+                stable_count = prior_index;
+                break;
+            }
+            if (stable_count == 0) break :blk sig;
+            var prior_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer prior_types.deinit(self.gpa);
+            for (args[0..stable_count]) |prior_arg| {
+                var prior_t = self.hir.typeOf(prior_arg);
+                if (prior_t == types.Primitive.none) prior_t = try self.checkExpression(prior_arg);
+                try prior_types.append(self.gpa, try self.expressionLiteralType(prior_arg, prior_t));
+            }
+            var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer subs.deinit(self.gpa);
+            try self.inferCallSubstitutions(sig, args[0..stable_count], prior_types.items, &subs);
+            try self.normalizeCallInferenceSubstitutions(sig, &subs);
+            const relowered = try self.relowerSignatureParametersWithInferences(sig, &subs);
+            break :blk self.substituteType(relowered, &subs) catch relowered;
+        };
+        const params = self.interner.signatureParams(effective_sig);
         if (arg_index > 0 and self.callCalleeHasOverloadSet(callee_node)) {
             const prior_count = @min(arg_index, params.len);
             for (args[0..prior_count], params[0..prior_count]) |prior_arg, prior_param_t| {
@@ -29675,7 +29700,7 @@ pub const Checker = struct {
                 if (!(self.isArgumentAssignableToParam(prior_arg, prior_t, prior_param_t) catch return null)) return null;
             }
         }
-        if (!self.rest_signatures.contains(sig)) {
+        if (!self.rest_signatures.contains(effective_sig)) {
             return if (arg_index < params.len) params[arg_index] else null;
         }
         if (params.len == 0) return null;
@@ -29685,7 +29710,7 @@ pub const Checker = struct {
         const rest_index = arg_index - fixed_count;
         const rest_count = args.len -| fixed_count;
         const rest_tuple_t = params[params.len - 1];
-        const tuple_annotation = self.restTupleAnnotationForContextualCall(sig, callee_node);
+        const tuple_annotation = self.restTupleAnnotationForContextualCall(effective_sig, callee_node);
         var target_t = (try self.contextualSymbolicTupleElementTypeAt(rest_tuple_t, rest_index, rest_count)) orelse
             if (tuple_annotation) |tuple_node|
                 try self.tupleAnnotationElementTypeAt(tuple_node, rest_index, rest_count)
@@ -73926,6 +73951,11 @@ pub const Checker = struct {
     fn reportExcessivelyDeepTypeInstantiationAt(self: *Checker, node: NodeId) CheckError!void {
         self.instantiation_defer_events +%= 1;
         if (node == hir_mod.none_node_id) return;
+        if (self.diagnosticExists(node, TsCodes.circular_constraint)) return;
+        var ancestor = self.hir.parentOf(node);
+        while (ancestor != hir_mod.none_node_id) : (ancestor = self.hir.parentOf(ancestor)) {
+            if (self.diagnosticExists(ancestor, TsCodes.circular_constraint)) return;
+        }
         if (self.reported_deep_instantiation_nodes.contains(node)) return;
         try self.reported_deep_instantiation_nodes.put(self.gpa, node, {});
         try self.report(
@@ -74947,7 +74977,8 @@ pub const Checker = struct {
                                     const conditional = self.interner.conditionalPayload(info.body);
                                     if (conditional.check_type != info.params[1]) break :blk_preserve false;
                                     const current_tail = subs.get(info.params[1]) orelse break :blk_preserve false;
-                                    break :blk_preserve self.infer_type_parameters.contains(current_tail);
+                                    break :blk_preserve self.infer_type_parameters.contains(current_tail) or
+                                        self.isActualTupleType(current_tail);
                                 };
                                 if (preserve_reducing_tuple_subs) {
                                     return self.substituteType(info.body, &subs) catch info.body;
@@ -114488,6 +114519,7 @@ pub const Checker = struct {
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.argument_type_mismatch);
+        self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.property_does_not_exist);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
         self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
@@ -138063,8 +138095,11 @@ pub const Checker = struct {
             if (try self.jsDocConstrainedTypeAssignable(comparable_arg, constraint, 0)) return;
             if (try self.tryReportTypeArgSingleMissingProperty(arg_node, comparable_arg, constraint, false)) return;
         }
+        const tuple_constraint_chain = try self.typeArgTupleConstraintChain(arg_t, constraint);
         const broad_function_to_call = self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint);
-        if (!broad_function_to_call and try self.genericConstraintAssignable(arg_t, constraint)) return;
+        if (!broad_function_to_call and
+            tuple_constraint_chain.len == 0 and
+            try self.genericConstraintAssignable(arg_t, constraint)) return;
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
@@ -138111,7 +138146,7 @@ pub const Checker = struct {
             if (!broad_function_to_call and self.typeArgSatisfiesSignatureConstraint(arg_t, info)) return;
             chain = try self.typeArgSignatureConstraintChain(arg_t, info);
         } else if (!constraint_is_object) {
-            chain = try self.typeArgTupleConstraintChain(arg_t, constraint);
+            chain = tuple_constraint_chain;
             if (chain.len == 0 and
                 arg_t < self.interner.pool.typeCount() and
                 constraint < self.interner.pool.typeCount() and
@@ -151890,9 +151925,6 @@ pub const Checker = struct {
         const old_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(sig));
         defer self.gpa.free(old_params);
         const param_nodes = self.signature_param_nodes.get(sig);
-        var substitution_param_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
-        defer substitution_param_nodes.deinit(self.gpa);
-
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         var subs_it = subs.iterator();
@@ -151905,12 +151937,6 @@ pub const Checker = struct {
             if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
             const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
             try self.recordNarrow(payload.name, entry.value_ptr.*);
-            const decl_node = self.type_parameter_decl_nodes.get(param_t) orelse
-                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param_t)) orelse
-                hir_mod.none_node_id;
-            if (decl_node != hir_mod.none_node_id) {
-                try substitution_param_nodes.append(self.gpa, decl_node);
-            }
         }
 
         var params: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -151922,8 +151948,7 @@ pub const Checker = struct {
                 if (param_index < nodes.len and self.hir.kindOf(nodes[param_index]) == .parameter) {
                     const annotation = hir_mod.parameterOf(self.hir, nodes[param_index]).type_annotation;
                     if (annotation != hir_mod.none_node_id and
-                        self.firstSignatureType(param) != null and
-                        self.typeNodeReferencesTypeParams(annotation, substitution_param_nodes.items))
+                        self.firstSignatureType(param) != null)
                     {
                         refreshed = self.lowererLowerWithTypeParams(annotation) catch refreshed;
                     }
@@ -154075,13 +154100,17 @@ pub const Checker = struct {
             else
                 tp.default;
             if (new_constraint == tp.constraint and new_default == tp.default) return t;
-            return self.interner.internTypeParameterWithFlags(
+            const substituted_param = self.interner.internTypeParameterWithFlags(
                 tp.name,
                 new_constraint,
                 new_default,
                 tp.variance,
                 tp.is_const,
             ) catch return t;
+            if (self.infer_type_parameters.contains(t)) {
+                try self.infer_type_parameters.put(self.gpa, substituted_param, {});
+            }
+            return substituted_param;
         }
         return t;
     }
@@ -164683,6 +164712,16 @@ pub const Checker = struct {
         arg_t: TypeId,
         param_t: TypeId,
     ) CheckError!bool {
+        return self.argumentAssignableToReducedConditionalTargetInner(arg_t, param_t, 0);
+    }
+
+    fn argumentAssignableToReducedConditionalTargetInner(
+        self: *Checker,
+        arg_t: TypeId,
+        param_t: TypeId,
+        depth: u8,
+    ) CheckError!bool {
+        if (depth >= 16) return false;
         if (param_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(param_t).is_conditional) return false;
         const c = self.interner.conditionalPayloadOrNull(param_t) orelse return false;
@@ -164691,7 +164730,8 @@ pub const Checker = struct {
         const resolved = try self.evalConditionalWithDistribution(check_t, c.extends_type, c.true_branch, c.false_branch, true, c.is_distributive);
         if (resolved == param_t) return false;
         if (resolved >= self.interner.pool.typeCount()) return false;
-        return self.engine.isAssignableTo(arg_t, resolved) catch false;
+        if (self.engine.isAssignableTo(arg_t, resolved) catch false) return true;
+        return self.argumentAssignableToReducedConditionalTargetInner(arg_t, resolved, depth + 1);
     }
 
     fn resolveIndexedAccessTypeIfPossible(self: *Checker, t: TypeId) CheckError!TypeId {
