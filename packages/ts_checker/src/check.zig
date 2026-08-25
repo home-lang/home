@@ -8892,7 +8892,7 @@ pub const Checker = struct {
                 }
                 const raw_elem_t = if (self.hir.kindOf(fr.source) == .array_literal and
                     hir_mod.arrayLiteralElements(self.hir, fr.source).len == 0)
-                    types.Primitive.never
+                    if (self.strict_flags.no_implicit_any) types.Primitive.never else types.Primitive.any
                 else if (fr.is_await and !sync_iterable and self.isAsyncIterableLikeType(src_t))
                     try self.asyncIterableElementType(src_t)
                 else
@@ -135735,6 +135735,19 @@ pub const Checker = struct {
         // library has already established a type-space meaning. External
         // module metadata can expose the same symbol's runtime side first.
         if ((try self.importedReferenceLibTypeForLocal(name, node)) != null) return;
+        // A declaration-only export establishes a type-space meaning even
+        // when lowering its body recovers to `any` (for example a mapped
+        // alias whose key is an enum member). The runtime-status query is
+        // syntactic and therefore remains authoritative on this error path.
+        if (self.plainNamedImport(name, node)) |import| {
+            const spec = self.string_interner.get(import.module);
+            if (std.mem.startsWith(u8, spec, ".")) {
+                switch (try self.virtualRelativeModuleNamedExportRuntimeStatus(node, spec, import.imported)) {
+                    .type_only_decl, .type_only_alias => return,
+                    else => {},
+                }
+            }
+        }
         // An unresolved-import binding is typed `any` by tsc and is
         // usable as a type — suppress TS2749 for it.
         if (self.nameBoundByUnresolvedImport(node, name)) return;
@@ -151924,6 +151937,18 @@ pub const Checker = struct {
             var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer key_subs.deinit(self.gpa);
             try key_subs.put(self.gpa, indexed.key_tp, key_lit);
+            if (try self.inferReverseMappedIndexedAccessAtKey(
+                m.template,
+                arg_member.type,
+                indexed.object_tp,
+                indexed.key_tp,
+                arg_member.name,
+                subs,
+                0,
+            )) {
+                saw_member = true;
+                continue;
+            }
             const member_target = self.substituteType(m.template, &key_subs) catch m.template;
             try self.inferFromPair(member_target, arg_member.type, subs);
             if (subs.get(indexed.object_tp)) |source_obj| {
@@ -263171,4 +263196,61 @@ test "checker: parity 1151 nested generic lookup indexes stay deferred" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: parity 1201 declaration-only imported aliases keep type meaning" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: bbb.d.ts
+        \\export interface INode<T> { data: T; }
+        \\export function create<T>(): () => INode<T>;
+        \\// @filename: lib.d.ts
+        \\export type G<T extends string> = { [P in T]: string };
+        \\export enum E { A = "a", B = "b" }
+        \\export type T = G<E>;
+        \\export type Q = G<E.A>;
+        \\// @filename: index.ts
+        \\import { T, Q } from "./lib";
+        \\import { create } from "./bbb";
+        \\export const fun = create<T>();
+        \\export const fun2 = create<Q>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: parity 1201 non-strict empty array iteration widens to any" {
+    const s = try newSetup(
+        \\declare let doSomething;
+        \\for (let a1 of [])
+        \\  for (let a2 of a1.someArray)
+        \\    doSomething(() => a2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: parity 1201 reverse Readonly inference preserves object members" {
+    const s = try newSetup(
+        \\type TypeFunction<ReturnType = unknown> = (...args: any[]) => ReturnType;
+        \\type Flags = { [flagName: string]: { type: TypeFunction; default?: unknown } };
+        \\declare function fn<Options extends Flags>(options: Readonly<Options>): Options;
+        \\const result = fn({
+        \\  booleanFlag: { type: Boolean },
+        \\  booleanFlagDefault: { type: Boolean, default: false },
+        \\});
+        \\declare function takeType(arg: { type: unknown }): void;
+        \\takeType(result.booleanFlagDefault);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .strict_function_types = true,
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
