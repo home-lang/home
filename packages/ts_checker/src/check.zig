@@ -8409,8 +8409,10 @@ pub const Checker = struct {
                                     break :blk self.string_interner.get(return_ref.name);
                                 }
                             }
-                            if (self.class_name_by_instance.get(declared)) |class_name| {
-                                break :blk self.string_interner.get(class_name);
+                            if (return_ref.args_len == 0) {
+                                if (self.class_name_by_instance.get(declared)) |class_name| {
+                                    break :blk self.string_interner.get(class_name);
+                                }
                             }
                             const text = std.mem.trim(
                                 u8,
@@ -111473,12 +111475,23 @@ pub const Checker = struct {
         const source = self.source orelse return;
         const span = self.hir.spanOf(element);
         if (span.start >= span.end or span.end > source.len) return;
+        const attrs = hir_mod.jsxAttrs(self.hir, element);
         const text = source[span.start..span.end];
         var cursor: usize = 0;
         while (std.mem.indexOfPos(u8, text, cursor, "{...")) |relative| {
             const pos: u32 = @intCast(span.start + relative);
             cursor = relative + 4;
             if (self.hasDiagnosticAtPosition(TsCodes.jsx_spread_child_must_be_array, pos)) continue;
+            var is_spread_attribute = false;
+            for (attrs) |attr| {
+                if (self.hir.kindOf(attr) != .jsx_spread_attribute) continue;
+                const attr_span = self.hir.spanOf(attr);
+                if (pos >= attr_span.start and pos < attr_span.end) {
+                    is_spread_attribute = true;
+                    break;
+                }
+            }
+            if (is_spread_attribute) continue;
             var operand = text[cursor..];
             operand = std.mem.trim(u8, operand, " \t\r\n");
             var begins_with_jsx = std.mem.startsWith(u8, operand, "<");
@@ -192480,6 +192493,18 @@ test "checker: JSX spread child accepts arrays and any" {
     }
 }
 
+test "checker: parity 751 JSX spread attributes containing elements are not spread children" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; span: any; } }
+        \\const a = <div {...<span />} />;
+        \\const b = <div {...<span className="foo" />} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_spread_child_must_be_array));
+}
+
 test "checker: JSX factory reports tag arity beyond factory callback" {
     const s = try newTsxSetup(
         \\// @jsx h
@@ -258855,6 +258880,25 @@ test "checker: namespace parity batch preserves generic return annotations" {
         b,
         TsCodes.type_not_assignable,
         "Type 'null' is not assignable to type 'Line<Point>'.",
+    ));
+}
+
+test "checker: parity 751 static generic methods preserve return type arguments" {
+    const b = try newBoundSetup(
+        \\class A1<T> {
+        \\  static B<S>(v: A1<S>): A1<S>;
+        \\  static B<S>(v: S): A1<S>;
+        \\  static B<S>(v: any): A1<S> { return null; }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type 'null' is not assignable to type 'A1<S>'.",
     ));
 }
 
