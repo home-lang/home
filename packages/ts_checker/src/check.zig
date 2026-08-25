@@ -98579,6 +98579,14 @@ pub const Checker = struct {
                 return self.interner.internNumberLiteral(value) catch init_t;
             }
         }
+        if (init_t >= self.interner.pool.typeCount()) return init_t;
+        const init_flags = self.interner.pool.flagsOf(init_t);
+        if (target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_string_mapping and
+            (init_flags.is_number or init_flags.is_boolean or init_flags.is_bigint))
+        {
+            return self.widenLiteralType(init_t);
+        }
         if (self.containsTemplatePatternSurface(target_t)) {
             const literal_t = try self.expressionLiteralType(init_node, init_t);
             if (literal_t != init_t) return literal_t;
@@ -98587,8 +98595,6 @@ pub const Checker = struct {
             const literal_t = try self.expressionLiteralType(init_node, init_t);
             if (literal_t != init_t) return literal_t;
         }
-        if (init_t >= self.interner.pool.typeCount()) return init_t;
-        const init_flags = self.interner.pool.flagsOf(init_t);
         if (!init_flags.is_enum_literal) return init_t;
         const target_flags = if (target_t < self.interner.pool.typeCount())
             self.interner.pool.flagsOf(target_t)
@@ -262225,4 +262231,23 @@ test "checker: parity 651 namespace-local import-equals aliases retain runtime v
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.namespace_as_value));
+}
+
+test "checker: parity 701 string-mapping mismatches widen non-string literals" {
+    const s = try newSetup(
+        \\const x: Uppercase<string> = 42;
+        \\const y: Uppercase<string> = { foo: 'bar' };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'Uppercase<string>'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type '{ foo: string; }' is not assignable to type 'Uppercase<string>'.",
+    ));
 }
