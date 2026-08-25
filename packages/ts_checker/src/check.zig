@@ -104407,8 +104407,11 @@ pub const Checker = struct {
                     break :blk_target try self.checkExpression(a.target);
                 };
                 if (a.op == null and target_kind == .element_access) {
-                    if (try self.declaredElementWriteTypeAfterNarrow(a.target)) |declared_t| {
-                        target_t = declared_t;
+                    const element = hir_mod.elementOf(self.hir, a.target);
+                    if (!self.diagnosticExists(element.index, TsCodes.tuple_index_out_of_bounds)) {
+                        if (try self.declaredElementWriteTypeAfterNarrow(a.target)) |declared_t| {
+                            target_t = declared_t;
+                        }
                     }
                 }
                 if (a.op == null and target_kind == .member_access and
