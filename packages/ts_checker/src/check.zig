@@ -5463,6 +5463,7 @@ pub const Checker = struct {
         self.removeTypeArgumentCountDiagnosticsInJs();
         self.removeJsDocObjectMethodTypeMismatchCascades();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
+        self.removePropertyMissingDiagnosticsSupersededBySuggestion();
         try self.restoreRecoveredJsxImplicitAnyDiagnostics(root);
         self.applyExplicitNoImplicitThisDirective();
         // Detection passes above append diagnostics in node-id
@@ -6152,6 +6153,29 @@ pub const Checker = struct {
                 (d.code == TsCodes.type_not_assignable and std.mem.indexOf(u8, d.message, "Type 'string[]' is not assignable to type 'XY[]'.") != null);
             if (!remove) {
                 self.diagnostics.items[write] = d;
+                write += 1;
+            }
+        }
+        self.diagnostics.items.len = write;
+    }
+
+    fn removePropertyMissingDiagnosticsSupersededBySuggestion(self: *Checker) void {
+        var write: usize = 0;
+        for (self.diagnostics.items) |diagnostic| {
+            var superseded = false;
+            if (diagnostic.code == TsCodes.property_does_not_exist) {
+                const start = self.diagnosticStart(diagnostic);
+                for (self.diagnostics.items) |candidate| {
+                    if (candidate.code == TsCodes.property_does_not_exist_did_you_mean and
+                        self.diagnosticStart(candidate) == start)
+                    {
+                        superseded = true;
+                        break;
+                    }
+                }
+            }
+            if (!superseded) {
+                self.diagnostics.items[write] = diagnostic;
                 write += 1;
             }
         }
@@ -11344,7 +11368,7 @@ pub const Checker = struct {
             .{name_str},
         );
         try self.diagnostics.append(self.gpa, .{
-            .node = import_node,
+            .node = binding,
             .code = TsCodes.declared_but_not_read,
             .message = msg,
         });
@@ -14538,8 +14562,8 @@ pub const Checker = struct {
     /// For an `export default <decl>` statement, return the position of
     /// the named declaration (function/class name) so TS2528 underlines
     /// the identifier rather than the `export` keyword. Returns null
-    /// when the default payload isn't a named function/class (e.g. an
-    /// object literal ÃÂ¢ÃÂÃÂ TS itself reports column 1 in that case).
+    /// when the default payload isn't a named function/class. Expression
+    /// exports, including identifier expressions, report at `export`.
     fn defaultExportNamePos(self: *Checker, node: NodeId) ?u32 {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .export_decl) return null;
         const ex = hir_mod.exportOf(self.hir, node);
@@ -14558,7 +14582,7 @@ pub const Checker = struct {
                 const it = hir_mod.interfaceOf(self.hir, decl);
                 break :blk it.name;
             },
-            .identifier => decl,
+            .identifier => return self.hir.spanOf(node).start,
             else => return null,
         };
         if (name_node == hir_mod.none_node_id) return null;
@@ -40100,7 +40124,7 @@ pub const Checker = struct {
                     .body_node = hir_mod.none_node_id,
                 });
             }
-            try self.recordNarrow(cid.name, partial_instance_t);
+            try self.recordNarrow(cid.name, partial_static_t);
         }
 
         for (members) |m| {
@@ -123157,6 +123181,32 @@ pub const Checker = struct {
         return true;
     }
 
+    fn narrowArrayPredicateType(self: *Checker, current: TypeId, when_true: bool) CheckError!?TypeId {
+        const flags = self.interner.pool.flagsOf(current);
+        if (!flags.is_union) {
+            if (self.interner.objectNumberIndex(current) == types.Primitive.none) return null;
+            return if (when_true) current else types.Primitive.never;
+        }
+
+        var arrays: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer arrays.deinit(self.gpa);
+        var non_arrays: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer non_arrays.deinit(self.gpa);
+        for (self.interner.unionMembers(current)) |member| {
+            if (self.interner.objectNumberIndex(member) != types.Primitive.none) {
+                try arrays.append(self.gpa, member);
+            } else {
+                try non_arrays.append(self.gpa, member);
+            }
+        }
+        if (arrays.items.len == 0) return null;
+
+        const selected = if (when_true) arrays.items else non_arrays.items;
+        if (selected.len == 0) return types.Primitive.never;
+        if (selected.len == 1) return selected[0];
+        return self.interner.internUnion(selected) catch return error.OutOfMemory;
+    }
+
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         if (self.conditionHasInvalidJsDocPredicateCast(cond)) return;
         // An optional chain contributes `undefined` only when one of its
@@ -123188,12 +123238,10 @@ pub const Checker = struct {
             }
         }
         // `if (Array.isArray(x))` ÃÂ¢ÃÂÃÂ built-in narrowing for the
-        // canonical array predicate. We don't yet have a fully-shaped
-        // `Array<any>` reference type wired up here, so we narrow the
-        // argument to `Primitive.object_t` (arrays are objects). This
-        // mirrors the approximation used elsewhere (e.g. `instanceof`)
-        // and lets `let arr = x` after the guard pick up an object
-        // type rather than the original `any`/union.
+        // canonical array predicate. Preserve array and non-array union
+        // constituents in their respective branches; only fall back to the
+        // broad object approximation when the source type cannot be
+        // partitioned (notably `any`).
         if (self.hir.kindOf(cond) == .call_expr) {
             const c = hir_mod.callOf(self.hir, cond);
             if (self.hir.kindOf(c.callee) == .member_access) {
@@ -123208,13 +123256,13 @@ pub const Checker = struct {
                         const args = hir_mod.callArgs(self.hir, cond);
                         if (args.len >= 1 and self.hir.kindOf(args[0]) == .identifier) {
                             const arg_id = hir_mod.identifierOf(self.hir, args[0]);
-                            if (when_true) {
-                                try self.recordNarrow(arg_id.name, types.Primitive.object_t);
-                            } else {
-                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(args[0]);
-                                const narrowed = self.subtractType(current, types.Primitive.object_t) catch current;
-                                try self.recordNarrow(arg_id.name, narrowed);
-                            }
+                            const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(args[0]);
+                            const narrowed = (try self.narrowArrayPredicateType(current, when_true)) orelse
+                                if (when_true)
+                                    types.Primitive.object_t
+                                else
+                                    self.subtractType(current, types.Primitive.object_t) catch current;
+                            try self.recordNarrow(arg_id.name, narrowed);
                             return;
                         }
                     }
@@ -133304,6 +133352,7 @@ pub const Checker = struct {
         }
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const construct_sig = self.interner.internSignature(&[_]TypeId{any_t}, instance_t, true) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(construct_sig, &.{true});
         const members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = instance_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = construct_sig, .is_optional = false, .is_readonly = true, .is_method = true },
@@ -177691,11 +177740,22 @@ pub const Checker = struct {
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 if (self.class_name_by_static.get(t)) |class_name| {
-                    break :blk try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "typeof {s}",
-                        .{self.string_interner.get(class_name)},
-                    );
+                    const raw_name = self.string_interner.get(class_name);
+                    if (!std.mem.startsWith(u8, raw_name, "(anonymous:")) {
+                        break :blk try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "typeof {s}",
+                            .{raw_name},
+                        );
+                    }
+                    const inferred_name = self.privateClassDisplayName(class_name);
+                    if (!std.mem.eql(u8, inferred_name, "(anonymous)")) {
+                        break :blk try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "typeof {s}",
+                            .{inferred_name},
+                        );
+                    }
                 }
                 // Anonymous class expressions retain a nominal static-side
                 // identity in diagnostics instead of exposing their
@@ -261596,4 +261656,121 @@ test "checker: parity 301 truthy imported namespaces retain node-aware assignabi
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parity 351 FormData optional constructor remains iterable" {
+    const s = try newSetup(
+        \\// @lib: es6,webworker,webworker.iterable
+        \\// @target: es6
+        \\for (const [key, entry] of new FormData()) {
+        \\  key;
+        \\  entry;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+}
+
+test "checker: parity 351 default expression export diagnostics anchor on export" {
+    const source =
+        \\const foo = 1
+        \\export default foo
+        \\export default class Foo {}
+        \\export default interface Foo {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "export default foo") orelse return error.MissingDiagnostic);
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.export_default_redeclared) continue;
+        if (s.checker.diagnosticStart(diagnostic) == expected_pos) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: parity 351 property suggestions supersede same-position missing diagnostics" {
+    const s = try newSetup(
+        \\function test<Shape extends Record<string, string>>(shape: Shape, key: keyof Shape) {
+        \\  const obj = {} as Record<keyof Shape | "knownLiteralKey", number>;
+        \\  obj.knownLiteralKey = 1;
+        \\  obj[key] = 2;
+        \\  obj.unknownLiteralKey = 3;
+        \\  obj['' as string] = 4;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist_did_you_mean));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: parity 351 automatic JSX runtime anchors unused default imports on the binding" {
+    const source =
+        \\// @jsx: react-jsx
+        \\import React from "react";
+        \\const element = <div />;
+    ;
+    const s = try newTsxSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_locals = true });
+    try s.checker.checkSourceFile(s.root);
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "React") orelse return error.MissingDiagnostic);
+    var found = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.declared_but_not_read or
+            std.mem.indexOf(u8, diagnostic.message, "'React'") == null) continue;
+        try T.expectEqual(expected_pos, s.checker.diagnosticStart(diagnostic));
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: parity 351 Array.isArray preserves both sides of array unions" {
+    const s = try newSetup(
+        \\type Element = string;
+        \\type ElementOrArray = Element | Element[];
+        \\function flatten(elOrA: ElementOrArray) {
+        \\  let values: Element[] = [...Array.isArray(elOrA) ? elOrA : [elOrA]];
+        \\  return values;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parity 351 class-body names resolve to the static side" {
+    const s = try newSetup(
+        \\function doThing(x: { n: string }) {}
+        \\class A {
+        \\  static n: string;
+        \\  p = doThing(A);
+        \\}
+        \\class B extends A {
+        \\  p1 = doThing(A);
+        \\  p2 = doThing(B);
+        \\}
+        \\doThing(B);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
+}
+
+test "checker: parity 351 inferred anonymous class names stay user-facing" {
+    const s = try newSetup(
+        \\interface A { prop: string; }
+        \\const A: { new(): A } = class {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'typeof A' is not assignable to type 'new () => A'.",
+    ));
 }
