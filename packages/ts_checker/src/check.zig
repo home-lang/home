@@ -163998,6 +163998,38 @@ pub const Checker = struct {
         return self.substituteType(source_sig, &subs) catch source_sig;
     }
 
+    fn genericSourceOwnParametersFlowIntoInferredTarget(
+        self: *Checker,
+        source_sig: TypeId,
+        target_sig: TypeId,
+    ) CheckError!bool {
+        const source_type_params = self.generic_signature_params.get(source_sig) orelse return false;
+        if (source_type_params.len == 0 or self.generic_signature_params.get(target_sig) != null) return false;
+        const source_params = self.interner.signatureParams(source_sig);
+        const target_params = self.interner.signatureParams(target_sig);
+        if (self.signatureMinRequiredArgs(source_sig, source_params) > target_params.len) return false;
+
+        var saw_source_parameter = false;
+        const shared_len = @min(source_params.len, target_params.len);
+        for (0..shared_len) |i| {
+            var target_contains_source_parameter = false;
+            for (source_type_params) |type_param| {
+                if (self.typeContainsInferenceTarget(target_params[i], type_param, 0)) {
+                    target_contains_source_parameter = true;
+                    saw_source_parameter = true;
+                    break;
+                }
+            }
+            if (target_contains_source_parameter) continue;
+            if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_params[i])) return false;
+        }
+        if (!saw_source_parameter) return false;
+
+        const source_ret = self.interner.signatureReturn(source_sig) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_sig) orelse types.Primitive.void_t;
+        return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+    }
+
     fn mergeContextualSignatureInferences(
         self: *Checker,
         dest: *std.AutoHashMapUnmanaged(TypeId, TypeId),
@@ -164799,8 +164831,10 @@ pub const Checker = struct {
         }
         if (try self.contextualFunctionBodyAssignableToTargetReturn(arg_node, target_ret)) {
             if (contextual_rest_params_fit) return true;
+            if (try self.genericSourceOwnParametersFlowIntoInferredTarget(relation_source_t, target_t)) return true;
             return try self.functionExpressionParametersAssignableToTarget(relation_source_t, target_t);
         }
+        if (try self.genericSourceOwnParametersFlowIntoInferredTarget(relation_source_t, target_t)) return true;
         if (self.engine.isAssignableTo(relation_source_t, target_t) catch false) return true;
         return self.contextualFunctionSignatureAssignable(relation_source_t, target_t) catch false;
     }
@@ -211894,6 +211928,24 @@ test "checker: residual parity reverse mapped tuple identifier inference" {
         \\const output = test(input);
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: generic callback conditionals instantiate against inferred target" {
+    const s = try newSetup(
+        \\type Ref<T> = { current: T };
+        \\type FunctionComponent<P> = (props: P) => unknown;
+        \\type ComponentProps<T extends FunctionComponent<any>> = T extends FunctionComponent<infer P> ? P : {};
+        \\type PropsWithoutRef<P> = P extends any ? "ref" extends keyof P ? Omit<P, "ref"> : P : P;
+        \\type ComponentPropsWithoutRef<T extends FunctionComponent<any>> = PropsWithoutRef<ComponentProps<T>>;
+        \\declare function forwardRef<T, P>(component: (props: P, ref: Ref<T>) => unknown): (props: P & { ref?: Ref<T> }) => unknown;
+        \\const ComponentWithForwardRef = forwardRef(
+        \\  <T extends FunctionComponent<any>>(props: ComponentPropsWithoutRef<T>, ref: Ref<HTMLElement>) => null,
+        \\);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
