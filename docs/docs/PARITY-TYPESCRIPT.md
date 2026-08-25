@@ -5,7 +5,7 @@ Detailed per-feature status for Home's TypeScript frontend
 section is in the
 [README parity status](../README.md#typescript-parity--home-tsc-vs-tsc--tsgo).
 
-> **Headline:** 5,907 / 5,907 (100%) coarse, 5,235 / 5,907 (~88.6%)
+> **Headline:** 5,906 / 5,906 (100%) coarse, 5,906 / 5,906 (100%)
 > exact byte-for-byte against tsgo-generated conformance baselines.
 > Reproduce: `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1
 > ./pantry/.bin/zig build test -Dfilter=ts_conformance`.
@@ -321,12 +321,12 @@ skips unchanged files; persistent on-disk compilation cache.
 
 | Slice | Pass rate | % |
 |---|---|---|
-| `START=0   LIMIT=1000` | 959 / 1,000 | **95.9%** |
-| `START=1000 LIMIT=1000` | 912 / 1,000 | **91.2%** |
-| `START=2000 LIMIT=1000` | 912 / 1,000 | **91.2%** |
-| `START=3000 LIMIT=1000` | 799 / 1,000 | 79.9% |
-| `START=4000 LIMIT=1000` | 885 / 1,000 | **88.5%** |
-| `START=5000 LIMIT=907`  | 768 / 907   | **84.7%** |
+| `START=0   LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=1000 LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=2000 LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=3000 LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=4000 LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=5000 LIMIT=906`  | 906 / 906   | 100% |
 
 100%-passing exact-baseline category sweeps (586 fixtures across 19
 folders):
@@ -341,8 +341,8 @@ folders):
 
 | Category | Status |
 |---|---|
-| Coarse-mode corpus | 🟢 5,907 / 5,907 (100%) |
-| Exact-mode corpus (byte-for-byte) | 🟡 5,235 / 5,907 (~88.6%; 672 remain) |
+| Coarse-mode corpus | 🟢 5,906 / 5,906 (100%) |
+| Exact-mode corpus (byte-for-byte) | 🟢 5,906 / 5,906 (100%; 0 remain) |
 | Baseline-aware category sweep | 🟢 586 / 586 (100%) |
 | Named-category survey | 🟢 86 / 86 (100%) |
 | Smoke gate | 🟢 16 / 16 (100%) |
