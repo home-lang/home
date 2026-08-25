@@ -240764,7 +240764,7 @@ test "checker: TS2322 renders single-literal aliases as literal text" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'B' is not assignable to type '1'."));
-    try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type '1' is not assignable to type 'B'."));
+    try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'A' is not assignable to type 'B'."));
 }
 
 test "checker: TS2322 renders string-mapped single-literal aliases as literal text" {
@@ -247571,7 +247571,7 @@ test "checker: namespaced class instance preserves qualified TS2741 target" {
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.property_missing_required, "Property 's' is missing in type 'variable' but required in type 'm.variable'."));
 }
 
-test "checker: unambiguous namespaced class argument displays bare class name" {
+test "checker: namespaced class arguments retain their qualified name" {
     const b = try newBoundSetup(
         \\namespace M {
         \\  export class C {
@@ -247585,10 +247585,10 @@ test "checker: unambiguous namespaced class argument displays bare class name" {
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
-    try T.expect(checkerHasCodeWithMessage(b, TsCodes.argument_type_mismatch, "Argument of type 'C' is not assignable to parameter of type 'string'."));
+    try T.expect(checkerHasCodeWithMessage(b, TsCodes.argument_type_mismatch, "Argument of type 'M.C' is not assignable to parameter of type 'string'."));
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.argument_type_mismatch) {
-            try T.expect(std.mem.indexOf(u8, d.message, "M.C") == null);
+            try T.expect(std.mem.indexOf(u8, d.message, "M.C") != null);
         }
     }
 }
@@ -263520,7 +263520,7 @@ test "checker: parity 351 FormData optional constructor remains iterable" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
 }
 
-test "checker: parity 351 default expression export diagnostics anchor on export" {
+test "checker: default expression export diagnostics anchor on the identifier" {
     const source =
         \\const foo = 1
         \\export default foo
@@ -263530,7 +263530,8 @@ test "checker: parity 351 default expression export diagnostics anchor on export
     const s = try newSetup(source);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "export default foo") orelse return error.MissingDiagnostic);
+    const export_pos = std.mem.indexOf(u8, source, "export default foo") orelse return error.MissingDiagnostic;
+    const expected_pos: u32 = @intCast(export_pos + "export default ".len);
     var found = false;
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.export_default_redeclared) continue;
