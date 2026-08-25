@@ -1086,6 +1086,25 @@ pub const HomeKernelCodegen = struct {
             // A string literal's value is the address of its bytes, so a local
             // initialized from one is a byte pointer and may be indexed.
             .StringLiteral => return "[*]u8",
+            .IfExpr => |ie| {
+                // The value of an if-expression is whichever branch runs, so
+                // its type is the branches' common type. Take the then-branch
+                // and fall back to the else-branch when it is unknown — a
+                // branch may end in `null`, which carries no type.
+                if (self.typeOfLValue(ie.then_branch)) |t| return t;
+                return self.typeOfLValue(ie.else_branch);
+            },
+            .BlockExpr => |b| {
+                // A block's value is its trailing expression.
+                if (b.statements.len == 0) return null;
+                const last = b.statements[b.statements.len - 1];
+                if (last == .ExprStmt) return self.typeOfLValue(last.ExprStmt);
+                return null;
+            },
+            .SliceExpr => |sl| {
+                const base = self.typeOfLValue(sl.array) orelse return null;
+                return pointeeType(splitAlign(base).bare);
+            },
             // A struct literal has the type it names; this sizes an inferred
             // local's slot to the full struct, not one word.
             .StructLiteral => |lit| return lit.type_name,
@@ -1262,6 +1281,86 @@ pub const HomeKernelCodegen = struct {
         try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
     }
 
+    /// Emit the address of `base[start..]` into %rax, returning the element
+    /// type. `base` may be an array, a pointer, or another slice.
+    fn emitSliceDataPointer(self: *HomeKernelCodegen, sl: *const ast.SliceExpr) anyerror!?[]const u8 {
+        const base_type = self.typeOfLValue(sl.array) orelse {
+            try self.writeAll("    # ERROR: cannot slice: the base has no known type\n");
+            return null;
+        };
+        const bare = splitAlign(base_type).bare;
+        const elem_type = pointeeType(bare) orelse {
+            try self.print("    # ERROR: cannot slice a value of type {s}\n", .{bare});
+            return null;
+        };
+        const elem_size = self.sizeOf(elem_type) orelse {
+            try self.print("    # ERROR: cannot slice: element type {s} has unknown size\n", .{elem_type});
+            return null;
+        };
+
+        if (isSliceType(bare)) {
+            _ = try self.emitAddress(sl.array) orelse return null;
+            try self.emitSliceData();
+        } else if (isPointerType(bare)) {
+            try self.generateExpr(sl.array);
+        } else {
+            _ = try self.emitAddress(sl.array) orelse return null;
+        }
+
+        // Offset by the start index, when there is one.
+        if (sl.start) |start| {
+            try self.writeAll("    pushq %rax\n");
+            try self.generateExpr(start);
+            if (elem_size > 1) {
+                try self.print("    imulq ${d}, %rax\n", .{elem_size});
+            }
+            try self.writeAll("    popq %rcx\n");
+            try self.writeAll("    addq %rcx, %rax\n");
+        }
+        return elem_type;
+    }
+
+    /// Emit the length of a slice expression into %rax: `end - start`, or the
+    /// base's own length when `end` is omitted.
+    fn emitSliceLength(self: *HomeKernelCodegen, sl: *const ast.SliceExpr) anyerror!void {
+        if (sl.end) |end| {
+            try self.generateExpr(end);
+            if (sl.start) |start| {
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(start);
+                try self.writeAll("    movq %rax, %rcx\n");
+                try self.writeAll("    popq %rax\n");
+                try self.writeAll("    subq %rcx, %rax\n");
+            }
+            return;
+        }
+        // No end: the length is the base's, minus any start offset.
+        const base_type = self.typeOfLValue(sl.array) orelse {
+            try self.writeAll("    # ERROR: cannot determine slice length\n");
+            try self.writeAll("    movq $0, %rax\n");
+            return;
+        };
+        const bare = splitAlign(base_type).bare;
+        if (self.arrayType(bare)) |arr| {
+            try self.print("    movq ${d}, %rax\n", .{arr.count});
+        } else if (isSliceType(bare)) {
+            _ = try self.emitAddress(sl.array) orelse return;
+            try self.print("    addq ${d}, %rax\n", .{SLICE_LEN_OFFSET});
+            try self.writeAll("    movq (%rax), %rax\n");
+        } else {
+            try self.print("    # ERROR: cannot determine the length of {s}\n", .{bare});
+            try self.writeAll("    movq $0, %rax\n");
+            return;
+        }
+        if (sl.start) |start| {
+            try self.writeAll("    pushq %rax\n");
+            try self.generateExpr(start);
+            try self.writeAll("    movq %rax, %rcx\n");
+            try self.writeAll("    popq %rax\n");
+            try self.writeAll("    subq %rcx, %rax\n");
+        }
+    }
+
     /// Load the value at the address in %rax, given its declared type.
     /// An array or struct loads as its own address: it is storage, not a
     /// value that fits in a register.
@@ -1334,9 +1433,22 @@ pub const HomeKernelCodegen = struct {
             try self.writeAll("    pushq %rdi\n");
             try self.generateExpr(fi.value);
             try self.writeAll("    popq %rdi\n");
+            if (storeFor(f.size) == null) {
+                // Wide fields — arrays, nested structs — do not fit in a
+                // register. %rax holds the source address, %rdi the
+                // destination; copy the field's own width.
+                try self.print("    addq ${d}, %rdi\n", .{f.offset});
+                try self.writeAll("    movq %rax, %rsi\n");
+                try self.print("    movq ${d}, %rcx\n", .{f.size});
+                try self.writeAll("    cld\n");
+                try self.writeAll("    rep movsb\n");
+                // %rdi advanced; recompute it for the next field.
+                try self.writeAll("    subq %rcx, %rdi\n");
+                try self.print("    subq ${d}, %rdi\n", .{f.offset});
+                continue;
+            }
             const st = storeFor(f.size) orelse {
-                // Wide fields (arrays, nested structs) need a copy, not a
-                // register store; refuse rather than truncate.
+                // Unreachable: the null case is handled above.
                 try self.print("    # ERROR: cannot lower field {s}.{s} of {d} bytes\n", .{ info.name, f.name, f.size });
                 continue;
             };
@@ -1563,6 +1675,19 @@ pub const HomeKernelCodegen = struct {
             try self.writeAll("    pushq %rax\n");
             return 2;
         }
+        // `ptr[0..len]` passed to a `[]T` parameter travels as the pair the
+        // callee expects. Length first, pointer second: pushes happen in
+        // reverse argument order, so this leaves the pointer on top, which is
+        // what pops into the lower-numbered register.
+        if (arg.* == .SliceExpr) {
+            try self.emitSliceLength(arg.SliceExpr);
+            try self.writeAll("    pushq %rax\n");
+            _ = try self.emitSliceDataPointer(arg.SliceExpr) orelse {
+                try self.writeAll("    movq $0, %rax\n");
+            };
+            try self.writeAll("    pushq %rax\n");
+            return 2;
+        }
         if (self.typeOfLValue(arg)) |t| {
             const bare = splitAlign(t).bare;
             if (isSliceType(bare)) {
@@ -1760,8 +1885,38 @@ pub const HomeKernelCodegen = struct {
                 },
                 .WhileStmt => |s2| try self.reserveLocals(s2.body.statements),
                 .BlockStmt => |s2| try self.reserveLocals(s2.statements),
+                .ReturnStmt => |s2| {
+                    if (s2.value) |v| try self.reserveLocalsInExpr(v);
+                },
+                .ExprStmt => |e| try self.reserveLocalsInExpr(e),
                 else => {},
             }
+            // A declaration's initializer can itself contain declarations:
+            // `let p = if c { a() } else { let tmp = f(); g(tmp) }`. Those
+            // need frame slots too.
+            if (stmt == .LetDecl) {
+                if (stmt.LetDecl.value) |v| try self.reserveLocalsInExpr(v);
+            }
+        }
+    }
+
+    /// Reserve frame slots for declarations nested inside an expression.
+    /// Since if-expression branches became blocks, a `let` can live inside
+    /// one — and a local with no frame slot is a hard error at every use.
+    fn reserveLocalsInExpr(self: *HomeKernelCodegen, expr: *const ast.Expr) anyerror!void {
+        switch (expr.*) {
+            .IfExpr => |ie| {
+                try self.reserveLocalsInExpr(ie.condition);
+                try self.reserveLocalsInExpr(ie.then_branch);
+                try self.reserveLocalsInExpr(ie.else_branch);
+            },
+            .TernaryExpr => |t| {
+                try self.reserveLocalsInExpr(t.condition);
+                try self.reserveLocalsInExpr(t.true_val);
+                try self.reserveLocalsInExpr(t.false_val);
+            },
+            .BlockExpr => |b| try self.reserveLocals(b.statements),
+            else => {},
         }
     }
 
@@ -2581,6 +2736,21 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    # ERROR: undefined variable {s}\n", .{id.name});
                     try self.writeAll("    movq $0, %rax\n");
                 }
+            },
+            .SliceExpr => |sl| {
+                // A slice value in a register position is its data pointer.
+                // The length only travels when the slice is passed to a
+                // parameter that declares one — see pushArgument.
+                _ = try self.emitSliceDataPointer(sl) orelse {
+                    try self.writeAll("    movq $0, %rax\n");
+                };
+            },
+            .ArrayLiteral => |lit| {
+                // An array literal is storage, so as a bare expression there
+                // is nowhere to put it. The declaration and assignment paths
+                // write the elements straight into the destination.
+                try self.print("    # ERROR: array literal of {d} elements needs a destination\n", .{lit.elements.len});
+                try self.writeAll("    movq $0, %rax\n");
             },
             .StructLiteral => |lit| {
                 // A bitfield struct literal is just an integer: shift each
