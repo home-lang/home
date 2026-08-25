@@ -827,9 +827,16 @@ pub const HomeKernelCodegen = struct {
     /// True for types whose value is their address: arrays and structs.
     fn isStorageType(self: *HomeKernelCodegen, raw: []const u8) bool {
         const type_name = splitAlign(raw).bare;
-        return self.arrayType(type_name) != null or
-            isSliceType(type_name) or
-            self.structs.contains(type_name);
+        if (self.arrayType(type_name) != null) return true;
+        if (isSliceType(type_name)) return true;
+        if (self.structs.get(type_name)) |info| {
+            // A bitfield struct IS its backing integer — it fits in a
+            // register and is assigned like one. Treating it as storage
+            // would demand an lvalue on the right-hand side, so
+            // `entry.flags = emptyPageFlags()` would be refused.
+            return !info.is_bitfield;
+        }
+        return false;
     }
 
     fn findField(self: *HomeKernelCodegen, raw: []const u8, member: []const u8) ?FieldInfo {
@@ -1022,7 +1029,12 @@ pub const HomeKernelCodegen = struct {
     /// An array or struct loads as its own address: it is storage, not a
     /// value that fits in a register.
     fn emitLoadFromAddress(self: *HomeKernelCodegen, type_name: []const u8) !void {
-        if (self.arrayType(type_name) != null or self.structs.contains(type_name)) return;
+        if (self.arrayType(type_name) != null) return;
+        if (self.structs.get(type_name)) |info| {
+            // A bitfield struct loads as its backing integer; every other
+            // struct's "value" is its address.
+            if (!info.is_bitfield) return;
+        }
         const size = self.sizeOf(type_name) orelse 8;
         const ld = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a value of type {s} ({d} bytes)\n", .{ type_name, size });
