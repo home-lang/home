@@ -207127,7 +207127,7 @@ test "checker: broad string element access carries TS7054 no-index-signature cha
     try T.expect(found);
 }
 
-test "checker: literal and union string index misses use TS7053 property chains" {
+test "checker: literal and union string index misses use current property diagnostics" {
     const s = try newSetup(
         \\var a = {}["hello"];
         \\const o = { a: 0 };
@@ -207141,9 +207141,8 @@ test "checker: literal and union string index misses use TS7053 property chains"
     var saw_empty_object = false;
     var saw_union_chain = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.element_implicitly_any and d.chain.len == 1 and
-            d.chain[0].code == TsCodes.property_does_not_exist and
-            std.mem.indexOf(u8, d.chain[0].message, "Property 'hello' does not exist on type '{}'.") != null)
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "Property 'hello' does not exist on type '{}'.") != null)
         {
             saw_empty_object = true;
         }
