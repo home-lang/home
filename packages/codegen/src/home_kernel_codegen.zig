@@ -134,6 +134,7 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
     if (std.mem.eql(u8, type_name, "u8") or std.mem.eql(u8, type_name, "i8") or
         std.mem.eql(u8, type_name, "bool")) return 1;
     if (std.mem.eql(u8, type_name, "u16") or std.mem.eql(u8, type_name, "i16")) return 2;
+    if (std.mem.eql(u8, type_name, "str") or std.mem.eql(u8, type_name, "string")) return 8;
     if (std.mem.eql(u8, type_name, "u32") or std.mem.eql(u8, type_name, "i32")) return 4;
     // 128-bit descriptors: an IDT or GDT entry is one of these.
     if (std.mem.eql(u8, type_name, "u128") or std.mem.eql(u8, type_name, "i128")) return 16;
@@ -300,12 +301,16 @@ fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, 
 fn isPointerType(type_name: []const u8) bool {
     // `[*]T` is a many-item pointer: an address you may index, with no length.
     if (std.mem.startsWith(u8, type_name, "[*]")) return true;
+    // A string value is the address of its bytes.
+    if (std.mem.eql(u8, type_name, "str") or std.mem.eql(u8, type_name, "string")) return true;
     return type_name.len > 1 and (type_name[0] == '*' or type_name[0] == '&');
 }
 
 /// The type a pointer or array refers to.
 fn pointeeType(raw: []const u8) ?[]const u8 {
     const type_name = splitAlign(raw).bare;
+    // A string is a run of bytes; indexing one yields a byte.
+    if (std.mem.eql(u8, type_name, "str") or std.mem.eql(u8, type_name, "string")) return "u8";
     if (std.mem.startsWith(u8, type_name, "[*]")) {
         const e = std.mem.trim(u8, type_name[3..], " ");
         return if (e.len == 0) null else e;
@@ -1092,6 +1097,12 @@ pub const HomeKernelCodegen = struct {
                 if (self.global_vars.get(id.name)) |g| {
                     try self.print("    leaq {s}(%rip), %rax\n", .{g.symbol});
                     return g.type_name;
+                }
+                // A function's address is its label. Interrupt tables are
+                // built out of these.
+                if (self.declared_fns.contains(id.name)) {
+                    try self.print("    leaq {s}(%rip), %rax\n", .{id.name});
+                    return "fn()";
                 }
                 try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
                 return null;
@@ -2396,6 +2407,47 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    # ERROR: undefined variable {s}\n", .{id.name});
                     try self.writeAll("    movq $0, %rax\n");
                 }
+            },
+            .StructLiteral => |lit| {
+                // A bitfield struct literal is just an integer: shift each
+                // field's value into place and OR them together. This is what
+                // `PageFlags { present: true, address: n, ... }` means.
+                if (self.structs.get(splitAlign(lit.type_name).bare)) |info| {
+                    if (info.is_bitfield) {
+                        try self.writeAll("    xorq %rax, %rax\n");
+                        try self.writeAll("    pushq %rax\n");     // accumulator
+                        for (lit.fields) |fi| {
+                            const field = blk: {
+                                for (info.fields) |f| {
+                                    if (std.mem.eql(u8, f.name, fi.name)) break :blk f;
+                                }
+                                try self.print("    # ERROR: {s} has no field {s}\n", .{ info.name, fi.name });
+                                break :blk null;
+                            } orelse continue;
+
+                            try self.generateExpr(fi.value);
+                            const mask: u64 = if (field.bit_width >= 64)
+                                std.math.maxInt(u64)
+                            else
+                                (@as(u64, 1) << @intCast(field.bit_width)) - 1;
+                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
+                            try self.writeAll("    andq %rcx, %rax\n");
+                            if (field.bit_offset > 0) {
+                                try self.print("    shlq ${d}, %rax\n", .{field.bit_offset});
+                            }
+                            try self.writeAll("    popq %rcx\n");
+                            try self.writeAll("    orq %rcx, %rax\n");
+                            try self.writeAll("    pushq %rax\n");
+                        }
+                        try self.writeAll("    popq %rax\n");
+                        return;
+                    }
+                }
+                // An ordinary struct literal has to be written into storage,
+                // and as a bare expression there is nowhere to put it. The
+                // assignment path handles `x = Type { ... }` directly.
+                try self.print("    # ERROR: struct literal of {s} needs a destination\n", .{lit.type_name});
+                try self.writeAll("    movq $0, %rax\n");
             },
             .CharLiteral => |lit| {
                 // The lexeme still carries its quotes and any escape.
