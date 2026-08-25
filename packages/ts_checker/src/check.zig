@@ -49999,12 +49999,6 @@ pub const Checker = struct {
             return self.heritageMemberAssignable(child_t, parent_t);
         }
 
-        // A derived method may accept fewer arguments than its base method,
-        // but it cannot make an additional argument mandatory: callers typed
-        // as the base are still allowed to omit it. Parameter types remain
-        // bivariant below, matching TypeScript's method-specific relation.
-        if (self.methodOverrideHasExtraRequiredParams(child_t, parent_t)) return false;
-
         const child_ret = self.interner.signatureReturn(child_t) orelse types.Primitive.any;
         const parent_ret = self.interner.signatureReturn(parent_t) orelse types.Primitive.any;
         if (parent_ret != types.Primitive.void_t and
@@ -178555,7 +178549,8 @@ pub const Checker = struct {
             // ReactNode semantically includes undefined, but tsc keeps the
             // optional-property `| undefined` outside the alias in managed
             // JSX attrs diagnostics.
-            if (m.is_optional and
+            if (self.strict_flags.strict_null_checks and
+                m.is_optional and
                 (!self.typeIncludesUndefined(m.type) or std.mem.eql(u8, tn, "ReactNode")))
             {
                 try buf.appendSlice(arena, " | undefined");
@@ -198946,7 +198941,7 @@ test "checker: TS2416 method override is bivariant (no diagnostic on widened par
     }
 }
 
-test "checker: method override bivariance accepts an additional required parameter" {
+test "checker: parity 3651-4250 method override bivariance accepts an additional required parameter" {
     const s = try newSetup(
         \\class Base { method(value: string, count = 1) {} }
         \\class Derived extends Base { method(value: string, count: number) {} }
@@ -200261,7 +200256,7 @@ test "checker: annotated signature assignment display normalizes object this par
     try T.expect(saw);
 }
 
-test "checker: optional object property shape renders with ` | undefined` only in TS2322 variant" {
+test "checker: parity 3651-4250 optional object property shape follows strict null checking" {
     // Construct `{ s?: number }` directly via the interner so the
     // assertion isolates the `allocObjectTypeShape*` rendering paths
     // without depending on TS2322 wiring.
@@ -200278,6 +200273,12 @@ test "checker: optional object property shape renders with ` | undefined` only i
     // Verbose variant (used by TS2322 prose) widens with `| undefined`.
     const verbose = (try s.checker.allocObjectTypeShapeWithUndefined(obj)) orelse return error.SkipZigTest;
     try T.expect(std.mem.indexOf(u8, verbose, "s?: number | undefined;") != null);
+
+    const loose_simple = (try s.checker.allocSimpleTypeName(obj)) orelse return error.SkipZigTest;
+    try T.expect(std.mem.indexOf(u8, loose_simple, "| undefined") == null);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    const strict_simple = (try s.checker.allocSimpleTypeName(obj)) orelse return error.SkipZigTest;
+    try T.expect(std.mem.indexOf(u8, strict_simple, "s?: number | undefined;") != null);
 
     // A property that is BOTH optional AND already permits undefined
     // (`s?: number | undefined`) must not double-render the suffix
