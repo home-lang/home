@@ -67490,6 +67490,17 @@ pub const Checker = struct {
                 found = (try self.reportEnumInitializerLateReferences(current_enum_name, current_member_key, m.object)) or found;
                 break :blk found;
             },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, node);
+                var found = false;
+                if (self.hir.kindOf(e.object) == .identifier and self.hir.kindOf(e.index) == .literal_string) {
+                    const object = hir_mod.identifierOf(self.hir, e.object);
+                    const member_name = hir_mod.literalStringOf(self.hir, e.index).value;
+                    found = try self.reportEnumInitializerLateReferenceIfNeeded(object.name, member_name, current_member_key, node);
+                }
+                found = (try self.reportEnumInitializerLateReferences(current_enum_name, current_member_key, e.object)) or found;
+                break :blk found;
+            },
             .unary_op => blk: {
                 const u = hir_mod.unaryOf(self.hir, node);
                 break :blk try self.reportEnumInitializerLateReferences(current_enum_name, current_member_key, u.operand);
@@ -71428,6 +71439,17 @@ pub const Checker = struct {
                 const conditional = hir_mod.conditionalTypeOf(self.hir, cur);
                 if (self.nodeIsAncestorOf(conditional.true_branch, node) and
                     self.typeNodeDeclaresInferName(conditional.extends, name))
+                {
+                    return true;
+                }
+            }
+            if (self.hir.kindOf(cur) == .mapped_type) {
+                const mapped = hir_mod.mappedTypeOf(self.hir, cur);
+                if (mapped.type_param != hir_mod.none_node_id and
+                    self.hir.kindOf(mapped.type_param) == .type_parameter and
+                    hir_mod.typeParameterOf(self.hir, mapped.type_param).name == name and
+                    (self.nodeIsAncestorOf(mapped.value, node) or
+                        (mapped.remap != hir_mod.none_node_id and self.nodeIsAncestorOf(mapped.remap, node))))
                 {
                     return true;
                 }
@@ -263253,4 +263275,36 @@ test "checker: parity 1201 reverse Readonly inference preserves object members" 
     });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 1251 mapped key binders defer generic indexed access" {
+    const s = try newSetup(
+        \\type optionalKeys<T extends object> = {
+        \\  [k in keyof T]: undefined extends T[k] ? k : never;
+        \\}[keyof T];
+        \\type requiredKeys<T extends object> = Exclude<keyof T, optionalKeys<T>>;
+        \\type addQuestionMarks<T extends object> = {
+        \\  [k in optionalKeys<T>]?: T[k];
+        \\} & {
+        \\  [k in requiredKeys<T>]: T[k];
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: parity 1351 quoted enum forward references do not recurse" {
+    const s = try newSetup(
+        \\enum E1 {
+        \\  X = Y,
+        \\  X1 = E1["Y"],
+        \\  Y = E1.Z,
+        \\  Y1 = E1["Z"]
+        \\}
+        \\enum E1 { Z = 4 }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.enum_member_initializer_late_reference));
 }
