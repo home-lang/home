@@ -1038,11 +1038,12 @@ pub const HomeKernelCodegen = struct {
         if (self.arrayType(type_name) != null) return true;
         if (isSliceType(type_name)) return true;
         if (self.structs.get(type_name)) |info| {
-            // A bitfield struct IS its backing integer — it fits in a
-            // register and is assigned like one. Treating it as storage
-            // would demand an lvalue on the right-hand side, so
-            // `entry.flags = emptyPageFlags()` would be refused.
-            return !info.is_bitfield;
+            // A bitfield struct IS its backing integer, so one that fits in a
+            // register is a value and is assigned like one — otherwise
+            // `entry.flags = emptyPageFlags()` would demand an lvalue on the
+            // right. A wider one (a u128 descriptor) does not fit in any
+            // register and is storage like any other aggregate.
+            return !info.is_bitfield or info.size > 8;
         }
         return false;
     }
@@ -1053,6 +1054,27 @@ pub const HomeKernelCodegen = struct {
             if (std.mem.eql(u8, f.name, member)) return f;
         }
         return null;
+    }
+
+    /// The type an argument in type position denotes: a bare name is the type
+    /// itself, and `@TypeOf(x)` is x's declared type — which is how this tree
+    /// writes `@sizeOf(@TypeOf(idt))`.
+    fn typeArgOf(self: *HomeKernelCodegen, expr: *const ast.Expr) ?[]const u8 {
+        switch (expr.*) {
+            .Identifier => |id| {
+                if (self.structs.contains(id.name) or self.enum_sizes.contains(id.name)) return id.name;
+                if (sizeOfPrimitive(id.name) != null) return id.name;
+                return self.typeOfLValue(expr) orelse id.name;
+            },
+            .ReflectExpr => |r| {
+                if (r.kind == .TypeOf) {
+                    if (r.target_type) |t| return t;
+                    return self.typeOfLValue(r.target);
+                }
+                return null;
+            },
+            else => return self.typeOfLValue(expr),
+        }
     }
 
     /// `*T` for a given T, interned in the import arena so the returned name
@@ -1297,6 +1319,25 @@ pub const HomeKernelCodegen = struct {
     }
 
     /// Load a bitfield struct's backing integer from the address in %rax.
+    /// Load the 64-bit word of a bitfield container that holds `bit_offset`,
+    /// from the container address in %rax, and return the bit offset within
+    /// that word. A container wider than a register — a u128 descriptor — is
+    /// addressed a word at a time rather than refused.
+    fn emitLoadBackingWord(self: *HomeKernelCodegen, size: usize, bit_offset: usize) !usize {
+        if (size <= 8) {
+            try self.emitLoadBacking(size);
+            return bit_offset;
+        }
+        const word = bit_offset / 64;
+        if (word * 8 >= size) {
+            try self.print("    # ERROR: bit offset {d} lies outside a {d}-byte container\n", .{ bit_offset, size });
+            try self.writeAll("    movq $0, %rax\n");
+            return bit_offset % 64;
+        }
+        try self.print("    movq {d}(%rax), %rax\n", .{word * 8});
+        return bit_offset % 64;
+    }
+
     fn emitLoadBacking(self: *HomeKernelCodegen, size: usize) !void {
         const ld = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a bitfield container of {d} bytes\n", .{size});
@@ -1484,6 +1525,68 @@ pub const HomeKernelCodegen = struct {
     }
 
     /// Evaluate `value` and store it at the address in %rax.
+    /// Write an array literal or repeat into the destination address in %rax.
+    /// The address is preserved across each element's value expression.
+    fn emitArrayLiteralToMemory(
+        self: *HomeKernelCodegen,
+        type_name: []const u8,
+        value: *const ast.Expr,
+    ) anyerror!void {
+        const arr = self.arrayType(splitAlign(type_name).bare) orelse {
+            try self.print("    # ERROR: array literal needs an array-typed destination, not {s}\n", .{type_name});
+            return;
+        };
+        const elem_size = self.sizeOf(arr.elem_type) orelse {
+            try self.print("    # ERROR: array element type {s} has unknown size\n", .{arr.elem_type});
+            return;
+        };
+        const st = storeFor(elem_size) orelse {
+            try self.print("    # ERROR: cannot store array elements of {d} bytes\n", .{elem_size});
+            return;
+        };
+
+        try self.writeAll("    pushq %rax\n"); // base address
+
+        switch (value.*) {
+            .ArrayLiteral => |lit| {
+                for (lit.elements, 0..) |elem, i| {
+                    if (i >= arr.count) {
+                        try self.print("    # ERROR: array literal has more elements than the {d} declared\n", .{arr.count});
+                        break;
+                    }
+                    try self.generateExpr(elem);
+                    try self.writeAll("    movq (%rsp), %rdx\n");
+                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
+                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                }
+                // Elements the literal does not mention read as zero.
+                var i: usize = lit.elements.len;
+                while (i < arr.count) : (i += 1) {
+                    try self.writeAll("    movq (%rsp), %rdx\n");
+                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
+                    try self.writeAll("    xorq %rax, %rax\n");
+                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                }
+            },
+            .ArrayRepeat => |rep| {
+                // `[0; N]` — one value, repeated. Evaluate it once: repeating
+                // the expression would repeat its side effects too.
+                try self.generateExpr(rep.value);
+                try self.writeAll("    movq %rax, %rsi\n");
+                var i: usize = 0;
+                while (i < arr.count) : (i += 1) {
+                    try self.writeAll("    movq (%rsp), %rdx\n");
+                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
+                    try self.writeAll("    movq %rsi, %rax\n");
+                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                }
+            },
+            else => {},
+        }
+
+        try self.writeAll("    popq %rax\n");
+    }
+
     fn emitStoreToAddress(
         self: *HomeKernelCodegen,
         type_name: []const u8,
@@ -1496,6 +1599,14 @@ pub const HomeKernelCodegen = struct {
         if (value.* == .StructLiteral) {
             try self.writeAll("    pushq %rax\n");
             try self.emitStructLiteralToMemory(type_name, value.StructLiteral);
+            return;
+        }
+
+        // An array literal or repeat is written element by element into the
+        // destination. Like a struct literal it is storage, not a value, so
+        // there is nothing to copy it *from* — it only exists once written.
+        if (value.* == .ArrayLiteral or value.* == .ArrayRepeat) {
+            try self.emitArrayLiteralToMemory(type_name, value);
             return;
         }
 
@@ -2239,6 +2350,11 @@ pub const HomeKernelCodegen = struct {
                                     try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
                                     try self.emitStructLiteralToMemory(tn, value.StructLiteral);
                                 }
+                            } else if (value.* == .ArrayLiteral or value.* == .ArrayRepeat) {
+                                if (self.locals.get(decl.name)) |slot| {
+                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emitArrayLiteralToMemory(tn, value);
+                                }
                             } else if (self.typeOfLValue(value) != null) {
                                 if (self.locals.get(decl.name)) |slot| {
                                     try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
@@ -2936,8 +3052,14 @@ pub const HomeKernelCodegen = struct {
                         try self.generateExpr(r.target);
                         if (r.target_type) |t| try self.emitNarrowTo(t);
                     },
+                    .TypeOf => {
+                        // @TypeOf is only meaningful inside another builtin;
+                        // on its own it has no runtime value.
+                        try self.writeAll("    # ERROR: @TypeOf has no value outside @sizeOf / @alignOf\n");
+                        try self.writeAll("    movq $0, %rax\n");
+                    },
                     .SizeOf => {
-                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                        if (r.target_type orelse self.typeArgOf(r.target)) |t| {
                             if (self.sizeOf(t)) |n| {
                                 try self.print("    movq ${d}, %rax\n", .{n});
                                 return;
@@ -2947,7 +3069,7 @@ pub const HomeKernelCodegen = struct {
                         try self.writeAll("    movq $0, %rax\n");
                     },
                     .AlignOf => {
-                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                        if (r.target_type orelse self.typeArgOf(r.target)) |t| {
                             try self.print("    movq ${d}, %rax\n", .{self.alignOf(t)});
                             return;
                         }
@@ -2955,7 +3077,7 @@ pub const HomeKernelCodegen = struct {
                         try self.writeAll("    movq $0, %rax\n");
                     },
                     .OffsetOf => {
-                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                        if (r.target_type orelse self.typeArgOf(r.target)) |t| {
                             if (r.field_name) |fname| {
                                 if (self.findField(t, fname)) |f| {
                                     try self.print("    movq ${d}, %rax\n", .{f.offset});
