@@ -81459,7 +81459,12 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.literalExpressionAssignableToTarget(el, tgt_t)) continue;
-            var el_t = try self.checkExpression(el);
+            var el_t = if (self.isContextualFunctionExpressionLike(el)) blk: {
+                const contextual_sig = self.firstSignatureType(tgt_t) orelse break :blk try self.checkExpression(el);
+                try self.checkFunctionWithContextualSignature(el, contextual_sig);
+                if (self.functionExpressionHasContextSensitiveParameters(el)) continue;
+                break :blk self.hir.typeOf(el);
+            } else try self.checkExpression(el);
             if (try self.contextualGenericCallResult(el, el_t, tgt_t)) |contextual_t| {
                 self.removeUnknownAssignabilityDiagnosticsForNode(el);
                 try self.checkContextualGenericCallFunctionArgs(el, el_t, tgt_t);
@@ -118833,6 +118838,8 @@ pub const Checker = struct {
                 if (elem_t != types.Primitive.none) arg_t = elem_t;
             }
             if (try self.sameEnclosingTypeParameterDisplay(arg, arg_t, param_t)) continue;
+            if (self.hir.kindOf(arg) == .array_literal and
+                try self.arrayLiteralAssignableToTarget(arg, param_t)) continue;
             if (self.engine.isAssignableTo(arg_t, param_t) catch false) continue;
 
             const raw_display_param_t = if (fixed_pos >= min_required and
@@ -121235,8 +121242,11 @@ pub const Checker = struct {
                 continue;
             }
             const constraint = self.substituteType(raw_constraint, &subs) catch raw_constraint;
+            const array_literal_satisfies = self.hir.kindOf(args[arg_i]) == .array_literal and
+                try self.arrayLiteralAssignableToTarget(args[arg_i], constraint);
             const satisfies = !self.strictNullishInferenceExcludedByConstraint(candidate, constraint) and
                 ((try self.literalSatisfiesRecursiveTemplatePathConstraint(raw_constraint, candidate, &subs)) or
+                    array_literal_satisfies or
                     self.functionObjectTargetAcceptsArgument(candidate, constraint, 0) or
                     (!self.builtinFunctionSourceCannotSatisfyCallTarget(candidate, constraint) and
                         (try self.genericConstraintAssignable(candidate, constraint))));
@@ -155675,6 +155685,8 @@ pub const Checker = struct {
             }
             const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
             if (self.containsFreeTypeParameter(constraint) and !self.interner.isSignature(constraint)) continue;
+            if (self.hir.kindOf(args[i]) == .array_literal and
+                try self.arrayLiteralAssignableToTarget(args[i], constraint)) continue;
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
                 arg_t = try self.iterableElementType(arg_t);
@@ -159962,13 +159974,19 @@ pub const Checker = struct {
             },
             .type_ref => return hir_mod.none_node_id,
             .call_expr, .new_expr => {
-                for (hir_mod.callTypeArgs(self.hir, node)) |ta| {
-                    if (self.firstTypeParamRefIn(ta, type_params)) |hit| return hit;
+                const call_args = hir_mod.callArgs(self.hir, node);
+                const source_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(node), " \t\r\n");
+                const is_heritage_type_application = call_args.len == 0 and
+                    std.mem.endsWith(u8, source_text, ">");
+                if (!is_heritage_type_application) {
+                    for (hir_mod.callTypeArgs(self.hir, node)) |ta| {
+                        if (self.firstTypeParamRefIn(ta, type_params)) |hit| return hit;
+                    }
                 }
                 const c = hir_mod.callOf(self.hir, node);
                 const callee_hit = self.baseClassExpressionTypeParamReferenceNode(c.callee, type_params);
                 if (callee_hit != hir_mod.none_node_id) return callee_hit;
-                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                for (call_args) |arg| {
                     const arg_hit = self.baseClassExpressionTypeParamReferenceNode(arg, type_params);
                     if (arg_hit != hir_mod.none_node_id) return arg_hit;
                 }
@@ -261805,6 +261823,30 @@ test "checker: parity 401 non-strict apply keeps permissive Function arguments" 
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_bind_call_apply = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 501 qualified generic heritage permits class type arguments" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  export class Base<T> {}
+        \\}
+        \\class Derived<T> extends N.Base<T> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.base_class_expression_type_parameter));
+}
+
+test "checker: parity 501 constrained callback tuples contextually type array elements" {
+    const s = try newSetup(
+        \\function f<T extends [(p1: number) => number]>(p: T): T {
+        \\  return p;
+        \\}
+        \\var v = f([x => x]);
+    );
+    defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
