@@ -86033,6 +86033,7 @@ pub const Checker = struct {
                 // before the whole-enum nominal checks below, which would
                 // otherwise treat `E.A` as the enum `E` (not assignable to `1`).
                 if (self.enumLiteralRelatesToBareLiteral(init_type, declared_type)) break :blk true;
+                if (self.enumLiteralAssignableToEnumUnion(enum_relation_source, declared_type)) break :blk true;
                 if (self.enumIdentityAssignmentResult(enum_relation_source, declared_type)) |enum_ok| break :blk enum_ok;
                 if (self.enumIdentityInfo(enum_relation_source)) |enum_info| {
                     if (self.enumValueAssignableToTarget(enum_info.name, declared_type)) break :blk true;
@@ -171153,6 +171154,7 @@ pub const Checker = struct {
         }
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
+        if (try self.enumMemberExpressionAssignableToEnumTarget(value_node, target_t)) return true;
         if (flags.is_union) {
             if (self.interner.pool.payloadOf(target_t) >= self.interner.pool.union_payloads.items.len) return false;
             for (self.interner.unionMembers(target_t)) |member| {
@@ -171165,7 +171167,6 @@ pub const Checker = struct {
                 self.hir.kindOf(value_node) == .literal_number or
                 self.hir.kindOf(value_node) == .literal_bigint;
         }
-        if (try self.enumMemberExpressionAssignableToEnumTarget(value_node, target_t)) return true;
         if (!flags.is_literal) return false;
         const lit = self.interner.literalOf(target_t);
         return switch (lit) {
@@ -171193,19 +171194,23 @@ pub const Checker = struct {
     }
 
     fn enumMemberExpressionAssignableToEnumTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
-        const target_member = if (target_t < self.interner.pool.typeCount()) self.interner.enumLiteralInfo(target_t) else null;
-        const target_enum = self.enumNameFromNominal(target_t) orelse
-            if (target_member) |info| info.enum_name else return false;
         if (self.hir.kindOf(value_node) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, value_node);
         if (self.hir.kindOf(m.object) != .identifier) return false;
         const obj = hir_mod.identifierOf(self.hir, m.object);
-        if (try self.enumMemberAccessType(obj.name, m.name, value_node)) |source_t| {
-            if (self.enumNameFromNominal(source_t)) |source_enum| {
+        const source_t = try self.enumMemberAccessType(obj.name, m.name, value_node);
+        if (target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_union) {
+            return if (source_t) |resolved| self.enumLiteralAssignableToEnumUnion(resolved, target_t) else false;
+        }
+        const target_member = if (target_t < self.interner.pool.typeCount()) self.interner.enumLiteralInfo(target_t) else null;
+        const target_enum = self.enumNameFromNominal(target_t) orelse
+            if (target_member) |info| info.enum_name else return false;
+        if (source_t) |resolved| {
+            if (self.enumNameFromNominal(resolved)) |source_enum| {
                 return target_member == null and self.stringIdsHaveSameText(source_enum, target_enum);
             }
-            if (source_t >= types.Primitive.first_dynamic and source_t < self.interner.pool.typeCount()) {
-                if (self.interner.enumLiteralInfo(source_t)) |info| {
+            if (resolved >= types.Primitive.first_dynamic and resolved < self.interner.pool.typeCount()) {
+                if (self.interner.enumLiteralInfo(resolved)) |info| {
                     if (!self.stringIdsHaveSameText(info.enum_name, target_enum)) return false;
                     return if (target_member) |target_info|
                         self.stringIdsHaveSameText(info.member_name, target_info.member_name)
@@ -259323,6 +259328,18 @@ test "checker: parity 851 global JSX factory directive crosses virtual files" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
+}
+
+test "checker: parity 901 enum member expression assigns to matching union member" {
+    const s = try newSetup(
+        \\enum Meat { Sausage, Bacon }
+        \\const union: Meat.Bacon | Meat.Sausage = Meat.Bacon;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_unchecked_indexed_access = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: namespace parity batch uses class and enum static sides" {
