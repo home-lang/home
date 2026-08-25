@@ -151136,6 +151136,8 @@ pub const Checker = struct {
         if (param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(param_t).is_mapped and
+            !self.interner.pool.flagsOf(param_t).is_union and
+            !self.interner.pool.flagsOf(param_t).is_intersection and
             arg_t >= types.Primitive.first_dynamic and
             arg_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(arg_t).is_object_type)
@@ -151145,7 +151147,9 @@ pub const Checker = struct {
         if (self.hir.kindOf(arg_node) == .object_literal and
             param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(param_t).is_mapped)
+            self.interner.pool.flagsOf(param_t).is_mapped and
+            !self.interner.pool.flagsOf(param_t).is_union and
+            !self.interner.pool.flagsOf(param_t).is_intersection)
         {
             if (try self.inferFromReverseMappedObjectLiteral(param_t, arg_t, subs)) return;
             if (self.limitedReverseMappedSourceTypeParameter(param_t)) |source_tp| {
@@ -151322,8 +151326,11 @@ pub const Checker = struct {
                     self.signature_predicates.contains(member_sig)
                 else
                     false;
+                const raw_member_flags = self.interner.pool.flagsOf(param_member.type);
+                const mapped_union = raw_member_flags.is_union and raw_member_flags.is_mapped;
                 const relowered_param_t = if (!collect_const_candidate and
                     !has_predicate and
+                    !mapped_union and
                     (!has_unfixed or mapped_or_conditional))
                     try self.relowerObjectMemberTypeWithInferences(param_member, subs)
                 else
@@ -169627,6 +169634,8 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (flags.is_signature) return false;
+        if (flags.is_mapped and !flags.is_intersection) return true;
         if (!flags.is_object_type) return true;
         var saw_discriminant = false;
         for (self.interner.objectMembers(target_t)) |tm| {
@@ -212063,6 +212072,37 @@ test "checker: residual parity reverse mapped tuple identifier inference" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: reverse mapped inference selects mapped object union arm" {
+    const b = try newBoundSetup(
+        \\type Action<T extends string = string> = { type: T };
+        \\interface UnknownAction extends Action { [extraProps: string]: unknown }
+        \\type Reducer<S = any, A extends Action = UnknownAction> = (state: S | undefined, action: A) => S;
+        \\type ReducersMapObject<S = any, A extends Action = UnknownAction> = { [K in keyof S]: Reducer<S[K], A> };
+        \\interface ConfigureStoreOptions<S = any, A extends Action = UnknownAction> {
+        \\  reducer: Reducer<S, A> | ReducersMapObject<S, A>;
+        \\}
+        \\declare function configureStore<S = any, A extends Action = UnknownAction>(options: ConfigureStoreOptions<S, A>): void;
+        \\{
+        \\  const reducer: Reducer<number> = () => 0;
+        \\  const store1 = configureStore({ reducer });
+        \\}
+        \\const counterReducer1: Reducer<number> = () => 0;
+        \\const store2 = configureStore({ reducer: { counter1: counterReducer1 } });
+        \\export {};
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
 test "checker: generic callback conditionals instantiate against inferred target" {

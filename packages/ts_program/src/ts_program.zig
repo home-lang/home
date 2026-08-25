@@ -7765,6 +7765,46 @@ test "Program: namespace interface augmentation merges through star reexport" {
     try expectCompilationLacksDiagnosticCode(p.fileById(augment_id).compilation.?, 2339);
 }
 
+test "Program: reverse mapped inference changes union arms for the same source" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const main_id = try p.add("/proj/main.ts",
+        \\type Action<T extends string = string> = { type: T };
+        \\interface UnknownAction extends Action { [extraProps: string]: unknown }
+        \\type Reducer<S = any, A extends Action = UnknownAction> = (state: S | undefined, action: A) => S;
+        \\type ReducersMapObject<S = any, A extends Action = UnknownAction> = { [K in keyof S]: Reducer<S[K], A> };
+        \\interface ConfigureStoreOptions<S = any, A extends Action = UnknownAction> {
+        \\  reducer: Reducer<S, A> | ReducersMapObject<S, A>;
+        \\}
+        \\declare function configureStore<S = any, A extends Action = UnknownAction>(options: ConfigureStoreOptions<S, A>): void;
+        \\{
+        \\  const reducer: Reducer<number> = () => 0;
+        \\  const store1 = configureStore({ reducer });
+        \\}
+        \\const counterReducer1: Reducer<number> = () => 0;
+        \\const store2 = configureStore({ reducer: { counter1: counterReducer1 } });
+        \\export {};
+    );
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{
+            .no_implicit_any = true,
+            .no_implicit_this = true,
+            .strict_function_types = true,
+            .strict_bind_call_apply = true,
+            .strict_null_checks = true,
+            .strict_property_initialization = true,
+        },
+    });
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
 test "Program: relative module augmentation preserves missing member diagnostic" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
