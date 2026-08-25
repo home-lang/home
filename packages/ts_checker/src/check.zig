@@ -49870,7 +49870,10 @@ pub const Checker = struct {
                 // properties) keep the standard one-way check.
                 const parent_is_method = pm.is_method and parent_getter_read_t == null;
                 const both_methods = parent_is_method and cm.is_method;
-                const assignable = if (both_methods)
+                const assignable = if (both_methods and
+                    self.methodOverrideHasExtraRequiredParams(cm.type, parent_compare_t))
+                    false
+                else if (both_methods)
                     try self.methodOverrideAssignable(cm.type, parent_compare_t)
                 else if (parent_is_method != cm.is_method)
                     self.heritageAssignable(cm.type, parent_compare_t) catch false
@@ -49908,8 +49911,7 @@ pub const Checker = struct {
         const child_params = self.interner.signatureParams(child_t);
         const parent_params = self.interner.signatureParams(parent_t);
         if (self.rest_signatures.contains(parent_t)) return false;
-        return self.signatureMinRequiredArgs(child_t, child_params) >
-            self.signatureMinRequiredArgs(parent_t, parent_params);
+        return self.signatureMinRequiredArgs(child_t, child_params) > parent_params.len;
     }
 
     fn methodDeclMinRequiredArgs(self: *Checker, decl_node: NodeId) ?usize {
@@ -49954,6 +49956,20 @@ pub const Checker = struct {
         const child_min = self.methodDeclMinRequiredArgs(child_decl) orelse return false;
         const parent_min = self.methodDeclMinRequiredArgs(parent_decl) orelse return false;
         return child_min > parent_min;
+    }
+
+    fn methodDeclAddsRequiredBeyondParentArity(
+        self: *Checker,
+        child_decl: NodeId,
+        parent_decl: NodeId,
+    ) bool {
+        const child_min = self.methodDeclMinRequiredArgs(child_decl) orelse return false;
+        const parent_params = self.methodDeclParams(parent_decl) orelse return false;
+        var parent_arity: usize = 0;
+        for (parent_params) |param_node| {
+            if (!self.isThisParameter(param_node)) parent_arity += 1;
+        }
+        return child_min > parent_arity;
     }
 
     fn methodDeclHasIncompatibleBindingPattern(
@@ -146058,8 +146074,9 @@ pub const Checker = struct {
                             self.classOrInterfaceMemberNode(decl, target_member.name)
                         else
                             target_member.decl_node;
-                        break :blk self.methodDeclHasExtraRequiredParams(child_decl, parent_decl) and
-                            try self.methodDeclHasIncompatibleBindingPattern(child_decl, parent_decl);
+                        break :blk self.methodDeclAddsRequiredBeyondParentArity(child_decl, parent_decl) or
+                            (self.methodDeclHasExtraRequiredParams(child_decl, parent_decl) and
+                                try self.methodDeclHasIncompatibleBindingPattern(child_decl, parent_decl));
                     });
             if (!is_symbol_member and !has_required_param_mismatch) continue;
             const assignable = if (has_required_param_mismatch)
