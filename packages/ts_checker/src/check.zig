@@ -520,6 +520,12 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
     specifier: []const u8,
     name: []const u8,
     members: []const ProgramAmbientInterfaceMember = &.{},
+    /// Resolved source module that owns an exported namespace interface.
+    /// Empty for interfaces declared in ambient external modules.
+    module_path: []const u8 = "",
+    /// Dot-separated namespace path within `module_path` (for example
+    /// `Root.Nested`). Empty for ambient external module interfaces.
+    namespace_path: []const u8 = "",
 };
 
 pub const ProgramCommonJsExport = struct {
@@ -4708,6 +4714,9 @@ pub const Checker = struct {
     /// augmentations. Arguments targeting these signatures need the same
     /// contextual recheck as source-declared generic method callbacks.
     module_augmentation_callback_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Canonical merged shapes for interfaces contributed by both a module
+    /// export and a relative module augmentation.
+    module_augmented_interface_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
@@ -5153,6 +5162,7 @@ pub const Checker = struct {
         self.class_instance_types.deinit(self.gpa);
         self.synthetic_program_class_origins.deinit(self.gpa);
         self.module_augmentation_callback_signatures.deinit(self.gpa);
+        self.module_augmented_interface_types.deinit(self.gpa);
         self.merged_class_instance_types.deinit(self.gpa);
         self.class_this_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
@@ -76722,13 +76732,25 @@ pub const Checker = struct {
             break :blk full_path.items;
         } else full_path.items[1..];
         if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name)) |t| return t;
-        if (try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name)) |t| return t;
+        var exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
         const spec = self.string_interner.get(import_info.specifier);
-        if (namespace_path.len == 0) {
-            if (try self.ambientModuleExportTypeForSpec(spec, leaf_name)) |t| return t;
-        } else if (try self.ambientModuleExportTypeByPathForSpec(spec, namespace_path, leaf_name)) |t| {
-            return t;
+        if (exported_t == null and std.mem.startsWith(u8, spec, ".")) {
+            exported_t = try self.programRelativeModuleInterfaceExportType(
+                import_info.import_node,
+                spec,
+                namespace_path,
+                leaf_name,
+            );
         }
+        const augmented_t = if (namespace_path.len == 0)
+            try self.ambientModuleExportTypeForSpec(spec, leaf_name)
+        else
+            try self.ambientModuleExportTypeByPathForSpec(spec, namespace_path, leaf_name);
+        if (exported_t != null and augmented_t != null and exported_t.? != augmented_t.?) {
+            return try self.mergeModuleAugmentedInterfaceTypes(exported_t.?, augmented_t.?);
+        }
+        if (exported_t) |t| return t;
+        if (augmented_t) |t| return t;
         if (namespace_path.len == 0) {
             const status = if (std.mem.startsWith(u8, spec, "."))
                 try self.virtualRelativeModuleNamedExportRuntimeStatus(type_node, spec, leaf_name)
@@ -76983,6 +77005,17 @@ pub const Checker = struct {
             if (self.hir.kindOf(raw) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, raw);
             const decl = self.unwrapExportDecl(raw);
+            if (namespace_path.len != 0 and
+                ex.is_namespace and
+                ex.namespace_alias == string_interner.empty_string_id and
+                ex.module != string_interner.empty_string_id)
+            {
+                const star_spec = self.string_interner.get(ex.module);
+                if (std.mem.startsWith(u8, star_spec, ".")) {
+                    if (try self.virtualRelativeModuleExportType(raw, ex.module, namespace_path, leaf_name)) |t| return t;
+                }
+                continue;
+            }
             if (namespace_path.len == 0) {
                 if (leaf_name == default_name) {
                     if (ex.is_default) {
@@ -77119,6 +77152,103 @@ pub const Checker = struct {
             return try self.namespaceExportTypeByPath(decl, namespace_path[1..], leaf_name);
         }
         return null;
+    }
+
+    fn mergeModuleAugmentedInterfaceTypes(
+        self: *Checker,
+        raw_exported_t: TypeId,
+        raw_augmented_t: TypeId,
+    ) CheckError!TypeId {
+        const exported_t = self.module_augmented_interface_types.get(raw_exported_t) orelse raw_exported_t;
+        const augmented_t = self.module_augmented_interface_types.get(raw_augmented_t) orelse raw_augmented_t;
+        if (exported_t == augmented_t) return exported_t;
+        if (exported_t >= self.interner.pool.typeCount() or augmented_t >= self.interner.pool.typeCount()) return exported_t;
+        if (!self.interner.pool.flagsOf(exported_t).is_object_type or
+            !self.interner.pool.flagsOf(augmented_t).is_object_type)
+        {
+            return exported_t;
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try members.appendSlice(self.gpa, self.interner.objectMembers(exported_t));
+        for (self.interner.objectMembers(augmented_t)) |member| try self.upsertObjectMember(&members, member);
+        const merged = self.interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            if (self.interner.objectStringIndex(augmented_t) != types.Primitive.none)
+                self.interner.objectStringIndex(augmented_t)
+            else
+                self.interner.objectStringIndex(exported_t),
+            if (self.interner.objectNumberIndex(augmented_t) != types.Primitive.none)
+                self.interner.objectNumberIndex(augmented_t)
+            else
+                self.interner.objectNumberIndex(exported_t),
+            if (self.interner.objectSymbolIndex(augmented_t) != types.Primitive.none)
+                self.interner.objectSymbolIndex(augmented_t)
+            else
+                self.interner.objectSymbolIndex(exported_t),
+        ) catch return error.OutOfMemory;
+        try self.module_augmented_interface_types.put(self.gpa, raw_exported_t, merged);
+        try self.module_augmented_interface_types.put(self.gpa, raw_augmented_t, merged);
+        try self.module_augmented_interface_types.put(self.gpa, exported_t, merged);
+        try self.module_augmented_interface_types.put(self.gpa, augmented_t, merged);
+        return merged;
+    }
+
+    fn programRelativeModuleInterfaceExportType(
+        self: *Checker,
+        import_node: NodeId,
+        spec: []const u8,
+        namespace_path: []const hir_mod.StringId,
+        leaf_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const leaf_text = self.string_interner.get(leaf_name);
+        for (self.program_ambient_module_interface_exports) |exported| {
+            if (exported.module_path.len == 0 or
+                !std.mem.eql(u8, exported.name, leaf_text) or
+                !self.programNamespacePathMatches(namespace_path, exported.namespace_path))
+            {
+                continue;
+            }
+            if (!try self.programImportTargetsPath(import_node, spec, exported.module_path)) continue;
+
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            for (exported.members) |member| {
+                const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+                const value_t = try self.programAmbientInterfaceMemberType(member.type_name);
+                try members.append(self.gpa, .{
+                    .name = member_name,
+                    .type = if (member.is_method)
+                        self.interner.internSignature(&.{}, value_t, false) catch return error.OutOfMemory
+                    else
+                        value_t,
+                    .is_optional = member.is_optional,
+                    .is_readonly = member.is_readonly,
+                    .is_method = member.is_method,
+                    .decl_node = hir_mod.none_node_id,
+                });
+            }
+            const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            if (!self.alias_display_names.contains(result)) {
+                try self.alias_display_names.put(self.gpa, result, exported.name);
+            }
+            return result;
+        }
+        return null;
+    }
+
+    fn programNamespacePathMatches(
+        self: *Checker,
+        namespace_path: []const hir_mod.StringId,
+        expected: []const u8,
+    ) bool {
+        var parts = std.mem.splitScalar(u8, expected, '.');
+        for (namespace_path) |name| {
+            const part = parts.next() orelse return false;
+            if (!std.mem.eql(u8, self.string_interner.get(name), part)) return false;
+        }
+        return parts.next() == null;
     }
 
     fn typeOfExportedTypeDecl(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -99442,6 +99572,9 @@ pub const Checker = struct {
     }
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.module_augmented_interface_types.get(obj_t)) |merged_t| {
+            if (merged_t != obj_t) return try self.lookupObjectMember(merged_t, name);
+        }
         const flags = self.interner.pool.flagsOf(obj_t);
         // A property access on `any` yields `any` for any name. Mirrors
         // tsc's `getPropertyOfType` short-circuit on the `any`/error type
@@ -233029,6 +233162,28 @@ test "checker: declare module augments existing module from another virtual file
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: module augmentation merges namespace interface through star reexport" {
+    const b = try newBoundSetup(
+        \\// @filename: file.ts
+        \\export namespace Root { export interface Foo { x: number } }
+        \\// @filename: reexport.ts
+        \\export * from "./file";
+        \\// @filename: augment.ts
+        \\import * as ns from "./reexport";
+        \\declare module "./reexport" {
+        \\  export namespace Root { export interface Foo { self: Foo } }
+        \\}
+        \\declare const f: ns.Root.Foo;
+        \\f.x;
+        \\f.self;
+        \\f.self.x;
+        \\f.self.self;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
 }
 
 test "checker: nested ambient module augmentation merges interface members" {

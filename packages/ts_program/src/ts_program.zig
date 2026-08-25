@@ -822,6 +822,8 @@ pub const Program = struct {
             for (out.items) |item| {
                 self.gpa.free(item.specifier);
                 self.gpa.free(item.name);
+                self.gpa.free(item.module_path);
+                self.gpa.free(item.namespace_path);
                 freeProgramAmbientInterfaceMembers(self.gpa, item.members);
             }
             out.deinit(self.gpa);
@@ -830,7 +832,376 @@ pub const Program = struct {
             if (f.redirect_target != null) continue;
             try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
         }
+        try self.collectExportedNamespaceInterfaces(&out);
+        try self.propagateExportedNamespaceInterfacesThroughStars(&out);
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectExportedNamespaceInterfaces(
+        self: *const Program,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        for (self.files.items) |file| {
+            if (file.redirect_target != null) continue;
+            try collectExportedNamespaceInterfacesFromSource(self.gpa, file.path, file.source, out);
+        }
+    }
+
+    fn propagateExportedNamespaceInterfacesThroughStars(
+        self: *const Program,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (self.files.items) |file| {
+                if (file.redirect_target != null) continue;
+                var stars = try relativeExportStarSpecifiers(self.gpa, file.source);
+                defer stars.deinit(self.gpa);
+                for (stars.items) |specifier| {
+                    const target_path = try resolveProgramRelativeModulePath(self.gpa, file.path, specifier);
+                    defer self.gpa.free(target_path);
+                    const candidate_count = out.items.len;
+                    var index: usize = 0;
+                    while (index < candidate_count) : (index += 1) {
+                        const exported = out.items[index];
+                        if (exported.module_path.len == 0 or
+                            !programModulePathMatches(exported.module_path, target_path) or
+                            programNamespaceInterfaceExists(out.items, file.path, exported.namespace_path, exported.name))
+                        {
+                            continue;
+                        }
+                        try appendProgramNamespaceInterface(
+                            self.gpa,
+                            file.path,
+                            exported.namespace_path,
+                            exported.name,
+                            exported.members,
+                            out,
+                        );
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn collectExportedNamespaceInterfacesFromSource(
+        gpa: std.mem.Allocator,
+        module_path: []const u8,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        var index: usize = 0;
+        var depth: usize = 0;
+        while (index < source.len) {
+            if (skipProgramCommentOrString(source, index, source.len)) |next| {
+                index = next;
+                continue;
+            }
+            switch (source[index]) {
+                '{' => depth += 1,
+                '}' => if (depth > 0) {
+                    depth -= 1;
+                },
+                else => {},
+            }
+            if (depth != 0 or !identifierKeywordAt(source, index, "export")) {
+                index += 1;
+                continue;
+            }
+            var cursor = skipProgramTrivia(source, index + "export".len, source.len);
+            if (identifierKeywordAt(source, cursor, "declare")) {
+                cursor = skipProgramTrivia(source, cursor + "declare".len, source.len);
+            }
+            const keyword_len: usize = if (identifierKeywordAt(source, cursor, "namespace"))
+                "namespace".len
+            else if (identifierKeywordAt(source, cursor, "module"))
+                "module".len
+            else {
+                index += "export".len;
+                continue;
+            };
+            const name_start = skipProgramTrivia(source, cursor + keyword_len, source.len);
+            const name_end = parseIdentifierEnd(source, name_start, source.len) orelse {
+                index += "export".len;
+                continue;
+            };
+            const body_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse break;
+            const body_close = findMatchingBrace(source, body_open) orelse break;
+            const namespace_path = source[name_start..name_end];
+            try collectExportedNamespaceBody(
+                gpa,
+                module_path,
+                source,
+                body_open + 1,
+                body_close,
+                namespace_path,
+                out,
+            );
+            index = body_close + 1;
+        }
+    }
+
+    fn collectExportedNamespaceBody(
+        gpa: std.mem.Allocator,
+        module_path: []const u8,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+        namespace_path: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        var index = body_start;
+        var depth: usize = 0;
+        while (index < body_end) {
+            if (skipProgramCommentOrString(source, index, body_end)) |next| {
+                index = next;
+                continue;
+            }
+            switch (source[index]) {
+                '{' => depth += 1,
+                '}' => if (depth > 0) {
+                    depth -= 1;
+                },
+                else => {},
+            }
+            if (depth != 0 or !identifierKeywordAt(source, index, "export")) {
+                index += 1;
+                continue;
+            }
+            var cursor = skipProgramTrivia(source, index + "export".len, body_end);
+            if (identifierKeywordAt(source, cursor, "declare")) {
+                cursor = skipProgramTrivia(source, cursor + "declare".len, body_end);
+            }
+            if (identifierKeywordAt(source, cursor, "interface")) {
+                const name_start = skipProgramTrivia(source, cursor + "interface".len, body_end);
+                const name_end = parseIdentifierEnd(source, name_start, body_end) orelse {
+                    index += "export".len;
+                    continue;
+                };
+                const iface_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse break;
+                const iface_close = findMatchingBrace(source, iface_open) orelse break;
+                if (iface_close > body_end) break;
+                const members = try collectAmbientInterfaceMembers(gpa, source, iface_open + 1, iface_close);
+                appendProgramNamespaceInterface(
+                    gpa,
+                    module_path,
+                    namespace_path,
+                    source[name_start..name_end],
+                    members,
+                    out,
+                ) catch |err| {
+                    freeProgramAmbientInterfaceMembers(gpa, members);
+                    return err;
+                };
+                freeProgramAmbientInterfaceMembers(gpa, members);
+                index = iface_close + 1;
+                continue;
+            }
+            const keyword_len: usize = if (identifierKeywordAt(source, cursor, "namespace"))
+                "namespace".len
+            else if (identifierKeywordAt(source, cursor, "module"))
+                "module".len
+            else {
+                index += "export".len;
+                continue;
+            };
+            const name_start = skipProgramTrivia(source, cursor + keyword_len, body_end);
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse {
+                index += "export".len;
+                continue;
+            };
+            const nested_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse break;
+            const nested_close = findMatchingBrace(source, nested_open) orelse break;
+            if (nested_close > body_end) break;
+            const nested_path = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ namespace_path, source[name_start..name_end] });
+            defer gpa.free(nested_path);
+            try collectExportedNamespaceBody(
+                gpa,
+                module_path,
+                source,
+                nested_open + 1,
+                nested_close,
+                nested_path,
+                out,
+            );
+            index = nested_close + 1;
+        }
+    }
+
+    fn appendProgramNamespaceInterface(
+        gpa: std.mem.Allocator,
+        module_path: []const u8,
+        namespace_path: []const u8,
+        name: []const u8,
+        source_members: []const ts_driver.ProgramAmbientInterfaceMember,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        const specifier_copy = try gpa.dupe(u8, "");
+        errdefer gpa.free(specifier_copy);
+        const module_path_copy = try gpa.dupe(u8, module_path);
+        errdefer gpa.free(module_path_copy);
+        const namespace_path_copy = try gpa.dupe(u8, namespace_path);
+        errdefer gpa.free(namespace_path_copy);
+        const name_copy = try gpa.dupe(u8, name);
+        errdefer gpa.free(name_copy);
+        const members = try cloneProgramAmbientInterfaceMembers(gpa, source_members);
+        errdefer freeProgramAmbientInterfaceMembers(gpa, members);
+        try out.append(gpa, .{
+            .specifier = specifier_copy,
+            .name = name_copy,
+            .members = members,
+            .module_path = module_path_copy,
+            .namespace_path = namespace_path_copy,
+        });
+    }
+
+    fn cloneProgramAmbientInterfaceMembers(
+        gpa: std.mem.Allocator,
+        source_members: []const ts_driver.ProgramAmbientInterfaceMember,
+    ) ProgramError![]const ts_driver.ProgramAmbientInterfaceMember {
+        var members: std.ArrayListUnmanaged(ts_driver.ProgramAmbientInterfaceMember) = .empty;
+        errdefer freeProgramAmbientInterfaceMembers(gpa, members.items);
+        for (source_members) |member| {
+            const cloned = try cloneProgramAmbientInterfaceMember(gpa, member);
+            members.append(gpa, cloned) catch {
+                gpa.free(cloned.name);
+                gpa.free(cloned.type_name);
+                return error.OutOfMemory;
+            };
+        }
+        return try members.toOwnedSlice(gpa);
+    }
+
+    fn cloneProgramAmbientInterfaceMember(
+        gpa: std.mem.Allocator,
+        member: ts_driver.ProgramAmbientInterfaceMember,
+    ) ProgramError!ts_driver.ProgramAmbientInterfaceMember {
+        const name = try gpa.dupe(u8, member.name);
+        errdefer gpa.free(name);
+        const type_name = try gpa.dupe(u8, member.type_name);
+        return .{
+            .name = name,
+            .type_name = type_name,
+            .is_optional = member.is_optional,
+            .is_readonly = member.is_readonly,
+            .is_method = member.is_method,
+        };
+    }
+
+    fn programNamespaceInterfaceExists(
+        items: []const ts_driver.ProgramAmbientModuleInterfaceExport,
+        module_path: []const u8,
+        namespace_path: []const u8,
+        name: []const u8,
+    ) bool {
+        for (items) |item| {
+            if (programModulePathMatches(item.module_path, module_path) and
+                std.mem.eql(u8, item.namespace_path, namespace_path) and
+                std.mem.eql(u8, item.name, name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn relativeExportStarSpecifiers(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+    ) ProgramError!std.ArrayListUnmanaged([]const u8) {
+        var result: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer result.deinit(gpa);
+        var index: usize = 0;
+        var depth: usize = 0;
+        while (index < source.len) {
+            if (skipProgramCommentOrString(source, index, source.len)) |next| {
+                index = next;
+                continue;
+            }
+            switch (source[index]) {
+                '{' => depth += 1,
+                '}' => if (depth > 0) {
+                    depth -= 1;
+                },
+                else => {},
+            }
+            if (depth != 0 or !identifierKeywordAt(source, index, "export")) {
+                index += 1;
+                continue;
+            }
+            var cursor = skipProgramTrivia(source, index + "export".len, source.len);
+            if (cursor >= source.len or source[cursor] != '*') {
+                index += "export".len;
+                continue;
+            }
+            cursor = skipProgramTrivia(source, cursor + 1, source.len);
+            if (!identifierKeywordAt(source, cursor, "from")) {
+                index += "export".len;
+                continue;
+            }
+            cursor = skipProgramTrivia(source, cursor + "from".len, source.len);
+            if (cursor >= source.len or (source[cursor] != '"' and source[cursor] != '\'')) {
+                index += "export".len;
+                continue;
+            }
+            const quote = source[cursor];
+            const spec_start = cursor + 1;
+            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse break;
+            const specifier = source[spec_start..spec_end];
+            if (std.mem.startsWith(u8, specifier, ".")) try result.append(gpa, specifier);
+            index = spec_end + 1;
+        }
+        return result;
+    }
+
+    fn skipProgramTrivia(source: []const u8, start: usize, limit: usize) usize {
+        var index = start;
+        while (index < limit) {
+            if (std.ascii.isWhitespace(source[index])) {
+                index += 1;
+                continue;
+            }
+            if (index + 1 < limit and source[index] == '/' and source[index + 1] == '/') {
+                index += 2;
+                while (index < limit and source[index] != '\n' and source[index] != '\r') : (index += 1) {}
+                continue;
+            }
+            if (index + 1 < limit and source[index] == '/' and source[index + 1] == '*') {
+                index += 2;
+                while (index + 1 < limit and !(source[index] == '*' and source[index + 1] == '/')) : (index += 1) {}
+                index = @min(index + 2, limit);
+                continue;
+            }
+            break;
+        }
+        return index;
+    }
+
+    fn skipProgramCommentOrString(source: []const u8, start: usize, limit: usize) ?usize {
+        if (start >= limit) return null;
+        if (start + 1 < limit and source[start] == '/' and source[start + 1] == '/') {
+            var index = start + 2;
+            while (index < limit and source[index] != '\n' and source[index] != '\r') : (index += 1) {}
+            return index;
+        }
+        if (start + 1 < limit and source[start] == '/' and source[start + 1] == '*') {
+            var index = start + 2;
+            while (index + 1 < limit and !(source[index] == '*' and source[index + 1] == '/')) : (index += 1) {}
+            return @min(index + 2, limit);
+        }
+        const quote = source[start];
+        if (quote != '"' and quote != '\'' and quote != '`') return null;
+        var index = start + 1;
+        while (index < limit) : (index += 1) {
+            if (source[index] == '\\') {
+                index = @min(index + 1, limit);
+                continue;
+            }
+            if (source[index] == quote) return index + 1;
+        }
+        return limit;
     }
 
     fn collectProgramCommonJsExports(self: *const Program) ProgramError![]const ts_driver.ProgramCommonJsExport {
@@ -1015,6 +1386,8 @@ pub const Program = struct {
                 .specifier = spec_copy,
                 .name = name_copy,
                 .members = members,
+                .module_path = try gpa.dupe(u8, ""),
+                .namespace_path = try gpa.dupe(u8, ""),
             });
             search_start = iface_close + 1;
         }
@@ -2326,6 +2699,8 @@ pub const Program = struct {
         for (items) |item| {
             gpa.free(item.specifier);
             gpa.free(item.name);
+            gpa.free(item.module_path);
+            gpa.free(item.namespace_path);
             freeProgramAmbientInterfaceMembers(gpa, item.members);
         }
         gpa.free(items);
@@ -7354,6 +7729,40 @@ test "Program: relative module augmentation merges namespace static members" {
     try expectCompilationLacksDiagnosticCode(main_c, 2339);
     try expectCompilationLacksDiagnosticCode(main_c, 7006);
     try expectCompilationLacksDiagnosticCode(main_c, 2345);
+}
+
+test "Program: namespace interface augmentation merges through star reexport" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    _ = try p.add("/proj/file.ts",
+        \\export namespace Root {
+        \\  export interface Foo { x: number; }
+        \\}
+    );
+    _ = try p.add("/proj/reexport.ts",
+        \\export * from "./file";
+    );
+    const augment_id = try p.add("/proj/augment.ts",
+        \\import * as ns from "./reexport";
+        \\declare module "./reexport" {
+        \\  export namespace Root {
+        \\    export interface Foo { self: Foo; }
+        \\  }
+        \\}
+        \\declare const f: ns.Root.Foo;
+        \\f.x;
+        \\f.self;
+        \\f.self.x;
+        \\f.self.self;
+    );
+
+    try p.compileAll(.{ .no_emit = true });
+    try expectCompilationLacksDiagnosticCode(p.fileById(augment_id).compilation.?, 2339);
 }
 
 test "Program: relative module augmentation preserves missing member diagnostic" {
