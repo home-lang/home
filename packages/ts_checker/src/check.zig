@@ -14891,6 +14891,8 @@ pub const Checker = struct {
         //   supported when '--module' flag is 'system'.
         const target_is_system = self.sourceDirectiveValueMentions("module", "system") or
             std.ascii.eqlIgnoreCase(self.module_kind, "system");
+        const target_is_es2015 = self.sourceDirectiveValueMentions("target", "es2015") or
+            self.sourceDirectiveValueMentions("target", "es6");
         var it = by_section.valueIterator();
         while (it.next()) |info| {
             if (info.export_assignment == hir_mod.none_node_id) continue;
@@ -14899,7 +14901,10 @@ pub const Checker = struct {
                 continue;
             }
             if (target_is_esm) continue;
-            if (target_is_system and !self.virtualSectionIsDeclarationFile(info.export_assignment)) {
+            if (target_is_system and
+                !target_is_es2015 and
+                !self.virtualSectionIsDeclarationFile(info.export_assignment))
+            {
                 try self.report(info.export_assignment, 1218, "Export assignment is not supported when '--module' flag is 'system'.");
                 continue;
             }
@@ -102351,6 +102356,7 @@ pub const Checker = struct {
         {
             return null;
         }
+        if (!self.strict_flags.strict_bind_call_apply) return types.Primitive.any;
 
         const params = self.interner.signatureParams(sig);
         const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
@@ -102423,6 +102429,7 @@ pub const Checker = struct {
         args: []const NodeId,
         arg_types: []const TypeId,
     ) CheckError!void {
+        if (!self.strict_flags.strict_bind_call_apply) return;
         if (args.len < 2 or arg_types.len < 2) return;
         if (self.hir.kindOf(callee) != .member_access) return;
         const m = hir_mod.memberOf(self.hir, callee);
@@ -261773,4 +261780,31 @@ test "checker: parity 351 inferred anonymous class names stay user-facing" {
         TsCodes.type_not_assignable,
         "Type 'typeof A' is not assignable to type 'new () => A'.",
     ));
+}
+
+test "checker: parity 401 ES2015 System export assignments follow tsgo baseline" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @module: system
+        \\var x = 1;
+        \\export = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 1218));
+}
+
+test "checker: parity 401 non-strict apply keeps permissive Function arguments" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\namespace M1 {
+        \\  export function reduce<A>(ar, f, e?): Array<A> {
+        \\    return Array.prototype.reduce.apply(ar, e ? [f, e] : [f]);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_bind_call_apply = false });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
