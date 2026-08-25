@@ -188430,11 +188430,13 @@ test "checker: contextually typed excess rest parameter suppresses TS7019" {
 test "checker: TS2454 is suppressed after parse diagnostics" {
     const clean = try newSetup("let value: number; value;");
     defer destroySetup(clean);
+    clean.checker.setStrictFlags(.{ .strict_null_checks = true });
     try clean.checker.checkSourceFile(clean.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(clean, TsCodes.used_before_assignment));
 
     const recovered = try newSetup("let value: number; value;");
     defer destroySetup(recovered);
+    recovered.checker.setStrictFlags(.{ .strict_null_checks = true });
     recovered.checker.setHasParseDiagnostics(true);
     try recovered.checker.checkSourceFile(recovered.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(recovered, TsCodes.used_before_assignment));
@@ -198094,6 +198096,7 @@ test "checker: typed var used in array literal emits TS2454" {
         \\let y = [x, 1];
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -198109,6 +198112,7 @@ test "checker: construct-signature typed var used as call arg emits TS2454" {
         \\use(C);
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -216854,6 +216858,7 @@ test "checker: program UMD globals resolve in scripts and diagnose in modules" {
     );
     defer destroyBoundSetup(script);
     script.base.checker.setProgramUmdGlobals(&globals);
+    script.base.checker.setStrictFlags(.{ .strict_null_checks = true });
     try script.base.checker.checkSourceFile(script.base.root);
     try T.expect(!checkerHasAnyCode(script.base, TsCodes.cannot_find_name));
     try T.expect(!checkerHasAnyCode(script.base, TsCodes.cannot_find_namespace));
