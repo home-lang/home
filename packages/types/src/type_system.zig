@@ -3844,6 +3844,20 @@ pub const TypeChecker = struct {
         return Type{ .Tuple = .{ .element_types = element_types } };
     }
 
+    /// Width of an arbitrary-width integer type name such as `u4` or `i40`,
+    /// or null if the name is not of that form. The standard widths are
+    /// matched by name before this is reached, so it only sees the rest.
+    fn parseArbitraryIntWidth(name: []const u8) ?u16 {
+        if (name.len < 2) return null;
+        if (name[0] != 'u' and name[0] != 'i') return null;
+        for (name[1..]) |c| {
+            if (!std.ascii.isDigit(c)) return null;
+        }
+        const width = std.fmt.parseInt(u16, name[1..], 10) catch return null;
+        if (width == 0 or width > 128) return null;
+        return width;
+    }
+
     fn parseTypeName(self: *TypeChecker, name: []const u8) !Type {
         // Built-in primitive types
         if (std.mem.eql(u8, name, "int")) return Type.Int;
@@ -3876,6 +3890,27 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "Int")) return Type.Int;
         if (std.mem.eql(u8, name, "Float")) return Type.Float;
         if (std.mem.eql(u8, name, "Bool")) return Type.Bool;
+
+        // Arbitrary-width integers: `u4`, `u6`, `u12`, `u40`, `u63`, and so
+        // on. These are what a systems language needs and what a JavaScript
+        // type system has no concept of — a page table entry is a `u40`
+        // address beside a `u3` of available bits, and an interrupt gate is
+        // a `u128` of fields that are not byte-aligned.
+        //
+        // They are modelled as the smallest standard-width integer that holds
+        // them, which keeps signedness and storage class exact and loses only
+        // range precision. Without this, a binding declared `let n: u4` did
+        // not resolve to a type at all, so the binding was never entered into
+        // scope and every later use of it was reported as an undefined
+        // variable — an error a long way from its cause.
+        if (parseArbitraryIntWidth(name)) |width| {
+            const unsigned = name[0] == 'u';
+            if (width <= 8) return if (unsigned) Type.U8 else Type.I8;
+            if (width <= 16) return if (unsigned) Type.U16 else Type.I16;
+            if (width <= 32) return if (unsigned) Type.U32 else Type.I32;
+            if (width <= 64) return if (unsigned) Type.U64 else Type.I64;
+            if (width <= 128) return if (unsigned) Type.U128 else Type.I128;
+        }
 
         // Check if it's a mutable type (mut T) - for by-value mutable parameters
         // This is different from &mut T which is a mutable reference
