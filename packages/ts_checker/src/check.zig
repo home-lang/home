@@ -44075,6 +44075,15 @@ pub const Checker = struct {
                             self.expressionContainsThisMember(a.value, mm.name);
                         const value_t = if (method_empty_array)
                             self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory
+                        else if (a.value != hir_mod.none_node_id and
+                            self.hir.kindOf(a.value) == .template_literal and
+                            hir_mod.templateLiteralExprs(self.hir, a.value).len > 0)
+                            // This inference pass runs after the constructor's
+                            // lexical scope has been popped. An interpolated
+                            // template is always widened to string for a class
+                            // property, so do not re-check its substitutions
+                            // and spuriously resolve constructor locals again.
+                            types.Primitive.string_t
                         else if (a.value != hir_mod.none_node_id) blk: {
                             const cached = self.hir.typeOf(a.value);
                             break :blk if (cached != types.Primitive.none)
@@ -73650,7 +73659,7 @@ pub const Checker = struct {
                     if (try self.boundThisTypeForNode(type_node, id.name)) |t| return t;
                     return try self.freshThisTypeParameter(id.name);
                 }
-                if (self.lookupNarrow(id.name)) |t| return t;
+                if (self.lookupNarrow(id.name)) |t| return self.narrowTypeInTypePosition(id.name, t);
                 if (try self.importedReferenceLibTypeForLocal(id.name, type_node)) |t| return t;
                 if (self.enumDeclForNameAt(id.name, type_node)) |decl| {
                     const e = hir_mod.enumOf(self.hir, decl);
@@ -73943,6 +73952,8 @@ pub const Checker = struct {
                     }
                     if (self.lookupNarrow(r.name)) |t| {
                         if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_type_parameter) return t;
+                        const type_position_t = self.narrowTypeInTypePosition(r.name, t);
+                        if (type_position_t != t) return type_position_t;
                         if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
                             !self.visibleTypeDeclarationExistsAt(type_node, r.name))
                         {
@@ -90447,6 +90458,16 @@ pub const Checker = struct {
             try self.refreshSignatureParamNamesFromDecl(result);
         }
         return result;
+    }
+
+    /// A class binding is narrowed to its constructor object while its body is
+    /// checked so value expressions such as `C.make()` see static members.
+    /// The same spelling in a type annotation still denotes the instance side.
+    fn narrowTypeInTypePosition(self: *Checker, name: hir_mod.StringId, narrowed: TypeId) TypeId {
+        if (self.class_name_by_static.get(narrowed)) |class_name| {
+            if (class_name == name) return self.class_instance_types.get(name) orelse narrowed;
+        }
+        return narrowed;
     }
 
     fn refreshSignatureParamNamesFromDecl(self: *Checker, sig: TypeId) CheckError!void {
@@ -161803,6 +161824,7 @@ pub const Checker = struct {
                     const keyof = hir_mod.keyofTypeOf(self.hir, args[0]);
                     if (self.typeNodesReferenceSameBareName(object_node, keyof.operand)) return true;
                 }
+                if (self.distributiveKeyFilterMatchesObject(mapped.constraint, object_node)) return true;
             }
             const constraint_t = self.lowererLowerWithTypeParams(mapped.constraint) catch return false;
             const operand_t = self.constrainedKeyofOperand(constraint_t, 0) orelse return false;
@@ -161810,6 +161832,42 @@ pub const Checker = struct {
             return self.typeParameterConstraintChainContains(object_t, operand_t);
         }
         return false;
+    }
+
+    /// Recognize a user-defined distributive key filter such as
+    /// `type Public<T> = T extends Private ? never : T`. Instantiating that
+    /// alias with `keyof Obj` can only remove keys, so every surviving mapped
+    /// key remains valid for `Obj[K]` just like built-in Exclude/Extract.
+    fn distributiveKeyFilterMatchesObject(
+        self: *Checker,
+        constraint_node: NodeId,
+        object_node: NodeId,
+    ) bool {
+        if (self.hir.kindOf(constraint_node) != .type_ref) return false;
+        const reference = hir_mod.typeRefOf(self.hir, constraint_node);
+        if (reference.qualifier_len != 0) return false;
+        const args = hir_mod.typeRefArgs(self.hir, constraint_node);
+        if (args.len != 1 or self.hir.kindOf(args[0]) != .keyof_type) return false;
+        const keyof = hir_mod.keyofTypeOf(self.hir, args[0]);
+        if (!self.typeNodesReferenceSameBareName(object_node, keyof.operand)) return false;
+
+        const declaration = self.typeAliasDeclForNameAt(reference.name, constraint_node) orelse return false;
+        const alias = hir_mod.typeAliasOf(self.hir, declaration);
+        const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        if (params.len != 1 or self.hir.kindOf(params[0]) != .type_parameter or
+            self.hir.kindOf(alias.aliased) != .conditional_type)
+        {
+            return false;
+        }
+        const param_name = hir_mod.typeParameterOf(self.hir, params[0]).name;
+        const conditional = hir_mod.conditionalTypeOf(self.hir, alias.aliased);
+        if ((self.bareTypeNodeName(conditional.check) orelse return false) != param_name) return false;
+
+        const true_is_param = (self.bareTypeNodeName(conditional.true_branch) orelse 0) == param_name;
+        const false_is_param = (self.bareTypeNodeName(conditional.false_branch) orelse 0) == param_name;
+        const true_is_never = self.typeNodeIsNever(conditional.true_branch);
+        const false_is_never = self.typeNodeIsNever(conditional.false_branch);
+        return (true_is_param and false_is_never) or (true_is_never and false_is_param);
     }
 
     fn resolveTypeofComputedIndexedMember(
@@ -261845,6 +261903,47 @@ test "checker: parity 501 constrained callback tuples contextually type array el
         \\  return p;
         \\}
         \\var v = f([x => x]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 551 checked-JS class templates keep constructor locals in scope" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class C {
+        \\  property;
+        \\  constructor() {
+        \\    const variable = "value";
+        \\    this.property = `prefix-${variable}`;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: parity 551 distributive mapped key filters preserve indexed access" {
+    const s = try newSetup(
+        \\type PublicKeys<T> = T extends `_${string}` ? never : T;
+        \\declare function dropPrivate<Obj>(obj: Obj): {
+        \\  [K in PublicKeys<keyof Obj>]: Obj[K]
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: parity 551 class annotations remain instance-sided in static methods" {
+    const s = try newSetup(
+        \\class B {
+        \\  static one(source: B, value: number): B { return source; }
+        \\  static two(source: B): B { return this.one(source, 42); }
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
