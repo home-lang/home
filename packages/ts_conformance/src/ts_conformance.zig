@@ -2906,7 +2906,7 @@ test "conformance: visible @types ambient modules resolve from multiple node_mod
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: script ambient module declaration wins over resolved source file" {
+test "conformance: parity 2851-3650 script ambient module declaration wins over resolved source file" {
     const raw =
         \\// @target: es2015
         \\// @strict: false
@@ -2929,6 +2929,33 @@ test "conformance: script ambient module declaration wins over resolved source f
         .path = "foo_2.ts",
         .raw_source = raw,
         .expected_errors = "foo_2.ts(3,14): error TS2339: Property 'x' does not exist on type 'typeof import(\"vs/foo_0\")'.",
+        .strict_flags = .{},
+    };
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parity 2851-3650 relative require diagnostic preserves the written module name" {
+    const raw =
+        \\// @target: es2015
+        \\// @module: commonjs
+        \\// @filename: foo_0.d.ts
+        \\export var x: number;
+        \\// @filename: foo_0.ts
+        \\export var y: number;
+        \\// @filename: foo_1.ts
+        \\import foo = require("./foo_0");
+        \\var z1 = foo.x + 10;
+        \\var z2 = foo.y + 10;
+    ;
+    const c: Case = .{
+        .name = "importTsBeforeDTs",
+        .source = "",
+        .path = "foo_1.ts",
+        .raw_source = raw,
+        .expected_errors = "foo_1.ts(2,14): error TS2339: Property 'x' does not exist on type 'typeof import(\"foo_0\")'.",
         .strict_flags = .{},
     };
     try T.expect(shouldRouteThroughProgram(c));
@@ -7217,6 +7244,15 @@ pub fn loadDirectoryWithOptions(
         if (!options.honor_directives and
             options.strict_default_for_expected_errors and
             expects_error and
+            baselineHasStrictBindCallApplyDiagnostic(gpa, baseline_path))
+        {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.strict_bind_call_apply = true;
+            strict_flags = merged;
+        }
+        if (!options.honor_directives and
+            options.strict_default_for_expected_errors and
+            expects_error and
             baselineHasDiagnostic(gpa, baseline_path, "TS2564"))
         {
             var merged = strict_flags orelse ts_driver.StrictFlags{};
@@ -9831,6 +9867,14 @@ fn baselineHasStrictNullDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]con
         if (std.mem.indexOf(u8, baseline, snippet) != null) return true;
     }
     return false;
+}
+
+fn baselineHasStrictBindCallApplyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
+    const path = baseline_path orelse return false;
+    const baseline = readFileAlloc(gpa, path) catch return false;
+    defer gpa.free(baseline);
+    return std.mem.indexOf(u8, baseline, "TS2345") != null and
+        std.mem.indexOf(u8, baseline, "Target signature provides too few arguments.") != null;
 }
 
 /// Parse `"strict": true|false` out of the first
@@ -56019,6 +56063,25 @@ test "conformance: TS2454 baseline restores strict null checks after property in
     defer T.allocator.free(baseline_path);
 
     try T.expect(baselineHasStrictNullDiagnostic(T.allocator, baseline_path));
+}
+
+test "conformance: parity 2851-3650 call signature baseline restores strict bind call apply" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "strictBindCallApply.errors.txt", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(
+            io,
+            "strictBindCallApply.ts(1,1): error TS2345: Argument of type '(name: any, f: any) => void' is not assignable to parameter of type '() => void'.\n  Target signature provides too few arguments. Expected 2 or more, but got 0.",
+        );
+    }
+    const baseline_path = try tmp.dir.realPathFileAlloc(io, "strictBindCallApply.errors.txt", T.allocator);
+    defer T.allocator.free(baseline_path);
+
+    try T.expect(baselineHasStrictBindCallApplyDiagnostic(T.allocator, baseline_path));
 }
 
 test "conformance: bare variable scan detects TS7005 shape" {

@@ -20693,7 +20693,7 @@ pub const Checker = struct {
         if (!self.sourceHasVirtualFilenameSections()) return false;
         const target_section = self.virtualSectionStartForNode(target);
         if (self.expandoReceiverDeclaration(target)) |declaration| {
-            if (self.virtualSectionStartForNode(declaration) != target_section) return true;
+            return self.virtualSectionStartForNode(declaration) != target_section;
         }
         if (self.hir.kindOf(target) != .member_access) return false;
         const object = hir_mod.memberOf(self.hir, target).object;
@@ -30499,11 +30499,14 @@ pub const Checker = struct {
                     }
                     continue;
                 },
-                .object_literal,
-                .array_literal,
-                .as_expr,
-                .conditional,
-                => continue,
+                .object_literal, .array_literal, .conditional => continue,
+                .as_expr, .type_assertion => {
+                    const assertion = hir_mod.asExpressionOf(self.hir, cur);
+                    if (assertion.type_node == hir_mod.none_node_id) return false;
+                    const asserted_t = self.lowererLowerWithTypeParams(assertion.type_node) catch return false;
+                    if (self.typeIsAnyLike(asserted_t)) return false;
+                    return self.contextualParameterTypeForFunctionParam(fn_node, param_node, asserted_t) != null;
+                },
                 .class_expr, .class_decl => {
                     const member_name = contextual_member_name orelse return false;
                     if (self.hir.kindOf(prev) != .object_property) return false;
@@ -109060,8 +109063,12 @@ pub const Checker = struct {
                 const inner_kind = self.hir.kindOf(a.expr);
                 var contextual_inner_t: TypeId = types.Primitive.none;
                 if (inner_kind == .arrow_fn or inner_kind == .fn_expr or inner_kind == .fn_decl) {
-                    if (self.firstSignatureType(target_t)) |target_sig| {
-                        try self.checkFunctionWithContextualSignatureMode(a.expr, target_sig, false, &contextual_inner_t);
+                    if (self.typeIsAnyLike(target_t)) {
+                        self.clearCachedTypesWithin(a.expr);
+                    } else {
+                        if (self.firstSignatureType(target_t)) |target_sig| {
+                            try self.checkFunctionWithContextualSignatureMode(a.expr, target_sig, false, &contextual_inner_t);
+                        }
                     }
                 }
                 const inner_t = if (contextual_inner_t != types.Primitive.none)
@@ -145299,7 +145306,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
+        if (try self.allocPropertyMissingTargetTypeNameAt(node, target_t)) |target_text| {
             // TS2551: when a similarly-spelled member exists on the
             // receiver type, upstream emits the did-you-mean variant
             // instead of the bare TS2339. Skip for ECMAScript private
@@ -145535,11 +145542,8 @@ pub const Checker = struct {
             info.exported_value or
             (info.ambient_module and !info.ambient_module_exports_known)) return false;
 
-        const resolved = resolver.resolve(spec, self.importer_path);
-        const module_name = if (resolved) |resolution|
-            stripProgramModuleExtension(resolution.path)
-        else
-            std.mem.trim(u8, info.module_name, "\"");
+        var module_name = stripJsOutputExtension(spec);
+        while (std.mem.startsWith(u8, module_name, "./")) module_name = module_name[2..];
         const display = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "typeof import(\"{s}\")",
@@ -145745,6 +145749,47 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn allocPropertyMissingTargetTypeNameAt(self: *Checker, node: NodeId, target_t: TypeId) !?[]const u8 {
+        if ((!self.virtualSectionIsJsLike(node) and !self.sourceHasCheckJsDirective()) or
+            target_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(target_t).is_object_type)
+        {
+            return self.allocPropertyMissingTargetTypeName(target_t);
+        }
+        const function = self.enclosingFunctionLike(node) orelse
+            return self.allocPropertyMissingTargetTypeName(target_t);
+
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        for (hir_mod.fnParams(self.hir, function)) |param| {
+            if (self.isThisParameter(param)) continue;
+            if (self.hir.kindOf(param) != .parameter) return self.allocPropertyMissingTargetTypeName(target_t);
+            const binding = hir_mod.parameterOf(self.hir, param).name;
+            if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) {
+                return self.allocPropertyMissingTargetTypeName(target_t);
+            }
+            try names.append(self.gpa, hir_mod.identifierOf(self.hir, binding).name);
+        }
+        if (names.items.len == 0) return self.allocPropertyMissingTargetTypeName(target_t);
+
+        var signature: ?TypeId = null;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (!self.interner.isSignature(member.type)) continue;
+            if (self.interner.signatureParams(member.type).len != names.items.len) continue;
+            signature = member.type;
+            break;
+        }
+        const sig = signature orelse return self.allocPropertyMissingTargetTypeName(target_t);
+        try self.signature_param_names.ensureUnusedCapacity(self.gpa, 1);
+        const previous = self.signature_param_names.fetchRemove(sig);
+        self.signature_param_names.putAssumeCapacity(sig, names.items);
+        defer {
+            _ = self.signature_param_names.fetchRemove(sig);
+            if (previous) |prior| self.signature_param_names.putAssumeCapacity(sig, prior.value);
+        }
+        return self.allocPropertyMissingTargetTypeName(target_t);
     }
 
     fn allocInstantiatedGenericAliasNameFromObjectLiteral(
@@ -202207,6 +202252,25 @@ test "checker: assertion target contextually types arrow before TS2352 overlap" 
     }
 }
 
+test "checker: parity 2851-3250 any assertion blocks outer callback contextual typing" {
+    const s = try newSetup(
+        \\interface IDone { (error?: Error): void; }
+        \\class Runnable {
+        \\    block: () => void;
+        \\    children: Runnable[];
+        \\    call(block: () => void, done: IDone) {}
+        \\    run(done: IDone) {}
+        \\    runChild(index: number, done: IDone) {
+        \\        return this.call(<any>((done) => this.children[index].run(done)), done);
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: numeric property names tolerate missing interned names" {
     try T.expect(Checker.isNumericPropertyNameText("0"));
     try T.expect(Checker.isNumericPropertyNameText("123."));
@@ -232455,7 +232519,7 @@ test "checker: strict checkjs prototype methods inherit only tagged constructor 
     try T.expectEqual(@as(usize, 2), arg_mismatches);
 }
 
-test "checker: checkjs chained function assignments share JSDoc signatures and members" {
+test "checker: parity 2851-3250 checkjs chained function assignments share JSDoc signatures and members" {
     const s = try newSetup(
         \\// @checkJs: true
         \\function A() { this.x = 1; }
@@ -232477,6 +232541,10 @@ test "checker: checkjs chained function assignments share JSDoc signatures and m
         try T.expect(std.mem.indexOf(u8, d.message, "Property 'y'") == null);
         try T.expect(std.mem.indexOf(u8, d.message, "Property 'z'") == null);
         try T.expect(std.mem.indexOf(u8, d.message, "Property 't'") == null);
+        try T.expectEqualStrings(
+            "Property 'x' does not exist on type '{ (): void; s: (m: number) => any; t: (m: number) => any; }'.",
+            d.message,
+        );
     }
 }
 
@@ -259571,20 +259639,24 @@ test "checker: checked JSX function components retain local and React expandos" 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checked JSX expandos resolve repeated names within their virtual file" {
+test "checker: parity 2851-3250 checked JSX expandos resolve repeated names within their virtual file" {
     const s = try newTsxSetup(
         \\// @allowJs: true
         \\// @checkJs: true
         \\// @filename: first.jsx
         \\const Component = () => null;
+        \\Component.propTypes = {};
         \\Component.defaultProps = { first: true };
+        \\export default Component;
         \\// @filename: declared.jsx
         \\/** @type {{defaultProps: {tabs: string}} & (() => any)} */
         \\const Component = () => null;
         \\Component.defaultProps = { tabs: "default" };
+        \\export default Component;
         \\// @filename: inferred.jsx
         \\const Component = (/** @type {{className: string}} */ props) => null;
         \\Component.defaultProps = { tabs: "default" };
+        \\export default Component;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
