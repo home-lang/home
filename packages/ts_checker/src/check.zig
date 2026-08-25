@@ -17505,7 +17505,9 @@ pub const Checker = struct {
         try self.checkExportedFunctionPrivateNames(node);
         try self.checkExportedTypeParamPrivateNames(node, hir_mod.fnTypeParams(self.hir, node), .function);
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0 or self.fnHasJsDocTemplateTags(node);
-        _ = try self.checkFnSignatureOnly(node);
+        if (try self.reuseFunctionSignatureForBody(node) == null) {
+            _ = try self.checkFnSignatureOnly(node);
+        }
         try self.seedRepeatedVarsFromPolymorphicThisParameters(node);
         const f = hir_mod.fnDeclOf(self.hir, node);
         const jsdoc_declared_return = if (f.return_type == hir_mod.none_node_id)
@@ -17543,6 +17545,32 @@ pub const Checker = struct {
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
         try self.checkSetterReturnValue(node);
+    }
+
+    fn reuseFunctionSignatureForBody(self: *Checker, node: NodeId) CheckError!?TypeId {
+        const sig = self.hir.typeOf(node);
+        if (sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) return null;
+
+        const type_params = hir_mod.fnTypeParams(self.hir, node);
+        if (type_params.len == 0) {
+            if (self.fnHasJsDocTemplateTags(node)) return null;
+            return sig;
+        }
+        const cached_params = self.generic_signature_params.get(sig) orelse return null;
+        if (cached_params.len != type_params.len) return null;
+
+        for (type_params) |type_param_node| {
+            if (self.hir.kindOf(type_param_node) != .type_parameter) return null;
+        }
+
+        try self.pushNarrowScope();
+        errdefer self.popNarrowScope();
+        for (type_params, cached_params) |type_param_node, type_param_t| {
+            const type_param = hir_mod.typeParameterOf(self.hir, type_param_node);
+            self.hir.setType(type_param_node, type_param_t);
+            try self.recordNarrow(type_param.name, type_param_t);
+        }
+        return sig;
     }
 
     fn seedRepeatedVarsFromPolymorphicThisParameters(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -18856,8 +18884,12 @@ pub const Checker = struct {
                     types.Primitive.boolean_t)
             else if (f.return_type != hir_mod.none_node_id and
                 !self.typeNodeContainsInvalidThisType(f.return_type))
-                self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none
-            else blk: {
+            blk: {
+                if (self.firstSignatureType(self.hir.typeOf(node))) |sig| {
+                    if (self.interner.signatureReturn(sig)) |return_t| break :blk return_t;
+                }
+                break :blk self.lowerReturnTypeAnnotationWithCircularityGuard(node, f.return_type) catch types.Primitive.none;
+            } else blk: {
                 const jsdoc_return_for_body: ?JsDocDeclaredReturn = if (cached_jsdoc_return) |jsdoc_return|
                     jsdoc_return
                 else
@@ -52988,6 +53020,29 @@ pub const Checker = struct {
         var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
         defer visited.deinit(self.gpa);
         return try self.substituteTypeNoCyclesInner(t, subs, &visited);
+    }
+
+    fn substituteTypeWithFreshMemo(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        if (self.subst_memo_subs == null or self.subst_memo_subs == subs) {
+            return self.substituteType(t, subs);
+        }
+
+        // A nested substitution map needs its own memo. Temporarily move the
+        // outer memo aside, then restore its ownership when this walk ends.
+        const saved_subs = self.subst_memo_subs;
+        const saved_memo = self.subst_memo;
+        self.subst_memo_subs = null;
+        self.subst_memo = .empty;
+        defer {
+            self.subst_memo.deinit(self.gpa);
+            self.subst_memo = saved_memo;
+            self.subst_memo_subs = saved_subs;
+        }
+        return self.substituteType(t, subs);
     }
 
     fn typeContainsSubstitutionKey(
@@ -119363,18 +119418,25 @@ pub const Checker = struct {
         const construct_diagnostic_start = self.diagnostics.items.len;
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
-        try self.collectConstructSignatures(callee_t, &construct_sigs);
-        // Use declared *overload* constructor signatures for the named
-        // class when present. The implementation signature is the one
-        // that ends up in the static type's `__construct` member, but it
-        // is not visible to external `new C(...)` resolution.
+        var used_named_class_signatures = false;
+        // Named classes already carry their canonical constructor metadata.
+        // Prefer it to recursively walking the completed static-side object,
+        // whose methods can reference mutually-recursive generic classes.
         if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
             const callee_id = hir_mod.identifierOf(self.hir, callee_node);
-            if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
-                construct_sigs.clearRetainingCapacity();
-                try construct_sigs.appendSlice(self.gpa, overload_list.items);
+            if (self.class_static_types.get(callee_id.name)) |class_static_t| {
+                if (class_static_t == callee_t) {
+                    if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
+                        try construct_sigs.appendSlice(self.gpa, overload_list.items);
+                        used_named_class_signatures = true;
+                    } else if (self.class_constructor_sigs.get(callee_id.name)) |constructor_sig| {
+                        try construct_sigs.append(self.gpa, constructor_sig);
+                        used_named_class_signatures = true;
+                    }
+                }
             }
         }
+        if (!used_named_class_signatures) try self.collectConstructSignatures(callee_t, &construct_sigs);
         if (construct_sigs.items.len == 0) return null;
 
         const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
@@ -152660,13 +152722,19 @@ pub const Checker = struct {
                 const key_lit = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
                 var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer key_subs.deinit(self.gpa);
+                // Compose the outer alias substitutions with K -> key and
+                // specialize the original template in one memoized walk.
+                var outer_subs = subs.iterator();
+                while (outer_subs.next()) |entry| {
+                    try key_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                }
                 if (key_tp != types.Primitive.none) try key_subs.put(self.gpa, key_tp, key_lit);
                 var value_t = (if (self.isBuiltinMappedKeyTypeParameter(key_tp) and source_obj != types.Primitive.none)
                     try self.resolveObjectIndexedAccessType(source_obj, key_lit)
                 else
                     null) orelse
                     (if (key_tp != types.Primitive.none)
-                        try self.substituteType(template, &key_subs)
+                        try self.substituteTypeWithFreshMemo(m.template, &key_subs)
                     else
                         template);
                 const source_member = self.mappedSourceMemberInfo(source_obj, key);
@@ -152703,8 +152771,12 @@ pub const Checker = struct {
                     }
                     var number_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                     defer number_subs.deinit(self.gpa);
+                    var outer_subs = subs.iterator();
+                    while (outer_subs.next()) |entry| {
+                        try number_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                    }
                     try number_subs.put(self.gpa, key_tp, types.Primitive.number_t);
-                    break :blk try self.substituteType(template, &number_subs);
+                    break :blk try self.substituteTypeWithFreshMemo(m.template, &number_subs);
                 } else types.Primitive.none;
                 const result = self.interner.internObjectTypeWithIndexAndSymbol(
                     members.items,
@@ -152978,6 +153050,7 @@ pub const Checker = struct {
             }
             var preserved_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer preserved_params.deinit(self.gpa);
+            var signature_subs_changed = false;
             if (self.generic_signature_params.get(t)) |type_params| {
                 for (type_params) |param_t| {
                     if (subs.contains(param_t)) continue;
@@ -153016,6 +153089,7 @@ pub const Checker = struct {
                         param_t;
                     if (next_param_t != param_t) {
                         try signature_subs.put(self.gpa, param_t, next_param_t);
+                        signature_subs_changed = true;
                         const decl_node = self.type_parameter_decl_nodes.get(param_t) orelse
                             self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param_t));
                         if (decl_node) |decl| {
@@ -153029,16 +153103,17 @@ pub const Checker = struct {
                     try preserved_params.append(self.gpa, next_param_t);
                 }
             }
+            const effective_subs = if (signature_subs_changed) &signature_subs else subs;
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (params_snapshot) |p| try new.append(self.gpa, try self.substituteType(p, &signature_subs));
+            for (params_snapshot) |p| try new.append(self.gpa, try self.substituteType(p, effective_subs));
             const ret = if (self.interner.signatureReturn(t)) |r|
-                try self.substituteType(r, &signature_subs)
+                try self.substituteType(r, effective_subs)
             else
                 types.Primitive.void_t;
             const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
             const this_t_opt: ?TypeId = if (self.signatureThisParam(t)) |this_t|
-                try self.substituteType(this_t, &signature_subs)
+                try self.substituteType(this_t, effective_subs)
             else
                 null;
             const new_sig = if (this_t_opt) |this_t|
@@ -153078,7 +153153,7 @@ pub const Checker = struct {
             }
             if (self.signature_predicates.get(t)) |pred| {
                 var next_pred = pred;
-                next_pred.target_type = self.substituteType(pred.target_type, &signature_subs) catch pred.target_type;
+                next_pred.target_type = self.substituteType(pred.target_type, effective_subs) catch pred.target_type;
                 try self.signature_predicates.put(self.gpa, new_sig, next_pred);
             }
             if (preserved_params.items.len > 0) {
@@ -153094,7 +153169,7 @@ pub const Checker = struct {
                 const key: SignatureParamKey = .{ .signature = t, .param_index = @intCast(param_ix) };
                 if (self.signature_param_predicates.get(key)) |pred| {
                     var next_pred = pred;
-                    next_pred.target_type = self.substituteType(pred.target_type, &signature_subs) catch pred.target_type;
+                    next_pred.target_type = self.substituteType(pred.target_type, effective_subs) catch pred.target_type;
                     try self.signature_param_predicates.put(self.gpa, .{
                         .signature = new_sig,
                         .param_index = @intCast(param_ix),
@@ -262734,4 +262809,39 @@ test "checker: parity 701 string-mapping mismatches widen non-string literals" {
         TsCodes.type_not_assignable,
         "Type '{ foo: string; }' is not assignable to type 'Uppercase<string>'.",
     ));
+}
+
+test "checker: parity 901 recursive generic classes compose through mapped aliases" {
+    const s = try newSetup(
+        \\type Either<L, A> = Left<L, A> | Right<L, A>;
+        \\class Left<L, A> {
+        \\  readonly _A!: A;
+        \\  map<B>(f: (a: A) => B): Either<L, B> { return this as any; }
+        \\}
+        \\class Right<L, A> {
+        \\  readonly _A!: A;
+        \\  constructor(readonly value: A) {}
+        \\  map<B>(f: (a: A) => B): Either<L, B> { return new Right(f(this.value)); }
+        \\}
+        \\class Type<A, O = A, I = unknown> {
+        \\  readonly _A!: A;
+        \\  constructor(readonly validate: (input: I) => Either<{}[], A>) {}
+        \\}
+        \\interface Any extends Type<any, any, any> {}
+        \\type TypeOf<C extends Any> = C['_A'];
+        \\type ToB<S extends { [_ in string | number | symbol]: Any }> = { [K in keyof S]: TypeOf<S[K]> };
+        \\type ToA<S> = { [K in keyof S]: Type<S[K]> };
+        \\type NeededInfo<S = {}> = { ASchema: ToA<S> };
+        \\type MyInfo = NeededInfo<ToB<{ initialize: any }>>;
+        \\function accept<N extends NeededInfo>(value: N) {}
+        \\class Server<X extends NeededInfo> {}
+        \\class MyServer extends Server<MyInfo> {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
