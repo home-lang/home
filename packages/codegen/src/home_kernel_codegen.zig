@@ -22,8 +22,17 @@ const StringLiteral = struct {
 /// A module-level mutable binding, lowered to a symbol in .bss or .data.
 /// Kernel subsystems keep their state in these — page bitmaps, counters,
 /// descriptor tables — so nothing in kernel/src/ compiles without them.
+/// Prefix for module-variable symbols. Home keeps functions and variables in
+/// separate namespaces; assembly does not, and this tree has files where a
+/// `var free_pages` sits alongside a `fn free_pages`. Emitting both under the
+/// bare name makes the assembler reject the file outright.
+const GLOBAL_SYMBOL_PREFIX = "__home_g_";
+
 const GlobalVar = struct {
     name: []const u8,
+    /// The emitted assembly symbol, which is the name with the module-variable
+    /// prefix applied.
+    symbol: []const u8,
     /// The type exactly as written, so field and element access can resolve
     /// against it later.
     type_name: []const u8,
@@ -220,14 +229,25 @@ fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, 
     const close = matchingBracket(type_name) orelse return null;
     const inside = std.mem.trim(u8, type_name[1..close], " ");
 
+    // The count slot may be any constant expression — `MAX_PAGE_TABLES / 8`,
+    // `1 << 12` — not just a bare name. Accept anything made of identifier,
+    // digit, and arithmetic characters and let the evaluator judge it; a
+    // plain integer literal was already handled by parseArrayType.
     const isIdent = struct {
         fn f(t: []const u8) bool {
             if (t.len == 0) return false;
-            if (!std.ascii.isAlphabetic(t[0]) and t[0] != '_') return false;
+            var has_name_or_digit = false;
             for (t) |c| {
-                if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+                if (std.ascii.isAlphanumeric(c) or c == '_' or c == '.') {
+                    has_name_or_digit = true;
+                    continue;
+                }
+                switch (c) {
+                    ' ', '\t', '+', '-', '*', '/', '%', '<', '>', '(', ')' => {},
+                    else => return false,
+                }
             }
-            return true;
+            return has_name_or_digit;
         }
     }.f;
 
@@ -489,6 +509,133 @@ pub const HomeKernelCodegen = struct {
     // guessing a stride and silently reading the wrong memory.
 
     /// Size of a type as written: primitive, struct, array, or pointer.
+    /// Evaluate a constant expression written inside an array type's
+    /// brackets — `[MAX_PAGE_TABLES / 8]u8`. The constant folder works on the
+    /// AST, but a type is a string by the time it reaches here, so this is a
+    /// small recursive-descent evaluator over that text. Identifiers resolve
+    /// against the module constants table.
+    const ConstExprParser = struct {
+        text: []const u8,
+        pos: usize = 0,
+        cg: *HomeKernelCodegen,
+
+        fn skipSpace(self: *ConstExprParser) void {
+            while (self.pos < self.text.len and (self.text[self.pos] == ' ' or self.text[self.pos] == '\t')) {
+                self.pos += 1;
+            }
+        }
+
+        fn peek(self: *ConstExprParser) ?u8 {
+            self.skipSpace();
+            return if (self.pos < self.text.len) self.text[self.pos] else null;
+        }
+
+        fn eat(self: *ConstExprParser, c: u8) bool {
+            if (self.peek() == c) {
+                self.pos += 1;
+                return true;
+            }
+            return false;
+        }
+
+        fn eatOp2(self: *ConstExprParser, a: u8, b: u8) bool {
+            self.skipSpace();
+            if (self.pos + 1 < self.text.len and self.text[self.pos] == a and self.text[self.pos + 1] == b) {
+                self.pos += 2;
+                return true;
+            }
+            return false;
+        }
+
+        fn primary(self: *ConstExprParser) ?i64 {
+            self.skipSpace();
+            if (self.pos >= self.text.len) return null;
+            const c = self.text[self.pos];
+
+            if (c == '(') {
+                self.pos += 1;
+                const v = self.additive() orelse return null;
+                if (!self.eat(')')) return null;
+                return v;
+            }
+            if (c == '-') {
+                self.pos += 1;
+                const v = self.primary() orelse return null;
+                return -v;
+            }
+            if (std.ascii.isDigit(c)) {
+                const start = self.pos;
+                // Accept 0x / 0b prefixes and the digits after them.
+                while (self.pos < self.text.len and
+                    (std.ascii.isAlphanumeric(self.text[self.pos]) or self.text[self.pos] == '_'))
+                {
+                    self.pos += 1;
+                }
+                return std.fmt.parseInt(i64, self.text[start..self.pos], 0) catch null;
+            }
+            if (std.ascii.isAlphabetic(c) or c == '_') {
+                const start = self.pos;
+                while (self.pos < self.text.len and
+                    (std.ascii.isAlphanumeric(self.text[self.pos]) or self.text[self.pos] == '_' or self.text[self.pos] == '.'))
+                {
+                    self.pos += 1;
+                }
+                return self.cg.globals.get(self.text[start..self.pos]);
+            }
+            return null;
+        }
+
+        fn multiplicative(self: *ConstExprParser) ?i64 {
+            var left = self.primary() orelse return null;
+            while (true) {
+                self.skipSpace();
+                if (self.eat('*')) {
+                    const r = self.primary() orelse return null;
+                    left *%= r;
+                } else if (self.eat('/')) {
+                    const r = self.primary() orelse return null;
+                    if (r == 0) return null;
+                    left = @divTrunc(left, r);
+                } else if (self.eat('%')) {
+                    const r = self.primary() orelse return null;
+                    if (r == 0) return null;
+                    left = @rem(left, r);
+                } else return left;
+            }
+        }
+
+        fn additive(self: *ConstExprParser) ?i64 {
+            var left = self.multiplicative() orelse return null;
+            while (true) {
+                self.skipSpace();
+                if (self.eatOp2('<', '<')) {
+                    const r = self.multiplicative() orelse return null;
+                    if (r < 0 or r > 63) return null;
+                    left <<= @intCast(r);
+                } else if (self.eatOp2('>', '>')) {
+                    const r = self.multiplicative() orelse return null;
+                    if (r < 0 or r > 63) return null;
+                    left >>= @intCast(r);
+                } else if (self.eat('+')) {
+                    const r = self.multiplicative() orelse return null;
+                    left +%= r;
+                } else if (self.eat('-')) {
+                    const r = self.multiplicative() orelse return null;
+                    left -%= r;
+                } else return left;
+            }
+        }
+    };
+
+    fn evalConstExprText(self: *HomeKernelCodegen, text: []const u8) ?i64 {
+        var parser = ConstExprParser{ .text = text, .cg = self };
+        const value = parser.additive() orelse return null;
+        parser.skipSpace();
+        // Trailing junk means this was not a constant expression after all.
+        if (parser.pos != parser.text.len) return null;
+        return value;
+    }
+
     /// Parse an array type, resolving a length written as a named constant.
     /// `[MAGAZINE_SIZE]u64` is how this tree sizes most of its tables, and a
     /// struct containing one cannot be laid out until the name resolves.
@@ -496,7 +643,7 @@ pub const HomeKernelCodegen = struct {
         const type_name = splitAlign(raw).bare;
         if (parseArrayType(type_name)) |arr| return .{ .count = arr.count, .elem_type = arr.elem_type };
         if (parseArrayTypeNamed(type_name)) |named| {
-            const value = self.globals.get(named.count_name) orelse return null;
+            const value = self.evalConstExprText(named.count_name) orelse return null;
             if (value < 0) return null;
             return .{ .count = @intCast(value), .elem_type = named.elem_type };
         }
@@ -910,7 +1057,7 @@ pub const HomeKernelCodegen = struct {
                     return self.local_types.get(id.name) orelse "";
                 }
                 if (self.global_vars.get(id.name)) |g| {
-                    try self.print("    leaq {s}(%rip), %rax\n", .{g.name});
+                    try self.print("    leaq {s}(%rip), %rax\n", .{g.symbol});
                     return g.type_name;
                 }
                 try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
@@ -964,6 +1111,19 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    # ERROR: cannot resolve .{s}: the base has no known type\n", .{m.member});
                     return null;
                 };
+                // `.ptr` is the address of the data, whatever carries it:
+                // a slice's first word, or an array or pointer's own value.
+                if (std.mem.eql(u8, m.member, "ptr")) {
+                    const bare = splitAlign(base_type).bare;
+                    if (isSliceType(bare)) {
+                        _ = try self.emitAddress(m.object) orelse return null;
+                        return "[*]u8";
+                    }
+                    if (self.arrayType(bare) != null or isPointerType(bare)) {
+                        _ = try self.emitAddress(m.object) orelse return null;
+                        return "[*]u8";
+                    }
+                }
                 // A slice's only field is its length, the second word.
                 if (isSliceType(splitAlign(base_type).bare) and std.mem.eql(u8, m.member, "len")) {
                     _ = try self.emitAddress(m.object) orelse return null;
@@ -1112,10 +1272,17 @@ pub const HomeKernelCodegen = struct {
     fn declareGlobalVar(self: *HomeKernelCodegen, decl: *const ast.LetDecl) !bool {
         const type_name = decl.type_name orelse return false;
 
+        const symbol = try std.fmt.allocPrint(
+            self.import_arena.allocator(),
+            GLOBAL_SYMBOL_PREFIX ++ "{s}",
+            .{decl.name},
+        );
+
         if (self.arrayType(type_name)) |arr| {
             const elem = self.sizeOf(arr.elem_type) orelse return false;
             try self.global_vars.put(decl.name, .{
                 .name = decl.name,
+                .symbol = symbol,
                 .type_name = type_name,
                 .size = arr.count * elem,
                 .elem_size = elem,
@@ -1130,6 +1297,7 @@ pub const HomeKernelCodegen = struct {
         if (self.structs.get(type_name)) |info| {
             try self.global_vars.put(decl.name, .{
                 .name = decl.name,
+                .symbol = symbol,
                 .type_name = type_name,
                 .size = info.size,
                 .elem_size = info.alignment,
@@ -1151,6 +1319,7 @@ pub const HomeKernelCodegen = struct {
         }
         try self.global_vars.put(decl.name, .{
             .name = decl.name,
+            .symbol = symbol,
             .type_name = type_name,
             .size = size,
             .elem_size = size,
@@ -1182,7 +1351,7 @@ pub const HomeKernelCodegen = struct {
                     else => ".quad",
                 };
                 try self.print(".align {d}\n", .{g.size});
-                try self.print("{s}:\n", .{g.name});
+                try self.print("{s}:\n", .{g.symbol});
                 try self.print("    {s} {d}\n", .{ directive, v });
             }
         }
@@ -1197,7 +1366,7 @@ pub const HomeKernelCodegen = struct {
                 // page alignment on everything.
                 const alignment = @min(g.elem_size, @as(usize, 16));
                 try self.print(".align {d}\n", .{alignment});
-                try self.print("{s}:\n", .{g.name});
+                try self.print("{s}:\n", .{g.symbol});
                 try self.print("    .zero {d}\n", .{g.size});
             }
         }
@@ -1479,6 +1648,15 @@ pub const HomeKernelCodegen = struct {
         //   struct layouts     ->  global sizes, strides, field offsets
         for (program.statements) |stmt| {
             if (stmt == .FnDecl) {
+                // Two definitions of one name emit two labels with it, and
+                // the assembler rejects the whole file with no indication of
+                // which source line is at fault. Say so here instead.
+                if (!stmt.FnDecl.is_forward_decl and self.declared_fns.contains(stmt.FnDecl.name)) {
+                    try self.print(
+                        "# ERROR: {s} is defined more than once in this module\n",
+                        .{stmt.FnDecl.name},
+                    );
+                }
                 try self.declared_fns.put(stmt.FnDecl.name, {});
                 if (stmt.FnDecl.return_type) |rt| {
                     try self.fn_return_types.put(stmt.FnDecl.name, rt);
@@ -2075,7 +2253,7 @@ pub const HomeKernelCodegen = struct {
                             if (g.is_array) {
                                 try self.print("    # ERROR: cannot assign to the array {s} as a whole\n", .{g.name});
                             } else if (storeFor(g.size)) |st| {
-                                try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.name });
+                                try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.symbol });
                             } else {
                                 try self.print("    # ERROR: cannot store {s} of size {d}\n", .{ g.name, g.size });
                             }
@@ -2147,10 +2325,10 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    movq ${d}, %rax\n", .{value});
                 } else if (self.global_vars.get(id.name)) |g| {
                     if (g.is_array) {
-                        try self.print("    leaq {s}(%rip), %rax\n", .{g.name});
+                        try self.print("    leaq {s}(%rip), %rax\n", .{g.symbol});
                     } else if (loadFor(g.size)) |ld| {
                         if (g.size < 8) try self.writeAll("    xorq %rax, %rax\n");
-                        try self.print("    {s} {s}(%rip), %{s}\n", .{ ld.insn, g.name, ld.reg });
+                        try self.print("    {s} {s}(%rip), %{s}\n", .{ ld.insn, g.symbol, ld.reg });
                     } else {
                         try self.print("    # ERROR: cannot load {s} of size {d}\n", .{ g.name, g.size });
                         try self.writeAll("    movq $0, %rax\n");
