@@ -101,6 +101,12 @@ fn charLiteralValue(lexeme: []const u8) ?i64 {
         '\\' => 92,
         '\'' => 39,
         '"' => 34,
+        // Additional C-style escapes; kernel sources use these in console
+        // and keyboard handling paths.
+        'a' => 7, // bell
+        'b' => 8, // backspace
+        'f' => 12, // form feed
+        'v' => 11, // vertical tab
         else => null,
     };
 }
@@ -1080,6 +1086,9 @@ pub const HomeKernelCodegen = struct {
             // A string literal's value is the address of its bytes, so a local
             // initialized from one is a byte pointer and may be indexed.
             .StringLiteral => return "[*]u8",
+            // A struct literal has the type it names; this sizes an inferred
+            // local's slot to the full struct, not one word.
+            .StructLiteral => |lit| return lit.type_name,
             else => return null,
         }
     }
@@ -1274,6 +1283,67 @@ pub const HomeKernelCodegen = struct {
         try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
     }
 
+    /// Write a struct literal's fields directly into the struct storage whose
+    /// address is on top of the stack (the caller pushes it). Bytes no field
+    /// covers are zeroed first, which is what a literal means: fields you do
+    /// not mention are zero, not garbage. Field value expressions run with
+    /// the base address pushed again so they cannot clobber it.
+    fn emitStructLiteralToMemory(
+        self: *HomeKernelCodegen,
+        type_name: []const u8,
+        lit: *const ast.StructLiteralExpr,
+    ) !void {
+        const bare = splitAlign(type_name).bare;
+        const info = self.structs.get(bare) orelse {
+            try self.print("    # ERROR: struct literal of unknown type {s}\n", .{type_name});
+            try self.writeAll("    addq $8, %rsp\n");
+            return;
+        };
+        if (info.is_bitfield) {
+            // A bitfield literal IS an integer: build it in %rax via the
+            // expression path, then store over the destination.
+            // generateExpr takes a pointer, so the wrapper needs storage.
+            // The union holds a mutable pointer; nothing here writes through it.
+            var as_expr = ast.Expr{ .StructLiteral = @constCast(lit) };
+            try self.generateExpr(&as_expr);
+            try self.writeAll("    popq %rdx\n");
+            try self.print("    movq %rax, (%rdx)\n", .{});
+            return;
+        }
+
+        try self.writeAll("    popq %rdi\n");
+        // Zero the full width so unmentioned fields read as zero.
+        try self.print("    movq ${d}, %rcx\n", .{info.size});
+        try self.writeAll("    xorq %rax, %rax\n");
+        try self.writeAll("    cld\n");
+        try self.writeAll("    rep stosb\n");
+
+        for (lit.fields) |fi| {
+            var field: ?FieldInfo = null;
+            for (info.fields) |f| {
+                if (std.mem.eql(u8, f.name, fi.name)) {
+                    field = f;
+                    break;
+                }
+            }
+            const f = field orelse {
+                try self.print("    # ERROR: {s} has no field {s}\n", .{ info.name, fi.name });
+                continue;
+            };
+            // Base address survives the field's value expression.
+            try self.writeAll("    pushq %rdi\n");
+            try self.generateExpr(fi.value);
+            try self.writeAll("    popq %rdi\n");
+            const st = storeFor(f.size) orelse {
+                // Wide fields (arrays, nested structs) need a copy, not a
+                // register store; refuse rather than truncate.
+                try self.print("    # ERROR: cannot lower field {s}.{s} of {d} bytes\n", .{ info.name, f.name, f.size });
+                continue;
+            };
+            try self.print("    {s} %{s}, {d}(%rdi)\n", .{ st.insn, st.reg, f.offset });
+        }
+    }
+
     /// Evaluate `value` and store it at the address in %rax.
     fn emitStoreToAddress(
         self: *HomeKernelCodegen,
@@ -1282,16 +1352,30 @@ pub const HomeKernelCodegen = struct {
     ) !void {
         const size = self.sizeOf(type_name) orelse 8;
 
+        // A struct literal is lowered field-by-field straight into the
+        // destination; no intermediate copy exists anywhere.
+        if (value.* == .StructLiteral) {
+            try self.writeAll("    pushq %rax\n");
+            try self.emitStructLiteralToMemory(type_name, value.StructLiteral);
+            return;
+        }
+
         // A struct or array does not fit in a register: assigning one is a
-        // memory copy. Both sides are addresses.
+        // memory copy. Both sides are addresses. When the source is a plain
+        // addressable form its address is emitted; anything else (a call
+        // returning a struct, say) is evaluated first — the convention is
+        // that such an expression leaves the struct's address in %rax — and
+        // copied out of immediately, before that storage can go stale.
         if (self.isStorageType(type_name)) {
             try self.writeAll("    pushq %rax\n");           // destination
-            _ = try self.emitAddress(value) orelse {
-                try self.writeAll("    addq $8, %rsp\n");
-                return;
-            };
-            try self.writeAll("    movq %rax, %rsi\n");      // source
-            try self.writeAll("    popq %rdi\n");            // destination
+            if (try self.emitAddress(value)) |_| {
+                try self.writeAll("    movq %rax, %rsi\n");      // source
+                try self.writeAll("    popq %rdi\n");            // destination
+            } else {
+                try self.generateExpr(value);
+                try self.writeAll("    movq %rax, %rsi\n");
+                try self.writeAll("    popq %rdi\n");
+            }
             try self.print("    movq ${d}, %rcx\n", .{size});
             try self.writeAll("    cld\n");
             try self.writeAll("    rep movsb\n");
@@ -1900,13 +1984,31 @@ pub const HomeKernelCodegen = struct {
                 // first — and expression codegen pushes constantly.
                 // An array local is storage, not a value: its slot holds the
                 // elements themselves, so there is nothing to store into it.
-                if (decl.type_name) |tn| {
+                // The written type is preferred; an inferred binding whose
+                // initializer reveals a storage type (a struct literal, say)
+                // gets the same treatment — the slot was sized for it.
+                var storage_type: ?[]const u8 = decl.type_name;
+                if (storage_type == null) {
+                    if (decl.value) |v| {
+                        if (v.* == .StructLiteral) {
+                            storage_type = v.StructLiteral.type_name;
+                        } else if (self.local_types.get(decl.name)) |inferred| {
+                            storage_type = inferred;
+                        }
+                    }
+                }
+                if (storage_type) |tn| {
                     if (self.isStorageType(tn)) {
                         // `let buf: [N]u8 = undefined` reserves storage and
                         // initializes nothing. An initializer that is itself
                         // an aggregate is copied into the slot.
                         if (decl.value) |value| {
-                            if (self.typeOfLValue(value) != null) {
+                            if (value.* == .StructLiteral) {
+                                if (self.locals.get(decl.name)) |slot| {
+                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emitStructLiteralToMemory(tn, value.StructLiteral);
+                                }
+                            } else if (self.typeOfLValue(value) != null) {
                                 if (self.locals.get(decl.name)) |slot| {
                                     try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
                                     try self.emitStoreToAddress(tn, value);
@@ -2010,6 +2112,78 @@ pub const HomeKernelCodegen = struct {
                 for (block.statements) |inner| {
                     try self.generateStmt(inner);
                 }
+            },
+            .SwitchStmt => |sw| {
+                // Match-style switch statement: `switch x { pat => {...}, _ => {...} }`.
+                // Lowered as a comparison chain: all comparisons first, then
+                // all bodies — so a non-matching clause falls through to the
+                // next comparison, never into a foreign body. The scrutinee
+                // is evaluated once and kept on the stack. Case bodies do
+                // not fall through; `break` inside a case continues to
+                // target the enclosing loop.
+                const label_num = self.freshLabel();
+                const end_label = try std.fmt.allocPrint(self.allocator, ".L_switch_end_{d}", .{label_num});
+                defer self.allocator.free(end_label);
+
+                try self.generateExpr(sw.value);
+                try self.writeAll("    pushq %rax\n");
+
+                // Pass 1: one body label per non-default clause, then all
+                // the comparisons.
+                const BodyLabel = struct { label: []const u8, clause_idx: usize };
+                // Unmanaged ArrayList: this Zig version takes the allocator
+                // per call rather than storing it.
+                var bodies: std.ArrayList(BodyLabel) = .{ .items = &[_]BodyLabel{}, .capacity = 0 };
+                defer {
+                    for (bodies.items) |b| self.allocator.free(b.label);
+                    bodies.deinit(self.allocator);
+                }
+                var default_clause: ?usize = null;
+                for (sw.cases, 0..) |clause, idx| {
+                    if (clause.is_default) {
+                        default_clause = idx;
+                    } else {
+                        const lbl = try std.fmt.allocPrint(self.allocator, ".L_switch_case_{d}_{d}", .{ label_num, idx });
+                        try bodies.append(self.allocator, .{ .label = lbl, .clause_idx = idx });
+                    }
+                }
+
+                for (bodies.items) |b| {
+                    const clause = sw.cases[b.clause_idx];
+                    for (clause.patterns) |pattern| {
+                        // Pattern into %rax, saved to %rcx; scrutinee loaded
+                        // from the stack; compare and branch on equality.
+                        try self.generateExpr(pattern);
+                        try self.writeAll("    movq %rax, %rcx\n");
+                        try self.writeAll("    movq (%rsp), %rax\n");
+                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        try self.print("    je {s}\n", .{b.label});
+                    }
+                }
+                if (default_clause) |di| {
+                    try self.print("    jmp .L_switch_case_{d}_{d}\n", .{ label_num, di });
+                }
+                try self.print("    jmp {s}\n", .{end_label});
+
+                // Pass 2: bodies, each closed with a jump to the end.
+                for (bodies.items) |b| {
+                    try self.print("{s}:\n", .{b.label});
+                    const clause = sw.cases[b.clause_idx];
+                    for (clause.body) |body_stmt| {
+                        try self.generateStmt(body_stmt);
+                    }
+                    try self.print("    jmp {s}\n", .{end_label});
+                }
+                if (default_clause) |di| {
+                    try self.print(".L_switch_case_{d}_{d}:\n", .{ label_num, di });
+                    for (sw.cases[di].body) |body_stmt| {
+                        try self.generateStmt(body_stmt);
+                    }
+                    try self.print("    jmp {s}\n", .{end_label});
+                }
+
+                try self.print("{s}:\n", .{end_label});
+                try self.writeAll("    addq $8, %rsp\n");
             },
             // Declarations that describe types or module structure emit no
             // code by design; they are consumed by the pre-passes.
@@ -2443,10 +2617,19 @@ pub const HomeKernelCodegen = struct {
                         return;
                     }
                 }
-                // An ordinary struct literal has to be written into storage,
-                // and as a bare expression there is nowhere to put it. The
-                // assignment path handles `x = Type { ... }` directly.
-                try self.print("    # ERROR: struct literal of {s} needs a destination\n", .{lit.type_name});
+                // A bare struct literal materializes on the stack and leaves
+                // its address in %rax — the same "structs are storage" rule
+                // loads use. The LetDecl and assignment paths bypass this
+                // and write fields straight into the destination slot.
+                if (self.structs.get(splitAlign(lit.type_name).bare)) |info| {
+                    const aligned = (info.size + 15) / 16 * 16;
+                    try self.print("    subq ${d}, %rsp\n", .{aligned});
+                    try self.writeAll("    pushq %rsp\n");
+                    try self.emitStructLiteralToMemory(lit.type_name, lit);
+                    try self.writeAll("    movq %rsp, %rax\n");
+                    return;
+                }
+                try self.print("    # ERROR: struct literal of unknown type {s}\n", .{lit.type_name});
                 try self.writeAll("    movq $0, %rax\n");
             },
             .CharLiteral => |lit| {

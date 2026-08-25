@@ -6681,6 +6681,41 @@ pub const Parser = struct {
     /// `else` token (which sits at NullCoalesce) reliably terminates the
     /// then-branch. `else` is mandatory; an if-without-else used as an
     /// expression is a type error caught downstream.
+    /// Parse the `{ ... }` body of an if-expression branch, with the opening
+    /// brace already consumed.
+    ///
+    /// A branch may hold a sequence of statements whose value is its trailing
+    /// expression, not only a single expression:
+    ///
+    ///     let pdpt = if create {
+    ///         getOrCreatePDPT(idx, user)
+    ///     } else {
+    ///         let phys = physicalAddress(entry)
+    ///         if aligned(phys) { fromInt(phys) } else { null }
+    ///     }
+    ///
+    /// This used to parse the branch with `expression()`, which reads exactly
+    /// one expression. A branch holding a statement therefore left the parser
+    /// mid-block, and the following `expect(RightBrace)` consumed the brace
+    /// closing the *enclosing function*. The result parsed without error into
+    /// a different program: the `let` binding vanished and every statement
+    /// after it was hoisted to module scope. Nothing downstream could see the
+    /// cause — the type checker simply reported the vanished name as
+    /// undefined at each of its uses.
+    ///
+    /// A single-expression branch still yields that expression directly, so
+    /// the common case produces the same AST as before.
+    fn braceBranch(self: *Parser) !*ast.Expr {
+        const block = try self.blockExprParse();
+        if (block.* == .BlockExpr) {
+            const stmts = block.BlockExpr.statements;
+            if (stmts.len == 1 and stmts[0] == .ExprStmt) {
+                return stmts[0].ExprStmt;
+            }
+        }
+        return block;
+    }
+
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
         // Parse condition - let expression() handle all grouping naturally.
@@ -6699,8 +6734,7 @@ pub const Parser = struct {
             then_branch = try self.parsePrecedence(.Or);
         } else if (uses_brace) {
             _ = self.advance(); // consume `{`
-            then_branch = try self.expression();
-            _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+            then_branch = try self.braceBranch();
         } else {
             // Bare expression form (issue #54): the arm is just an
             // expression. Parse at Or-precedence so `else` terminates it.
@@ -6716,8 +6750,7 @@ pub const Parser = struct {
             else_branch = try self.ifExpr();
         } else if (uses_brace and self.check(.LeftBrace)) {
             _ = self.advance();
-            else_branch = try self.expression();
-            _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
+            else_branch = try self.braceBranch();
         } else if (uses_then) {
             else_branch = try self.parsePrecedence(.Or);
         } else {

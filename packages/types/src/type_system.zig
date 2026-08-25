@@ -1417,8 +1417,21 @@ pub const TypeChecker = struct {
                 if (decl.value) |value| {
                     // BIDIRECTIONAL CHECKING: If type annotation exists, CHECK the value
                     // Otherwise, SYNTHESIZE the type from the value
+                    // A binding is entered into scope even when its
+                    // initializer cannot be typed. Previously a failure here
+                    // propagated out of this arm and `env.define` below never
+                    // ran, so the name simply did not exist — and every later
+                    // use of it reported "Undefined variable", pointing at the
+                    // use rather than at the initializer that actually failed.
+                    // One un-inferable `let` produced fifteen errors in
+                    // home-os's vmm.home, none of them at the real cause.
+                    //
+                    // Void is this checker's "unknown", and it already treats
+                    // Void as compatible with everything (see
+                    // checkExpressionAgainst), so an un-typed binding degrades
+                    // to gradual typing instead of cascading.
                     const value_type = if (decl.type_name) |type_name| blk: {
-                        const declared_type = try self.parseTypeName(type_name);
+                        const declared_type = self.parseTypeName(type_name) catch Type.Void;
                         // CHECK mode: propagate the declared type as a
                         // hint into the initializer so numeric literals
                         // and array literals adopt the destination
@@ -1426,12 +1439,14 @@ pub const TypeChecker = struct {
                         // default. The synthesized value type is then
                         // validated against the declared type the same
                         // way `checkExpression` did.
-                        const synthesized = try self.inferExpressionWithHint(value, declared_type);
-                        try self.checkExpressionAgainst(value, declared_type, synthesized);
+                        const synthesized = self.inferExpressionWithHint(value, declared_type) catch {
+                            break :blk declared_type;
+                        };
+                        self.checkExpressionAgainst(value, declared_type, synthesized) catch {};
                         break :blk declared_type;
                     } else blk: {
-                        // SYNTHESIS mode: infer type from value
-                        break :blk try self.synthesizeExpression(value);
+                        // SYNTHESIS mode: infer type from value.
+                        break :blk self.synthesizeExpression(value) catch Type.Void;
                     };
 
                     // If the value is an identifier, mark it as moved (if movable)
@@ -3274,6 +3289,21 @@ pub const TypeChecker = struct {
         // Allow Void (unknown) types to be sliced - return Void
         if (array_type == .Void) {
             return Type.Void;
+        }
+
+        // Slicing a pointer produces a slice of the pointee. This is how a
+        // kernel turns an address handed to it by a syscall into something
+        // with a length — `ptr[0..len]` — and it is the one slice form a
+        // JavaScript type system has no reason to allow, since it has no
+        // pointers. Without it the only way to pass such data on is a bare
+        // pointer to a parameter that will read `.len` off it.
+        if (array_type == .Reference or array_type == .MutableReference) {
+            const pointee = switch (array_type) {
+                .Reference => |inner| inner,
+                .MutableReference => |inner| inner,
+                else => unreachable,
+            };
+            return Type{ .Array = .{ .element_type = pointee } };
         }
 
         // Array must be an array type
