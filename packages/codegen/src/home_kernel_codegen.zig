@@ -93,11 +93,16 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
         std.mem.eql(u8, type_name, "bool")) return 1;
     if (std.mem.eql(u8, type_name, "u16") or std.mem.eql(u8, type_name, "i16")) return 2;
     if (std.mem.eql(u8, type_name, "u32") or std.mem.eql(u8, type_name, "i32")) return 4;
+    // 128-bit descriptors: an IDT or GDT entry is one of these.
+    if (std.mem.eql(u8, type_name, "u128") or std.mem.eql(u8, type_name, "i128")) return 16;
     if (std.mem.eql(u8, type_name, "u64") or std.mem.eql(u8, type_name, "i64") or
         std.mem.eql(u8, type_name, "usize") or std.mem.eql(u8, type_name, "isize") or
         std.mem.eql(u8, type_name, "int") or std.mem.eql(u8, type_name, "uint")) return 8;
     // Pointers are word-sized whatever they point at.
     if (type_name.len > 0 and (type_name[0] == '*' or type_name[0] == '&')) return 8;
+    // A function type in a value position is a function pointer.
+    if (std.mem.startsWith(u8, type_name, "fn(") or
+        std.mem.startsWith(u8, type_name, "fn (")) return 8;
     return null;
 }
 
@@ -857,7 +862,14 @@ pub const HomeKernelCodegen = struct {
             },
             .IndexExpr => |idx| {
                 const base = self.typeOfLValue(idx.array) orelse return null;
-                return pointeeType(base);
+                const inner = pointeeType(base) orelse return null;
+                // `entries: *[DirEntryInfo; 256]` indexed reaches an element,
+                // not the array: a pointer to an array is a handle on the
+                // array, and this tree writes `entries[i].size`.
+                if (isPointerType(splitAlign(base).bare)) {
+                    if (pointeeType(inner)) |elem| return elem;
+                }
+                return inner;
             },
             .MemberExpr => |m| {
                 var base = splitAlign(self.typeOfLValue(m.object) orelse return null).bare;
@@ -909,21 +921,33 @@ pub const HomeKernelCodegen = struct {
                     try self.writeAll("    # ERROR: cannot index: the base has no known type\n");
                     return null;
                 };
-                const elem_type = pointeeType(base_type) orelse {
+                var elem_type = pointeeType(base_type) orelse {
                     try self.print("    # ERROR: cannot index a value of type {s}\n", .{base_type});
                     return null;
                 };
+                const bare_base = splitAlign(base_type).bare;
+                // Through a pointer-to-array, indexing reaches the element:
+                // `entries: *[DirEntryInfo; 256]` written as `entries[i].size`.
+                if (isPointerType(bare_base)) {
+                    if (pointeeType(elem_type)) |inner| elem_type = inner;
+                }
                 const elem_size = self.sizeOf(elem_type) orelse {
                     try self.print("    # ERROR: cannot index: element type {s} has unknown size\n", .{elem_type});
                     return null;
                 };
 
-                // Base address first, stashed, then the index — so the index
-                // expression cannot clobber the base.
-                if (isPointerType(base_type)) {
-                    // A pointer's *value* is the base address.
+                // Get the address of element zero, stash it, then evaluate the
+                // index — so the index expression cannot clobber the base.
+                if (isSliceType(bare_base)) {
+                    // A slice indexes through its data pointer, not through
+                    // the address of the (pointer, length) pair itself.
+                    _ = try self.emitAddress(idx.array) orelse return null;
+                    try self.emitSliceData();
+                } else if (isPointerType(bare_base)) {
+                    // A pointer's value is already the base address.
                     try self.generateExpr(idx.array);
                 } else {
+                    // An array's storage starts at its own address.
                     _ = try self.emitAddress(idx.array) orelse return null;
                 }
                 try self.writeAll("    pushq %rax\n");
