@@ -92,7 +92,7 @@ pub const HomeKernelCodegen = struct {
 
             for (self.string_literals.items) |str_lit| {
                 try self.print(".L_str_{d}:", .{str_lit.label});
-                try self.print("    .asciz \"{s}\"", .{str_lit.content});
+                try self.print("    .asciz \"{s}\"\n", .{str_lit.content});
             }
         }
 
@@ -110,10 +110,10 @@ pub const HomeKernelCodegen = struct {
                     std.mem.eql(u8, func.name, "main");
 
                 if (is_export) {
-                    try self.print(".global {s}", .{func.name});
+                    try self.print(".global {s}\n", .{func.name});
                 }
 
-                try self.print("{s}:", .{func.name});
+                try self.print("{s}:\n", .{func.name});
 
                 // Function prologue
                 const attrs = kernel_codegen.FunctionAttributes{
@@ -168,7 +168,7 @@ pub const HomeKernelCodegen = struct {
 
                 // Generate unique labels
                 const label_num = @intFromPtr(if_stmt);
-                try self.print("    jz .L_else_{d}", .{label_num});
+                try self.print("    jz .L_else_{d}\n", .{label_num});
 
                 // Then block
                 for (if_stmt.then_block.statements) |then_stmt| {
@@ -176,35 +176,35 @@ pub const HomeKernelCodegen = struct {
                 }
 
                 if (if_stmt.else_block) |else_block| {
-                    try self.print("    jmp .L_endif_{d}", .{label_num});
-                    try self.print(".L_else_{d}:", .{label_num});
+                    try self.print("    jmp .L_endif_{d}\n", .{label_num});
+                    try self.print(".L_else_{d}:\n", .{label_num});
 
                     for (else_block.statements) |else_stmt| {
                         try self.generateStmt(else_stmt);
                     }
 
-                    try self.print(".L_endif_{d}:", .{label_num});
+                    try self.print(".L_endif_{d}:\n", .{label_num});
                 } else {
-                    try self.print(".L_else_{d}:", .{label_num});
+                    try self.print(".L_else_{d}:\n", .{label_num});
                 }
             },
             .WhileStmt => |while_stmt| {
                 const label_num = @intFromPtr(while_stmt);
 
-                try self.print(".L_while_start_{d}:", .{label_num});
+                try self.print(".L_while_start_{d}:\n", .{label_num});
 
                 // Condition
                 try self.generateExpr(while_stmt.condition);
                 try self.writeAll("    testq %rax, %rax\n");
-                try self.print("    jz .L_while_end_{d}", .{label_num});
+                try self.print("    jz .L_while_end_{d}\n", .{label_num});
 
                 // Body
                 for (while_stmt.body.statements) |body_stmt| {
                     try self.generateStmt(body_stmt);
                 }
 
-                try self.print("    jmp .L_while_start_{d}", .{label_num});
-                try self.print(".L_while_end_{d}:", .{label_num});
+                try self.print("    jmp .L_while_start_{d}\n", .{label_num});
+                try self.print(".L_while_end_{d}:\n", .{label_num});
             },
             .ReturnStmt => |return_stmt| {
                 // Generate return statement
@@ -228,20 +228,20 @@ pub const HomeKernelCodegen = struct {
         switch (expr.*) {
             .IntegerLiteral => |lit| {
                 // Load immediate value into %rax
-                try self.print("    movq ${d}, %rax", .{lit.value});
+                try self.print("    movq ${d}, %rax\n", .{lit.value});
             },
             .BooleanLiteral => |lit| {
                 // Load boolean as integer (0 or 1) into %rax
-                try self.print("    movq ${d}, %rax", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
+                try self.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
             },
             .InlineAsm => |asm_node| {
                 // Emit inline assembly instruction directly
-                try self.print("    {s}", .{asm_node.instruction});
+                try self.print("    {s}\n", .{asm_node.instruction});
             },
             .StringLiteral => |lit| {
                 // Create string constant in .rodata
                 const label_num = @intFromPtr(lit.value.ptr);
-                try self.print("    leaq .L_str_{d}(%rip), %rax", .{label_num});
+                try self.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
 
                 // Collect this string literal for emission later
                 try self.string_literals.append(self.allocator, .{
@@ -293,7 +293,7 @@ pub const HomeKernelCodegen = struct {
                             // Pop arguments into registers in correct order
                             for (0..call.args.len) |reg_idx| {
                                 if (reg_idx < arg_regs.len) {
-                                    try self.print("    popq %{s}", .{arg_regs[reg_idx]});
+                                    try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
                                 } else {
                                     // Arguments beyond 6 stay on stack for the call
                                     break;
@@ -302,7 +302,7 @@ pub const HomeKernelCodegen = struct {
                         }
 
                         // Call function
-                        try self.print("    call {s}", .{func_name});
+                        try self.print("    call {s}\n", .{func_name});
                     }
                 }
             },
@@ -338,11 +338,11 @@ pub const HomeKernelCodegen = struct {
                 // Load variable from stack
                 if (self.locals.get(id.name)) |offset| {
                     // Load from stack at offset from %rbp into %rax
-                    try self.print("    movq {d}(%rbp), %rax", .{offset});
+                    try self.print("    movq {d}(%rbp), %rax\n", .{offset});
                 } else {
                     // Variable not found in locals - might be global or parameter
                     // For now, just emit a comment
-                    try self.print("    # Load variable {s} (not in locals)", .{id.name});
+                    try self.print("    # Load variable {s} (not in locals)\n", .{id.name});
                 }
             },
             else => {
@@ -381,9 +381,9 @@ pub const HomeKernelCodegen = struct {
 
                 // Move to appropriate argument register
                 if (i == 0) {
-                    try self.print("    movq %rax, %{s}", .{arg_regs[i]});
+                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
                 } else {
-                    try self.print("    movq %rax, %{s}", .{arg_regs[i]});
+                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
                 }
             } else {
                 // Push additional arguments onto stack
@@ -393,12 +393,12 @@ pub const HomeKernelCodegen = struct {
         }
 
         // Call the external Zig function
-        try self.print("    call {s}", .{ffi_name.items});
+        try self.print("    call {s}\n", .{ffi_name.items});
 
         // Clean up stack if we pushed extra arguments
         if (args.len > arg_regs.len) {
             const stack_bytes = (args.len - arg_regs.len) * 8;
-            try self.print("    addq ${d}, %rsp", .{stack_bytes});
+            try self.print("    addq ${d}, %rsp\n", .{stack_bytes});
         }
     }
 };
