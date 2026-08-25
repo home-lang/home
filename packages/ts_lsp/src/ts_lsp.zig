@@ -2049,23 +2049,22 @@ pub const Service = struct {
             }
         }
 
-        // ---- Implement missing interface members (TS2420 -> TS90006/95032/95158)
-        // Upstream's implement-interface fixer is a language-service code
-        // action, not a compiler diagnostic. Offer it only when TS2420 is
-        // present and only for named interface members the class does not
-        // already declare. Type-incompatible existing members remain a
-        // checker error and do not get overwritten by this fixer.
+        // ---- Implement missing interface members (TS90006/95032/95158) ----
+        // This is a language-service action rather than a compiler
+        // diagnostic, so derive it from class/interface structure even when
+        // the current compile has no aggregate TS2420. Type-incompatible
+        // existing members remain checker errors and are not overwritten.
         var implement_interface_groups: std.ArrayListUnmanaged(ImplementInterfaceGroup) = .empty;
         defer {
             for (implement_interface_groups.items) |*group| group.deinit(gpa);
             implement_interface_groups.deinit(gpa);
         }
-        for (c.diagnostics.items) |d| {
-            if (d.code != ts_checker.check.TsCodes.class_incorrectly_implements_interface) continue;
-            const class_node = findClassDeclForImplementsDiagnostic(&c.hir, stmts, d.pos) orelse continue;
-            const class_payload = hir_mod.classOf(&c.hir, class_node);
+        var implement_class_node: hir_mod.NodeId = 0;
+        while (implement_class_node < c.hir.nodeCount()) : (implement_class_node += 1) {
+            if (c.hir.kindOf(implement_class_node) != .class_decl) continue;
+            const class_payload = hir_mod.classOf(&c.hir, implement_class_node);
             _ = classNameText(&c.hir, &c.interner, class_payload.name) orelse continue;
-            const insert_byte = classImplementationInsertByte(f.source, c.hir.spanOf(class_node)) orelse continue;
+            const insert_byte = classImplementationInsertByte(f.source, c.hir.spanOf(implement_class_node)) orelse continue;
             const indent = try classMemberIndent(gpa, f.source, insert_byte);
             defer gpa.free(indent);
             const implements_nodes = c.hir.childSlice(class_payload.implements_start, class_payload.implements_len);
@@ -2080,7 +2079,7 @@ pub const Service = struct {
                     gpa,
                     &c.hir,
                     &c.interner,
-                    class_node,
+                    implement_class_node,
                     iface_file.source,
                     &iface_comp.hir,
                     &iface_comp.interner,
@@ -5882,29 +5881,6 @@ fn implementInterfaceGroupExists(groups: []const ImplementInterfaceGroup, insert
         if (group.insert_byte == insert_byte and std.mem.eql(u8, group.interface_name, interface_name)) return true;
     }
     return false;
-}
-
-fn findClassDeclForImplementsDiagnostic(
-    hir: *const hir_mod.Hir,
-    stmts: []const hir_mod.NodeId,
-    pos: u32,
-) ?hir_mod.NodeId {
-    for (stmts) |stmt| {
-        var node = stmt;
-        if (hir.kindOf(node) == .export_decl) {
-            const ex = hir_mod.exportOf(hir, node);
-            if (ex.decl == hir_mod.none_node_id) continue;
-            node = ex.decl;
-        }
-        if (hir.kindOf(node) != .class_decl) continue;
-        const cls = hir_mod.classOf(hir, node);
-        if (cls.name == hir_mod.none_node_id) continue;
-        const name_span = hir.spanOf(cls.name);
-        if (pos >= name_span.start and pos <= name_span.end) return node;
-        const class_span = hir.spanOf(node);
-        if (pos >= class_span.start and pos <= class_span.end) return node;
-    }
-    return null;
 }
 
 fn classNameText(hir: *const hir_mod.Hir, interner: *const string_interner.Interner, name_node: hir_mod.NodeId) ?[]const u8 {
