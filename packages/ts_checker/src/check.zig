@@ -158509,29 +158509,7 @@ pub const Checker = struct {
         if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, type_node);
         if (r.qualifier_len != 0 or r.args_len != 0) return false;
-        var cur = self.hir.parentOf(type_node);
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
-            switch (self.hir.kindOf(cur)) {
-                .fn_decl, .fn_expr, .arrow_fn => {
-                    for (hir_mod.fnTypeParams(self.hir, cur)) |tp| {
-                        if (self.hir.kindOf(tp) != .type_parameter) continue;
-                        if (hir_mod.typeParameterOf(self.hir, tp).name == r.name) return true;
-                    }
-                    return false;
-                },
-                .fn_type => {
-                    const f = hir_mod.fnTypeOf(self.hir, cur);
-                    for (self.hir.childSlice(f.type_params_start, f.type_params_len)) |tp| {
-                        if (self.hir.kindOf(tp) != .type_parameter) continue;
-                        if (hir_mod.typeParameterOf(self.hir, tp).name == r.name) return true;
-                    }
-                    return false;
-                },
-                .block_stmt, .source_file => return false,
-                else => {},
-            }
-        }
-        return false;
+        return self.nameHasEnclosingTypeParameter(r.name, type_node);
     }
 
     fn typeNodeContainsEnclosingTypeParameter(self: *Checker, type_node: NodeId) bool {
@@ -161405,6 +161383,7 @@ pub const Checker = struct {
     ) !void {
         if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
         if (self.indexNodeIsVisibleTypeParameter(index_node)) return;
+        if (self.typeNodeContainsEnclosingTypeParameter(index_node)) return;
         if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
@@ -263175,4 +263154,21 @@ test "checker: parity 1101 declare-global functions satisfy classic JSX factory 
     s.checker.setJsxClassicRuntime(true);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
+}
+
+test "checker: parity 1151 nested generic lookup indexes stay deferred" {
+    const s = try newSetup(
+        \\type StringContains<S extends string, L extends string> =
+        \\  ({ [K in S]: 'true' } & { [key: string]: 'false' })[L];
+        \\type ObjectHasKey<O, L extends string> = StringContains<Extract<keyof O, string>, L>;
+        \\type E<T> = { true: 'true' }[ObjectHasKey<T, '1'>];
+        \\type Juxtapose<T> = ({ true: 'otherwise' } & { [k: string]: 'true' })[ObjectHasKey<T, '1'>];
+        \\type DeepError<T> = { true: 'true' }[Juxtapose<T>];
+        \\type DeepOK<T> = { true: 'true', otherwise: 'false' }[Juxtapose<T>];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
 }
