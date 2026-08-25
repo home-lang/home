@@ -69719,10 +69719,23 @@ pub const Checker = struct {
             .indexed_access_type => {
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
                 if (!try self.checkGenericAliasIndexedAccessBySyntax(ia.object, ia.index, type_params)) {
-                    if (!try self.indexedAccessReferencesOwnTypeParam(ia.object, ia.index, type_params)) {
+                    const references_own_type_param = try self.indexedAccessReferencesOwnTypeParam(
+                        ia.object,
+                        ia.index,
+                        type_params,
+                    );
+                    if (!references_own_type_param or !self.indexedAccessUsesEnclosingAlias(ia.object, node)) {
                         const obj_t = self.lowererLowerWithTypeParams(ia.object) catch types.Primitive.any;
                         const idx_t = self.lowererLowerWithTypeParams(ia.index) catch types.Primitive.any;
-                        try self.checkInvalidIndexedAccessType(node, ia.index, ia.object, obj_t, idx_t);
+                        try self.checkInvalidIndexedAccessType(
+                            node,
+                            ia.index,
+                            ia.object,
+                            obj_t,
+                            idx_t,
+                            !references_own_type_param,
+                        );
+                        try self.checkInvalidMappedObjectIndexedAccessType(node, ia.object, ia.index);
                     }
                 }
                 try self.checkInvalidIndexedAccessTypesInTypeNode(ia.object, type_params);
@@ -69737,6 +69750,12 @@ pub const Checker = struct {
                 for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
                     try self.checkInvalidIndexedAccessTypesInTypeNode(member, type_params);
                 }
+            },
+            .mapped_type => {
+                const mapped = hir_mod.mappedTypeOf(self.hir, node);
+                try self.checkInvalidIndexedAccessTypesInTypeNode(mapped.constraint, type_params);
+                try self.checkInvalidIndexedAccessTypesInTypeNode(mapped.value, type_params);
+                try self.checkInvalidIndexedAccessTypesInTypeNode(mapped.remap, type_params);
             },
             else => {},
         }
@@ -69778,6 +69797,21 @@ pub const Checker = struct {
                 try self.reportOnce(index_node, TsCodes.type_cannot_be_used_to_index_type, "Type cannot be used to index type.");
                 return true;
             }
+        }
+        return false;
+    }
+
+    fn indexedAccessUsesEnclosingAlias(self: *Checker, object_node: NodeId, access_node: NodeId) bool {
+        if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .type_ref) return false;
+        const reference = hir_mod.typeRefOf(self.hir, object_node);
+        if (reference.qualifier_len != 0) return false;
+
+        var current = access_node;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) != .type_alias_decl) continue;
+            const alias = hir_mod.typeAliasOf(self.hir, current);
+            if (alias.name == hir_mod.none_node_id or self.hir.kindOf(alias.name) != .identifier) return false;
+            return hir_mod.identifierOf(self.hir, alias.name).name == reference.name;
         }
         return false;
     }
@@ -75395,7 +75429,7 @@ pub const Checker = struct {
                 }
                 if (try self.resolveTypeofComputedIndexedMember(ia.index, obj)) |resolved| return resolved;
                 if (!self.indexedAccessUsesEnclosingMappedKey(ia.object, ia.index)) {
-                    try self.checkInvalidIndexedAccessType(type_node, ia.index, ia.object, obj, idx);
+                    try self.checkInvalidIndexedAccessType(type_node, ia.index, ia.object, obj, idx, true);
                 }
                 try self.checkInvalidMappedObjectIndexedAccessType(type_node, ia.object, ia.index);
                 if (self.hir.kindOf(ia.object) == .intersection_type and self.containsFreeTypeParameter(obj)) {
@@ -99842,9 +99876,6 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) CheckError!bool {
         if (constraint >= self.interner.pool.typeCount()) return false;
-        if (self.directKeyofOperand(constraint)) |operand| {
-            return (try self.lookupObjectMember(operand, name)) != null;
-        }
         const flags = self.interner.pool.flagsOf(constraint);
         if (flags.is_union) {
             for (self.interner.unionMembers(constraint)) |member| {
@@ -161771,10 +161802,11 @@ pub const Checker = struct {
         object_node: NodeId,
         object_t: TypeId,
         index_t: TypeId,
+        defer_enclosing_type_parameters: bool,
     ) !void {
         if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
-        if (self.indexNodeIsVisibleTypeParameter(index_node)) return;
-        if (self.typeNodeContainsEnclosingTypeParameter(index_node)) return;
+        if (defer_enclosing_type_parameters and self.indexNodeIsVisibleTypeParameter(index_node)) return;
+        if (defer_enclosing_type_parameters and self.typeNodeContainsEnclosingTypeParameter(index_node)) return;
         if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
@@ -183805,9 +183837,6 @@ pub const Checker = struct {
         if (constraint == types.Primitive.string_t) return !self.isSymbolNamedMember(key_name);
         if (constraint == types.Primitive.number_t) return self.isNumericPropertyName(key_name);
         if (constraint == types.Primitive.symbol_t) return self.isSymbolNamedMember(key_name);
-        if (self.directKeyofOperand(constraint)) |operand| {
-            return (try self.lookupObjectMember(operand, key_name)) != null;
-        }
         if (self.isSymbolNamedMember(key_name)) return try self.checkerAssignableTo(types.Primitive.symbol_t, constraint);
         const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
         if (try self.templateLiteralSourceAssignableToTarget(key_lit, constraint)) return true;
@@ -198065,7 +198094,6 @@ test "checker: typed var used in array literal emits TS2454" {
         \\let y = [x, 1];
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -198081,7 +198109,6 @@ test "checker: construct-signature typed var used as call arg emits TS2454" {
         \\use(C);
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -202186,6 +202213,7 @@ test "checker: private generic assertions use directional overlap and track defi
         \\<C4>c3;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.used_before_assignment));
@@ -214083,6 +214111,7 @@ test "checker: structurally matching recursive aliases flow through generic retu
         \\a = b;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.used_before_assignment));
