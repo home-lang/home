@@ -194720,6 +194720,7 @@ test "checker: JSX parity class spreads elaborate missing and weak managed props
         \\<Weak {...{ "data-prop": true }} />;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expect(checkerHasCodeAndMessage(
@@ -194746,6 +194747,7 @@ test "checker: JSX parity union class props retain managed intersection grouping
         \\<Component editable={true} />;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expect(checkerHasCodeAndMessage(
@@ -198189,6 +198191,7 @@ test "checker: empty for-of preserves never inference and maybe-unassigned var f
     );
     defer destroySetup(s);
     s.checker.setTargetEmitEs5(true);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(hasDiagnosticCodeMessage(
         s,
@@ -210108,6 +210111,7 @@ test "checker: async helpers retain ES5 IArguments for apply tuple checks" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_bind_call_apply = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.arguments_in_arrow_es5));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
@@ -210123,7 +210127,7 @@ test "checker: async helpers retain ES5 IArguments for apply tuple checks" {
         saw_number = saw_number or std.mem.eql(
             u8,
             d.message,
-            "Argument of type 'IArguments' is not assignable to parameter of type '[number]'.",
+            "Argument of type 'IArguments' is not assignable to parameter of type '[value: number]'.",
         );
     }
     try T.expect(saw_empty);
