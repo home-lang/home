@@ -71675,6 +71675,7 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         params: []const NodeId,
     ) CheckError!void {
+        if (self.diagnosticExists(node, TsCodes.generic_type_requires_between_args)) return;
         const min = self.declTypeParamMinTypeArgCount(params);
         var name_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer name_buf.deinit(self.gpa);
@@ -74333,6 +74334,14 @@ pub const Checker = struct {
                         for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                     }
                     return types.Primitive.any;
+                }
+                if (!self.nameHasEnclosingTypeParameter(r.name, type_node)) {
+                    if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
+                        const params = self.typeParamNodesOfDecl(decl);
+                        if (self.declTypeParamsHaveInvalidRangeTypeArgCount(params, r.args_len)) {
+                            try self.reportDeclGenericTypeRequiresBetweenArgs(type_node, r.name, params);
+                        }
+                    }
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     if (try self.circularTypeArgReference(r.name)) return types.Primitive.any;
@@ -138019,7 +138028,8 @@ pub const Checker = struct {
             if (try self.jsDocConstrainedTypeAssignable(comparable_arg, constraint, 0)) return;
             if (try self.tryReportTypeArgSingleMissingProperty(arg_node, comparable_arg, constraint, false)) return;
         }
-        if (try self.genericConstraintAssignable(arg_t, constraint)) return;
+        const broad_function_to_call = self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint);
+        if (!broad_function_to_call and try self.genericConstraintAssignable(arg_t, constraint)) return;
         if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
@@ -138061,7 +138071,6 @@ pub const Checker = struct {
         // though they pass our default `isAssignableTo` heuristic.
         const constraint_is_object = constraint == types.Primitive.object_t;
         const arg_is_nullish = arg_t == types.Primitive.null_t or arg_t == types.Primitive.undefined_t;
-        const broad_function_to_call = self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint);
         var chain: []const DiagnosticChainEntry = &.{};
         if (signature_constraint) |info| {
             if (!broad_function_to_call and self.typeArgSatisfiesSignatureConstraint(arg_t, info)) return;
@@ -240388,6 +240397,7 @@ test "checker: TS2344 fires for null arg violating extends object constraint" {
         \\var nul: Proxy<null>;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
