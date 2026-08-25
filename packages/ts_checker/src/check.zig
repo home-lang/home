@@ -108143,6 +108143,13 @@ pub const Checker = struct {
                     (self.interner.pool.flagsOf(obj_t).is_union or
                         (idx_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(idx_t).is_union));
                 if (obj_or_index_is_union) {
+                    if (idx_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(idx_t).is_union and
+                        !try self.computedPropertyKeyTypeIsValid(idx_t) and
+                        try self.reportInvalidTypeLevelIndexTypes(e.index, obj_t, idx_t))
+                    {
+                        break :blk types.Primitive.any;
+                    }
                     if (try self.resolveObjectIndexedAccessType(obj_t, union_tuple_idx_t)) |resolved| {
                         break :blk try self.optionalChainResult(
                             self.uncheckedIndexedAccessResult(obj_t, union_tuple_idx_t, resolved),
@@ -263307,4 +263314,21 @@ test "checker: parity 1351 quoted enum forward references do not recurse" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.enum_member_initializer_late_reference));
+}
+
+test "checker: parity 1401 non-strict union indexes validate every constituent" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\declare const arr1: (string | string[])[];
+        \\declare const arr2: number[];
+        \\const j = arr2[arr1[0]];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_cannot_be_used_as_index,
+        "Type 'string[]' cannot be used as an index type.",
+    ));
 }
