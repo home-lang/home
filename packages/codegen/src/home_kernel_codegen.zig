@@ -17,6 +17,71 @@ const StringLiteral = struct {
     content: []const u8,
 };
 
+/// A module-level mutable binding, lowered to a symbol in .bss or .data.
+/// Kernel subsystems keep their state in these — page bitmaps, counters,
+/// descriptor tables — so nothing in kernel/src/ compiles without them.
+const GlobalVar = struct {
+    name: []const u8,
+    /// Total size in bytes.
+    size: usize,
+    /// Element size for an array; equals `size` for a scalar.
+    elem_size: usize,
+    is_array: bool,
+    /// Initial value for a scalar with a compile-time constant initializer.
+    /// null means zero-initialized, which goes in .bss.
+    init_value: ?i64,
+};
+
+/// Size in bytes of a written type name, or null if it is not a shape the
+/// kernel backend can lay out yet. Deliberately narrow: guessing a size for
+/// an unrecognized type would silently produce a symbol of the wrong length.
+fn sizeOfType(type_name: []const u8) ?usize {
+    if (std.mem.eql(u8, type_name, "u8") or std.mem.eql(u8, type_name, "i8") or
+        std.mem.eql(u8, type_name, "bool")) return 1;
+    if (std.mem.eql(u8, type_name, "u16") or std.mem.eql(u8, type_name, "i16")) return 2;
+    if (std.mem.eql(u8, type_name, "u32") or std.mem.eql(u8, type_name, "i32")) return 4;
+    if (std.mem.eql(u8, type_name, "u64") or std.mem.eql(u8, type_name, "i64") or
+        std.mem.eql(u8, type_name, "usize") or std.mem.eql(u8, type_name, "isize") or
+        std.mem.eql(u8, type_name, "int") or std.mem.eql(u8, type_name, "uint")) return 8;
+    // Pointers are word-sized whatever they point at.
+    if (type_name.len > 0 and (type_name[0] == '*' or type_name[0] == '&')) return 8;
+    return null;
+}
+
+/// Parse `[N]T`, returning element count and element size.
+fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem: usize } {
+    if (type_name.len < 3 or type_name[0] != '[') return null;
+    const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
+    const count_str = std.mem.trim(u8, type_name[1..close], " ");
+    const count = std.fmt.parseInt(usize, count_str, 0) catch return null;
+    const elem_name = std.mem.trim(u8, type_name[close + 1 ..], " ");
+    const elem = sizeOfType(elem_name) orelse return null;
+    return .{ .count = count, .elem = elem };
+}
+
+/// The mov suffix and destination register for a load of the given width.
+fn loadFor(size: usize) ?struct { insn: []const u8, reg: []const u8 } {
+    return switch (size) {
+        1 => .{ .insn = "movzbq", .reg = "rax" },
+        2 => .{ .insn = "movzwq", .reg = "rax" },
+        // A 32-bit mov into %eax zero-extends into %rax on x86-64.
+        4 => .{ .insn = "movl", .reg = "eax" },
+        8 => .{ .insn = "movq", .reg = "rax" },
+        else => null,
+    };
+}
+
+/// The mov suffix and source register for a store of the given width.
+fn storeFor(size: usize) ?struct { insn: []const u8, reg: []const u8 } {
+    return switch (size) {
+        1 => .{ .insn = "movb", .reg = "al" },
+        2 => .{ .insn = "movw", .reg = "ax" },
+        4 => .{ .insn = "movl", .reg = "eax" },
+        8 => .{ .insn = "movq", .reg = "rax" },
+        else => null,
+    };
+}
+
 /// Kernel code generator with Home language support
 pub const HomeKernelCodegen = struct {
     allocator: std.mem.Allocator,
@@ -55,6 +120,17 @@ pub const HomeKernelCodegen = struct {
     globals: std.StringHashMap(i64),
     /// True while generating statements outside any function body.
     at_top_level: bool,
+    /// Module-level mutable bindings, emitted as .bss/.data symbols.
+    global_vars: std.StringHashMap(GlobalVar),
+    /// Declaration order, so emitted symbols follow source order.
+    global_order: std.ArrayList([]const u8),
+    /// Every name that appears as an assignment target anywhere in the
+    /// program. A module-level binding that is assigned to is storage, not a
+    /// constant, however it was declared — this tree uses plain `let` for
+    /// mutable subsystem state throughout.
+    assigned_names: std.StringHashMap(void),
+    /// Element size for locals that are arrays; absent for scalars.
+    local_elem_size: std.StringHashMap(usize),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -77,6 +153,10 @@ pub const HomeKernelCodegen = struct {
         result.declared_fns = std.StringHashMap(void).init(allocator);
         result.globals = std.StringHashMap(i64).init(allocator);
         result.at_top_level = true;
+        result.global_vars = std.StringHashMap(GlobalVar).init(allocator);
+        result.global_order = .{ .items = &[_][]const u8{}, .capacity = 0 };
+        result.assigned_names = std.StringHashMap(void).init(allocator);
+        result.local_elem_size = std.StringHashMap(usize).init(allocator);
         return result;
     }
 
@@ -85,12 +165,188 @@ pub const HomeKernelCodegen = struct {
         self.locals.deinit();
         self.declared_fns.deinit();
         self.globals.deinit();
+        self.global_vars.deinit();
+        self.global_order.deinit(self.allocator);
+        self.assigned_names.deinit();
+        self.local_elem_size.deinit();
         self.string_literals.deinit(self.allocator);
     }
 
     /// Helper to write string to output
     fn writeAll(self: *HomeKernelCodegen, bytes: []const u8) !void {
         try self.output.appendSlice(self.allocator, bytes);
+    }
+
+    /// Walk statements recording every name assigned to, so module-level
+    /// bindings can be classified as constant or storage before any code is
+    /// generated for them.
+    fn collectAssignedNames(self: *HomeKernelCodegen, statements: []const ast.Stmt) !void {
+        for (statements) |stmt| {
+            switch (stmt) {
+                .ExprStmt => |expr| try self.collectAssignedInExpr(expr),
+                .LetDecl => |d| if (d.value) |v| try self.collectAssignedInExpr(v),
+                .ReturnStmt => |r| if (r.value) |v| try self.collectAssignedInExpr(v),
+                .IfStmt => |i| {
+                    try self.collectAssignedInExpr(i.condition);
+                    try self.collectAssignedNames(i.then_block.statements);
+                    if (i.else_block) |eb| try self.collectAssignedNames(eb.statements);
+                },
+                .WhileStmt => |w| {
+                    try self.collectAssignedInExpr(w.condition);
+                    try self.collectAssignedNames(w.body.statements);
+                },
+                .BlockStmt => |b| try self.collectAssignedNames(b.statements),
+                else => {},
+            }
+        }
+    }
+
+    fn collectAssignedInExpr(self: *HomeKernelCodegen, expr: *const ast.Expr) anyerror!void {
+        switch (expr.*) {
+            .AssignmentExpr => |a| {
+                var target = a.target;
+                // Reach through index and member access to the base name:
+                // `buf[i] = x` writes to `buf`.
+                while (true) {
+                    switch (target.*) {
+                        .IndexExpr => |idx| target = idx.array,
+                        .MemberExpr => |m| target = m.object,
+                        else => break,
+                    }
+                }
+                if (target.* == .Identifier) {
+                    try self.assigned_names.put(target.Identifier.name, {});
+                }
+                try self.collectAssignedInExpr(a.value);
+            },
+            .BinaryExpr => |b| {
+                try self.collectAssignedInExpr(b.left);
+                try self.collectAssignedInExpr(b.right);
+            },
+            .UnaryExpr => |u| try self.collectAssignedInExpr(u.operand),
+            .CallExpr => |c| for (c.args) |arg| try self.collectAssignedInExpr(arg),
+            .IndexExpr => |i| {
+                try self.collectAssignedInExpr(i.array);
+                try self.collectAssignedInExpr(i.index);
+            },
+            else => {},
+        }
+    }
+
+    /// Compute the address of `base[index]` into %rax and return the element
+    /// size, or null when the element width is unknown. The width comes from
+    /// the base's declared type, which is only available for a module-level
+    /// array today — indexing anything else is refused rather than guessed at
+    /// some default stride (home-lang/home-os#38).
+    fn generateElementAddress(self: *HomeKernelCodegen, idx: *const ast.IndexExpr) !?usize {
+        var elem_size: usize = 0;
+        if (idx.array.* == .Identifier) {
+            const base_name = idx.array.Identifier.name;
+            if (self.local_elem_size.get(base_name)) |es| {
+                elem_size = es;
+            } else if (self.global_vars.get(base_name)) |g| {
+                if (!g.is_array) {
+                    try self.print("    # ERROR: {s} is not an array\n", .{base_name});
+                    return null;
+                }
+                elem_size = g.elem_size;
+            } else {
+                try self.print("    # ERROR: cannot index {s}: element width unknown\n", .{base_name});
+                return null;
+            }
+        } else {
+            try self.writeAll("    # ERROR: cannot index this expression: element width unknown\n");
+            return null;
+        }
+
+        try self.generateExpr(idx.index);
+        if (elem_size > 1) {
+            try self.print("    imulq ${d}, %rax\n", .{elem_size});
+        }
+        try self.writeAll("    movq %rax, %rcx\n");
+        try self.generateExpr(idx.array);
+        try self.writeAll("    addq %rcx, %rax\n");
+        return elem_size;
+    }
+
+    /// Record a module-level binding as storage. Returns false when its size
+    /// cannot be determined, which is a refusal rather than a guess: emitting
+    /// a symbol of the wrong length would corrupt whatever follows it.
+    fn declareGlobalVar(self: *HomeKernelCodegen, decl: *const ast.LetDecl) !bool {
+        const type_name = decl.type_name orelse return false;
+
+        if (parseArrayType(type_name)) |arr| {
+            try self.global_vars.put(decl.name, .{
+                .name = decl.name,
+                .size = arr.count * arr.elem,
+                .elem_size = arr.elem,
+                .is_array = true,
+                .init_value = null,
+            });
+            try self.global_order.append(self.allocator, decl.name);
+            return true;
+        }
+
+        const size = sizeOfType(type_name) orelse return false;
+        // `= undefined` and `= 0` are both zero-initialized storage; a nonzero
+        // constant initializer goes in .data.
+        var init_value: ?i64 = null;
+        if (decl.value) |value| {
+            if (self.foldConst(value)) |folded| {
+                if (folded != 0) init_value = folded;
+            }
+        }
+        try self.global_vars.put(decl.name, .{
+            .name = decl.name,
+            .size = size,
+            .elem_size = size,
+            .is_array = false,
+            .init_value = init_value,
+        });
+        try self.global_order.append(self.allocator, decl.name);
+        return true;
+    }
+
+    /// Emit .data and .bss for the module-level bindings collected above.
+    fn emitGlobals(self: *HomeKernelCodegen) !void {
+        var data_count: usize = 0;
+        var bss_count: usize = 0;
+        for (self.global_order.items) |name| {
+            const g = self.global_vars.get(name) orelse continue;
+            if (g.init_value != null) data_count += 1 else bss_count += 1;
+        }
+
+        if (data_count > 0) {
+            try self.writeAll("\n.section .data\n");
+            for (self.global_order.items) |name| {
+                const g = self.global_vars.get(name) orelse continue;
+                const v = g.init_value orelse continue;
+                const directive = switch (g.size) {
+                    1 => ".byte",
+                    2 => ".short",
+                    4 => ".long",
+                    else => ".quad",
+                };
+                try self.print(".align {d}\n", .{g.size});
+                try self.print("{s}:\n", .{g.name});
+                try self.print("    {s} {d}\n", .{ directive, v });
+            }
+        }
+
+        if (bss_count > 0) {
+            try self.writeAll("\n.section .bss\n");
+            for (self.global_order.items) |name| {
+                const g = self.global_vars.get(name) orelse continue;
+                if (g.init_value != null) continue;
+                // Align to the element width, capped at 16 — enough for the
+                // scalars and byte arrays a kernel declares, without forcing
+                // page alignment on everything.
+                const alignment = @min(g.elem_size, @as(usize, 16));
+                try self.print(".align {d}\n", .{alignment});
+                try self.print("{s}:\n", .{g.name});
+                try self.print("    .zero {d}\n", .{g.size});
+            }
+        }
     }
 
     /// Fold an expression to an integer at compile time, or null if it is not
@@ -244,26 +500,38 @@ pub const HomeKernelCodegen = struct {
         return self.next_label;
     }
 
-    /// Count `let` declarations reachable in a statement list, including
-    /// nested blocks, so the prologue can reserve a slot for each. All
-    /// declarations in a function share one flat frame — shadowing in inner
-    /// scopes reuses the outer slot, which is a known limitation recorded in
-    /// the codegen ladder (home-lang/home-os#38) rather than a silent one.
-    fn countLetDecls(statements: []const ast.Stmt) usize {
-        var n: usize = 0;
+    /// Assign a frame slot to every `let` reachable in a statement list,
+    /// including nested blocks. An array local gets its full width; anything
+    /// else gets one word. All declarations in a function share one flat
+    /// frame, so shadowing in an inner scope reuses the outer slot — a known
+    /// limitation recorded on the codegen ladder (home-lang/home-os#38)
+    /// rather than a silent one.
+    fn reserveLocals(self: *HomeKernelCodegen, statements: []const ast.Stmt) anyerror!void {
         for (statements) |stmt| {
             switch (stmt) {
-                .LetDecl => n += 1,
-                .IfStmt => |s2| {
-                    n += countLetDecls(s2.then_block.statements);
-                    if (s2.else_block) |eb| n += countLetDecls(eb.statements);
+                .LetDecl => |decl| {
+                    if (self.locals.contains(decl.name)) continue;
+                    var bytes: usize = 8;
+                    if (decl.type_name) |tn| {
+                        if (parseArrayType(tn)) |arr| {
+                            bytes = arr.count * arr.elem;
+                            try self.local_elem_size.put(decl.name, arr.elem);
+                        }
+                    }
+                    // Keep every slot 8-byte aligned so word loads stay aligned.
+                    const aligned = (bytes + 7) / 8 * 8;
+                    self.stack_offset -= @intCast(aligned);
+                    try self.locals.put(decl.name, self.stack_offset);
                 },
-                .WhileStmt => |s2| n += countLetDecls(s2.body.statements),
-                .BlockStmt => |s2| n += countLetDecls(s2.statements),
+                .IfStmt => |s2| {
+                    try self.reserveLocals(s2.then_block.statements);
+                    if (s2.else_block) |eb| try self.reserveLocals(eb.statements);
+                },
+                .WhileStmt => |s2| try self.reserveLocals(s2.body.statements),
+                .BlockStmt => |s2| try self.reserveLocals(s2.statements),
                 else => {},
             }
         }
-        return n;
     }
 
     /// Helper to format and write to output
@@ -293,6 +561,7 @@ pub const HomeKernelCodegen = struct {
         for (program.statements) |stmt| {
             if (stmt == .FnDecl) {
                 try self.declared_fns.put(stmt.FnDecl.name, {});
+                try self.collectAssignedNames(stmt.FnDecl.body.statements);
             }
         }
 
@@ -300,6 +569,8 @@ pub const HomeKernelCodegen = struct {
         for (program.statements) |stmt| {
             try self.generateStmt(stmt);
         }
+
+        try self.emitGlobals();
 
         // Emit .rodata section with string literals
         if (self.string_literals.items.len > 0) {
@@ -348,22 +619,29 @@ pub const HomeKernelCodegen = struct {
                 // `stack_offset` were never reset, so one function's variables
                 // resolved inside the next one at meaningless offsets.
                 self.locals.clearRetainingCapacity();
+                self.local_elem_size.clearRetainingCapacity();
                 self.stack_offset = 0;
                 self.current_fn = func.name;
                 const was_top = self.at_top_level;
                 self.at_top_level = false;
                 defer self.at_top_level = was_top;
 
-                // Reserve one 8-byte slot per parameter and per `let` in the
-                // body, up front. Locals used to be created with `pushq`,
-                // which meant their recorded offset was only correct if no
-                // expression had pushed a temporary first — and expression
-                // codegen pushes temporaries constantly. Fixed slots relative
-                // to %rbp are correct regardless of what %rsp is doing.
-                var slots: usize = func.params.len;
-                slots += countLetDecls(func.body.statements);
+                // Lay the whole frame out before emitting anything. Locals
+                // used to be created with `pushq`, which meant a local's
+                // recorded offset was only correct if no expression had
+                // pushed a temporary first — and expression codegen pushes
+                // temporaries constantly. Fixed offsets from %rbp are correct
+                // regardless of what %rsp is doing, and an array local needs
+                // its full width reserved rather than one word.
+                for (func.params) |param| {
+                    self.stack_offset -= 8;
+                    try self.locals.put(param.name, self.stack_offset);
+                }
+                try self.reserveLocals(func.body.statements);
+
+                const frame_bytes: usize = @intCast(-self.stack_offset);
                 // Keep %rsp 16-byte aligned at the call boundary.
-                const frame_size: usize = ((slots * 8) + 15) / 16 * 16;
+                const frame_size: usize = (frame_bytes + 15) / 16 * 16;
 
                 try self.writeAll("    pushq %rbp\n");
                 try self.writeAll("    movq %rsp, %rbp\n");
@@ -376,15 +654,14 @@ pub const HomeKernelCodegen = struct {
                 // comment and read whatever happened to be in %rax.
                 const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
                 for (func.params, 0..) |param, i| {
-                    self.stack_offset -= 8;
-                    try self.locals.put(param.name, self.stack_offset);
+                    const slot = self.locals.get(param.name) orelse continue;
                     if (i < arg_regs.len) {
-                        try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[i], self.stack_offset });
+                        try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[i], slot });
                     } else {
                         // Arguments 7+ arrive above the return address.
                         const caller_offset = 16 + (i - arg_regs.len) * 8;
                         try self.print("    movq {d}(%rbp), %rax\n", .{caller_offset});
-                        try self.print("    movq %rax, {d}(%rbp)\n", .{self.stack_offset});
+                        try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
                     }
                 }
 
@@ -415,29 +692,41 @@ pub const HomeKernelCodegen = struct {
                 // scope is not representable yet and says so rather than
                 // emitting stores against a nonexistent %rbp.
                 if (self.at_top_level) {
-                    if (decl.value) |value| {
-                        if (self.foldConst(value)) |folded| {
-                            if (!decl.is_mutable) {
+                    // A binding with a compile-time integer value becomes a
+                    // constant substituted at each use — but only if nothing
+                    // in the program assigns to it. Mutability as declared is
+                    // not a reliable signal here: this tree uses plain `let`
+                    // for module state that is written to later.
+                    if (!decl.is_mutable and !self.assigned_names.contains(decl.name)) {
+                        if (decl.value) |value| {
+                            if (self.foldConst(value)) |folded| {
                                 try self.globals.put(decl.name, folded);
                                 return;
                             }
                         }
                     }
-                    try self.print("# unsupported module-level binding: {s}\n", .{decl.name});
+                    // Otherwise it is storage: a symbol in .bss or .data.
+                    if (try self.declareGlobalVar(decl)) return;
+                    try self.print("# unsupported module-level binding: {s}{s}\n", .{
+                        decl.name,
+                        if (decl.type_name == null) " (no type annotation, so its size is unknown)" else "",
+                    });
                     return;
                 }
                 // The slot was reserved by the prologue; store into it. The
                 // old code used `pushq`, which recorded an offset that was
                 // only right when no expression temporary had been pushed
                 // first — and expression codegen pushes constantly.
+                // An array local is storage, not a value: its slot holds the
+                // elements themselves, so there is nothing to store into it.
+                if (self.local_elem_size.contains(decl.name)) return;
                 if (decl.value) |value| {
                     try self.generateExpr(value);
-                    const slot = if (self.locals.get(decl.name)) |existing| existing else blk: {
-                        self.stack_offset -= 8;
-                        try self.locals.put(decl.name, self.stack_offset);
-                        break :blk self.stack_offset;
-                    };
-                    try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
+                    if (self.locals.get(decl.name)) |slot| {
+                        try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
+                    } else {
+                        try self.print("    # ERROR: no frame slot reserved for {s}\n", .{decl.name});
+                    }
                 }
             },
             .IfStmt => |if_stmt| {
@@ -544,6 +833,11 @@ pub const HomeKernelCodegen = struct {
                     } else {
                         try self.print("    movabsq ${d}, %rax\n", .{v});
                     }
+                } else if (std.math.cast(u64, lit.value)) |uv| {
+                    // Unsigned values above i64 max are still 64-bit patterns;
+                    // reinterpret rather than refuse. u64 max is how a kernel
+                    // spells an all-ones mask.
+                    try self.print("    movabsq ${d}, %rax\n", .{@as(i64, @bitCast(uv))});
                 } else {
                     try self.print("    # ERROR: integer literal {d} does not fit in 64 bits\n", .{lit.value});
                     try self.writeAll("    movq $0, %rax\n");
@@ -700,6 +994,20 @@ pub const HomeKernelCodegen = struct {
                     // Shift counts must be in %cl.
                     .LeftShift => try self.writeAll("    shlq %cl, %rax\n"),
                     .RightShift => try self.writeAll("    sarq %cl, %rax\n"),
+                    .Power => {
+                        // Integer exponentiation by repeated multiplication;
+                        // %rax = base, %rcx = exponent.
+                        const lbl = self.freshLabel();
+                        try self.writeAll("    movq %rax, %rsi\n");
+                        try self.writeAll("    movq $1, %rax\n");
+                        try self.print(".L_pow_start_{d}:\n", .{lbl});
+                        try self.writeAll("    testq %rcx, %rcx\n");
+                        try self.print("    jle .L_pow_end_{d}\n", .{lbl});
+                        try self.writeAll("    imulq %rsi, %rax\n");
+                        try self.writeAll("    decq %rcx\n");
+                        try self.print("    jmp .L_pow_start_{d}\n", .{lbl});
+                        try self.print(".L_pow_end_{d}:\n", .{lbl});
+                    },
                     .Equal => try self.emitCompare("sete"),
                     .NotEqual => try self.emitCompare("setne"),
                     .Less => try self.emitCompare("setl"),
@@ -709,6 +1017,21 @@ pub const HomeKernelCodegen = struct {
                     else => {
                         try self.print("    # unsupported binary operator: {s}\n", .{@tagName(binary.op)});
                     },
+                }
+            },
+            .IndexExpr => |idx| {
+                // Address into %rax, then load one element from it.
+                const elem = try self.generateElementAddress(idx) orelse {
+                    try self.writeAll("    movq $0, %rax\n");
+                    return;
+                };
+                if (loadFor(elem)) |ld| {
+                    try self.writeAll("    movq %rax, %rdx\n");
+                    if (elem < 8) try self.writeAll("    xorq %rax, %rax\n");
+                    try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
+                } else {
+                    try self.print("    # ERROR: cannot load element of size {d}\n", .{elem});
+                    try self.writeAll("    movq $0, %rax\n");
                 }
             },
             .UnaryExpr => |unary| {
@@ -728,23 +1051,68 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .AssignmentExpr => |assign| {
-                try self.generateExpr(assign.value);
-                if (assign.target.* == .Identifier) {
-                    const name = assign.target.Identifier.name;
-                    if (self.locals.get(name)) |offset| {
-                        try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
-                    } else {
-                        try self.print("    # assignment to unknown variable {s}\n", .{name});
-                    }
-                } else {
-                    try self.writeAll("    # unsupported assignment target\n");
+                switch (assign.target.*) {
+                    .Identifier => |target| {
+                        try self.generateExpr(assign.value);
+                        // `_ = expr` evaluates for effect and drops the result.
+                        if (std.mem.eql(u8, target.name, "_")) {
+                            return;
+                        }
+                        if (self.locals.get(target.name)) |offset| {
+                            try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                        } else if (self.global_vars.get(target.name)) |g| {
+                            if (g.is_array) {
+                                try self.print("    # ERROR: cannot assign to the array {s} as a whole\n", .{g.name});
+                            } else if (storeFor(g.size)) |st| {
+                                try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.name });
+                            } else {
+                                try self.print("    # ERROR: cannot store {s} of size {d}\n", .{ g.name, g.size });
+                            }
+                        } else if (self.globals.contains(target.name)) {
+                            try self.print("    # ERROR: {s} is a constant and cannot be assigned to\n", .{target.name});
+                        } else {
+                            try self.print("    # ERROR: assignment to undefined variable {s}\n", .{target.name});
+                        }
+                    },
+                    .IndexExpr => |idx| {
+                        // Address first, stash it, then the value — so the
+                        // value expression cannot clobber the address.
+                        const elem = try self.generateElementAddress(idx) orelse return;
+                        try self.writeAll("    pushq %rax\n");
+                        try self.generateExpr(assign.value);
+                        try self.writeAll("    popq %rdx\n");
+                        if (storeFor(elem)) |st| {
+                            try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                        } else {
+                            try self.print("    # ERROR: cannot store element of size {d}\n", .{elem});
+                        }
+                    },
+                    else => {
+                        try self.writeAll("    # ERROR: unsupported assignment target\n");
+                    },
                 }
             },
             .Identifier => |id| {
                 if (self.locals.get(id.name)) |offset| {
-                    try self.print("    movq {d}(%rbp), %rax\n", .{offset});
+                    if (self.local_elem_size.contains(id.name)) {
+                        // An array's value is its address, as in C.
+                        try self.print("    leaq {d}(%rbp), %rax\n", .{offset});
+                    } else {
+                        try self.print("    movq {d}(%rbp), %rax\n", .{offset});
+                    }
                 } else if (self.globals.get(id.name)) |value| {
                     try self.print("    movq ${d}, %rax\n", .{value});
+                } else if (self.global_vars.get(id.name)) |g| {
+                    if (g.is_array) {
+                        // An array's value is its address, as in C.
+                        try self.print("    leaq {s}(%rip), %rax\n", .{g.name});
+                    } else if (loadFor(g.size)) |ld| {
+                        if (g.size < 8) try self.writeAll("    xorq %rax, %rax\n");
+                        try self.print("    {s} {s}(%rip), %{s}\n", .{ ld.insn, g.name, ld.reg });
+                    } else {
+                        try self.print("    # ERROR: cannot load {s} of size {d}\n", .{ g.name, g.size });
+                        try self.writeAll("    movq $0, %rax\n");
+                    }
                 } else {
                     // Emitting a comment and carrying on leaves %rax holding
                     // whatever the last expression left there, which reads as
