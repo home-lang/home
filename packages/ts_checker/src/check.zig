@@ -8837,9 +8837,10 @@ pub const Checker = struct {
                     try self.reportTypeNotArrayForTarget(fr.source, member_t);
                 }
                 const sync_iterable = self.isIterableLikeType(src_t);
+                const for_await_iterable = fr.is_await and self.isForAwaitIterableLikeType(src_t);
                 if (fr.is_await and !sync_iterable and self.sourceLibDirectiveNeedsIterableIterator()) {
                     try self.reportTypeNotArrayOrStringForForOf(fr.source, src_t, fr.source);
-                } else if (fr.is_await and !sync_iterable and !self.isAsyncIterableLikeType(src_t)) {
+                } else if (fr.is_await and !for_await_iterable) {
                     // `for await … of` accepts an async iterable
                     // (`[Symbol.asyncIterator]`) or a plain sync iterable
                     // (each value is awaited). When the source is neither,
@@ -33655,6 +33656,11 @@ pub const Checker = struct {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isAsyncIterableLikeType(constraint);
+        }
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (!self.isAsyncIterableLikeType(member)) return false;
@@ -33677,6 +33683,27 @@ pub const Checker = struct {
             return self.typeHasNextMethod(iterator_t);
         }
         return false;
+    }
+
+    /// `for await` accepts either iterator protocol independently for each
+    /// union constituent. A mixed `Iterable<T> | AsyncIterable<T>` therefore
+    /// succeeds even though the union is neither wholly sync nor wholly async.
+    fn isForAwaitIterableLikeType(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isForAwaitIterableLikeType(constraint);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isForAwaitIterableLikeType(member)) return false;
+            }
+            return true;
+        }
+        return self.isIterableLikeType(t) or self.isAsyncIterableLikeType(t);
     }
 
     fn isDestructuringIterableSourceType(self: *Checker, t: TypeId) bool {
@@ -63343,7 +63370,7 @@ pub const Checker = struct {
                 const ix = hir_mod.indexSignatureOf(self.hir, m);
                 if (ix.is_readonly) has_readonly_index = true;
                 if (ix.value_type != hir_mod.none_node_id) {
-                    try self.reportUnresolvedBareTypeRefsInAnnotation(ix.value_type);
+                    try self.reportUnresolvedBodylessSignatureTypeRefs(ix.value_type, type_params);
                 }
                 const value_t = if (ix.value_type != hir_mod.none_node_id)
                     try self.lowererLowerWithTypeParams(ix.value_type)
@@ -63422,7 +63449,7 @@ pub const Checker = struct {
             }
             const member_t: TypeId = blk: {
                 if (im.type_node != hir_mod.none_node_id) {
-                    try self.reportUnresolvedBareTypeRefsInAnnotation(im.type_node);
+                    try self.reportUnresolvedBodylessSignatureTypeRefs(im.type_node, type_params);
                     const lowered_t = try self.lowererLowerWithTypeParams(im.type_node);
                     break :blk if (!im.is_method and
                         !self.syntheticSignatureMemberName(im.name) and
@@ -71339,6 +71366,22 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Recover a declaration's generic binder when a deferred type body is
+    /// revisited outside its original narrow scope. The HIR declaration keeps
+    /// the canonical TypeId even when no concrete substitution is active.
+    fn enclosingDeclaredTypeParameterType(self: *Checker, name: hir_mod.StringId, node: NodeId) ?TypeId {
+        var cur = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            for (self.typeParamNodesOfDecl(cur)) |tp| {
+                if (self.hir.kindOf(tp) != .type_parameter) continue;
+                if (hir_mod.typeParameterOf(self.hir, tp).name != name) continue;
+                const t = self.hir.typeOf(tp);
+                if (t != types.Primitive.none) return t;
+            }
+        }
+        return null;
+    }
+
     fn typeNodeDeclaresInferName(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
@@ -74149,6 +74192,10 @@ pub const Checker = struct {
                         if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_type_parameter) return t;
                         const type_position_t = self.narrowTypeInTypePosition(r.name, t);
                         if (type_position_t != t) return type_position_t;
+                        // Re-lowering a generic body may bind its type
+                        // parameter to a concrete type. The lexical binder
+                        // still wins over a same-named runtime value.
+                        if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return type_position_t;
                         if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
                             !self.visibleTypeDeclarationExistsAt(type_node, r.name))
                         {
@@ -74160,6 +74207,7 @@ pub const Checker = struct {
                         }
                         return t;
                     }
+                    if (self.enclosingDeclaredTypeParameterType(r.name, type_node)) |t| return t;
                     if (try self.jsDocContainingTemplateParamType(type_node, r.name)) |t| return t;
                     if (self.enumDeclForNameAt(r.name, type_node)) |decl| {
                         const e = hir_mod.enumOf(self.hir, decl);
@@ -113512,7 +113560,12 @@ pub const Checker = struct {
             }
         }
         if (child_types.items.len == 0) return types.Primitive.any;
-        if (child_types.items.len == 1) return child_types.items[0];
+        if (child_types.items.len == 1) {
+            if (contextual_children_t) |ctx| {
+                if (try self.jsxSingleArrayChildAssignableToTarget(children[0], ctx)) return ctx;
+            }
+            return child_types.items[0];
+        }
         if (contextual_children_t) |ctx| {
             var wants_tuple = self.actualTupleLength(ctx) != null;
             if (!wants_tuple and ctx < self.interner.pool.typeCount() and
@@ -113732,6 +113785,10 @@ pub const Checker = struct {
     /// separately); `{}` children anchor at the inner expression.
     fn checkJsxChildAssignableToChildrenType(self: *Checker, child: NodeId, child_index: usize, children_t: TypeId) CheckError!bool {
         if (self.typeIsAnyLike(children_t)) return false;
+        // One JSX expression containing an array supplies the complete
+        // array-valued children prop. Compare its nested literal elements
+        // contextually before treating it as one element of that array.
+        if (try self.jsxSingleArrayChildAssignableToTarget(child, children_t)) return false;
         const tuple_target = self.actualTupleLength(children_t) != null;
         const preserves_react_node = if (self.alias_display_names.get(children_t)) |display|
             std.mem.eql(u8, display, "ReactNode")
@@ -113795,6 +113852,17 @@ pub const Checker = struct {
             anchor;
         try self.reportTypeNotAssignable(report_anchor, child_t, target_t, "JSX child is not assignable to the target children type.");
         return true;
+    }
+
+    fn jsxSingleArrayChildAssignableToTarget(self: *Checker, child: NodeId, target_t: TypeId) CheckError!bool {
+        var inner = child;
+        if (self.hir.kindOf(inner) == .jsx_expression) {
+            const expression = hir_mod.jsxExpressionOf(self.hir, inner).expression;
+            if (expression == hir_mod.none_node_id) return false;
+            inner = expression;
+        }
+        if (self.hir.kindOf(inner) != .array_literal) return false;
+        return try self.arrayLiteralAssignableToTarget(inner, target_t);
     }
 
     fn jsxChildLiteralAssignableToTarget(self: *Checker, child: NodeId, target_t: TypeId) CheckError!bool {
@@ -262844,4 +262912,47 @@ test "checker: parity 901 recursive generic classes compose through mapped alias
     });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: parity 1001 for-await accepts mixed iterator protocol unions" {
+    const s = try newSetup(
+        \\async function f<T>(source: Iterable<T> | AsyncIterable<T>) {
+        \\  for await (const x of source) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.async_iterator_required));
+}
+
+test "checker: parity 1001 single JSX array child uses complete contextual children type" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements { div: any; }
+        \\}
+        \\type Tab = [string, JSX.Element];
+        \\interface Props { children: Tab[]; }
+        \\const TabLayout = (props: Props) => <div />;
+        \\const app = <TabLayout>{[['Users', <div />], ['Products', <div />]]}</TabLayout>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parity 1001 concrete generic substitutions retain lexical type binders" {
+    const s = try newSetup(
+        \\export type inferPipe<t, pipe> =
+        \\  pipe extends (In: t) => unknown ? (In: t) => ReturnType<pipe> : never;
+        \\interface Type<t> {
+        \\  pipe<fn extends (In: t) => unknown>(fn: fn): Type<inferPipe<t, fn>>;
+        \\}
+        \\declare const t: Type<string>;
+        \\export const out = t.pipe(s => parseInt(s));
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
