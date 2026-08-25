@@ -81,6 +81,39 @@ const StructInfo = struct {
     is_bitfield: bool = false,
 };
 
+/// Value of a character literal lexeme, which still carries its quotes and
+/// any escape sequence.
+fn charLiteralValue(lexeme: []const u8) ?i64 {
+    var body = lexeme;
+    if (body.len >= 2 and (body[0] == '\'' or body[0] == '"')) {
+        body = body[1 .. body.len - 1];
+    }
+    if (body.len == 0) return null;
+    if (body[0] != '\\') {
+        return if (body.len == 1) @as(i64, body[0]) else null;
+    }
+    if (body.len < 2) return null;
+    return switch (body[1]) {
+        'n' => 10,
+        'r' => 13,
+        't' => 9,
+        '0' => 0,
+        '\\' => 92,
+        '\'' => 39,
+        '"' => 34,
+        else => null,
+    };
+}
+
+/// The type name an expression names, when the expression IS a type — as in
+/// `@sizeOf(PageTable)`, where the argument parses as an identifier.
+fn typeNameOfExpr(expr: *const ast.Expr) ?[]const u8 {
+    return switch (expr.*) {
+        .Identifier => |id| id.name,
+        else => null,
+    };
+}
+
 /// Bit width of a type used as a bitfield member. `bool` is one bit; `uN`
 /// and `iN` are N. Anything else has no bit width and makes the containing
 /// struct un-layoutable rather than being assumed to be some default.
@@ -1563,6 +1596,23 @@ pub const HomeKernelCodegen = struct {
         return true;
     }
 
+    /// Narrow %rax to the width of `type_name`, if that width is known and
+    /// smaller than a word. A widening or same-width cast needs no work: the
+    /// value is already in %rax.
+    fn emitNarrowTo(self: *HomeKernelCodegen, type_name: []const u8) !void {
+        const bare = splitAlign(type_name).bare;
+        const size = self.sizeOf(bare) orelse return;
+        if (size >= 8) return;
+        const signed = bare.len > 0 and bare[0] == 'i';
+        const insn = switch (size) {
+            1 => if (signed) "movsbq %al, %rax" else "movzbq %al, %rax",
+            2 => if (signed) "movswq %ax, %rax" else "movzwq %ax, %rax",
+            4 => if (signed) "movslq %eax, %rax" else "movl %eax, %eax",
+            else => return,
+        };
+        try self.print("    {s}\n", .{insn});
+    }
+
     /// Emit a comparison: %rax <op> %rcx, result 0 or 1 in %rax.
     fn emitCompare(self: *HomeKernelCodegen, setcc: []const u8) !void {
         try self.writeAll("    cmpq %rcx, %rax\n");
@@ -1950,8 +2000,13 @@ pub const HomeKernelCodegen = struct {
                     try self.generateStmt(inner);
                 }
             },
+            // Declarations that describe types or module structure emit no
+            // code by design; they are consumed by the pre-passes.
+            .ImportDecl, .StructDecl, .EnumDecl, .TypeAliasDecl, .TraitDecl, .ImplDecl => {},
             else => {
-                // Unsupported statement type - skip for now
+                // Same rule as expressions: a statement that emits nothing
+                // reads as working code. Say what was dropped.
+                try self.print("# ERROR: unsupported statement: {s}\n", .{@tagName(stmt)});
             },
         }
     }
@@ -2342,8 +2397,136 @@ pub const HomeKernelCodegen = struct {
                     try self.writeAll("    movq $0, %rax\n");
                 }
             },
+            .CharLiteral => |lit| {
+                // The lexeme still carries its quotes and any escape.
+                if (charLiteralValue(lit.value)) |v| {
+                    try self.print("    movq ${d}, %rax\n", .{v});
+                } else {
+                    try self.print("    # ERROR: unsupported character literal {s}\n", .{lit.value});
+                    try self.writeAll("    movq $0, %rax\n");
+                }
+            },
+            .NullLiteral => {
+                try self.writeAll("    movq $0, %rax\n");
+            },
+            .TypeCastExpr => |cast| {
+                try self.generateExpr(cast.value);
+                try self.emitNarrowTo(cast.target_type);
+            },
+            .ReflectExpr => |r| {
+                switch (r.kind) {
+                    // Pointer and bit reinterpretations are no-ops on a
+                    // 64-bit value: the bits are already in %rax.
+                    .IntFromPtr, .PtrFromInt, .PtrToInt, .PtrCast, .BitCast => {
+                        try self.generateExpr(r.target);
+                    },
+                    // Width changes: evaluate, then narrow to the named type.
+                    .Truncate, .IntCast, .As, .EnumToInt, .IntToEnum => {
+                        try self.generateExpr(r.target);
+                        if (r.target_type) |t| try self.emitNarrowTo(t);
+                    },
+                    .SizeOf => {
+                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                            if (self.sizeOf(t)) |n| {
+                                try self.print("    movq ${d}, %rax\n", .{n});
+                                return;
+                            }
+                        }
+                        try self.writeAll("    # ERROR: @sizeOf of an unknown type\n");
+                        try self.writeAll("    movq $0, %rax\n");
+                    },
+                    .AlignOf => {
+                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                            try self.print("    movq ${d}, %rax\n", .{self.alignOf(t)});
+                            return;
+                        }
+                        try self.writeAll("    # ERROR: @alignOf of an unknown type\n");
+                        try self.writeAll("    movq $0, %rax\n");
+                    },
+                    .OffsetOf => {
+                        if (r.target_type orelse typeNameOfExpr(r.target)) |t| {
+                            if (r.field_name) |fname| {
+                                if (self.findField(t, fname)) |f| {
+                                    try self.print("    movq ${d}, %rax\n", .{f.offset});
+                                    return;
+                                }
+                            }
+                        }
+                        try self.writeAll("    # ERROR: @offsetOf of an unknown field\n");
+                        try self.writeAll("    movq $0, %rax\n");
+                    },
+                    .Min, .Max => {
+                        const second = r.second_arg orelse {
+                            try self.print("    # ERROR: {s} needs two arguments\n", .{@tagName(r.kind)});
+                            return;
+                        };
+                        try self.generateExpr(r.target);
+                        try self.writeAll("    pushq %rax\n");
+                        try self.generateExpr(second);
+                        try self.writeAll("    movq %rax, %rcx\n");
+                        try self.writeAll("    popq %rax\n");
+                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        if (r.kind == .Min) {
+                            try self.writeAll("    cmovgq %rcx, %rax\n");
+                        } else {
+                            try self.writeAll("    cmovlq %rcx, %rax\n");
+                        }
+                    },
+                    .Abs => {
+                        try self.generateExpr(r.target);
+                        try self.writeAll("    movq %rax, %rcx\n");
+                        try self.writeAll("    negq %rcx\n");
+                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        try self.writeAll("    cmovlq %rcx, %rax\n");
+                    },
+                    else => {
+                        // Floating-point and type-introspection builtins have
+                        // no lowering in a freestanding integer backend.
+                        try self.print("    # ERROR: unsupported builtin: {s}\n", .{@tagName(r.kind)});
+                        try self.writeAll("    movq $0, %rax\n");
+                    },
+                }
+            },
+            .IfExpr => |if_expr| {
+                // `let x = if c { a() } else { b() }` — a value, not a
+                // statement. This used to fall through to the silent default
+                // below, so the initializer emitted nothing at all and the
+                // binding took whatever happened to be in %rax.
+                const label_num = self.freshLabel();
+                try self.generateExpr(if_expr.condition);
+                try self.writeAll("    testq %rax, %rax\n");
+                try self.print("    jz .L_ifexpr_else_{d}\n", .{label_num});
+                try self.generateExpr(if_expr.then_branch);
+                try self.print("    jmp .L_ifexpr_end_{d}\n", .{label_num});
+                try self.print(".L_ifexpr_else_{d}:\n", .{label_num});
+                try self.generateExpr(if_expr.else_branch);
+                try self.print(".L_ifexpr_end_{d}:\n", .{label_num});
+            },
+            .TernaryExpr => |t| {
+                const label_num = self.freshLabel();
+                try self.generateExpr(t.condition);
+                try self.writeAll("    testq %rax, %rax\n");
+                try self.print("    jz .L_ternary_else_{d}\n", .{label_num});
+                try self.generateExpr(t.true_val);
+                try self.print("    jmp .L_ternary_end_{d}\n", .{label_num});
+                try self.print(".L_ternary_else_{d}:\n", .{label_num});
+                try self.generateExpr(t.false_val);
+                try self.print(".L_ternary_end_{d}:\n", .{label_num});
+            },
+            .BlockExpr => |block| {
+                // The block's value is its last expression statement, which
+                // is whatever it leaves in %rax.
+                for (block.statements) |inner| {
+                    try self.generateStmt(inner);
+                }
+            },
             else => {
-                // Unsupported expression - skip
+                // Never silently emit nothing. An expression that produces no
+                // code leaves %rax holding the previous computation, so the
+                // surrounding statement compiles cleanly and computes the
+                // wrong answer — the worst failure mode this backend has.
+                try self.print("    # ERROR: unsupported expression: {s}\n", .{@tagName(expr.*)});
+                try self.writeAll("    movq $0, %rax\n");
             },
         }
     }
