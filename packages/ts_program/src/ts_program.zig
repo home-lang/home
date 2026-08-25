@@ -4742,6 +4742,37 @@ fn moduleRootValueHasMember(
         const decl = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
         if (decl == hir_mod_ns.none_node_id) continue;
         const kind = hir.kindOf(decl);
+        if ((kind == .namespace_decl or kind == .module_decl) and declarationName(hir, decl) == value_name) {
+            for (hir_mod_ns.namespaceBody(hir, decl)) |member_raw| {
+                if (hir.kindOf(member_raw) != .export_decl) continue;
+                const exported = hir_mod_ns.exportOf(hir, member_raw);
+                const member = exported.decl;
+                if (member != hir_mod_ns.none_node_id and
+                    std.mem.eql(u8, interner.get(declarationName(hir, member)), name) and
+                    declCreatesRuntimeValue(hir, member))
+                {
+                    return true;
+                }
+                for (hir_mod_ns.exportNamed(hir, member_raw)) |specifier| {
+                    if (hir.kindOf(specifier) != .import_specifier) continue;
+                    const named = hir_mod_ns.importSpecifierOf(hir, specifier);
+                    if (!std.mem.eql(u8, interner.get(named.local), name)) continue;
+                    for (hir_mod_ns.namespaceBody(hir, decl)) |candidate_raw| {
+                        const candidate = if (hir.kindOf(candidate_raw) == .export_decl)
+                            hir_mod_ns.exportOf(hir, candidate_raw).decl
+                        else
+                            candidate_raw;
+                        if (candidate != hir_mod_ns.none_node_id and
+                            declarationName(hir, candidate) == named.imported and
+                            declCreatesRuntimeValue(hir, candidate))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
         const variable = hir_mod_ns.varDeclOf(hir, decl);
         if (variable.name == hir_mod_ns.none_node_id or hir.kindOf(variable.name) != .identifier or
@@ -7555,6 +7586,22 @@ test "module export facts retain namespace alias meaning" {
     try T.expect(value.exported_type);
     try T.expect(value.exported_value);
     try T.expect(value.type_only_pos == null);
+}
+
+test "module export facts project export-assignment namespace members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/foo.ts",
+        "namespace M { export const Y = 1; } export = M;",
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const exported = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/foo.ts", "Y");
+    const missing = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/foo.ts", "X");
+    try T.expect(exported.exported_value);
+    try T.expect(!missing.exported_value);
 }
 
 test "module export facts preserve generic function exports through reexports" {

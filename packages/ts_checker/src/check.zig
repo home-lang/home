@@ -62642,6 +62642,7 @@ pub const Checker = struct {
 
     fn virtualSectionMatchesResolvedModule(self: *Checker, node: NodeId, resolved: []const u8, spec: []const u8) bool {
         const filename = self.relativeModuleFilenameForNode(node) orelse return false;
+        if (self.virtualPreferredResolvedModuleCandidateMatches(filename, resolved, spec)) |matches| return matches;
         if (virtualRelativeSpecifierPrefersIndex(spec)) {
             const index_exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
             for (index_exts) |ext| {
@@ -62654,6 +62655,48 @@ pub const Checker = struct {
         for (exts) |ext| {
             if (virtualPathEqualsWithSuffix(filename, resolved, "", ext)) return true;
             if (virtualPathEqualsWithSuffix(filename, resolved, "/index", ext)) return true;
+        }
+        return false;
+    }
+
+    /// Select one extensionless virtual module candidate using tsc's source
+    /// extension priority. Without this, every same-basename section matches
+    /// and a preceding `foo.d.ts` can mask the preferred `foo.ts`.
+    fn virtualPreferredResolvedModuleCandidateMatches(
+        self: *Checker,
+        filename: []const u8,
+        resolved: []const u8,
+        spec: []const u8,
+    ) ?bool {
+        const slash = std.mem.lastIndexOfScalar(u8, resolved, '/');
+        const basename = if (slash) |at| resolved[at + 1 ..] else resolved;
+        if (std.mem.indexOfScalar(u8, basename, '.') != null) return null;
+        const exts = [_][]const u8{
+            ".ts", ".tsx", ".d.ts", ".mts", ".d.mts", ".cts", ".d.cts",
+            ".js", ".jsx", ".mjs",  ".cjs",
+        };
+        if (!virtualRelativeSpecifierPrefersIndex(spec)) {
+            for (exts) |ext| {
+                if (!self.virtualSourceHasResolvedCandidate(resolved, "", ext)) continue;
+                return virtualPathEqualsWithSuffix(filename, resolved, "", ext);
+            }
+        }
+        for (exts) |ext| {
+            if (!self.virtualSourceHasResolvedCandidate(resolved, "/index", ext)) continue;
+            return virtualPathEqualsWithSuffix(filename, resolved, "/index", ext);
+        }
+        return null;
+    }
+
+    fn virtualSourceHasResolvedCandidate(self: *Checker, resolved: []const u8, infix: []const u8, ext: []const u8) bool {
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            const path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            if (virtualPathEqualsWithSuffix(path, resolved, infix, ext)) return true;
         }
         return false;
     }
@@ -129061,6 +129104,10 @@ pub const Checker = struct {
             "PropertyDescriptorMap",
             "DecoratorContext",
             "ClassDecorator",
+            "PropertyDecorator",
+            "MethodDecorator",
+            "ParameterDecorator",
+            "TypedPropertyDescriptor",
             "ClassFieldDecoratorContext",
             "ClassGetterDecoratorContext",
             "ClassSetterDecoratorContext",
@@ -154790,6 +154837,11 @@ pub const Checker = struct {
             else if (inferred_contextual_return_error)
                 false
             else if (inferred_generic_callback) blk: {
+                if (self.firstSignatureType(param_t)) |contextual_sig| {
+                    if (try self.contextSensitiveCallbackAssignableToGenericRestSignature(args[i], contextual_sig)) {
+                        break :blk true;
+                    }
+                }
                 const diagnostic_source_t = if (self.generic_signature_params.get(arg_t) != null)
                     arg_t
                 else
@@ -163387,6 +163439,11 @@ pub const Checker = struct {
         }
         if (self.functionObjectTargetAcceptsArgument(arg_t, param_t, 0)) return true;
         if (self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, param_t)) return false;
+        if (self.isContextualFunctionExpressionLike(arg_node)) {
+            if (self.firstSignatureType(param_t)) |contextual_sig| {
+                if (try self.contextSensitiveCallbackAssignableToGenericRestSignature(arg_node, contextual_sig)) return true;
+            }
+        }
         if (self.callableArgumentCannotSatisfyCustomRestTuple(arg_t, param_t)) return false;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
@@ -164660,6 +164717,41 @@ pub const Checker = struct {
         }
         if (self.engine.isAssignableTo(relation_source_t, target_t) catch false) return true;
         return self.contextualFunctionSignatureAssignable(relation_source_t, target_t) catch false;
+    }
+
+    fn contextSensitiveCallbackAssignableToGenericRestSignature(
+        self: *Checker,
+        fn_node: NodeId,
+        target_sig: TypeId,
+    ) CheckError!bool {
+        if (!self.functionExpressionHasContextSensitiveParameters(fn_node)) return false;
+        if (self.generic_signature_params.get(target_sig) == null) return false;
+        if (!self.rest_signatures.contains(target_sig) and self.restTypeAnnotationForSignature(target_sig) == null) return false;
+
+        var inferred_sig = self.hir.typeOf(fn_node);
+        try self.checkFunctionWithContextualSignatureMode(fn_node, target_sig, false, &inferred_sig);
+        if (inferred_sig >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(inferred_sig).is_signature)
+        {
+            return false;
+        }
+        const inferred_params = self.interner.signatureParams(inferred_sig);
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            if (value_index >= inferred_params.len) return false;
+            const parameter = hir_mod.parameterOf(self.hir, param_node);
+            const contextual_t = self.contextualParameterTypeForSignature(
+                target_sig,
+                value_index,
+                parameter.flags.is_rest,
+            ) orelse return false;
+            if (!try self.contextualTargetParamAssignableToSource(contextual_t, inferred_params[value_index])) return false;
+            value_index += 1;
+        }
+        const source_ret = self.interner.signatureReturn(inferred_sig) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_sig) orelse types.Primitive.void_t;
+        return self.contextualFunctionReturnAssignable(source_ret, target_ret);
     }
 
     fn unannotatedContextualCallbackFitsConcreteRestTarget(
@@ -262955,4 +263047,45 @@ test "checker: parity 1001 concrete generic substitutions retain lexical type bi
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: parity 1051 legacy method decorator type comes from the default lib" {
+    const s = try newSetup(
+        \\// @experimentaldecorators: true
+        \\// @emitdecoratormetadata: true
+        \\declare const decorator: MethodDecorator;
+        \\class A { @decorator async foo() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: parity 1051 contextual generic callbacks expand inferred rest tuples" {
+    const s = try newSetup(
+        \\function foo<A extends any[]>(
+        \\  arg: <T extends { a: number }>(t: T, ...rest: A) => number
+        \\) {}
+        \\foo((t, u: number) => t.a);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity 1051 virtual module resolution prefers source over declaration siblings" {
+    const s = try newSetup(
+        \\// @Filename: foo.d.ts
+        \\declare namespace M1 { export var X: number; }
+        \\export = M1;
+        \\// @Filename: foo.ts
+        \\namespace M2 { export var Y = 1; }
+        \\export = M2;
+        \\// @Filename: consumer.ts
+        \\import x = require('./foo');
+        \\x.Y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
