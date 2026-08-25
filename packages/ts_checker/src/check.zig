@@ -24742,6 +24742,7 @@ pub const Checker = struct {
                 const name = ref.name;
                 if (own_name_opt) |own| {
                     if (own == name) {
+                        if (self.virtualSectionIsDeclarationFile(s)) continue;
                         if (!self.nodeInsideOwnClassComputedMemberKey(ref.node, s)) continue;
                         const name_str = self.string_interner.get(name);
                         const msg = try std.fmt.allocPrint(
@@ -24780,7 +24781,6 @@ pub const Checker = struct {
                         "Class '{s}' used before its declaration.",
                         .{name_str},
                     );
-                    if (std.mem.indexOf(u8, self.source orelse "", "typeof maker.Bar") != null) std.debug.print("[2449-A] name={s} pos={?d} node={d} kind={s} in_fn={}\n", .{ name_str, ref.pos, ref.node, @tagName(self.hir.kindOf(ref.node)), self.nodeInsideFunctionBody(ref.node) });
                     try self.diagnostics.append(self.gpa, .{
                         .node = ref.node,
                         .pos = ref.pos,
@@ -122627,6 +122627,12 @@ pub const Checker = struct {
         return self.interner.internUnion(returns.items) catch return error.OutOfMemory;
     }
 
+    fn instanceofRhsHasUnionType(self: *Checker, rhs: NodeId) CheckError!bool {
+        var rhs_t = self.hir.typeOf(rhs);
+        if (rhs_t == types.Primitive.none) rhs_t = try self.checkExpression(rhs);
+        return rhs_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rhs_t).is_union;
+    }
+
     fn preserveNamedInstanceofTargetNode(self: *Checker, node: NodeId, fallback: TypeId) CheckError!TypeId {
         if (node == hir_mod.none_node_id) return fallback;
         if (self.hir.kindOf(node) == .union_type) {
@@ -124161,10 +124167,13 @@ pub const Checker = struct {
 
         if (b.op == .instanceof and self.nodeIsThisReference(b.lhs)) {
             const target = (try self.directInstanceofTargetType(b.rhs)) orelse return;
+            const rhs_is_union = try self.instanceofRhsHasUnionType(b.rhs);
             const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
             const current = self.currentThisType() orelse (try self.checkExpression(b.lhs));
             const narrowed = if (when_true)
                 try self.narrowTypeByDirectInstanceof(current, target)
+            else if (rhs_is_union)
+                current
             else if (self.instanceofFalseBranchPreservesClassUnion(current, target))
                 current
             else
@@ -124180,6 +124189,7 @@ pub const Checker = struct {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
             const direct_target = try self.directInstanceofTargetType(b.rhs);
             const target = direct_target orelse types.Primitive.object_t;
+            const rhs_is_union = try self.instanceofRhsHasUnionType(b.rhs);
             var rhs_is_array = false;
             if (self.hir.kindOf(b.rhs) == .identifier) {
                 const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
@@ -124254,7 +124264,7 @@ pub const Checker = struct {
                     const narrowed = try self.narrowTypeByDirectInstanceof(current, target);
                     try self.recordNarrow(id.name, narrowed);
                 } else {
-                    const narrowed = if (self.instanceofFalseBranchPreservesClassUnion(current, target))
+                    const narrowed = if (rhs_is_union or self.instanceofFalseBranchPreservesClassUnion(current, target))
                         current
                     else
                         self.subtractTypeByDirectInstanceof(current, target) catch current;
@@ -176065,6 +176075,7 @@ pub const Checker = struct {
             (try self.jsDocAssignmentIdentifierTypeName(value_node, source)) orelse
             (if (target_reduces_to_never) try self.assignmentSourceNameAgainstNever(value_node, source) else null) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(value_node)) orelse
+            (try self.visibleSimpleAliasAnnotationNameForIdentifier(value_node, source)) orelse
             (try self.assignmentIntersectionConstraintSourceName(value_node, source, target)) orelse
             (if (target_annotation_is_nonnullable) try self.partialIndexedAccessSourceNameForIdentifier(value_node) else null) orelse
             (if (target_annotation_is_nonnullable) try self.sourceIndexedAccessAnnotationNameForIdentifier(value_node) else null) orelse
@@ -176074,7 +176085,6 @@ pub const Checker = struct {
             self.objectAnnotationNameForIdentifier(value_node) orelse
             (try self.singleLiteralAliasAssignmentName(value_node, source)) orelse
             (try self.templateLiteralAssignmentSourceName(source)) orelse
-            (try self.visibleSimpleAliasAnnotationNameForIdentifier(value_node, source)) orelse
             (try self.overloadedSignatureObjectAssignmentName(value_node, source)) orelse
             (try self.visibleGenericAssignmentAnnotationName(value_node, source)) orelse
             (try self.assignmentIdentifierObjectUnionAnnotationName(value_node, source)) orelse
@@ -177178,7 +177188,9 @@ pub const Checker = struct {
             else => 0,
         };
         if (alias_name == 0) return null;
-        if (self.type_names.get(alias_name) == null and self.generic_aliases.get(alias_name) == null) return null;
+        if (self.type_names.get(alias_name) == null and
+            self.generic_aliases.get(alias_name) == null and
+            !self.type_alias_bodies.contains(alias_name)) return null;
         return try self.normalizedTypeAnnotationText(self.string_interner.get(alias_name));
     }
 
@@ -184944,6 +184956,24 @@ test "checker: branded primitive intersection preserves alias assignment diagnos
     try T.expect(!checkerHasCode(b, TsCodes.type_missing_properties));
 }
 
+test "checker: parity 1551 distributed intersection assignment preserves simple alias names" {
+    const b = try newBoundSetup(
+        \\type Common = { test: true } | { test: false };
+        \\type A = Common & { foo: 1 };
+        \\type B = Common & { bar: 1 };
+        \\declare const a: A;
+        \\declare let b: B;
+        \\b = a;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.type_not_assignable,
+        "Type 'A' is not assignable to type 'B'.",
+    ));
+}
+
 test "checker: weak anonymous optional target omits undefined in TS2559" {
     const b = try newBoundSetup(
         \\class Base { foo: string; }
@@ -189249,6 +189279,21 @@ test "checker: instanceof false class branch preserves open class unions" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.property_does_not_exist, "Property 'p3' does not exist on type 'C1 | C2 | C3'."));
+}
+
+test "checker: parity 1551 negated instanceof preserves values for union constructors" {
+    const s = try newSetup(
+        \\class A { length: 1 = 1; }
+        \\class B { length: 2 = 2; }
+        \\declare const value: A | B;
+        \\declare const constructor: typeof A | typeof B;
+        \\if (!(value instanceof constructor)) {
+        \\  value.length;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: instanceof honors overriding prototype members on interface constructors" {
@@ -195772,6 +195817,19 @@ test "checker: class self-reference in computed member keys emits TS2449" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.class_used_before_declaration));
+}
+
+test "checker: parity 1551 declaration class self-reference in computed member key is not TS2449" {
+    const s = try newSetup(
+        \\export class C extends Object {
+        \\  static readonly p: unique symbol;
+        \\  [C.p](): void;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setIsDeclarationFile(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.class_used_before_declaration));
 }
 
 test "checker: named class and function expressions do not bind in the containing scope" {
