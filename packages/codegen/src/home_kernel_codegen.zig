@@ -422,6 +422,12 @@ pub const HomeKernelCodegen = struct {
     import_arena: std.heap.ArenaAllocator,
     /// Files already pulled in, so a cycle or a diamond import is visited once.
     imported_files: std.StringHashMap(void),
+    /// Frame slot holding the hidden destination pointer, for a function that
+    /// returns an aggregate. 0 means this function does not return one.
+    sret_slot: i32,
+    /// Declared return type of the function being generated, needed to size
+    /// the copy into that destination.
+    current_return_type: []const u8,
     /// Interned `*T` names, so pointerTo can return a stable slice.
     pointer_type_names: std.StringHashMap([]const u8),
     /// Struct declarations from imported modules, awaiting layout alongside
@@ -461,6 +467,8 @@ pub const HomeKernelCodegen = struct {
         result.imported_files = std.StringHashMap(void).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
+        result.sret_slot = 0;
+        result.current_return_type = "";
         return result;
     }
 
@@ -1491,6 +1499,39 @@ pub const HomeKernelCodegen = struct {
             return;
         }
 
+        // A call returning an aggregate writes straight into the destination:
+        // the address already in %rax becomes the hidden first argument that
+        // the callee copies through. No temporary, and no assumption about
+        // where a returned struct lives — there is nowhere for it to live but
+        // the destination.
+        if (self.isStorageType(type_name) and value.* == .CallExpr) {
+            const call = value.CallExpr;
+            if (call.callee.* == .Identifier) {
+                const callee = call.callee.Identifier.name;
+                if (self.fn_return_types.get(callee)) |rt| {
+                    if (self.isStorageType(rt) and self.declared_fns.contains(callee)) {
+                        try self.writeAll("    pushq %rax\n"); // destination
+                        // The hidden pointer takes %rdi, so the declared
+                        // arguments start one register later.
+                        const sret_arg_regs = [_][]const u8{ "rsi", "rdx", "rcx", "r8", "r9" };
+                        var words: usize = 0;
+                        var i: usize = call.args.len;
+                        while (i > 0) {
+                            i -= 1;
+                            words += try self.pushArgument(call.args[i]);
+                        }
+                        for (0..words) |reg_idx| {
+                            if (reg_idx >= sret_arg_regs.len) break;
+                            try self.print("    popq %{s}\n", .{sret_arg_regs[reg_idx]});
+                        }
+                        try self.writeAll("    popq %rdi\n");
+                        try self.print("    call {s}\n", .{callee});
+                        return;
+                    }
+                }
+            }
+        }
+
         // A struct or array does not fit in a register: assigning one is a
         // memory copy. Both sides are addresses. When the source is a plain
         // addressable form its address is emitted; anything else (a call
@@ -2062,6 +2103,18 @@ pub const HomeKernelCodegen = struct {
                 // its full width reserved rather than one word.
                 // A slice parameter is two words — pointer then length — so
                 // it occupies two argument registers and two frame words.
+                // A function returning an aggregate does not return it in a
+                // register: the caller passes the address of the destination
+                // as a hidden first argument, and the callee copies into it.
+                self.sret_slot = 0;
+                self.current_return_type = func.return_type orelse "";
+                if (func.return_type) |rt| {
+                    if (self.isStorageType(rt)) {
+                        self.stack_offset -= 8;
+                        self.sret_slot = self.stack_offset;
+                    }
+                }
+
                 for (func.params) |param| {
                     try self.local_types.put(param.name, param.type_name);
                     const words: i32 = if (isSliceType(splitAlign(param.type_name).bare)) 2 else 1;
@@ -2085,6 +2138,10 @@ pub const HomeKernelCodegen = struct {
                 // comment and read whatever happened to be in %rax.
                 const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
                 var reg_index: usize = 0;
+                if (self.sret_slot != 0) {
+                    try self.print("    movq %rdi, {d}(%rbp)\n", .{self.sret_slot});
+                    reg_index = 1;
+                }
                 for (func.params) |param| {
                     const slot = self.locals.get(param.name) orelse continue;
                     const words: usize = if (isSliceType(splitAlign(param.type_name).bare)) 2 else 1;
@@ -2262,6 +2319,36 @@ pub const HomeKernelCodegen = struct {
             .ReturnStmt => |return_stmt| {
                 // Value in %rax, then jump to the function's one epilogue.
                 if (return_stmt.value) |value| {
+                    if (self.sret_slot != 0) {
+                        // Copy into the caller's destination and hand the
+                        // pointer back in %rax, as the ABI expects.
+                        try self.print("    movq {d}(%rbp), %rax\n", .{self.sret_slot});
+                        if (value.* == .StructLiteral) {
+                            try self.writeAll("    pushq %rax\n");
+                            try self.emitStructLiteralToMemory(
+                                self.current_return_type,
+                                value.StructLiteral,
+                            );
+                        } else if (self.typeOfLValue(value) != null) {
+                            try self.writeAll("    pushq %rax\n");
+                            if (try self.emitAddress(value)) |_| {
+                                try self.writeAll("    movq %rax, %rsi\n");
+                                try self.writeAll("    popq %rdi\n");
+                                try self.print("    movq ${d}, %rcx\n", .{self.sizeOf(self.current_return_type) orelse 8});
+                                try self.writeAll("    cld\n");
+                                try self.writeAll("    rep movsb\n");
+                            } else {
+                                try self.writeAll("    addq $8, %rsp\n");
+                            }
+                        } else {
+                            try self.print("    # ERROR: cannot return a {s} built from this expression\n", .{self.current_return_type});
+                        }
+                        try self.print("    movq {d}(%rbp), %rax\n", .{self.sret_slot});
+                        if (self.current_fn.len > 0) {
+                            try self.print("    jmp .L_epilogue_{s}\n", .{self.current_fn});
+                            return;
+                        }
+                    }
                     try self.generateExpr(value);
                 }
                 if (self.current_fn.len > 0) {
