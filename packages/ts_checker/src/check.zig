@@ -231944,7 +231944,7 @@ test "checker: checkjs expando JSDoc property type participates in parent assign
     try T.expect(found);
 }
 
-test "checker: checkjs virtual constructor function merges with sibling class" {
+test "checker: checkjs virtual constructor function conflicts with sibling class" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -231960,10 +231960,9 @@ test "checker: checkjs virtual constructor function merges with sibling class" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.cannot_redeclare_block_scoped);
-    }
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: checkjs virtual prototype assignment sees sibling constructor" {
@@ -232728,7 +232727,7 @@ test "checker: computed JavaScript prototype replacement keeps constructor membe
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: strict checkjs prototype methods inherit only tagged constructor members" {
+test "checker: strict checkjs prototype methods keep ordinary function this" {
     const s = try newSetup(
         \\// @allowJs: true
         \\// @checkJs: true
@@ -232756,15 +232755,8 @@ test "checker: strict checkjs prototype methods inherit only tagged constructor 
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    var arg_mismatches: usize = 0;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable and
-            std.mem.indexOf(u8, d.message, "not assignable to type 'number'") != null)
-        {
-            arg_mismatches += 1;
-        }
-    }
-    try T.expectEqual(@as(usize, 2), arg_mismatches);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: parity 2851-3250 checkjs chained function assignments share JSDoc signatures and members" {
@@ -232813,10 +232805,11 @@ test "checker: checkjs prototype object functions report implicit params and mis
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.property_does_not_exist) {
-            try T.expect(std.mem.indexOf(u8, d.message, "Property 'rgb' does not exist on type 'Color'.") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "Property 'rgb' does not exist on type '{ lighten: (ratio: any) => any; toJSON: () => any; }'.") != null);
         }
     }
 }
@@ -261031,7 +261024,7 @@ test "checker: rebound exports propagate nested writes to required module" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
-test "checker: checked JavaScript constructors aggregate prototype property writes" {
+test "checker: checked JavaScript constructors keep ordinary this under noImplicitAny" {
     const s = try newSetup(
         \\// @checkJs: true
         \\// @strictNullChecks: true
@@ -261064,8 +261057,9 @@ test "checker: checked JavaScript constructors aggregate prototype property writ
     s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.member_implicitly_any));
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.this_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_null_2531));
 }
 
