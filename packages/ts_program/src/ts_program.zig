@@ -1210,12 +1210,17 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.is_declaration) {
-                const private_name = moduleExportAssignmentPrivateTypeName(self.gpa, f.source, f.is_tsx) orelse continue;
-                errdefer self.gpa.free(private_name);
+                const info = moduleExportAssignmentInfo(self.gpa, f.source, f.is_tsx) orelse continue;
+                const private_name = info.private_type_name orelse "";
+                if (private_name.len == 0 and !info.target_is_any) continue;
+                errdefer if (private_name.len > 0) self.gpa.free(private_name);
                 const module_path = try self.gpa.dupe(u8, f.path);
                 errdefer self.gpa.free(module_path);
-                const module_name = try renderExternalModulePathDisplayName(self.gpa, f.path);
-                errdefer self.gpa.free(module_name);
+                const module_name = if (private_name.len > 0)
+                    try renderExternalModulePathDisplayName(self.gpa, f.path)
+                else
+                    "";
+                errdefer if (module_name.len > 0) self.gpa.free(module_name);
                 const export_name = try self.gpa.dupe(u8, "");
                 errdefer self.gpa.free(export_name);
                 try out.append(self.gpa, .{
@@ -1223,6 +1228,7 @@ pub const Program = struct {
                     .name = export_name,
                     .private_type_name = private_name,
                     .private_module_name = module_name,
+                    .whole_export_is_any = info.target_is_any,
                 });
                 continue;
             }
@@ -4859,13 +4865,16 @@ pub fn moduleCommonJsExportAssignmentClassName(
     return null;
 }
 
-/// Return the first private top-level type referenced by a module's
-/// `export =` value annotation. The returned name is owned by `gpa`.
-pub fn moduleExportAssignmentPrivateTypeName(
+const ModuleExportAssignmentInfo = struct {
+    private_type_name: ?[]u8 = null,
+    target_is_any: bool = false,
+};
+
+fn moduleExportAssignmentInfo(
     gpa: std.mem.Allocator,
     source: []const u8,
     is_tsx: bool,
-) ?[]u8 {
+) ?ModuleExportAssignmentInfo {
     var compilation = ts_driver.compileSource(gpa, source, .{
         .is_tsx = is_tsx,
         .continue_on_error = true,
@@ -4903,7 +4912,18 @@ pub fn moduleExportAssignmentPrivateTypeName(
         }
         break;
     }
-    if (annotation == hir_mod_ns.none_node_id) return null;
+    var info: ModuleExportAssignmentInfo = .{};
+    if (annotation == hir_mod_ns.none_node_id) return info;
+
+    const annotation_span = compilation.hir.spanOf(annotation);
+    if (annotation_span.end <= source.len and annotation_span.start <= annotation_span.end) {
+        const annotation_text = std.mem.trim(
+            u8,
+            source[annotation_span.start..annotation_span.end],
+            " \t\r\n",
+        );
+        info.target_is_any = std.mem.eql(u8, annotation_text, "any");
+    }
 
     var node: hir_mod_ns.NodeId = 1;
     while (node < compilation.hir.nodeCount()) : (node += 1) {
@@ -4912,9 +4932,21 @@ pub fn moduleExportAssignmentPrivateTypeName(
         const ref = hir_mod_ns.typeRefOf(&compilation.hir, node);
         if (ref.qualifier_len != 0 or ref.name == 0) continue;
         if (!moduleRootTypeNameIsPrivate(&compilation.hir, stmts, ref.name)) continue;
-        return gpa.dupe(u8, compilation.interner.get(ref.name)) catch null;
+        info.private_type_name = gpa.dupe(u8, compilation.interner.get(ref.name)) catch return null;
+        break;
     }
-    return null;
+    return info;
+}
+
+/// Return the first private top-level type referenced by a module's
+/// `export =` value annotation. The returned name is owned by `gpa`.
+pub fn moduleExportAssignmentPrivateTypeName(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    is_tsx: bool,
+) ?[]u8 {
+    const info = moduleExportAssignmentInfo(gpa, source, is_tsx) orelse return null;
+    return info.private_type_name;
 }
 
 fn hirNodeDescendsFrom(
@@ -8335,6 +8367,29 @@ test "Program: collects private export-assignment declaration types" {
     try T.expectEqual(@as(usize, 1), exports.len);
     try T.expectEqualStrings("Private", exports[0].private_type_name);
     try T.expectEqualStrings("\"/node_modules/@types/pkg/index\"", exports[0].private_module_name);
+}
+
+test "Program: records any-typed declaration export assignments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/node_modules/@types/process/process.d.ts",
+        "declare const thing: any;\nexport = thing;\n",
+    );
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add(
+        "/node_modules/@types/process/process.d.ts",
+        "declare const thing: any;\nexport = thing;\n",
+    );
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    try T.expectEqual(@as(usize, 1), exports.len);
+    try T.expect(exports[0].whole_export_is_any);
+    try T.expectEqualStrings("", exports[0].private_type_name);
 }
 
 test "Program: checked JS classifies ambient interface imports and re-exports as types" {

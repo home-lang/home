@@ -533,6 +533,10 @@ pub const ProgramCommonJsExport = struct {
     name: []const u8,
     private_type_name: []const u8 = "",
     private_module_name: []const u8 = "",
+    /// The declaration module's `export =` target is explicitly `any`.
+    /// Require bindings for these modules inherit `any`, rather than a
+    /// synthesized module namespace object.
+    whole_export_is_any: bool = false,
 };
 
 pub const ProgramAmbientInterfaceMember = struct {
@@ -28426,6 +28430,7 @@ pub const Checker = struct {
             if (try self.virtualExportAssignmentTargetStaticType(parent, imp.module)) |static_t| return static_t;
             if (try self.virtualCommonJsRepeatedWholeObjectExportType(parent, imp.module)) |whole_t| return whole_t;
             if (try self.virtualCommonJsModuleExportObjectType(parent, spec)) |commonjs_t| return commonjs_t;
+            if (try self.programCommonJsWholeExportType(parent, spec)) |whole_t| return whole_t;
         }
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
     }
@@ -28450,6 +28455,7 @@ pub const Checker = struct {
                 if (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module)) |static_t| return static_t;
                 if (try self.virtualCommonJsRepeatedWholeObjectExportType(stmt, imp.module)) |whole_t| return whole_t;
                 if (try self.virtualCommonJsModuleExportObjectType(stmt, self.string_interner.get(imp.module))) |commonjs_t| return commonjs_t;
+                if (try self.programCommonJsWholeExportType(stmt, self.string_interner.get(imp.module))) |whole_t| return whole_t;
             }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
@@ -60663,6 +60669,14 @@ pub const Checker = struct {
             if (try self.programImportTargetsPath(node, spec, exported.module_path)) return true;
         }
         return false;
+    }
+
+    fn programCommonJsWholeExportType(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
+        for (self.program_commonjs_exports) |exported| {
+            if (exported.name.len != 0 or !exported.whole_export_is_any) continue;
+            if (try self.programImportTargetsPath(node, spec, exported.module_path)) return types.Primitive.any;
+        }
+        return null;
     }
 
     fn programCommonJsExportPrivateName(
