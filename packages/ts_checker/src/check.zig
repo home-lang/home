@@ -29038,7 +29038,10 @@ pub const Checker = struct {
     }
 
     fn resolveVirtualModuleSpecifierPath(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!?[]u8 {
-        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (self.importer_path.len == 0 or !std.mem.startsWith(u8, spec, ".")) return null;
+            return try self.resolveVirtualRelativePath(self.importer_path, spec);
+        }
         if (std.mem.startsWith(u8, spec, ".")) return try self.resolveVirtualRelativePath(self.virtualSectionFilenameForNode(anchor) orelse return null, spec);
         if (!self.classicBareSiblingResolutionEnabled()) return null;
         if (std.mem.indexOfScalar(u8, spec, '/') != null) return null;
@@ -89159,7 +89162,8 @@ pub const Checker = struct {
         const mapped = self.interner.mappedPayload(target_t);
         for (source_members) |member| {
             if (!try self.mappedTypeAcceptsPropertyName(target_t, member.name)) return false;
-            if (!try self.checkerAssignableTo(member.type, mapped.template)) return false;
+            const target_member_t = try self.mappedPropertyTargetType(target_t, member.name);
+            if (!try self.checkerAssignableTo(member.type, target_member_t)) return false;
         }
         const source_string_index = self.interner.objectStringIndex(source_t);
         if (source_string_index != types.Primitive.none and
@@ -94048,7 +94052,10 @@ pub const Checker = struct {
         }
         if ((kind == .partial or kind == .required or kind == .readonly) and source_t < self.interner.pool.typeCount()) {
             const source_flags = self.interner.pool.flagsOf(source_t);
-            if (source_flags.is_type_parameter) {
+            if (source_flags.is_type_parameter or
+                ((source_flags.is_union or source_flags.is_intersection) and
+                    self.containsFreeTypeParameter(source_t)))
+            {
                 const key_name = self.string_interner.intern("__home_mapped_key") catch return error.OutOfMemory;
                 const key_tp = self.interner.internFreshTypeParameterWithFlags(
                     key_name,
@@ -94147,9 +94154,34 @@ pub const Checker = struct {
             for (keys.items) |k| try key_set.put(self.gpa, k, {});
         }
 
+        var source_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer source_members.deinit(self.gpa);
+        if (self.interner.pool.flagsOf(source_t).is_intersection) {
+            for (self.interner.intersectionMembers(source_t)) |constituent| {
+                if (constituent >= self.interner.pool.typeCount()) continue;
+                const constituent_flags = self.interner.pool.flagsOf(constituent);
+                if (!constituent_flags.is_object_type or constituent_flags.is_intersection) continue;
+                for (self.interner.objectMembers(constituent)) |member| {
+                    var seen = false;
+                    for (source_members.items) |existing| {
+                        if (existing.name == member.name) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (seen) continue;
+                    var combined = self.mappedSourceMemberInfo(source_t, member.name) orelse member;
+                    combined.type = (try self.lookupObjectMember(source_t, member.name)) orelse combined.type;
+                    try source_members.append(self.gpa, combined);
+                }
+            }
+        } else {
+            try source_members.appendSlice(self.gpa, self.interner.objectMembers(source_t));
+        }
+
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
-        for (self.interner.objectMembers(source_t)) |m| {
+        for (source_members.items) |m| {
             switch (kind) {
                 .pick => if (!key_set.contains(m.name)) continue,
                 .omit => if (key_set.contains(m.name)) continue,
@@ -99683,6 +99715,11 @@ pub const Checker = struct {
             return try self.refreshDeferredCallableReturns(t);
         }
         if (self.typeIsMappedPayloadType(obj_t)) {
+            if (self.builtinMappedSourceType(obj_t)) |source_t| {
+                if ((try self.lookupObjectMember(source_t, name)) != null) {
+                    return try self.mappedPropertyTargetType(obj_t, name);
+                }
+            }
             const mapped = self.interner.mappedPayload(obj_t);
             if (try self.mappedConstraintDefinitelyIncludesProperty(mapped.constraint, name)) {
                 return try self.mappedPropertyTargetType(obj_t, name);
@@ -99695,6 +99732,7 @@ pub const Checker = struct {
             }
             return self.recursiveAliasMemberSelfType(obj_t, member_t) orelse member_t;
         }
+        if (try self.builtinHomomorphicAliasMemberType(obj_t, name)) |member_t| return member_t;
         if (try self.synthesizeTypeboxStaticMemberForName(obj_t, name)) |static_t| return static_t;
         // Declaration-merge fallback: a `class C` instance also carries
         // the members of any same-named `interface C` (declaration
@@ -99804,6 +99842,9 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) CheckError!bool {
         if (constraint >= self.interner.pool.typeCount()) return false;
+        if (self.directKeyofOperand(constraint)) |operand| {
+            return (try self.lookupObjectMember(operand, name)) != null;
+        }
         const flags = self.interner.pool.flagsOf(constraint);
         if (flags.is_union) {
             for (self.interner.unionMembers(constraint)) |member| {
@@ -129954,10 +129995,13 @@ pub const Checker = struct {
         const undefined_t = types.Primitive.undefined_t;
         const optional_string_t = self.interner.internUnion(&.{ string_t, undefined_t }) catch return error.OutOfMemory;
         const optional_number_t = self.interner.internUnion(&.{ number_t, undefined_t }) catch return error.OutOfMemory;
+        const modern_options = self.intl_number_format_modern_options or
+            self.sourceDirectiveValueMentions("lib", "es2023.intl") or
+            self.sourceDirectiveValueMentions("lib", "esnext.intl");
 
         const style_t = try self.intlStringLiteralUnion(&.{ "decimal", "percent", "currency" }, true);
         const currency_display_t = try self.intlStringLiteralUnion(&.{ "code", "symbol", "name" }, true);
-        const use_grouping_t = if (self.intl_number_format_modern_options)
+        const use_grouping_t = if (modern_options)
             try self.intlStringLiteralUnionWithBase(
                 &.{ "true", "false", "min2", "auto", "always" },
                 boolean_t,
@@ -129991,7 +130035,7 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("trailingZeroDisplay") catch return error.OutOfMemory, .type = trailing_zero_display_t, .is_optional = true, .is_readonly = false, .is_method = false },
         }) catch return error.OutOfMemory;
         try self.alias_display_names.put(self.gpa, options_t, "NumberFormatOptions");
-        const resolved_use_grouping_t = if (self.intl_number_format_modern_options)
+        const resolved_use_grouping_t = if (modern_options)
             try self.intlStringLiteralUnionWithBase(
                 &.{ "min2", "auto", "always" },
                 boolean_t,
@@ -153335,6 +153379,35 @@ pub const Checker = struct {
         if (!self.isBuiltinMappedKeyTypeParameter(indexed.key_tp)) return null;
         if (indexed.object_tp >= self.interner.pool.typeCount()) return null;
         return indexed.object_tp;
+    }
+
+    fn builtinHomomorphicAliasMemberType(
+        self: *Checker,
+        alias_t: TypeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const args = self.alias_type_args.get(alias_t) orelse return null;
+        if (args.len != 1 or args[0] == alias_t) return null;
+        const alias_name = (try self.genericInstanceBaseName(alias_t)) orelse return null;
+        if (self.generic_aliases.contains(alias_name)) return null;
+        const raw_name = self.string_interner.get(alias_name);
+        const kind: enum { partial, required, readonly } = if (std.mem.eql(u8, raw_name, "Partial"))
+            .partial
+        else if (std.mem.eql(u8, raw_name, "Required"))
+            .required
+        else if (std.mem.eql(u8, raw_name, "Readonly"))
+            .readonly
+        else
+            return null;
+        const member_t = (try self.lookupObjectMember(args[0], name)) orelse return null;
+        const source_member = self.mappedSourceMemberInfo(args[0], name);
+        const was_optional = if (source_member) |member| member.is_optional else false;
+        const is_optional = switch (kind) {
+            .partial => true,
+            .required => false,
+            .readonly => was_optional,
+        };
+        return @as(?TypeId, try self.mappedPropertyValueWithOptionality(member_t, is_optional, was_optional));
     }
 
     fn isBuiltinMappedKeyTypeParameter(self: *Checker, t: TypeId) bool {
@@ -183721,6 +183794,9 @@ pub const Checker = struct {
     }
 
     fn mappedTypeAcceptsPropertyName(self: *Checker, mapped_t: TypeId, key_name: hir_mod.StringId) CheckError!bool {
+        if (self.builtinMappedSourceType(mapped_t)) |source_t| {
+            if ((try self.lookupObjectMember(source_t, key_name)) != null) return true;
+        }
         const mapped = self.interner.mappedPayload(mapped_t);
         return self.mappedConstraintAcceptsPropertyName(mapped.constraint, key_name);
     }
@@ -183729,6 +183805,9 @@ pub const Checker = struct {
         if (constraint == types.Primitive.string_t) return !self.isSymbolNamedMember(key_name);
         if (constraint == types.Primitive.number_t) return self.isNumericPropertyName(key_name);
         if (constraint == types.Primitive.symbol_t) return self.isSymbolNamedMember(key_name);
+        if (self.directKeyofOperand(constraint)) |operand| {
+            return (try self.lookupObjectMember(operand, key_name)) != null;
+        }
         if (self.isSymbolNamedMember(key_name)) return try self.checkerAssignableTo(types.Primitive.symbol_t, constraint);
         const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
         if (try self.templateLiteralSourceAssignableToTarget(key_lit, constraint)) return true;
@@ -184030,6 +184109,7 @@ pub const Checker = struct {
         if (!flags.is_object_type) return null;
         if (self.typeIsMappedPayloadType(t)) return try self.mappedPropertyTargetType(t, name);
         if (self.interner.objectMemberInfo(t, name)) |member| return member.type;
+        if (try self.builtinHomomorphicAliasMemberType(t, name)) |member_t| return member_t;
         const raw_name = self.string_interner.get(name);
         if (self.computedMemberNameInner(raw_name) == null) {
             const string_idx = self.interner.objectStringIndex(t);
@@ -192476,7 +192556,7 @@ test "checker: isolatedModules reports global value conflicts for type-only impo
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.global_this_no_index_signature));
 }
 
-test "checker: relative self imports preserve arbitrary string exports" {
+test "checker: parity 5251-5906 relative self imports preserve arbitrary string exports" {
     const s = try newSetup(
         \\const value = "value";
         \\type Shape = "shape";
@@ -192752,8 +192832,10 @@ test "checker: modern shared-memory and intl globals are recognized" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
 }
 
-test "checker: Intl NumberFormat composes ES2023 options" {
+test "checker: parity 5251-5906 Intl NumberFormat composes ES2023 options selected by lib" {
     const s = try newSetup(
+        \\// @target: es2022
+        \\// @lib: es2022,es2023.intl
         \\new Intl.NumberFormat("en-GB", { useGrouping: true });
         \\new Intl.NumberFormat("en-GB", { useGrouping: "true" });
         \\new Intl.NumberFormat("en-GB", { useGrouping: "always" });
@@ -192771,6 +192853,7 @@ test "checker: Intl NumberFormat composes ES2023 options" {
         \\  new Intl.NumberFormat("en-GB").resolvedOptions();
     );
     defer destroySetup(s);
+    s.checker.setIntlNumberFormatModernOptions(false);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
@@ -258003,7 +258086,7 @@ test "checker: generic intersection inference uses array iteration elements" {
     try T.expect(!checkerHasCode(b, TsCodes.type_not_assignable));
 }
 
-test "checker: readonly intersection props infer the catch-all class parameter" {
+test "checker: parity 5251-5906 readonly intersection props infer the catch-all class parameter" {
     const s = try newTsxSetup(
         \\declare namespace JSX {
         \\  interface ElementAttributesProperty { props: {}; }
@@ -258017,6 +258100,13 @@ test "checker: readonly intersection props infer the catch-all class parameter" 
         \\const rendered = <C foobar="example" />;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_null_checks = true,
+    });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
