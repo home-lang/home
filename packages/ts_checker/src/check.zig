@@ -4692,6 +4692,10 @@ pub const Checker = struct {
     /// These are properties of `globalThis`, `window`, and `self`, but not
     /// of the nullable `top: Window | null` DOM binding.
     program_global_var_names: []const []const u8 = &.{},
+    /// Type-space names contributed by sibling global script files.
+    /// Program compilation supplies these so per-file checking can resolve
+    /// interfaces, aliases, classes, enums, and namespaces from global libs.
+    program_global_type_names: []const []const u8 = &.{},
     /// Program-level namespace roots contributed by `declare global {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
@@ -5063,6 +5067,10 @@ pub const Checker = struct {
 
     pub fn setProgramGlobalVarNames(self: *Checker, names: []const []const u8) void {
         self.program_global_var_names = names;
+    }
+
+    pub fn setProgramGlobalTypeNames(self: *Checker, names: []const []const u8) void {
+        self.program_global_type_names = names;
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -74339,6 +74347,7 @@ pub const Checker = struct {
                     if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
+                    if (self.programHasGlobalTypeName(r.name)) return types.Primitive.any;
                     if (std.mem.eql(u8, name_str, "Object")) {
                         if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     }
@@ -134976,6 +134985,7 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
+        if (self.hir.kindOf(node) == .type_ref and self.programHasGlobalTypeName(name)) return;
         if (self.hir.kindOf(node) == .type_ref and self.typeOnlyImportLocal(name, node)) return;
         if (std.mem.eql(u8, name_str, "const") and self.hir.kindOf(node) == .type_ref) {
             const parent = self.hir.parentOf(node);
@@ -164284,6 +164294,14 @@ pub const Checker = struct {
     fn programHasGlobalVarName(self: *Checker, name: hir_mod.StringId) bool {
         const raw_name = self.string_interner.get(name);
         for (self.program_global_var_names) |program_name| {
+            if (std.mem.eql(u8, program_name, raw_name)) return true;
+        }
+        return false;
+    }
+
+    fn programHasGlobalTypeName(self: *Checker, name: hir_mod.StringId) bool {
+        const raw_name = self.string_interner.get(name);
+        for (self.program_global_type_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw_name)) return true;
         }
         return false;

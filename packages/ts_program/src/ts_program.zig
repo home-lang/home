@@ -351,6 +351,8 @@ pub const Program = struct {
         defer self.gpa.free(script_object_expandos);
         const program_global_var_names = try self.collectProgramGlobalVarNames();
         defer freeStringSlice(self.gpa, program_global_var_names);
+        const program_global_type_names = try self.collectProgramGlobalTypeNames();
+        defer freeStringSlice(self.gpa, program_global_type_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -378,6 +380,7 @@ pub const Program = struct {
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
             per_file.program_global_var_names = program_global_var_names;
+            per_file.program_global_type_names = program_global_type_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_exported_values = program_exported_values;
@@ -510,6 +513,8 @@ pub const Program = struct {
         defer self.gpa.free(script_object_expandos);
         const program_global_var_names = try self.collectProgramGlobalVarNames();
         defer freeStringSlice(self.gpa, program_global_var_names);
+        const program_global_type_names = try self.collectProgramGlobalTypeNames();
+        defer freeStringSlice(self.gpa, program_global_type_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -540,6 +545,7 @@ pub const Program = struct {
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
             per_file.program_global_var_names = program_global_var_names;
+            per_file.program_global_type_names = program_global_type_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
             per_file.program_exported_values = program_exported_values;
@@ -608,6 +614,19 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null or sourceLooksExternalModule(f.source)) continue;
             try appendTopLevelVarNamesFromSource(self.gpa, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramGlobalTypeNames(self: *const Program) ProgramError![]const []const u8 {
+        var out: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (out.items) |name| self.gpa.free(name);
+            out.deinit(self.gpa);
+        }
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or sourceLooksExternalModule(f.source)) continue;
+            try appendTopLevelTypeNamesFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
     }
@@ -1994,6 +2013,95 @@ pub const Program = struct {
         }
     }
 
+    fn appendTopLevelTypeNamesFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var i: usize = 0;
+        var brace_depth: usize = 0;
+        while (i < source.len) {
+            const c = source[i];
+            if (c == '/' and i + 1 < source.len and source[i + 1] == '/') {
+                i += 2;
+                while (i < source.len and source[i] != '\n' and source[i] != '\r') i += 1;
+                continue;
+            }
+            if (c == '/' and i + 1 < source.len and source[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) i += 1;
+                i = @min(i + 2, source.len);
+                continue;
+            }
+            if (c == '"' or c == '\'' or c == '`') {
+                const quote = c;
+                i += 1;
+                while (i < source.len) {
+                    if (source[i] == '\\') {
+                        i = @min(i + 2, source.len);
+                        continue;
+                    }
+                    if (source[i] == quote) {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if (c == '{') {
+                brace_depth += 1;
+                i += 1;
+                continue;
+            }
+            if (c == '}') {
+                if (brace_depth > 0) brace_depth -= 1;
+                i += 1;
+                continue;
+            }
+            if (brace_depth != 0) {
+                i += 1;
+                continue;
+            }
+
+            const keyword_len: usize = if (identifierKeywordAt(source, i, "interface"))
+                "interface".len
+            else if (identifierKeywordAt(source, i, "type"))
+                "type".len
+            else if (identifierKeywordAt(source, i, "class"))
+                "class".len
+            else if (identifierKeywordAt(source, i, "enum"))
+                "enum".len
+            else if (identifierKeywordAt(source, i, "namespace"))
+                "namespace".len
+            else if (identifierKeywordAt(source, i, "module"))
+                "module".len
+            else {
+                i += 1;
+                continue;
+            };
+
+            var p = i + keyword_len;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) {
+                i = p;
+                continue;
+            }
+            const name_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const name = source[name_start..p];
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) break;
+            } else {
+                const owned = try gpa.dupe(u8, name);
+                errdefer gpa.free(owned);
+                try out.append(gpa, owned);
+            }
+            i = p;
+        }
+    }
+
     fn collectUntypedObjectLiteralRoots(
         gpa: std.mem.Allocator,
         source: []const u8,
@@ -2382,6 +2490,8 @@ pub const Program = struct {
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
         const program_global_var_names = try self.collectProgramGlobalVarNames();
         defer freeStringSlice(self.gpa, program_global_var_names);
+        const program_global_type_names = try self.collectProgramGlobalTypeNames();
+        defer freeStringSlice(self.gpa, program_global_type_names);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
@@ -2398,6 +2508,7 @@ pub const Program = struct {
         defer self.gpa.free(merged_program_umd_globals);
         var shared_options = options;
         shared_options.program_global_var_names = program_global_var_names;
+        shared_options.program_global_type_names = program_global_type_names;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_exported_values = program_exported_values;
@@ -7999,4 +8110,27 @@ test "Program: declaration UMD globals reach script and module consumers" {
         if (diagnostic.code == 2686) module_umd_diagnostics += 1;
     }
     try T.expectEqual(@as(usize, 1), module_umd_diagnostics);
+}
+
+test "Program: sibling script interfaces contribute global type names" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const app_id = try program.add("/app.ts", "interface A { x: $ }\n");
+    _ = try program.add("/types/lib/index.d.ts", "interface $ { x }\n");
+    try program.compileAll(.{
+        .no_emit = true,
+        .known_type_reference_names = &.{"lib"},
+        .compiler_type_reference_names = &.{"lib"},
+    });
+
+    const app = program.fileById(app_id).compilation orelse return error.TestExpectedEqual;
+    for (app.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2304);
+        try T.expect(diagnostic.code != 2693);
+    }
 }
