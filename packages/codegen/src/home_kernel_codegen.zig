@@ -81,13 +81,49 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
 
 /// Parse `[N]T` into an element count and the element's type name. The
 /// element's *size* is resolved separately, because it may be a struct.
+/// Index of the `]` matching the `[` at position 0, or null. Scanning for the
+/// first `]` is wrong for a nested array: `[[u8; 4]; 3]` would split at the
+/// inner bracket and yield nonsense.
+fn matchingBracket(type_name: []const u8) ?usize {
+    if (type_name.len == 0 or type_name[0] != '[') return null;
+    var depth: usize = 0;
+    for (type_name, 0..) |c, i| {
+        if (c == '[') depth += 1;
+        if (c == ']') {
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+    }
+    return null;
+}
+
+/// Index of the last `;` outside any nested brackets.
+fn lastTopLevelSemicolon(inside: []const u8) ?usize {
+    var depth: usize = 0;
+    var found: ?usize = null;
+    for (inside, 0..) |c, i| {
+        switch (c) {
+            '[' => depth += 1,
+            ']' => if (depth > 0) {
+                depth -= 1;
+            },
+            ';' => if (depth == 0) {
+                found = i;
+            },
+            else => {},
+        }
+    }
+    return found;
+}
+
 fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem_type: []const u8 } {
     if (type_name.len < 3 or type_name[0] != '[') return null;
-    const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
+    const close = matchingBracket(type_name) orelse return null;
     const inside = std.mem.trim(u8, type_name[1..close], " ");
 
-    // `[T; N]` — the form this tree uses most.
-    if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi| {
+    // `[T; N]` — the form this tree uses most. The separator is the last `;`
+    // at depth zero, so a nested `[[u8; 4]; 3]` splits at the outer one.
+    if (lastTopLevelSemicolon(inside)) |semi| {
         const elem_name = std.mem.trim(u8, inside[0..semi], " ");
         const count_str = std.mem.trim(u8, inside[semi + 1 ..], " ");
         const count = std.fmt.parseInt(usize, count_str, 0) catch return null;
@@ -154,7 +190,7 @@ const SLICE_SIZE: usize = 16;
 /// resolved against the constants table by the codegen, which has it.
 fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, elem_type: []const u8 } {
     if (type_name.len < 3 or type_name[0] != '[') return null;
-    const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
+    const close = matchingBracket(type_name) orelse return null;
     const inside = std.mem.trim(u8, type_name[1..close], " ");
 
     const isIdent = struct {
@@ -168,7 +204,7 @@ fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, 
         }
     }.f;
 
-    if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi| {
+    if (lastTopLevelSemicolon(inside)) |semi| {
         const elem_name = std.mem.trim(u8, inside[0..semi], " ");
         const count_name = std.mem.trim(u8, inside[semi + 1 ..], " ");
         if (elem_name.len == 0 or !isIdent(count_name)) return null;
