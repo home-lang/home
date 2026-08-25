@@ -22,6 +22,9 @@ const StringLiteral = struct {
 /// descriptor tables — so nothing in kernel/src/ compiles without them.
 const GlobalVar = struct {
     name: []const u8,
+    /// The type exactly as written, so field and element access can resolve
+    /// against it later.
+    type_name: []const u8,
     /// Total size in bytes.
     size: usize,
     /// Element size for an array; equals `size` for a scalar.
@@ -32,10 +35,29 @@ const GlobalVar = struct {
     init_value: ?i64,
 };
 
-/// Size in bytes of a written type name, or null if it is not a shape the
-/// kernel backend can lay out yet. Deliberately narrow: guessing a size for
-/// an unrecognized type would silently produce a symbol of the wrong length.
-fn sizeOfType(type_name: []const u8) ?usize {
+/// One field of a laid-out struct.
+const FieldInfo = struct {
+    name: []const u8,
+    type_name: []const u8,
+    offset: usize,
+    size: usize,
+};
+
+/// A struct type laid out in memory. Fields are placed in declaration order,
+/// each aligned to its own size (capped at 8), which matches the C ABI for
+/// the scalar and array fields kernel structs are built from.
+const StructInfo = struct {
+    name: []const u8,
+    size: usize,
+    alignment: usize,
+    fields: []FieldInfo,
+};
+
+/// Size in bytes of a primitive type name, or null. Deliberately narrow:
+/// guessing a size for an unrecognized type would silently produce a symbol
+/// of the wrong length. Struct and array types are resolved by the codegen's
+/// own sizeOf, which has the struct table.
+fn sizeOfPrimitive(type_name: []const u8) ?usize {
     if (std.mem.eql(u8, type_name, "u8") or std.mem.eql(u8, type_name, "i8") or
         std.mem.eql(u8, type_name, "bool")) return 1;
     if (std.mem.eql(u8, type_name, "u16") or std.mem.eql(u8, type_name, "i16")) return 2;
@@ -48,15 +70,35 @@ fn sizeOfType(type_name: []const u8) ?usize {
     return null;
 }
 
-/// Parse `[N]T`, returning element count and element size.
-fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem: usize } {
+/// Parse `[N]T` into an element count and the element's type name. The
+/// element's *size* is resolved separately, because it may be a struct.
+fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem_type: []const u8 } {
     if (type_name.len < 3 or type_name[0] != '[') return null;
     const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
     const count_str = std.mem.trim(u8, type_name[1..close], " ");
     const count = std.fmt.parseInt(usize, count_str, 0) catch return null;
     const elem_name = std.mem.trim(u8, type_name[close + 1 ..], " ");
-    const elem = sizeOfType(elem_name) orelse return null;
-    return .{ .count = count, .elem = elem };
+    if (elem_name.len == 0) return null;
+    return .{ .count = count, .elem_type = elem_name };
+}
+
+/// True if the type is a pointer. Indexing one strides by the pointee.
+fn isPointerType(type_name: []const u8) bool {
+    return type_name.len > 1 and (type_name[0] == '*' or type_name[0] == '&');
+}
+
+/// The type a pointer or array refers to.
+fn pointeeType(type_name: []const u8) ?[]const u8 {
+    if (isPointerType(type_name)) {
+        var rest = type_name[1..];
+        // `&mut T` and `*const T` both point at T.
+        if (std.mem.startsWith(u8, rest, "mut ")) rest = rest[4..];
+        if (std.mem.startsWith(u8, rest, "const ")) rest = rest[6..];
+        const trimmed = std.mem.trim(u8, rest, " ");
+        return if (trimmed.len == 0) null else trimmed;
+    }
+    if (parseArrayType(type_name)) |arr| return arr.elem_type;
+    return null;
 }
 
 /// The mov suffix and destination register for a load of the given width.
@@ -129,8 +171,11 @@ pub const HomeKernelCodegen = struct {
     /// constant, however it was declared — this tree uses plain `let` for
     /// mutable subsystem state throughout.
     assigned_names: std.StringHashMap(void),
-    /// Element size for locals that are arrays; absent for scalars.
-    local_elem_size: std.StringHashMap(usize),
+    /// The type exactly as written for each local, so field and element
+    /// access can resolve against it.
+    local_types: std.StringHashMap([]const u8),
+    /// Laid-out struct types, by name.
+    structs: std.StringHashMap(StructInfo),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -156,7 +201,8 @@ pub const HomeKernelCodegen = struct {
         result.global_vars = std.StringHashMap(GlobalVar).init(allocator);
         result.global_order = .{ .items = &[_][]const u8{}, .capacity = 0 };
         result.assigned_names = std.StringHashMap(void).init(allocator);
-        result.local_elem_size = std.StringHashMap(usize).init(allocator);
+        result.local_types = std.StringHashMap([]const u8).init(allocator);
+        result.structs = std.StringHashMap(StructInfo).init(allocator);
         return result;
     }
 
@@ -168,7 +214,10 @@ pub const HomeKernelCodegen = struct {
         self.global_vars.deinit();
         self.global_order.deinit(self.allocator);
         self.assigned_names.deinit();
-        self.local_elem_size.deinit();
+        self.local_types.deinit();
+        var struct_it = self.structs.valueIterator();
+        while (struct_it.next()) |info| self.allocator.free(info.fields);
+        self.structs.deinit();
         self.string_literals.deinit(self.allocator);
     }
 
@@ -233,40 +282,247 @@ pub const HomeKernelCodegen = struct {
         }
     }
 
-    /// Compute the address of `base[index]` into %rax and return the element
-    /// size, or null when the element width is unknown. The width comes from
-    /// the base's declared type, which is only available for a module-level
-    /// array today — indexing anything else is refused rather than guessed at
-    /// some default stride (home-lang/home-os#38).
-    fn generateElementAddress(self: *HomeKernelCodegen, idx: *const ast.IndexExpr) !?usize {
-        var elem_size: usize = 0;
-        if (idx.array.* == .Identifier) {
-            const base_name = idx.array.Identifier.name;
-            if (self.local_elem_size.get(base_name)) |es| {
-                elem_size = es;
-            } else if (self.global_vars.get(base_name)) |g| {
-                if (!g.is_array) {
-                    try self.print("    # ERROR: {s} is not an array\n", .{base_name});
-                    return null;
-                }
-                elem_size = g.elem_size;
-            } else {
-                try self.print("    # ERROR: cannot index {s}: element width unknown\n", .{base_name});
-                return null;
-            }
-        } else {
-            try self.writeAll("    # ERROR: cannot index this expression: element width unknown\n");
-            return null;
-        }
+    // ---- Type resolution -------------------------------------------------
+    //
+    // The backend has no type inference. What it has is the type each binding
+    // was *declared* with, which is enough to resolve field offsets and array
+    // strides — and refusing anything it cannot resolve is what keeps it from
+    // guessing a stride and silently reading the wrong memory.
 
-        try self.generateExpr(idx.index);
-        if (elem_size > 1) {
-            try self.print("    imulq ${d}, %rax\n", .{elem_size});
+    /// Size of a type as written: primitive, struct, array, or pointer.
+    fn sizeOf(self: *HomeKernelCodegen, type_name: []const u8) ?usize {
+        if (sizeOfPrimitive(type_name)) |n| return n;
+        if (isPointerType(type_name)) return 8;
+        if (parseArrayType(type_name)) |arr| {
+            const elem = self.sizeOf(arr.elem_type) orelse return null;
+            return arr.count * elem;
         }
-        try self.writeAll("    movq %rax, %rcx\n");
-        try self.generateExpr(idx.array);
-        try self.writeAll("    addq %rcx, %rax\n");
-        return elem_size;
+        if (self.structs.get(type_name)) |info| return info.size;
+        return null;
+    }
+
+    /// Alignment of a type: its own size for scalars, capped at 8.
+    fn alignOf(self: *HomeKernelCodegen, type_name: []const u8) usize {
+        if (self.structs.get(type_name)) |info| return info.alignment;
+        if (parseArrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
+        const size = self.sizeOf(type_name) orelse 8;
+        return @min(size, @as(usize, 8));
+    }
+
+    /// Lay out every struct declared in the program. Runs to a fixed point so
+    /// a struct may refer to one declared later in the file; a struct that
+    /// still cannot be laid out after that is left out of the table, and any
+    /// use of it is refused rather than assigned a made-up size.
+    fn layoutStructs(self: *HomeKernelCodegen, program: *const ast.Program) !void {
+        var progress = true;
+        while (progress) {
+            progress = false;
+            for (program.statements) |stmt| {
+                if (stmt != .StructDecl) continue;
+                const decl = stmt.StructDecl;
+                if (self.structs.contains(decl.name)) continue;
+
+                // Every field must have a known size before this struct does.
+                var resolvable = true;
+                for (decl.fields) |f| {
+                    if (self.sizeOf(f.type_name) == null) {
+                        resolvable = false;
+                        break;
+                    }
+                }
+                if (!resolvable) continue;
+
+                var fields = try self.allocator.alloc(FieldInfo, decl.fields.len);
+                var offset: usize = 0;
+                var max_align: usize = 1;
+                for (decl.fields, 0..) |f, i| {
+                    const fsize = self.sizeOf(f.type_name).?;
+                    // `packed` means exactly what it says: no padding.
+                    const falign = if (decl.layout == .Packed) 1 else self.alignOf(f.type_name);
+                    max_align = @max(max_align, falign);
+                    offset = (offset + falign - 1) / falign * falign;
+                    fields[i] = .{
+                        .name = f.name,
+                        .type_name = f.type_name,
+                        .offset = offset,
+                        .size = fsize,
+                    };
+                    offset += fsize;
+                }
+                // Tail padding, so an array of this struct strides correctly.
+                const total = (offset + max_align - 1) / max_align * max_align;
+                try self.structs.put(decl.name, .{
+                    .name = decl.name,
+                    .size = total,
+                    .alignment = max_align,
+                    .fields = fields,
+                });
+                progress = true;
+            }
+        }
+    }
+
+    /// True for types whose value is their address: arrays and structs.
+    fn isStorageType(self: *HomeKernelCodegen, type_name: []const u8) bool {
+        return parseArrayType(type_name) != null or self.structs.contains(type_name);
+    }
+
+    fn findField(self: *HomeKernelCodegen, type_name: []const u8, member: []const u8) ?FieldInfo {
+        const info = self.structs.get(type_name) orelse return null;
+        for (info.fields) |f| {
+            if (std.mem.eql(u8, f.name, member)) return f;
+        }
+        return null;
+    }
+
+    /// The declared type of an lvalue expression, or null if unknown.
+    fn typeOfLValue(self: *HomeKernelCodegen, expr: *const ast.Expr) ?[]const u8 {
+        switch (expr.*) {
+            .Identifier => |id| {
+                if (self.local_types.get(id.name)) |t| return t;
+                if (self.global_vars.get(id.name)) |g| return g.type_name;
+                return null;
+            },
+            .IndexExpr => |idx| {
+                const base = self.typeOfLValue(idx.array) orelse return null;
+                return pointeeType(base);
+            },
+            .MemberExpr => |m| {
+                const base = self.typeOfLValue(m.object) orelse return null;
+                const f = self.findField(base, m.member) orelse return null;
+                return f.type_name;
+            },
+            else => return null,
+        }
+    }
+
+    /// Emit the address of an lvalue into %rax, returning its declared type.
+    /// Returns null — having already emitted an ERROR marker — when the
+    /// expression is not an addressable form the backend understands.
+    fn emitAddress(self: *HomeKernelCodegen, expr: *const ast.Expr) anyerror!?[]const u8 {
+        switch (expr.*) {
+            .Identifier => |id| {
+                if (self.locals.get(id.name)) |offset| {
+                    try self.print("    leaq {d}(%rbp), %rax\n", .{offset});
+                    return self.local_types.get(id.name) orelse "";
+                }
+                if (self.global_vars.get(id.name)) |g| {
+                    try self.print("    leaq {s}(%rip), %rax\n", .{g.name});
+                    return g.type_name;
+                }
+                try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
+                return null;
+            },
+            .IndexExpr => |idx| {
+                const base_type = self.typeOfLValue(idx.array) orelse {
+                    try self.writeAll("    # ERROR: cannot index: the base has no known type\n");
+                    return null;
+                };
+                const elem_type = pointeeType(base_type) orelse {
+                    try self.print("    # ERROR: cannot index a value of type {s}\n", .{base_type});
+                    return null;
+                };
+                const elem_size = self.sizeOf(elem_type) orelse {
+                    try self.print("    # ERROR: cannot index: element type {s} has unknown size\n", .{elem_type});
+                    return null;
+                };
+
+                // Base address first, stashed, then the index — so the index
+                // expression cannot clobber the base.
+                if (isPointerType(base_type)) {
+                    // A pointer's *value* is the base address.
+                    try self.generateExpr(idx.array);
+                } else {
+                    _ = try self.emitAddress(idx.array) orelse return null;
+                }
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(idx.index);
+                if (elem_size > 1) {
+                    try self.print("    imulq ${d}, %rax\n", .{elem_size});
+                }
+                try self.writeAll("    popq %rcx\n");
+                try self.writeAll("    addq %rcx, %rax\n");
+                return elem_type;
+            },
+            .MemberExpr => |m| {
+                const base_type = self.typeOfLValue(m.object) orelse {
+                    try self.print("    # ERROR: cannot resolve .{s}: the base has no known type\n", .{m.member});
+                    return null;
+                };
+                // Through a pointer, `p.f` means `(*p).f`.
+                var owner = base_type;
+                var through_pointer = false;
+                if (isPointerType(base_type)) {
+                    owner = pointeeType(base_type) orelse base_type;
+                    through_pointer = true;
+                }
+                const field = self.findField(owner, m.member) orelse {
+                    try self.print("    # ERROR: type {s} has no field {s}\n", .{ owner, m.member });
+                    return null;
+                };
+                if (through_pointer) {
+                    try self.generateExpr(m.object);
+                } else {
+                    _ = try self.emitAddress(m.object) orelse return null;
+                }
+                if (field.offset > 0) {
+                    try self.print("    addq ${d}, %rax\n", .{field.offset});
+                }
+                return field.type_name;
+            },
+            .UnaryExpr => |unary| {
+                // `*p` as an lvalue: the address is p's value.
+                if (unary.op == .Deref) {
+                    const t = self.typeOfLValue(unary.operand);
+                    try self.generateExpr(unary.operand);
+                    if (t) |base_type| {
+                        if (pointeeType(base_type)) |pt| return pt;
+                    }
+                    return "";
+                }
+                try self.writeAll("    # ERROR: not an addressable expression\n");
+                return null;
+            },
+            else => {
+                try self.writeAll("    # ERROR: not an addressable expression\n");
+                return null;
+            },
+        }
+    }
+
+    /// Load the value at the address in %rax, given its declared type.
+    /// An array or struct loads as its own address: it is storage, not a
+    /// value that fits in a register.
+    fn emitLoadFromAddress(self: *HomeKernelCodegen, type_name: []const u8) !void {
+        if (parseArrayType(type_name) != null or self.structs.contains(type_name)) return;
+        const size = self.sizeOf(type_name) orelse 8;
+        const ld = loadFor(size) orelse {
+            try self.print("    # ERROR: cannot load a value of type {s} ({d} bytes)\n", .{ type_name, size });
+            try self.writeAll("    movq $0, %rax\n");
+            return;
+        };
+        try self.writeAll("    movq %rax, %rdx\n");
+        if (size < 8) try self.writeAll("    xorq %rax, %rax\n");
+        try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
+    }
+
+    /// Evaluate `value` and store it at the address in %rax.
+    fn emitStoreToAddress(
+        self: *HomeKernelCodegen,
+        type_name: []const u8,
+        value: *const ast.Expr,
+    ) !void {
+        const size = self.sizeOf(type_name) orelse 8;
+        const st = storeFor(size) orelse {
+            try self.print("    # ERROR: cannot store a value of type {s} ({d} bytes)\n", .{ type_name, size });
+            return;
+        };
+        // Address first, stashed, then the value — so the value expression
+        // cannot clobber the address.
+        try self.writeAll("    pushq %rax\n");
+        try self.generateExpr(value);
+        try self.writeAll("    popq %rdx\n");
+        try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
     }
 
     /// Record a module-level binding as storage. Returns false when its size
@@ -276,10 +532,12 @@ pub const HomeKernelCodegen = struct {
         const type_name = decl.type_name orelse return false;
 
         if (parseArrayType(type_name)) |arr| {
+            const elem = self.sizeOf(arr.elem_type) orelse return false;
             try self.global_vars.put(decl.name, .{
                 .name = decl.name,
-                .size = arr.count * arr.elem,
-                .elem_size = arr.elem,
+                .type_name = type_name,
+                .size = arr.count * elem,
+                .elem_size = elem,
                 .is_array = true,
                 .init_value = null,
             });
@@ -287,7 +545,21 @@ pub const HomeKernelCodegen = struct {
             return true;
         }
 
-        const size = sizeOfType(type_name) orelse return false;
+        // A struct-typed global is storage too, laid out by its own size.
+        if (self.structs.get(type_name)) |info| {
+            try self.global_vars.put(decl.name, .{
+                .name = decl.name,
+                .type_name = type_name,
+                .size = info.size,
+                .elem_size = info.alignment,
+                .is_array = true, // storage: its value is its address
+                .init_value = null,
+            });
+            try self.global_order.append(self.allocator, decl.name);
+            return true;
+        }
+
+        const size = self.sizeOf(type_name) orelse return false;
         // `= undefined` and `= 0` are both zero-initialized storage; a nonzero
         // constant initializer goes in .data.
         var init_value: ?i64 = null;
@@ -298,6 +570,7 @@ pub const HomeKernelCodegen = struct {
         }
         try self.global_vars.put(decl.name, .{
             .name = decl.name,
+            .type_name = type_name,
             .size = size,
             .elem_size = size,
             .is_array = false,
@@ -513,9 +786,11 @@ pub const HomeKernelCodegen = struct {
                     if (self.locals.contains(decl.name)) continue;
                     var bytes: usize = 8;
                     if (decl.type_name) |tn| {
-                        if (parseArrayType(tn)) |arr| {
-                            bytes = arr.count * arr.elem;
-                            try self.local_elem_size.put(decl.name, arr.elem);
+                        try self.local_types.put(decl.name, tn);
+                        // An array or struct local needs its full width, not
+                        // one word — it holds its elements, not a pointer.
+                        if (self.isStorageType(tn)) {
+                            bytes = self.sizeOf(tn) orelse 8;
                         }
                     }
                     // Keep every slot 8-byte aligned so word loads stay aligned.
@@ -554,6 +829,10 @@ pub const HomeKernelCodegen = struct {
             \\
             \\
         );
+
+        // Lay out struct types first: sizing a global, an array stride, or a
+        // field offset all depend on knowing them.
+        try self.layoutStructs(program);
 
         // Collect declared function names before generating anything, so a
         // call to a function defined later in the file is still recognised
@@ -619,7 +898,7 @@ pub const HomeKernelCodegen = struct {
                 // `stack_offset` were never reset, so one function's variables
                 // resolved inside the next one at meaningless offsets.
                 self.locals.clearRetainingCapacity();
-                self.local_elem_size.clearRetainingCapacity();
+                self.local_types.clearRetainingCapacity();
                 self.stack_offset = 0;
                 self.current_fn = func.name;
                 const was_top = self.at_top_level;
@@ -719,7 +998,9 @@ pub const HomeKernelCodegen = struct {
                 // first — and expression codegen pushes constantly.
                 // An array local is storage, not a value: its slot holds the
                 // elements themselves, so there is nothing to store into it.
-                if (self.local_elem_size.contains(decl.name)) return;
+                if (decl.type_name) |tn| {
+                    if (self.isStorageType(tn)) return;
+                }
                 if (decl.value) |value| {
                     try self.generateExpr(value);
                     if (self.locals.get(decl.name)) |slot| {
@@ -1019,20 +1300,13 @@ pub const HomeKernelCodegen = struct {
                     },
                 }
             },
-            .IndexExpr => |idx| {
-                // Address into %rax, then load one element from it.
-                const elem = try self.generateElementAddress(idx) orelse {
+            .IndexExpr, .MemberExpr => {
+                // Address into %rax, then load the value it points at.
+                const t = try self.emitAddress(expr) orelse {
                     try self.writeAll("    movq $0, %rax\n");
                     return;
                 };
-                if (loadFor(elem)) |ld| {
-                    try self.writeAll("    movq %rax, %rdx\n");
-                    if (elem < 8) try self.writeAll("    xorq %rax, %rax\n");
-                    try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
-                } else {
-                    try self.print("    # ERROR: cannot load element of size {d}\n", .{elem});
-                    try self.writeAll("    movq $0, %rax\n");
-                }
+                try self.emitLoadFromAddress(t);
             },
             .UnaryExpr => |unary| {
                 try self.generateExpr(unary.operand);
@@ -1074,28 +1348,19 @@ pub const HomeKernelCodegen = struct {
                             try self.print("    # ERROR: assignment to undefined variable {s}\n", .{target.name});
                         }
                     },
-                    .IndexExpr => |idx| {
-                        // Address first, stash it, then the value — so the
-                        // value expression cannot clobber the address.
-                        const elem = try self.generateElementAddress(idx) orelse return;
-                        try self.writeAll("    pushq %rax\n");
-                        try self.generateExpr(assign.value);
-                        try self.writeAll("    popq %rdx\n");
-                        if (storeFor(elem)) |st| {
-                            try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
-                        } else {
-                            try self.print("    # ERROR: cannot store element of size {d}\n", .{elem});
-                        }
-                    },
                     else => {
-                        try self.writeAll("    # ERROR: unsupported assignment target\n");
+                        // Index, field, and dereference targets all reduce to
+                        // "compute an address, store through it".
+                        const t = try self.emitAddress(assign.target) orelse return;
+                        try self.emitStoreToAddress(t, assign.value);
                     },
                 }
             },
             .Identifier => |id| {
                 if (self.locals.get(id.name)) |offset| {
-                    if (self.local_elem_size.contains(id.name)) {
-                        // An array's value is its address, as in C.
+                    const t = self.local_types.get(id.name) orelse "";
+                    if (t.len > 0 and self.isStorageType(t)) {
+                        // An array or struct's value is its address, as in C.
                         try self.print("    leaq {d}(%rbp), %rax\n", .{offset});
                     } else {
                         try self.print("    movq {d}(%rbp), %rax\n", .{offset});
@@ -1104,7 +1369,6 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    movq ${d}, %rax\n", .{value});
                 } else if (self.global_vars.get(id.name)) |g| {
                     if (g.is_array) {
-                        // An array's value is its address, as in C.
                         try self.print("    leaq {s}(%rip), %rax\n", .{g.name});
                     } else if (loadFor(g.size)) |ld| {
                         if (g.size < 8) try self.writeAll("    xorq %rax, %rax\n");
