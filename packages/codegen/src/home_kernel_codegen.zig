@@ -98,7 +98,19 @@ fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem_type: []co
 /// placement constraint, not part of the type's identity, so everything
 /// downstream works on the bare name.
 fn splitAlign(type_name: []const u8) struct { bare: []const u8, alignment: ?usize } {
-    const trimmed = std.mem.trim(u8, type_name, " ");
+    var trimmed = std.mem.trim(u8, type_name, " ");
+    // Qualifiers constrain access, not layout: `volatile [N]u16` is laid out
+    // exactly like `[N]u16`. Strip them so everything downstream sees a type
+    // it recognizes. (Volatile *semantics* are the mmio_* intrinsics' job.)
+    while (true) {
+        if (std.mem.startsWith(u8, trimmed, "volatile ")) {
+            trimmed = std.mem.trim(u8, trimmed["volatile ".len..], " ");
+        } else if (std.mem.startsWith(u8, trimmed, "const ")) {
+            trimmed = std.mem.trim(u8, trimmed["const ".len..], " ");
+        } else if (std.mem.startsWith(u8, trimmed, "mut ")) {
+            trimmed = std.mem.trim(u8, trimmed["mut ".len..], " ");
+        } else break;
+    }
     const marker = " align(";
     const at = std.mem.indexOf(u8, trimmed, marker) orelse return .{ .bare = trimmed, .alignment = null };
     const open = at + marker.len;
@@ -265,6 +277,10 @@ pub const HomeKernelCodegen = struct {
     local_types: std.StringHashMap([]const u8),
     /// Laid-out struct types, by name.
     structs: std.StringHashMap(StructInfo),
+    /// Enum tag width by enum name, so an enum-typed field or global is sized.
+    enum_sizes: std.StringHashMap(usize),
+    /// Enum variant values, keyed "EnumName.VariantName".
+    enum_values: std.StringHashMap(i64),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -293,6 +309,8 @@ pub const HomeKernelCodegen = struct {
         result.assigned_names = std.StringHashMap(void).init(allocator);
         result.local_types = std.StringHashMap([]const u8).init(allocator);
         result.structs = std.StringHashMap(StructInfo).init(allocator);
+        result.enum_sizes = std.StringHashMap(usize).init(allocator);
+        result.enum_values = std.StringHashMap(i64).init(allocator);
         return result;
     }
 
@@ -309,6 +327,10 @@ pub const HomeKernelCodegen = struct {
         var struct_it = self.structs.valueIterator();
         while (struct_it.next()) |info| self.allocator.free(info.fields);
         self.structs.deinit();
+        self.enum_sizes.deinit();
+        var ev_it = self.enum_values.keyIterator();
+        while (ev_it.next()) |k| self.allocator.free(k.*);
+        self.enum_values.deinit();
         self.string_literals.deinit(self.allocator);
     }
 
@@ -405,6 +427,7 @@ pub const HomeKernelCodegen = struct {
             return arr.count * elem;
         }
         if (self.structs.get(type_name)) |info| return info.size;
+        if (self.enum_sizes.get(type_name)) |n| return n;
         return null;
     }
 
@@ -444,6 +467,33 @@ pub const HomeKernelCodegen = struct {
                     try self.globals.put(decl.name, folded);
                     progress = true;
                 }
+            }
+        }
+    }
+
+    /// Record each enum's tag width and its variants' values. An enum is an
+    /// integer of its tag type; a variant is a compile-time constant.
+    /// Variants without an explicit value continue from the previous one,
+    /// starting at zero, which is what both spellings of the syntax mean.
+    fn collectEnums(self: *HomeKernelCodegen, program: *const ast.Program) !void {
+        for (program.statements) |stmt| {
+            if (stmt != .EnumDecl) continue;
+            const decl = stmt.EnumDecl;
+            // Default tag width is 4 bytes when the declaration does not say.
+            const size = if (decl.tag_type) |t| (sizeOfPrimitive(t) orelse 4) else 4;
+            try self.enum_sizes.put(decl.name, size);
+
+            var next: i64 = 0;
+            for (decl.variants) |v| {
+                const value = v.value orelse next;
+                next = value + 1;
+                const key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ decl.name, v.name });
+                // A duplicate key would leak the second allocation.
+                if (self.enum_values.contains(key)) {
+                    self.allocator.free(key);
+                    continue;
+                }
+                try self.enum_values.put(key, value);
             }
         }
     }
@@ -550,6 +600,9 @@ pub const HomeKernelCodegen = struct {
                 if (c.callee.* != .Identifier) return null;
                 return self.fn_return_types.get(c.callee.Identifier.name);
             },
+            // A string literal's value is the address of its bytes, so a local
+            // initialized from one is a byte pointer and may be indexed.
+            .StringLiteral => return "[*]u8",
             else => return null,
         }
     }
@@ -822,6 +875,14 @@ pub const HomeKernelCodegen = struct {
             .IntegerLiteral => |lit| return std.math.cast(i64, lit.value),
             .BooleanLiteral => |lit| return if (lit.value) @as(i64, 1) else @as(i64, 0),
             .Identifier => |id| return self.globals.get(id.name),
+            .MemberExpr => |m| {
+                if (m.object.* != .Identifier) return null;
+                const enum_name = m.object.Identifier.name;
+                if (!self.enum_sizes.contains(enum_name)) return null;
+                const key = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ enum_name, m.member }) catch return null;
+                defer self.allocator.free(key);
+                return self.enum_values.get(key);
+            },
             .UnaryExpr => |unary| {
                 const v = self.foldConst(unary.operand) orelse return null;
                 return switch (unary.op) {
@@ -1087,6 +1148,7 @@ pub const HomeKernelCodegen = struct {
             }
         }
         try self.foldModuleConstants(program);
+        try self.collectEnums(program);
         try self.layoutStructs(program);
 
         // Generate code for each statement
@@ -1572,6 +1634,24 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IndexExpr, .MemberExpr => {
+                // `Enum.Variant` is a compile-time constant, not a field read.
+                if (expr.* == .MemberExpr) {
+                    const m = expr.MemberExpr;
+                    if (m.object.* == .Identifier) {
+                        const enum_name = m.object.Identifier.name;
+                        if (self.enum_sizes.contains(enum_name)) {
+                            const key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ enum_name, m.member });
+                            defer self.allocator.free(key);
+                            if (self.enum_values.get(key)) |v| {
+                                try self.print("    movq ${d}, %rax\n", .{v});
+                                return;
+                            }
+                            try self.print("    # ERROR: enum {s} has no variant {s}\n", .{ enum_name, m.member });
+                            try self.writeAll("    movq $0, %rax\n");
+                            return;
+                        }
+                    }
+                }
                 // `arr.len` on a fixed-size array is a compile-time constant,
                 // not a field read: there is no length word to load.
                 if (expr.* == .MemberExpr) {
