@@ -14611,8 +14611,7 @@ pub const Checker = struct {
     /// For an `export default <decl>` statement, return the position of
     /// the named declaration (function/class name) so TS2528 underlines
     /// the identifier rather than the `export` keyword. Returns null
-    /// when the default payload isn't a named function/class. Expression
-    /// exports, including identifier expressions, report at `export`.
+    /// when the default payload isn't a named declaration or identifier.
     fn defaultExportNamePos(self: *Checker, node: NodeId) ?u32 {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .export_decl) return null;
         const ex = hir_mod.exportOf(self.hir, node);
@@ -14631,7 +14630,7 @@ pub const Checker = struct {
                 const it = hir_mod.interfaceOf(self.hir, decl);
                 break :blk it.name;
             },
-            .identifier => return self.hir.spanOf(node).start,
+            .identifier => return self.hir.spanOf(decl).start,
             else => return null,
         };
         if (name_node == hir_mod.none_node_id) return null;
@@ -17619,8 +17618,14 @@ pub const Checker = struct {
             {
                 continue;
             }
-            const param_t = self.hir.typeOf(param_node);
-            if (!self.isThisTypeParameter(param_t)) continue;
+            var param_t = self.hir.typeOf(param_node);
+            if (!self.isThisTypeParameter(param_t)) {
+                const fn_decl = hir_mod.fnDeclOf(self.hir, fn_node);
+                if (fn_decl.flags.is_static) continue;
+                const class_node = self.enclosingClassNode(fn_node);
+                if (class_node == hir_mod.none_node_id) continue;
+                param_t = self.class_this_types.get(class_node) orelse continue;
+            }
             const id = hir_mod.identifierOf(self.hir, param.name);
             const key: VarDeclKey = .{
                 .scope = fn_node,
@@ -106865,14 +106870,16 @@ pub const Checker = struct {
                             }
                             const rest_arr_t = param_ts[param_ts.len - 1];
                             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                                if (try self.synthesizedRestArgumentListType(
-                                    node,
-                                    args,
-                                    arg_types.items,
-                                    fixed_count,
-                                    false,
-                                )) |rest_tuple_t| {
-                                    try call_subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                                if (args.len > fixed_count or !call_subs.contains(rest_arr_t)) {
+                                    if (try self.synthesizedRestArgumentListType(
+                                        node,
+                                        args,
+                                        arg_types.items,
+                                        fixed_count,
+                                        false,
+                                    )) |rest_tuple_t| {
+                                        try call_subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                                    }
                                 }
                             } else {
                                 const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
@@ -152442,14 +152449,16 @@ pub const Checker = struct {
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                if (try self.synthesizedRestArgumentListType(
-                    hir_mod.none_node_id,
-                    args,
-                    arg_types,
-                    fixed_count,
-                    false,
-                )) |rest_tuple_t| {
-                    try subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                if (args.len > fixed_count or !subs.contains(rest_arr_t)) {
+                    if (try self.synthesizedRestArgumentListType(
+                        hir_mod.none_node_id,
+                        args,
+                        arg_types,
+                        fixed_count,
+                        false,
+                    )) |rest_tuple_t| {
+                        try subs.put(self.gpa, rest_arr_t, rest_tuple_t);
+                    }
                 }
             } else {
                 const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
@@ -170713,6 +170722,11 @@ pub const Checker = struct {
         if (self.hir.kindOf(init_node) != .array_literal) return false;
         const resolved_target = self.arrayTypeFromMaybeOptional(target_t) orelse return false;
         if (self.isTupleShapedTarget(resolved_target)) return false;
+        // Named array interfaces retain their declaration identity in tsc's
+        // assignment diagnostic. Let the whole-value relation report the
+        // widened source array against that named target instead of reducing
+        // the error to the first incompatible spread element.
+        if (self.namedTypeForId(resolved_target) != null) return false;
         const elem_target_t = self.interner.objectNumberIndex(resolved_target);
         if (elem_target_t == types.Primitive.none or
             elem_target_t == types.Primitive.any or
@@ -224203,7 +224217,7 @@ test "checker: array spread of T[] yields T[]" {
     }
 }
 
-test "checker: tuple spreads preserve contextual positions and open spreads report whole assignments" {
+test "checker: parity 4451-5250 named array spreads report whole assignments" {
     const b = try newBoundSetup(
         \\const numbers = [1, 2, 3];
         \\const strings = ["s", "t", "r"];
@@ -225024,22 +225038,23 @@ test "checker: curry infers a bare generic rest from the whole prefix" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
-test "checker: callback params infer fixed generic rest tuple arity" {
+test "checker: parity 4451-5250 callback params infer fixed generic rest tuple arity" {
     const s = try newSetup(
         \\declare function call<TS extends unknown[]>(
-        \\  handler: (...args: TS) => void,
+        \\  handler: (...args: TS) => unknown,
         \\  ...args: TS): void;
         \\call((x: number, y: number) => x + y);
-        \\call((x: number, y: number) => x + y, 1, 2, 3);
+        \\call((x: number, y: number) => x + y, 4, 2);
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.expected_n_arguments) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqualStrings(
+        "Expected 3 arguments, but got 1.",
+        checkerFirstMessageForCode(s, TsCodes.expected_n_arguments) orelse return error.MissingDiagnostic,
+    );
 }
 
 test "checker: variadic tuple spreads satisfy fixed plus rest signatures" {
@@ -241605,7 +241620,7 @@ test "checker: duplicate named default classes use TS2528 without TS2300" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.duplicate_identifier));
 }
 
-test "checker: virtual default class function and value merge diagnostics" {
+test "checker: parity 4451-5250 virtual default class function and value merge diagnostics" {
     const src =
         "// @filename: m1.ts\n" ++
         "export default class foo {}\n" ++
@@ -262556,7 +262571,7 @@ test "checker: strict false retains missing members on globalThis intersections"
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
 }
 
-test "checker: polymorphic this default parameters merge with body var declarations" {
+test "checker: parity 4451-5250 polymorphic this default parameters merge with body var declarations" {
     const s = try newSetup(
         \\class Plain {
         \\  method(value = this) { var value!: Plain; }
@@ -262569,6 +262584,11 @@ test "checker: polymorphic this default parameters merge with body var declarati
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.subsequent_var_type_mismatch,
+        "Subsequent variable declarations must have the same type.  Variable 'value' must be of type 'this', but here has type 'Plain'.",
+    ));
     try T.expect(hasDiagnosticCodeMessage(
         s,
         TsCodes.subsequent_var_type_mismatch,
