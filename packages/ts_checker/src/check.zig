@@ -156770,7 +156770,8 @@ pub const Checker = struct {
                 {
                     continue;
                 }
-                if (try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
+                if (!self.typeIsBuiltinFunctionObject(constraint) and
+                    try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
                 const msg = (try self.formatUnconstrainedGenericArgument(arg_t, constraint)) orelse
                     try self.formatArgumentNotAssignable(arg_t, constraint, i);
                 try self.diagnostics.append(self.gpa, .{
@@ -156789,7 +156790,8 @@ pub const Checker = struct {
             {
                 continue;
             }
-            if (try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
+            if (!self.typeIsBuiltinFunctionObject(constraint) and
+                try self.tryReportSinglePropertyMissing(args[i], args[i], arg_t, constraint)) continue;
             const msg = (try self.formatGenericKeyofConstraintArgumentNotAssignable(
                 raw_constraint,
                 args,
@@ -185915,6 +185917,7 @@ test "checker: Function call prototype checks original parameters" {
         \\foo.call(undefined, 10, 20);
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_bind_call_apply = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var found = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -185950,7 +185953,7 @@ test "checker: contextual default function parameter preserves call callback ari
         \\}
     );
     defer destroyBoundSetup(b);
-    b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_bind_call_apply = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var found = false;
     for (b.base.checker.diagnostics.items) |d| {
