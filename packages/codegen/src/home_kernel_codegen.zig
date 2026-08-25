@@ -75,12 +75,53 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
 fn parseArrayType(type_name: []const u8) ?struct { count: usize, elem_type: []const u8 } {
     if (type_name.len < 3 or type_name[0] != '[') return null;
     const close = std.mem.indexOfScalar(u8, type_name, ']') orelse return null;
-    const count_str = std.mem.trim(u8, type_name[1..close], " ");
-    const count = std.fmt.parseInt(usize, count_str, 0) catch return null;
+    const inside = std.mem.trim(u8, type_name[1..close], " ");
+
+    // `[T; N]` — the form this tree uses most.
+    if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi| {
+        const elem_name = std.mem.trim(u8, inside[0..semi], " ");
+        const count_str = std.mem.trim(u8, inside[semi + 1 ..], " ");
+        const count = std.fmt.parseInt(usize, count_str, 0) catch return null;
+        if (elem_name.len == 0) return null;
+        return .{ .count = count, .elem_type = elem_name };
+    }
+
+    // `[N]T`.
+    const count = std.fmt.parseInt(usize, inside, 0) catch return null;
     const elem_name = std.mem.trim(u8, type_name[close + 1 ..], " ");
     if (elem_name.len == 0) return null;
     return .{ .count = count, .elem_type = elem_name };
 }
+
+/// Strip a trailing `align(N)` qualifier and surrounding space from a written
+/// type, returning the bare type and the requested alignment. Alignment is a
+/// placement constraint, not part of the type's identity, so everything
+/// downstream works on the bare name.
+fn splitAlign(type_name: []const u8) struct { bare: []const u8, alignment: ?usize } {
+    const trimmed = std.mem.trim(u8, type_name, " ");
+    const marker = " align(";
+    const at = std.mem.indexOf(u8, trimmed, marker) orelse return .{ .bare = trimmed, .alignment = null };
+    const open = at + marker.len;
+    const close = std.mem.indexOfScalarPos(u8, trimmed, open, ')') orelse
+        return .{ .bare = trimmed, .alignment = null };
+    const n = std.fmt.parseInt(usize, std.mem.trim(u8, trimmed[open..close], " "), 0) catch null;
+    return .{ .bare = std.mem.trim(u8, trimmed[0..at], " "), .alignment = n };
+}
+
+/// A slice is written `[]T` and is two words: a pointer then a length.
+fn isSliceType(type_name: []const u8) bool {
+    return type_name.len > 2 and type_name[0] == '[' and type_name[1] == ']';
+}
+
+fn sliceElem(type_name: []const u8) ?[]const u8 {
+    if (!isSliceType(type_name)) return null;
+    const e = std.mem.trim(u8, type_name[2..], " ");
+    return if (e.len == 0) null else e;
+}
+
+/// Byte offset of a slice's length word.
+const SLICE_LEN_OFFSET: usize = 8;
+const SLICE_SIZE: usize = 16;
 
 /// True if the type is a pointer. Indexing one strides by the pointee.
 fn isPointerType(type_name: []const u8) bool {
@@ -88,7 +129,9 @@ fn isPointerType(type_name: []const u8) bool {
 }
 
 /// The type a pointer or array refers to.
-fn pointeeType(type_name: []const u8) ?[]const u8 {
+fn pointeeType(raw: []const u8) ?[]const u8 {
+    const type_name = splitAlign(raw).bare;
+    if (isSliceType(type_name)) return sliceElem(type_name);
     if (isPointerType(type_name)) {
         var rest = type_name[1..];
         // `&mut T` and `*const T` both point at T.
@@ -151,6 +194,9 @@ pub const HomeKernelCodegen = struct {
     /// Innermost loop's labels, for break/continue. Empty when not in a loop.
     loop_break: []const u8,
     loop_continue: []const u8,
+    /// Declared return type of each function, for inferring the type of a
+    /// local initialized from a call.
+    fn_return_types: std.StringHashMap([]const u8),
     /// Every function declared in this program. An intrinsic name that the
     /// program also defines resolves to the program's definition, so adding
     /// intrinsics can never silently redirect an existing call.
@@ -196,6 +242,7 @@ pub const HomeKernelCodegen = struct {
         result.loop_break = "";
         result.loop_continue = "";
         result.declared_fns = std.StringHashMap(void).init(allocator);
+        result.fn_return_types = std.StringHashMap([]const u8).init(allocator);
         result.globals = std.StringHashMap(i64).init(allocator);
         result.at_top_level = true;
         result.global_vars = std.StringHashMap(GlobalVar).init(allocator);
@@ -210,6 +257,7 @@ pub const HomeKernelCodegen = struct {
         self.output.deinit(self.allocator);
         self.locals.deinit();
         self.declared_fns.deinit();
+        self.fn_return_types.deinit();
         self.globals.deinit();
         self.global_vars.deinit();
         self.global_order.deinit(self.allocator);
@@ -290,9 +338,11 @@ pub const HomeKernelCodegen = struct {
     // guessing a stride and silently reading the wrong memory.
 
     /// Size of a type as written: primitive, struct, array, or pointer.
-    fn sizeOf(self: *HomeKernelCodegen, type_name: []const u8) ?usize {
+    fn sizeOf(self: *HomeKernelCodegen, raw: []const u8) ?usize {
+        const type_name = splitAlign(raw).bare;
         if (sizeOfPrimitive(type_name)) |n| return n;
         if (isPointerType(type_name)) return 8;
+        if (isSliceType(type_name)) return SLICE_SIZE;
         if (parseArrayType(type_name)) |arr| {
             const elem = self.sizeOf(arr.elem_type) orelse return null;
             return arr.count * elem;
@@ -301,10 +351,20 @@ pub const HomeKernelCodegen = struct {
         return null;
     }
 
+    /// Emit the address of a slice's data pointer's *target* — i.e. load the
+    /// pointer word — given the address of the slice itself in %rax.
+    fn emitSliceData(self: *HomeKernelCodegen) !void {
+        try self.writeAll("    movq (%rax), %rax\n");
+    }
+
     /// Alignment of a type: its own size for scalars, capped at 8.
-    fn alignOf(self: *HomeKernelCodegen, type_name: []const u8) usize {
+    fn alignOf(self: *HomeKernelCodegen, raw: []const u8) usize {
+        const split = splitAlign(raw);
+        if (split.alignment) |explicit| return explicit;
+        const type_name = split.bare;
         if (self.structs.get(type_name)) |info| return info.alignment;
         if (parseArrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
+        if (isSliceType(type_name)) return 8;
         const size = self.sizeOf(type_name) orelse 8;
         return @min(size, @as(usize, 8));
     }
@@ -363,12 +423,15 @@ pub const HomeKernelCodegen = struct {
     }
 
     /// True for types whose value is their address: arrays and structs.
-    fn isStorageType(self: *HomeKernelCodegen, type_name: []const u8) bool {
-        return parseArrayType(type_name) != null or self.structs.contains(type_name);
+    fn isStorageType(self: *HomeKernelCodegen, raw: []const u8) bool {
+        const type_name = splitAlign(raw).bare;
+        return parseArrayType(type_name) != null or
+            isSliceType(type_name) or
+            self.structs.contains(type_name);
     }
 
-    fn findField(self: *HomeKernelCodegen, type_name: []const u8, member: []const u8) ?FieldInfo {
-        const info = self.structs.get(type_name) orelse return null;
+    fn findField(self: *HomeKernelCodegen, raw: []const u8, member: []const u8) ?FieldInfo {
+        const info = self.structs.get(splitAlign(raw).bare) orelse return null;
         for (info.fields) |f| {
             if (std.mem.eql(u8, f.name, member)) return f;
         }
@@ -388,9 +451,25 @@ pub const HomeKernelCodegen = struct {
                 return pointeeType(base);
             },
             .MemberExpr => |m| {
-                const base = self.typeOfLValue(m.object) orelse return null;
+                var base = splitAlign(self.typeOfLValue(m.object) orelse return null).bare;
+                if (isSliceType(base) and std.mem.eql(u8, m.member, "len")) return "usize";
+                if (isPointerType(base)) base = pointeeType(base) orelse base;
                 const f = self.findField(base, m.member) orelse return null;
                 return f.type_name;
+            },
+            .UnaryExpr => |u| {
+                // `*p` has the pointee's type; `&x` has x's, as a pointer we
+                // only need for further member access, so report x's type.
+                const inner = self.typeOfLValue(u.operand) orelse return null;
+                return switch (u.op) {
+                    .Deref => pointeeType(inner),
+                    .AddressOf, .Borrow, .BorrowMut => inner,
+                    else => null,
+                };
+            },
+            .CallExpr => |c| {
+                if (c.callee.* != .Identifier) return null;
+                return self.fn_return_types.get(c.callee.Identifier.name);
             },
             else => return null,
         }
@@ -449,11 +528,25 @@ pub const HomeKernelCodegen = struct {
                     try self.print("    # ERROR: cannot resolve .{s}: the base has no known type\n", .{m.member});
                     return null;
                 };
+                // A slice's only field is its length, the second word.
+                if (isSliceType(splitAlign(base_type).bare) and std.mem.eql(u8, m.member, "len")) {
+                    _ = try self.emitAddress(m.object) orelse return null;
+                    try self.print("    addq ${d}, %rax\n", .{SLICE_LEN_OFFSET});
+                    return "usize";
+                }
+                // An array's length is known at compile time.
+                if (parseArrayType(splitAlign(base_type).bare)) |arr| {
+                    if (std.mem.eql(u8, m.member, "len")) {
+                        try self.print("    # ERROR: {s}.len is a compile-time constant; use it as a value, not an address\n", .{m.member});
+                        _ = arr;
+                        return null;
+                    }
+                }
                 // Through a pointer, `p.f` means `(*p).f`.
-                var owner = base_type;
+                var owner = splitAlign(base_type).bare;
                 var through_pointer = false;
-                if (isPointerType(base_type)) {
-                    owner = pointeeType(base_type) orelse base_type;
+                if (isPointerType(owner)) {
+                    owner = pointeeType(owner) orelse owner;
                     through_pointer = true;
                 }
                 const field = self.findField(owner, m.member) orelse {
@@ -663,6 +756,51 @@ pub const HomeKernelCodegen = struct {
         }
     }
 
+    /// Push one call argument, returning how many machine words it occupies.
+    /// Pushes happen in reverse argument order, so within a slice the length
+    /// is pushed first and the pointer second — leaving the pointer on top,
+    /// which is what pops into the lower-numbered register.
+    fn pushArgument(self: *HomeKernelCodegen, arg: *const ast.Expr) anyerror!usize {
+        // A string literal used where a slice is expected carries its length
+        // with it: the length is known at compile time.
+        if (arg.* == .StringLiteral) {
+            try self.print("    movq ${d}, %rax\n", .{arg.StringLiteral.value.len});
+            try self.writeAll("    pushq %rax\n");
+            try self.generateExpr(arg);
+            try self.writeAll("    pushq %rax\n");
+            return 2;
+        }
+        if (self.typeOfLValue(arg)) |t| {
+            const bare = splitAlign(t).bare;
+            if (isSliceType(bare)) {
+                // Pass the pair through unchanged.
+                _ = try self.emitAddress(arg) orelse {
+                    try self.writeAll("    pushq %rax\n");
+                    return 1;
+                };
+                try self.writeAll("    pushq %rax\n");           // save slice address
+                try self.print("    movq {d}(%rax), %rax\n", .{SLICE_LEN_OFFSET});
+                try self.writeAll("    movq %rax, %rcx\n");
+                try self.writeAll("    popq %rax\n");
+                try self.writeAll("    pushq %rcx\n");            // length
+                try self.writeAll("    movq (%rax), %rax\n");     // data pointer
+                try self.writeAll("    pushq %rax\n");
+                return 2;
+            }
+            if (parseArrayType(bare)) |arr| {
+                // A fixed array decays to (pointer, length).
+                try self.print("    movq ${d}, %rax\n", .{arr.count});
+                try self.writeAll("    pushq %rax\n");
+                try self.generateExpr(arg);
+                try self.writeAll("    pushq %rax\n");
+                return 2;
+            }
+        }
+        try self.generateExpr(arg);
+        try self.writeAll("    pushq %rax\n");
+        return 1;
+    }
+
     /// Emit a kernel intrinsic, or return false if `name` is not one.
     ///
     /// Argument values are computed into %rax one at a time and parked in the
@@ -785,7 +923,15 @@ pub const HomeKernelCodegen = struct {
                 .LetDecl => |decl| {
                     if (self.locals.contains(decl.name)) continue;
                     var bytes: usize = 8;
-                    if (decl.type_name) |tn| {
+                    // Prefer the written type; otherwise infer it from the
+                    // initializer, which is how most locals in this tree are
+                    // declared. Without this, every `let s = something()` had
+                    // no type and every later `s.field` was refused.
+                    var declared: ?[]const u8 = decl.type_name;
+                    if (declared == null) {
+                        if (decl.value) |v| declared = self.typeOfLValue(v);
+                    }
+                    if (declared) |tn| {
                         try self.local_types.put(decl.name, tn);
                         // An array or struct local needs its full width, not
                         // one word — it holds its elements, not a pointer.
@@ -840,6 +986,9 @@ pub const HomeKernelCodegen = struct {
         for (program.statements) |stmt| {
             if (stmt == .FnDecl) {
                 try self.declared_fns.put(stmt.FnDecl.name, {});
+                if (stmt.FnDecl.return_type) |rt| {
+                    try self.fn_return_types.put(stmt.FnDecl.name, rt);
+                }
                 try self.collectAssignedNames(stmt.FnDecl.body.statements);
             }
         }
@@ -912,8 +1061,12 @@ pub const HomeKernelCodegen = struct {
                 // temporaries constantly. Fixed offsets from %rbp are correct
                 // regardless of what %rsp is doing, and an array local needs
                 // its full width reserved rather than one word.
+                // A slice parameter is two words — pointer then length — so
+                // it occupies two argument registers and two frame words.
                 for (func.params) |param| {
-                    self.stack_offset -= 8;
+                    try self.local_types.put(param.name, param.type_name);
+                    const words: i32 = if (isSliceType(splitAlign(param.type_name).bare)) 2 else 1;
+                    self.stack_offset -= words * 8;
                     try self.locals.put(param.name, self.stack_offset);
                 }
                 try self.reserveLocals(func.body.statements);
@@ -932,15 +1085,23 @@ pub const HomeKernelCodegen = struct {
                 // every parameter reference emitted a "# not in locals"
                 // comment and read whatever happened to be in %rax.
                 const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
-                for (func.params, 0..) |param, i| {
+                var reg_index: usize = 0;
+                for (func.params) |param| {
                     const slot = self.locals.get(param.name) orelse continue;
-                    if (i < arg_regs.len) {
-                        try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[i], slot });
-                    } else {
-                        // Arguments 7+ arrive above the return address.
-                        const caller_offset = 16 + (i - arg_regs.len) * 8;
-                        try self.print("    movq {d}(%rbp), %rax\n", .{caller_offset});
-                        try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
+                    const words: usize = if (isSliceType(splitAlign(param.type_name).bare)) 2 else 1;
+                    var w: usize = 0;
+                    while (w < words) : (w += 1) {
+                        const dest = slot + @as(i32, @intCast(w * 8));
+                        if (reg_index < arg_regs.len) {
+                            try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[reg_index], dest });
+                        } else {
+                            // Arguments past the registers arrive above the
+                            // return address.
+                            const caller_offset = 16 + (reg_index - arg_regs.len) * 8;
+                            try self.print("    movq {d}(%rbp), %rax\n", .{caller_offset});
+                            try self.print("    movq %rax, {d}(%rbp)\n", .{dest});
+                        }
+                        reg_index += 1;
                     }
                 }
 
@@ -1197,20 +1358,21 @@ pub const HomeKernelCodegen = struct {
                         // To handle multiple arguments correctly, we need to save previous args
                         // Strategy: evaluate in reverse order and push to stack, then pop into registers
                         if (call.args.len > 0) {
-                            // Evaluate all arguments and push them to stack in reverse order
+                            // Evaluate arguments in reverse and push, then pop
+                            // into the ABI registers in order. A slice
+                            // argument contributes two words, pointer then
+                            // length, matching how the callee spills them.
+                            var words: usize = 0;
                             var i: usize = call.args.len;
                             while (i > 0) {
                                 i -= 1;
-                                try self.generateExpr(call.args[i]);
-                                try self.writeAll("    pushq %rax\n");
+                                words += try self.pushArgument(call.args[i]);
                             }
-
-                            // Pop arguments into registers in correct order
-                            for (0..call.args.len) |reg_idx| {
+                            for (0..words) |reg_idx| {
                                 if (reg_idx < arg_regs.len) {
                                     try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
                                 } else {
-                                    // Arguments beyond 6 stay on stack for the call
+                                    // Arguments beyond six stay on the stack.
                                     break;
                                 }
                             }
@@ -1301,6 +1463,19 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IndexExpr, .MemberExpr => {
+                // `arr.len` on a fixed-size array is a compile-time constant,
+                // not a field read: there is no length word to load.
+                if (expr.* == .MemberExpr) {
+                    const m = expr.MemberExpr;
+                    if (std.mem.eql(u8, m.member, "len")) {
+                        if (self.typeOfLValue(m.object)) |bt| {
+                            if (parseArrayType(splitAlign(bt).bare)) |arr| {
+                                try self.print("    movq ${d}, %rax\n", .{arr.count});
+                                return;
+                            }
+                        }
+                    }
+                }
                 // Address into %rax, then load the value it points at.
                 const t = try self.emitAddress(expr) orelse {
                     try self.writeAll("    movq $0, %rax\n");
@@ -1309,6 +1484,13 @@ pub const HomeKernelCodegen = struct {
                 try self.emitLoadFromAddress(t);
             },
             .UnaryExpr => |unary| {
+                // `&x` is the address of an lvalue, not a value computation.
+                if (unary.op == .AddressOf or unary.op == .Borrow or unary.op == .BorrowMut) {
+                    _ = try self.emitAddress(unary.operand) orelse {
+                        try self.writeAll("    movq $0, %rax\n");
+                    };
+                    return;
+                }
                 try self.generateExpr(unary.operand);
                 switch (unary.op) {
                     .Neg => try self.writeAll("    negq %rax\n"),
