@@ -69724,7 +69724,12 @@ pub const Checker = struct {
                         ia.index,
                         type_params,
                     );
-                    if (!references_own_type_param or !self.indexedAccessUsesEnclosingAlias(ia.object, node)) {
+                    const parameterized_index = self.hir.kindOf(ia.index) == .type_ref and
+                        hir_mod.typeRefOf(self.hir, ia.index).args_len > 0;
+                    if ((!references_own_type_param or !self.indexedAccessUsesEnclosingAlias(ia.object, node)) and
+                        !(references_own_type_param and parameterized_index) and
+                        !self.indexedAccessUsesEnclosingMappedKey(ia.object, ia.index))
+                    {
                         const obj_t = self.lowererLowerWithTypeParams(ia.object) catch types.Primitive.any;
                         const idx_t = self.lowererLowerWithTypeParams(ia.index) catch types.Primitive.any;
                         try self.checkInvalidIndexedAccessType(
@@ -108369,17 +108374,20 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(nt, element_is_optional_chain);
                     }
                 }
-                if (try self.symbolicIndexedAccessKeyRelation(obj_t, idx_t)) |valid| {
-                    if (!valid) {
-                        try self.reportTypeCannotIndexType(node, e.index, e.object, idx_t, obj_t);
+                const syntax_proves_index = self.indexTypeParameterConstraintIsKeyofObjectSyntax(idx_t, e.object);
+                if (!syntax_proves_index) {
+                    if (try self.symbolicIndexedAccessKeyRelation(obj_t, idx_t)) |valid| {
+                        if (!valid) {
+                            try self.reportTypeCannotIndexType(node, e.index, e.object, idx_t, obj_t);
+                            break :blk types.Primitive.any;
+                        }
+                    }
+                    if (try self.reportMismatchedGenericKeyofIndex(node, obj_t, idx_t)) {
                         break :blk types.Primitive.any;
                     }
-                }
-                if (try self.reportMismatchedGenericKeyofIndex(node, obj_t, idx_t)) {
-                    break :blk types.Primitive.any;
-                }
-                if (try self.reportGenericKeyCannotIndexElement(node, e.object, e.index, obj_t, idx_t)) {
-                    break :blk types.Primitive.any;
+                    if (try self.reportGenericKeyCannotIndexElement(node, e.object, e.index, obj_t, idx_t)) {
+                        break :blk types.Primitive.any;
+                    }
                 }
                 if (self.indexTypeExcludesSymbol(idx_t)) {
                     if (try self.effectiveStringIndexType(obj_t)) |string_index_t| {
@@ -161821,6 +161829,7 @@ pub const Checker = struct {
         if (self.indexNodeIsRecoveredPrivateName(index_node)) return;
         if (defer_enclosing_type_parameters and self.indexNodeIsVisibleTypeParameter(index_node)) return;
         if (defer_enclosing_type_parameters and self.typeNodeContainsEnclosingTypeParameter(index_node)) return;
+        if (self.indexTypeParameterConstraintIsKeyofObjectSyntax(index_t, object_node)) return;
         if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
@@ -161905,6 +161914,29 @@ pub const Checker = struct {
         if (index_node == hir_mod.none_node_id or self.hir.kindOf(index_node) != .type_ref) return false;
         const ref = hir_mod.typeRefOf(self.hir, index_node);
         return ref.qualifier_len == 0 and self.nameHasEnclosingTypeParameter(ref.name, index_node);
+    }
+
+    fn indexTypeParameterConstraintIsKeyofObjectSyntax(
+        self: *Checker,
+        index_t: TypeId,
+        object_node: NodeId,
+    ) bool {
+        if (!self.isBareTypeParameter(index_t)) return false;
+        const object_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(object_node), " \t\r\n");
+        if (object_text.len == 0) return false;
+        if (std.mem.eql(u8, object_text, "this")) {
+            const operand = self.constrainedKeyofOperand(index_t, 0) orelse return false;
+            if (self.isThisTypeParameter(operand)) return true;
+        }
+
+        const resolved_index = self.resolvedTypeParameterPlaceholder(index_t);
+        const param_node = self.type_parameter_decl_nodes.get(resolved_index) orelse return false;
+        if (self.hir.kindOf(param_node) != .type_parameter) return false;
+        const param = hir_mod.typeParameterOf(self.hir, param_node);
+        if (param.constraint == hir_mod.none_node_id or self.hir.kindOf(param.constraint) != .keyof_type) return false;
+        const operand = hir_mod.keyofTypeOf(self.hir, param.constraint).operand;
+        const operand_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(operand), " \t\r\n");
+        return std.mem.eql(u8, object_text, operand_text);
     }
 
     fn symbolicIndexedAccessKeyRelation(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?bool {
