@@ -47797,6 +47797,33 @@ pub const Checker = struct {
         return if (best_name.len > 0 and best_dist <= threshold) best_name else null;
     }
 
+    fn closestEnclosingInstanceClassMemberName(self: *Checker, object: NodeId, typo: []const u8) ?[]const u8 {
+        if (!self.nodeIsThisReference(object)) return null;
+        const class_node = self.enclosingClassNode(object);
+        if (class_node == hir_mod.none_node_id) return null;
+        const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
+        var best_name: []const u8 = "";
+        var best_dist: usize = std.math.maxInt(usize);
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            const is_static = switch (self.hir.kindOf(member)) {
+                .fn_decl, .fn_expr => hir_mod.fnDeclOf(self.hir, member).flags.is_static,
+                .object_property => hir_mod.objectPropertyOf(self.hir, member).is_static,
+                else => false,
+            };
+            if (is_static) continue;
+            const member_name = self.declarationName(member) orelse continue;
+            const candidate = self.string_interner.get(member_name);
+            if (candidate.len == 0 or std.mem.eql(u8, candidate, "constructor") or
+                std.mem.eql(u8, candidate, typo)) continue;
+            const distance = spellingSuggestionDistanceIcase(typo, candidate);
+            if (distance < best_dist) {
+                best_name = candidate;
+                best_dist = distance;
+            }
+        }
+        return if (best_name.len > 0 and best_dist <= threshold) best_name else null;
+    }
+
     fn collectClosestMember(
         self: *Checker,
         pt: TypeId,
@@ -115945,7 +115972,9 @@ pub const Checker = struct {
         // part of the current namespace. This is what lets a later
         // `namespace M { <div/> }` use `M.React` exported by an earlier
         // `namespace M` declaration as the classic JSX factory.
-        if (self.visibleValueOnlyDeclarationExistsAt(anchor, name)) return types.Primitive.any;
+        if (self.visibleValueOnlyDeclarationExistsAt(anchor, name) or self.declareGlobalBlockHasValue(name)) {
+            return types.Primitive.any;
+        }
         var lexical = self.hir.parentOf(anchor);
         while (lexical != hir_mod.none_node_id) : (lexical = self.hir.parentOf(lexical)) {
             if (self.hir.kindOf(lexical) != .namespace_decl) continue;
@@ -126924,6 +126953,7 @@ pub const Checker = struct {
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
+            !self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node) and
             self.nameIsCrossModuleTypeOnlyExport(id.name, node))
         {
             const msg = std.fmt.allocPrint(
@@ -145029,7 +145059,12 @@ pub const Checker = struct {
             // constituent has a close member name.
             const target_is_union = target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_union;
             if (!target_is_union and !self.memberNameIsEcmaPrivate(name)) {
-                if (try self.closestPropertyMemberName(target_t, name_str)) |suggestion| {
+                const suggestion = (try self.closestPropertyMemberName(target_t, name_str)) orelse
+                    if (self.hir.kindOf(node) == .member_access)
+                        self.closestEnclosingInstanceClassMemberName(hir_mod.memberOf(self.hir, node).object, name_str)
+                    else
+                        null;
+                if (suggestion) |suggested_name| {
                     // In an unchecked `.js` file (JS-like, no checkJs),
                     // upstream softens this to TS2568 "may not exist" and
                     // emits it as a SUGGESTION rather than an error.
@@ -145038,7 +145073,7 @@ pub const Checker = struct {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Property '{s}' may not exist on type '{s}'. Did you mean '{s}'?",
-                            .{ name_str, target_text, suggestion },
+                            .{ name_str, target_text, suggested_name },
                         );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
@@ -145052,7 +145087,7 @@ pub const Checker = struct {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Property '{s}' does not exist on type '{s}'. Did you mean '{s}'?",
-                        .{ name_str, target_text, suggestion },
+                        .{ name_str, target_text, suggested_name },
                     );
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
@@ -263088,4 +263123,56 @@ test "checker: parity 1051 virtual module resolution prefers source over declara
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: parity 1101 erased default exports accept imported type aliases" {
+    const s = try newSetup(
+        \\// @module: es2015
+        \\// @Filename: /exported.ts
+        \\type Foo = number;
+        \\export { Foo };
+        \\// @Filename: /main.ts
+        \\import { Foo } from "./exported";
+        \\export default Foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+}
+
+test "checker: parity 1101 incomplete class shapes still suggest declared methods" {
+    const s = try newSetup(
+        \\while (0) {
+        \\  class A { methodA() { this; } }
+        \\  class B {
+        \\    methodB() {
+        \\      this.methodA;
+        \\      this.methodB;
+        \\    }
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist_did_you_mean,
+        "Property 'methodA' does not exist on type 'B'. Did you mean 'methodB'?",
+    ));
+}
+
+test "checker: parity 1101 declare-global functions satisfy classic JSX factory scope" {
+    const s = try newTsxSetup(
+        \\// @jsx: react
+        \\// @jsxFactory: __make
+        \\declare global { function __make(params: object): any; }
+        \\declare var __foot: any;
+        \\const thing = <__foot />;
+        \\export {};
+    );
+    defer destroySetup(s);
+    s.checker.setJsxFactoryName("__make");
+    s.checker.setJsxClassicRuntime(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.jsx_factory_not_in_scope));
 }
