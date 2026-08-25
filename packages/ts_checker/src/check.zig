@@ -119891,14 +119891,21 @@ pub const Checker = struct {
         // whose methods can reference mutually-recursive generic classes.
         if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
             const callee_id = hir_mod.identifierOf(self.hir, callee_node);
-            if (self.class_static_types.get(callee_id.name)) |class_static_t| {
-                if (class_static_t == callee_t) {
-                    if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
-                        try construct_sigs.appendSlice(self.gpa, overload_list.items);
-                        used_named_class_signatures = true;
-                    } else if (self.class_constructor_sigs.get(callee_id.name)) |constructor_sig| {
-                        try construct_sigs.append(self.gpa, constructor_sig);
-                        used_named_class_signatures = true;
+            const local_decl = self.findLocalValueDeclBeforeExpression(callee_node, callee_id.name);
+            const callee_is_named_class = if (local_decl) |decl|
+                self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr
+            else
+                true;
+            if (callee_is_named_class) {
+                if (self.class_static_types.get(callee_id.name)) |class_static_t| {
+                    if (class_static_t == callee_t) {
+                        if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
+                            try construct_sigs.appendSlice(self.gpa, overload_list.items);
+                            used_named_class_signatures = true;
+                        } else if (self.class_constructor_sigs.get(callee_id.name)) |constructor_sig| {
+                            try construct_sigs.append(self.gpa, constructor_sig);
+                            used_named_class_signatures = true;
+                        }
                     }
                 }
             }
@@ -126543,6 +126550,7 @@ pub const Checker = struct {
                 const cid = hir_mod.identifierOf(self.hir, cp.name);
                 if (cid.name == id.name) {
                     self.reportDeprecatedDeclarationUse(node, decl, id.name) catch {};
+                    if (self.class_static_type_by_node.get(decl)) |static_t| return static_t;
                     if (self.class_static_types.get(id.name)) |static_t| return static_t;
                     const t = self.hir.typeOf(decl);
                     if (t != types.Primitive.none) return t;
