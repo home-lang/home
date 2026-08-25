@@ -1738,11 +1738,13 @@ pub const Parser = struct {
         //   `packed struct(u8) { ... }` (always anonymous — `bound_name`
         //   is non-null here because the outer form is
         //   `const Name = packed struct(u8) { ... }`).
-        // Accept and discard the backing type for now — codegen will
-        // recover the layout from field types and the `packed` attribute.
+        // The backing type is recorded on the declaration: a bitfield
+        // struct's fields are bit ranges within that integer, and codegen
+        // cannot recover which integer from the field types alone.
+        var backing_type: ?[]const u8 = null;
         if (bound_name != null and self.check(.LeftParen)) {
             _ = self.advance();
-            _ = try self.parseTypeAnnotation();
+            backing_type = try self.parseTypeAnnotation();
             _ = try self.expect(.RightParen, "Expected ')' after struct backing type");
         }
 
@@ -1752,13 +1754,10 @@ pub const Parser = struct {
         };
 
         // Optional explicit backing type for fixed-layout structs:
-        //   `packed struct IDTEntry: u128 { ... }`. Currently we accept
-        //   the type and discard it — codegen will recover the layout
-        //   from field types and the `packed` attribute. The token is
-        //   consumed so it doesn't trip the `{`-after-name check.
+        //   `packed struct IDTEntry: u128 { ... }`.
         if (self.check(.Colon)) {
             _ = self.advance();
-            _ = try self.parseTypeAnnotation();
+            backing_type = try self.parseTypeAnnotation();
         }
 
         // Parse generic type parameters if present: struct Name<T, U> or struct Name<T: Trait>
@@ -2071,6 +2070,8 @@ pub const Parser = struct {
             struct_decl.layout = .Aligned;
             struct_decl.alignment = explicit_alignment;
         }
+        // Propagate the backing type of a bitfield struct.
+        struct_decl.backing_type = backing_type;
 
         return ast.Stmt{ .StructDecl = struct_decl };
     }

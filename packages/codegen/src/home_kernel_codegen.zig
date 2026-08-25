@@ -41,8 +41,12 @@ const GlobalVar = struct {
 const FieldInfo = struct {
     name: []const u8,
     type_name: []const u8,
+    /// Byte offset for an ordinary field; unused for a bitfield.
     offset: usize,
     size: usize,
+    /// Bit placement within the backing integer, for a bitfield struct.
+    bit_offset: usize = 0,
+    bit_width: usize = 0,
 };
 
 /// A struct declaration imported from another module, with the qualified
@@ -60,7 +64,25 @@ const StructInfo = struct {
     size: usize,
     alignment: usize,
     fields: []FieldInfo,
+    /// True when the struct IS an integer and its fields are bit ranges
+    /// within it: `packed struct PageFlags: u64 { present: bool, ... }`.
+    /// Page tables, descriptor tables, and hardware registers are all this
+    /// shape, so a kernel backend that cannot express it cannot express a
+    /// page table entry.
+    is_bitfield: bool = false,
 };
+
+/// Bit width of a type used as a bitfield member. `bool` is one bit; `uN`
+/// and `iN` are N. Anything else has no bit width and makes the containing
+/// struct un-layoutable rather than being assumed to be some default.
+fn bitWidthOfType(type_name: []const u8) ?usize {
+    if (std.mem.eql(u8, type_name, "bool")) return 1;
+    if (type_name.len < 2) return null;
+    if (type_name[0] != 'u' and type_name[0] != 'i') return null;
+    const n = std.fmt.parseInt(usize, type_name[1..], 10) catch return null;
+    if (n == 0 or n > 64) return null;
+    return n;
+}
 
 /// Size in bytes of a primitive type name, or null. Deliberately narrow:
 /// guessing a size for an unrecognized type would silently produce a symbol
@@ -707,6 +729,53 @@ pub const HomeKernelCodegen = struct {
         const primary = qualified orelse decl.name;
         if (self.structs.contains(primary)) return false;
 
+        // A bitfield struct is its backing integer; its fields are bit ranges
+        // laid out from the least significant bit up, in declaration order.
+        if (decl.backing_type) |backing| {
+            const total_bytes = sizeOfPrimitive(backing) orelse return false;
+            var bits = try self.allocator.alloc(FieldInfo, decl.fields.len);
+            errdefer self.allocator.free(bits);
+            var bit_pos: usize = 0;
+            for (decl.fields, 0..) |f, i| {
+                // An explicit `x: u32:4` width wins over the type's own.
+                const width = if (f.bit_width) |bw| @as(usize, bw) else (bitWidthOfType(f.type_name) orelse {
+                    self.allocator.free(bits);
+                    return false;
+                });
+                if (bit_pos + width > total_bytes * 8) {
+                    self.allocator.free(bits);
+                    return false;
+                }
+                bits[i] = .{
+                    .name = f.name,
+                    .type_name = f.type_name,
+                    .offset = 0,
+                    .size = total_bytes,
+                    .bit_offset = bit_pos,
+                    .bit_width = width,
+                };
+                bit_pos += width;
+            }
+            try self.structs.put(primary, .{
+                .name = primary,
+                .size = total_bytes,
+                .alignment = @min(total_bytes, @as(usize, 8)),
+                .fields = bits,
+                .is_bitfield = true,
+            });
+            if (qualified != null and !self.structs.contains(decl.name)) {
+                const copy = try self.allocator.dupe(FieldInfo, bits);
+                try self.structs.put(decl.name, .{
+                    .name = decl.name,
+                    .size = total_bytes,
+                    .alignment = @min(total_bytes, @as(usize, 8)),
+                    .fields = copy,
+                    .is_bitfield = true,
+                });
+            }
+            return true;
+        }
+
         // Every field must have a known size before this struct does. A
         // struct with one unsizable field is left out entirely rather than
         // laid out with a guessed offset, which would misplace every field
@@ -917,6 +986,36 @@ pub const HomeKernelCodegen = struct {
                 return null;
             },
         }
+    }
+
+    /// If `m` names a member of a bitfield struct, return its placement.
+    fn bitFieldOf(self: *HomeKernelCodegen, m: *const ast.MemberExpr) !?struct {
+        field: FieldInfo,
+        container_size: usize,
+    } {
+        const base_type = self.typeOfLValue(m.object) orelse return null;
+        var owner = splitAlign(base_type).bare;
+        if (isPointerType(owner)) owner = pointeeType(owner) orelse owner;
+        const info = self.structs.get(owner) orelse return null;
+        if (!info.is_bitfield) return null;
+        for (info.fields) |f| {
+            if (std.mem.eql(u8, f.name, m.member)) {
+                return .{ .field = f, .container_size = info.size };
+            }
+        }
+        return null;
+    }
+
+    /// Load a bitfield struct's backing integer from the address in %rax.
+    fn emitLoadBacking(self: *HomeKernelCodegen, size: usize) !void {
+        const ld = loadFor(size) orelse {
+            try self.print("    # ERROR: cannot load a bitfield container of {d} bytes\n", .{size});
+            try self.writeAll("    movq $0, %rax\n");
+            return;
+        };
+        try self.writeAll("    movq %rax, %rdx\n");
+        if (size < 8) try self.writeAll("    xorq %rax, %rax\n");
+        try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
     }
 
     /// Load the value at the address in %rax, given its declared type.
@@ -1843,6 +1942,28 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IndexExpr, .MemberExpr => {
+                // A bitfield member is a bit range inside an integer, not a
+                // value at a byte offset: load the whole backing integer,
+                // shift it down, and mask.
+                if (expr.* == .MemberExpr) {
+                    if (try self.bitFieldOf(expr.MemberExpr)) |bf| {
+                        const addr_type = try self.emitAddress(expr.MemberExpr.object) orelse {
+                            try self.writeAll("    movq $0, %rax\n");
+                            return;
+                        };
+                        _ = addr_type;
+                        try self.emitLoadBacking(bf.container_size);
+                        if (bf.field.bit_offset > 0) {
+                            try self.print("    shrq ${d}, %rax\n", .{bf.field.bit_offset});
+                        }
+                        if (bf.field.bit_width < 64) {
+                            const mask: u64 = (@as(u64, 1) << @intCast(bf.field.bit_width)) - 1;
+                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
+                            try self.writeAll("    andq %rcx, %rax\n");
+                        }
+                        return;
+                    }
+                }
                 // `Enum.Variant` is a compile-time constant, not a field read.
                 if (expr.* == .MemberExpr) {
                     const m = expr.MemberExpr;
@@ -1928,9 +2049,50 @@ pub const HomeKernelCodegen = struct {
                             try self.print("    # ERROR: assignment to undefined variable {s}\n", .{target.name});
                         }
                     },
+                    .MemberExpr => |m| {
+                        // A bitfield member is read-modify-write: clear its
+                        // bit range in the backing integer, then OR the new
+                        // value in. Storing at a byte offset would clobber
+                        // every neighbouring field.
+                        if (try self.bitFieldOf(m)) |bf| {
+                            _ = try self.emitAddress(m.object) orelse return;
+                            try self.writeAll("    pushq %rax\n");        // container address
+                            try self.generateExpr(assign.value);
+                            const mask: u64 = if (bf.field.bit_width >= 64)
+                                std.math.maxInt(u64)
+                            else
+                                (@as(u64, 1) << @intCast(bf.field.bit_width)) - 1;
+                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
+                            try self.writeAll("    andq %rcx, %rax\n");   // value, truncated
+                            if (bf.field.bit_offset > 0) {
+                                try self.print("    shlq ${d}, %rax\n", .{bf.field.bit_offset});
+                            }
+                            try self.writeAll("    movq %rax, %rsi\n");   // shifted value
+                            try self.writeAll("    popq %rdx\n");         // container address
+                            try self.writeAll("    pushq %rdx\n");
+                            try self.writeAll("    movq %rdx, %rax\n");
+                            try self.emitLoadBacking(bf.container_size);
+                            const shifted_mask: u64 = if (bf.field.bit_offset >= 64)
+                                0
+                            else
+                                mask << @intCast(bf.field.bit_offset);
+                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(~shifted_mask))});
+                            try self.writeAll("    andq %rcx, %rax\n");   // clear the range
+                            try self.writeAll("    orq %rsi, %rax\n");    // insert
+                            try self.writeAll("    popq %rdx\n");
+                            const st = storeFor(bf.container_size) orelse {
+                                try self.print("    # ERROR: cannot store a bitfield container of {d} bytes\n", .{bf.container_size});
+                                return;
+                            };
+                            try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                            return;
+                        }
+                        const t = try self.emitAddress(assign.target) orelse return;
+                        try self.emitStoreToAddress(t, assign.value);
+                    },
                     else => {
-                        // Index, field, and dereference targets all reduce to
-                        // "compute an address, store through it".
+                        // Index and dereference targets reduce to "compute an
+                        // address, store through it".
                         const t = try self.emitAddress(assign.target) orelse return;
                         try self.emitStoreToAddress(t, assign.value);
                     },
