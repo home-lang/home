@@ -823,6 +823,7 @@ pub const TsCodes = struct {
     /// and the source is a close spelling match to one of them. `{0}` =
     /// source type, `{1}` = target union, `{2}` = suggested literal.
     pub const type_not_assignable_did_you_mean: u32 = 2820;
+    pub const import_assertions_replaced_by_attributes: u32 = 2880;
     /// TS2859 - relation comparison overflow. The upstream relater uses
     /// this when a type-pair comparison exhausts its complexity budget.
     pub const excessive_complexity_comparing_types: u32 = 2859;
@@ -5431,6 +5432,7 @@ pub const Checker = struct {
             defer self.popNarrowScope();
             for (stmts) |s| try self.checkStatement(s);
         }
+        try self.reportLegacyImportOptionAssertions(root);
         try self.checkCommonJsWholeExportDeclarationPrivacy();
         try self.anchorJsDocValueUsedAsTypeDiagnostics();
         try self.recheckDeferredVarianceAnnotations(stmts);
@@ -45423,6 +45425,23 @@ pub const Checker = struct {
         });
     }
 
+    const InterfaceAccessorKind = enum { getter, setter };
+
+    fn interfaceAccessorKind(self: *Checker, member: NodeId) ?InterfaceAccessorKind {
+        if (member == hir_mod.none_node_id or self.hir.kindOf(member) != .interface_member) return null;
+        const text = std.mem.trimStart(u8, self.nodeSourceTextOrEmpty(member), " \t\r\n");
+        if (std.mem.startsWith(u8, text, "get ") or std.mem.startsWith(u8, text, "get\t")) return .getter;
+        if (std.mem.startsWith(u8, text, "set ") or std.mem.startsWith(u8, text, "set\t")) return .setter;
+        return null;
+    }
+
+    fn interfaceTypeNodesBelongToAccessorPair(self: *Checker, first_type: NodeId, second_type: NodeId) bool {
+        if (first_type == hir_mod.none_node_id or second_type == hir_mod.none_node_id) return false;
+        const first = self.interfaceAccessorKind(self.hir.parentOf(first_type)) orelse return false;
+        const second = self.interfaceAccessorKind(self.hir.parentOf(second_type)) orelse return false;
+        return first != second;
+    }
+
     fn classMemberDuplicateFnTypeDisplay(self: *Checker, fn_p: hir_mod.FnDeclPayload) CheckError![]const u8 {
         if (fn_p.flags.is_getter) {
             if (fn_p.return_type != hir_mod.none_node_id) {
@@ -54845,6 +54864,47 @@ pub const Checker = struct {
             std.mem.indexOf(u8, text, " assert") != null;
     }
 
+    fn legacyImportOptionAssertPos(text: []const u8) ?usize {
+        var search: usize = 0;
+        while (std.mem.indexOfPos(u8, text, search, "assert")) |at| {
+            search = at + "assert".len;
+            const before_ok = at == 0 or !isJsDocIdentChar(text[at - 1]);
+            const after_ok = search == text.len or !isJsDocIdentChar(text[search]);
+            if (!before_ok or !after_ok) continue;
+            var cursor = search;
+            while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+            if (cursor >= text.len or text[cursor] != ':') continue;
+            cursor += 1;
+            while (cursor < text.len and std.ascii.isWhitespace(text[cursor])) : (cursor += 1) {}
+            if (cursor < text.len and text[cursor] == '{') return at;
+        }
+        return null;
+    }
+
+    fn reportLegacyImportOptionAssertions(self: *Checker, root: NodeId) CheckError!void {
+        const source = self.source orelse return;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            const is_import_type = kind == .type_ref and
+                std.mem.startsWith(u8, std.mem.trimStart(u8, self.nodeSourceTextOrEmpty(node), " \t\r\n"), "import(");
+            const is_import_call = kind == .call_expr and
+                self.isDynamicImportCallee(hir_mod.callOf(self.hir, node).callee);
+            if (!is_import_type and !is_import_call) continue;
+            const span = self.hir.spanOf(node);
+            if (span.start >= span.end or span.end > source.len) continue;
+            const relative = legacyImportOptionAssertPos(source[span.start..span.end]) orelse continue;
+            const pos: u32 = @intCast(span.start + relative);
+            if (self.hasDiagnosticAtPosition(TsCodes.import_assertions_replaced_by_attributes, pos)) continue;
+            try self.reportAt(
+                root,
+                pos,
+                TsCodes.import_assertions_replaced_by_attributes,
+                "Import assertions have been replaced by import attributes. Use 'with' instead of 'assert'.",
+            );
+        }
+    }
+
     /// `moduleSupportsImportAttributes` in tsgo: import attributes / assertions
     /// are only valid when `module` is one of esnext/node18/node20/nodenext/
     /// preserve. Reads both the inline `// @module:` directive (conformance /
@@ -63357,7 +63417,9 @@ pub const Checker = struct {
                 }
                 const gop = try iface_property_type_nodes.getOrPut(self.gpa, im.name);
                 if (gop.found_existing) {
-                    if (!self.nodeSourceTextEqual(gop.value_ptr.*, im.type_node)) {
+                    if (!self.nodeSourceTextEqual(gop.value_ptr.*, im.type_node) and
+                        !self.interfaceTypeNodesBelongToAccessorPair(gop.value_ptr.*, im.type_node))
+                    {
                         try self.reportInterfacePropertyTypeMismatch(m, im.name, gop.value_ptr.*, im.type_node);
                     }
                 } else {
@@ -66534,7 +66596,9 @@ pub const Checker = struct {
             if (im.name == 0 or im.is_method or self.syntheticSignatureMemberName(im.name)) continue;
             const gop = try property_type_nodes.getOrPut(self.gpa, im.name);
             if (gop.found_existing) {
-                if (!self.nodeSourceTextEqual(gop.value_ptr.*, im.type_node)) {
+                if (!self.nodeSourceTextEqual(gop.value_ptr.*, im.type_node) and
+                    !self.interfaceTypeNodesBelongToAccessorPair(gop.value_ptr.*, im.type_node))
+                {
                     try self.reportInterfacePropertyTypeMismatch(m, im.name, gop.value_ptr.*, im.type_node);
                 }
             } else {
@@ -258900,6 +258964,40 @@ test "checker: parity 751 static generic methods preserve return type arguments"
         TsCodes.type_not_assignable,
         "Type 'null' is not assignable to type 'A1<S>'.",
     ));
+}
+
+test "checker: parity 801 import option assertions report TS2880" {
+    const s = try newSetup(
+        \\// @module: esnext
+        \\type A = import("./types", { assert: { "resolution-mode": "import" } }).MyType;
+        \\type B = import("./types", { assert: { "resolution-mode": "require" } }).MyType;
+        \\const a = import("./types", { assert: { "resolution-mode": "import" } });
+        \\const b = import("./types", { assert: { "resolution-mode": "require" } });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.import_assertions_replaced_by_attributes));
+}
+
+test "checker: parity 801 getter and setter types may diverge" {
+    const s = try newSetup(
+        \\type G<T = string> = {
+        \\  get divergentProperty(): string | T;
+        \\  set divergentProperty(p: number | T);
+        \\};
+        \\function makeV() {
+        \\  type X<T> = {
+        \\    get divergentProperty(): string | T;
+        \\    set divergentProperty(p: number | T);
+        \\  };
+        \\  return null! as X<number>;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_property_declaration_same_type));
 }
 
 test "checker: namespace parity batch uses class and enum static sides" {
