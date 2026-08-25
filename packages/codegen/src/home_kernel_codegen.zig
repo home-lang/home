@@ -1497,6 +1497,24 @@ pub const HomeKernelCodegen = struct {
                 try self.print("    # ERROR: {s} has no field {s}\n", .{ info.name, fi.name });
                 continue;
             };
+            // An aggregate field is written in place — it has no value to
+            // load into a register, only a destination to fill.
+            if (fi.value.* == .ArrayLiteral or fi.value.* == .ArrayRepeat or
+                fi.value.* == .StructLiteral)
+            {
+                try self.writeAll("    pushq %rdi\n");
+                try self.writeAll("    movq %rdi, %rax\n");
+                if (f.offset > 0) try self.print("    addq ${d}, %rax\n", .{f.offset});
+                if (fi.value.* == .StructLiteral) {
+                    try self.writeAll("    pushq %rax\n");
+                    try self.emitStructLiteralToMemory(f.type_name, fi.value.StructLiteral);
+                } else {
+                    try self.emitArrayLiteralToMemory(f.type_name, fi.value);
+                }
+                try self.writeAll("    popq %rdi\n");
+                continue;
+            }
+
             // Base address survives the field's value expression.
             try self.writeAll("    pushq %rdi\n");
             try self.generateExpr(fi.value);
