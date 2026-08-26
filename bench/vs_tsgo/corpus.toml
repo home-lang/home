@@ -11,6 +11,7 @@ reexport_graph_barrel_size = 8
 tsx_components = 256
 generic_calls = 256
 control_flow_functions = 256
+overload_call_groups = 128
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -35,6 +36,9 @@ description = "One module with 256 constrained generic projections, indexed acce
 
 [workloads.control_flow]
 description = "One module with 256 exhaustive discriminated-union functions and definite-assignment joins."
+
+[workloads.overload_resolution]
+description = "One module with 128 call groups selecting among eight generic overloads with contextual arguments."
 
 [compilers.tsc]
 version = "6.0.3"

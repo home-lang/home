@@ -365,6 +365,43 @@ def generate_control_flow(directory: Path, functions: int) -> None:
     write(directory / "src/control-flow.ts", "".join(blocks))
 
 
+def generate_overload_resolution(directory: Path, groups: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "interface RouteResult<K extends string, N extends number, V> {\n"
+        "  readonly kind: K;\n"
+        "  readonly id: N;\n"
+        "  readonly value: V;\n"
+        "}\n\n"
+        "declare function route<N extends number>(kind: \"text\", id: N, payload: string): RouteResult<\"text\", N, string>;\n"
+        "declare function route<N extends number>(kind: \"count\", id: N, payload: number): RouteResult<\"count\", N, number>;\n"
+        "declare function route<N extends number>(kind: \"flag\", id: N, payload: boolean): RouteResult<\"flag\", N, boolean>;\n"
+        "declare function route<N extends number>(kind: \"point\", id: N, payload: { readonly x: number; readonly y: number }): RouteResult<\"point\", N, { readonly x: number; readonly y: number }>;\n"
+        "declare function route<N extends number>(kind: \"pair\", id: N, payload: readonly [string, number]): RouteResult<\"pair\", N, readonly [string, number]>;\n"
+        "declare function route<N extends number>(kind: \"record\", id: N, payload: { readonly label: string; readonly active: boolean }): RouteResult<\"record\", N, { readonly label: string; readonly active: boolean }>;\n"
+        "declare function route<N extends number>(kind: \"callback\", id: N, payload: (value: number) => string): RouteResult<\"callback\", N, (value: number) => string>;\n"
+        "declare function route<N extends number>(kind: \"nested\", id: N, payload: { readonly meta: { readonly id: number } }): RouteResult<\"nested\", N, { readonly meta: { readonly id: number } }>;\n\n"
+    ]
+    for index in range(groups):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f'const text{index}: RouteResult<"text", {index}, string> = route("text", {index}, "item-{index}");\n'
+            f'const count{index}: RouteResult<"count", {index}, number> = route("count", {index}, {index});\n'
+            f'const flag{index}: RouteResult<"flag", {index}, boolean> = route("flag", {index}, {active});\n'
+            f'const point{index}: RouteResult<"point", {index}, {{ readonly x: number; readonly y: number }}> = route("point", {index}, {{ x: {index}, y: {index + 1} }});\n'
+            f'const pair{index}: RouteResult<"pair", {index}, readonly [string, number]> = route("pair", {index}, ["item-{index}", {index}] as const);\n'
+            f'const record{index}: RouteResult<"record", {index}, {{ readonly label: string; readonly active: boolean }}> = route("record", {index}, {{ label: "item-{index}", active: {active} }});\n'
+            f'const callback{index}: RouteResult<"callback", {index}, (value: number) => string> = route("callback", {index}, (value: number) => `item-{index}-${{value}}`);\n'
+            f'const nested{index}: RouteResult<"nested", {index}, {{ readonly meta: {{ readonly id: number }} }}> = route("nested", {index}, {{ meta: {{ id: {index} }} }});\n'
+            f"export const overloadResult{index}: readonly [{index}, string, number, boolean, number, string, string, number] = [\n"
+            f"  text{index}.id, text{index}.value, count{index}.value, flag{index}.value, point{index}.value.x,\n"
+            f"  pair{index}.value[0], callback{index}.value({index}), nested{index}.value.meta.id,\n"
+            "];\n\n"
+        )
+    write(directory / "src/overload-resolution.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -380,6 +417,7 @@ def cmd_corpus() -> None:
     generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
     generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
     generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
+    generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
