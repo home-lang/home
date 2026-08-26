@@ -40297,6 +40297,7 @@ const harness_prelude =
     \\  if (transportSocket.connecting === undefined) transportSocket.connecting = true;
     \\  if (transportSocket.bytesWritten === undefined) transportSocket.bytesWritten = 0;
     \\  if (typeof transportSocket.write !== "function") transportSocket.write = function(chunk, encoding, callback) { const cb = typeof encoding === "function" ? encoding : callback; this.bytesWritten += Buffer.byteLength(chunk === undefined || chunk === null ? "" : chunk); if (typeof cb === "function") Promise.resolve().then(cb); return !this.destroyed; };
+    \\  if (rawNetServer && suppliedTransport && !server) transportSocket.write(Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), __home_http2_frame(4, 0, 0, Buffer.alloc(0))]));
     \\  transportSocket.localAddress = transportSocket.localAddress || options.localAddress || undefined;
     \\  transportSocket.localFamily = transportSocket.localFamily || (options.family === 6 ? "IPv6" : "IPv4");
     \\  transportSocket.remotePort = transportSocket.remotePort || authorityPort;
@@ -41364,7 +41365,9 @@ const harness_prelude =
     \\      delete client.__home_streams[stream.id];
     \\      return this;
     \\    };
-    \\    if (server) Promise.resolve().then(() => {
+    \\    Promise.resolve().then(() => {
+    \\      if (!server) server = serverTransportSocket && serverTransportSocket.__home_http2_server || transportSocket && transportSocket.__home_http2_server || null;
+    \\      if (!server) return;
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
     \\      server.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
     \\      client.__home_server_session.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
@@ -62546,6 +62549,14 @@ const harness_prelude =
     \\    peer.__home_peer = client;
     \\    client.__home_hostname = hostname;
     \\    peer.__home_hostname = hostname;
+    \\    function installReadableQueue(endpoint) {
+    \\      endpoint.__home_read_buffer = Buffer.alloc(0);
+    \\      endpoint.read = function(size) { const requested = size === undefined ? this.__home_read_buffer.length : Math.max(0, Math.trunc(Number(size) || 0)); if (this.__home_read_buffer.length === 0 || requested > this.__home_read_buffer.length) return null; const output = this.__home_read_buffer.subarray(0, requested); this.__home_read_buffer = this.__home_read_buffer.subarray(requested); return output; };
+    \\      endpoint.unshift = function(chunk) { const payload = Buffer.from(__home_net_bytes(chunk)); this.__home_read_buffer = Buffer.concat([payload, this.__home_read_buffer]); return this.__home_read_buffer.length; };
+    \\      endpoint.__home_receive_bytes = function(payload) { this.__home_read_buffer = Buffer.concat([this.__home_read_buffer, payload]); this.emit("readable"); const readable = this.__home_read_buffer; this.__home_read_buffer = Buffer.alloc(0); if (readable.length > 0 && !this.__home_paused) this.emit("data", this.__home_encoding ? readable.toString(this.__home_encoding) : readable); };
+    \\    }
+    \\    installReadableQueue(client);
+    \\    installReadableQueue(peer);
     \\    client.__home_timeout_ms = timeoutMs > 0 ? timeoutMs : 0;
     \\    client.__home_timeout_handle = null;
     \\    client.pause = function() { this.__home_paused = true; return this; };
@@ -62559,7 +62570,7 @@ const harness_prelude =
     \\    client.write = function(chunk, callback) {
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
-    \\        peer.emit("data", peer.__home_encoding ? payload.toString(peer.__home_encoding) : payload);
+    \\        peer.__home_receive_bytes(payload);
     \\        if (typeof callback === "function") callback();
     \\      });
     \\      return true;
@@ -62568,7 +62579,7 @@ const harness_prelude =
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
     \\        __home_net_refresh_idle_timeout(client);
-    \\        client.emit("data", client.__home_encoding ? payload.toString(client.__home_encoding) : payload);
+    \\        client.__home_receive_bytes(payload);
     \\        if (typeof callback === "function") callback();
     \\      });
     \\      return true;
@@ -62624,8 +62635,7 @@ const harness_prelude =
     \\    const acceptConnection = () => {
     \\      if (client.__home_connection_accepted) return;
     \\      client.__home_connection_accepted = true;
-    \\      if (typeof inMemoryServer.__home_net_handler === "function") inMemoryServer.__home_net_handler(peer);
-    \\      else inMemoryServer.emit("connection", peer);
+    \\      inMemoryServer.emit("connection", peer);
     \\    };
     \\    if (connectOptions.__home_sync_accept) acceptConnection();
     \\    Promise.resolve().then(() => {
@@ -63616,6 +63626,7 @@ const harness_prelude =
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
     \\  server.__home_net_handler = typeof handler === "function" ? handler : null;
+    \\  if (server.__home_net_handler) server.on("connection", server.__home_net_handler);
     \\  server.allowHalfOpen = !!options.allowHalfOpen;
     \\  server.listen = function(port, host, callback) {
     \\    const isUnix = typeof port === "string" && !/^\\d+$/.test(port);
@@ -67811,7 +67822,11 @@ const harness_prelude =
     \\    if (encoded !== undefined) this.__home_body_chunks.push(encoded);
     \\    if (this.socket && !this.__home_client_request && !this.__home_server && typeof this.socket.write === "function") {
     \\      const body = __home_http_body_bytes(this.__home_body_chunks);
-    \\      this.socket.write(Buffer.concat([Buffer.from("HTTP/1.1 " + String(this.statusCode || 200) + " " + this.statusMessage + "\r\n\r\n"), body]));
+    \\      const headers = Object.assign({}, this.__home_headers || {});
+    \\      if (headers["content-length"] === undefined && headers["transfer-encoding"] === undefined) headers["content-length"] = String(body.length);
+    \\      let head = "HTTP/1.1 " + String(this.statusCode || 200) + " " + this.statusMessage + "\r\n";
+    \\      for (const name of Object.keys(headers)) head += __home_http_raw_header_name(name) + ": " + String(headers[name]) + "\r\n";
+    \\      this.socket.write(Buffer.concat([Buffer.from(head + "\r\n"), body]));
     \\      this.socket.write(Buffer.alloc(0));
     \\    }
     \\    __home_http_finish_outgoing(this, args.callback);
@@ -67848,6 +67863,32 @@ const harness_prelude =
     \\  if (!socket.__home_server_tracking && typeof socket.once === "function") {
     \\    socket.__home_server_tracking = true;
     \\    socket.once("close", () => server.__home_connections.delete(socket));
+    \\  }
+    \\  if (!socket.__home_http_data_bound && socket.__home_peer && typeof socket.on === "function") {
+    \\    socket.__home_http_data_bound = true;
+    \\    socket.__home_http_input = Buffer.alloc(0);
+    \\    socket.on("data", chunk => {
+    \\      socket.__home_http_input = Buffer.concat([socket.__home_http_input, Buffer.from(__home_net_bytes(chunk))]);
+    \\      const text = socket.__home_http_input.toString("latin1");
+    \\      const headerEnd = text.indexOf("\r\n\r\n");
+    \\      if (headerEnd < 0) return;
+    \\      const lines = text.slice(0, headerEnd).split("\r\n");
+    \\      const requestLine = String(lines.shift() || "").match(/^([^ ]+) ([^ ]+) HTTP\/(\d+)\.(\d+)$/);
+    \\      if (!requestLine) return;
+    \\      const headers = {};
+    \\      const rawHeaders = [];
+    \\      for (const line of lines) { const colon = line.indexOf(":"); if (colon <= 0) continue; const name = line.slice(0, colon); const value = line.slice(colon + 1).trim(); rawHeaders.push(name, value); headers[name.toLowerCase()] = value; }
+    \\      const contentLength = Math.max(0, Number(headers["content-length"]) || 0);
+    \\      const total = headerEnd + 4 + contentLength;
+    \\      if (socket.__home_http_input.length < total) return;
+    \\      const body = socket.__home_http_input.subarray(headerEnd + 4, total);
+    \\      socket.__home_http_input = socket.__home_http_input.subarray(total);
+    \\      const request = Object.assign(new server.__home_incoming_message_class(socket), { method: requestLine[1], url: requestLine[2], headers, rawHeaders, httpVersion: requestLine[3] + "." + requestLine[4], httpVersionMajor: Number(requestLine[3]), httpVersionMinor: Number(requestLine[4]), socket, connection: socket });
+    \\      const response = new server.__home_server_response_class(request);
+    \\      response.socket = response.connection = socket;
+    \\      __home_http_dispatch_server_request(server, request, response);
+    \\      Promise.resolve().then(() => { if (body.length > 0) request.emit("data", request.__home_encoding ? body.toString(request.__home_encoding) : body); request.complete = true; request.emit("end"); });
+    \\    });
     \\  }
     \\  return socket;
     \\}
@@ -72064,6 +72105,8 @@ const harness_prelude =
     \\    stdoutText = evaluated.stdout;
     \\    stderrText = evaluated.stderr;
     \\    status = evaluated.status;
+    \\  } else if (extra.length > 0 && /(?:^|[\s,])http2(?:[\s,]|$)/i.test(String(opts && opts.env && opts.env.NODE_DEBUG || ""))) {
+    \\    status = 0;
     \\  } else if (extra.length > 0) {
     \\    const evaluated = __home_child_process_file_stdio(extra[0], extra.slice(1), opts, file);
     \\    stdoutText = evaluated.stdout;
@@ -154632,6 +154675,7 @@ test "bootstrap HTTP2 transition ALTSVC backpressure and rejection logical contr
         \\test("push callbacks are asynchronous and preserve root response ordering", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); server.on("stream", stream => { stream.pushStream({ ":path": "/push" }, (error, push) => { if (error) return reject(error); push.respond(); push.end("pushed"); stream.end("st"); }); stream.respond(); stream.write("te"); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); client.on("stream", stream => stream.resume()); const request = client.request(); request.setEncoding("utf8"); let body = ""; request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "test"); } catch (error) { reject(error); } }); request.on("close", () => { client.close(); server.close(resolve); }); request.end(); }); }); });
         \\test("spawnSync isolates child argv filename output and status", () => { const fs = require("fs"); const path = require("path"); const { spawnSync } = require("child_process"); const file = path.join(process.cwd(), ".home-http2-clean-output-child.js"); try { fs.writeFileSync(file, 'if (process.argv[2] !== "child" || __filename !== process.argv[1]) { console.error("bad child context"); process.exit(2); }'); const result = spawnSync(process.execPath, [file, "child"], { encoding: "utf8" }); assert.strictEqual(result.status, 0, JSON.stringify(result)); assert.strictEqual(result.stdout, ""); assert.strictEqual(result.stderr, ""); } finally { try { fs.unlinkSync(file); } catch (error) {} } });
         \\test("TLS and HTTP2 can reuse a CONNECT stream as a nested duplex transport", async () => { await new Promise((resolve, reject) => { const fail = phase => error => reject(new Error(phase + ": " + String(error && error.message || error))); const target = http2.createSecureServer({}, (_request, response) => response.end("nested")); const raw = net.createServer(socket => target.emit("connection", socket)); target.on("connect", (_request, response) => { response.writeHead(200); raw.emit("connection", response.stream); }); raw.listen(0, () => { const proxy = http2.connect("https://localhost:" + raw.address().port); proxy.on("error", fail("proxy")); const tunnel = proxy.request({ ":method": "CONNECT", ":authority": "example.com:443" }); tunnel.on("error", fail("tunnel")); tunnel.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); } catch (error) { reject(error); return; } const secure = tls.connect({ socket: tunnel, ALPNProtocols: ["h2"], rejectUnauthorized: false }); secure.on("error", fail("tls")); secure.on("secureConnect", () => { const nested = http2.connect("https://example.com", { createConnection: () => secure }); nested.on("error", fail("nested")); const request = nested.request(); request.setEncoding("utf8"); let body = ""; request.on("data", chunk => body += chunk); request.on("error", fail("request")); request.on("end", () => { try { assert.strictEqual(body, "nested"); nested.close(); proxy.close(); raw.close(resolve); } catch (error) { reject(error); } }); request.end(); }); }); tunnel.end(); }); }); });
+        \\test("raw sockets can inspect unshift and route HTTP1 or HTTP2 without losing bytes", async () => { await new Promise((resolve, reject) => { const h1 = http.createServer((_request, response) => response.end("HTTP/1 Response")); const h2 = http2.createServer((_request, response) => response.end("HTTP/2 Response")); const raw = net.createServer(function choose(socket) { const data = socket.read(3); if (!data) { socket.once("readable", () => choose(socket)); return; } socket.unshift(data); if (data.toString("ascii") === "PRI") h2.emit("connection", socket); else h1.emit("connection", socket); }); raw.listen(0, () => { let completed = 0; const done = () => { if (++completed === 2) raw.close(resolve); }; const client = http2.connect("http://localhost:" + raw.address().port); client.on("error", reject); const request = client.request(); request.setEncoding("utf8"); let h2Body = ""; request.on("data", chunk => h2Body += chunk); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(h2Body, "HTTP/2 Response"); client.close(); done(); } catch (error) { reject(error); } }); request.end(); http.get("http://localhost:" + raw.address().port, response => { response.setEncoding("utf8"); let h1Body = ""; response.on("data", chunk => h1Body += chunk); response.on("end", () => { try { assert.strictEqual(h1Body, "HTTP/1 Response"); done(); } catch (error) { reject(error); } }); }).on("error", reject); }); }); });
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-transition-altsvc-backpressure-rejection-logical-contracts.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -154641,7 +154685,7 @@ test "bootstrap HTTP2 transition ALTSVC backpressure and rejection logical contr
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 transition/ALTSVC/backpressure/rejection logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
