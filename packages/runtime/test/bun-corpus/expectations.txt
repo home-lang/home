@@ -153,12 +153,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # write semantics, async_hooks integration, node-internal-module dependencies). Burn these
 # down as the corresponding features land.
 test/js/node/test/parallel/test-diagnostics-channel-http2-server-stream-close.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-allow-http1-upgrade-ws.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-alpn.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-async-local-storage.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-backpressure.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-create-client-secure-session.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-https-fallback.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-autoselect-protocol.js [ SKIP ] # hangs; skip until the underlying feature lands
 test/js/node/test/parallel/test-http2-client-connection-tunnelling.js [ SKIP ] # hangs; skip until the underlying feature lands
 test/js/node/test/parallel/test-http2-client-jsstream-destroy.js [ SKIP ] # hangs; skip until the underlying feature lands
@@ -216,15 +210,10 @@ test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # legacy-parser e
 # v26.3.0-verbatim deviations (test content is byte-identical to node v26.3.0):
 # validator wording: Bun's shared range template says "and" where node's validators say "&&"
 test/js/node/test/parallel/test-http2-client-rststream-before-connect.js [ FAIL ]
-test/js/node/test/parallel/test-http2-client-setLocalWindowSize.js [ FAIL ]
-test/js/node/test/parallel/test-http2-invalidargtypes-errors.js [ FAIL ]
 # customSettings/remoteCustomSettings not implemented
 test/js/node/test/parallel/test-http2-session-settings.js [ FAIL ]
 # requires internal/test/binding (nghttp2 prototype monkey-patching)
-test/js/node/test/parallel/test-http2-respond-errors.js [ FAIL ]
 # flow-control violations surface as stream errors, node/nghttp2 surfaces ERR_HTTP2_ERROR "Protocol error"
-test/js/node/test/parallel/test-http2-misbehaving-flow-control.js [ FAIL ]
-test/js/node/test/parallel/test-http2-misbehaving-flow-control-paused.js [ FAIL ]
 # multi-localhost (127.0.0.2) binding not supported on Windows
 [ WINDOWS ] test/js/node/test/parallel/test-http2-connect-options.js [ FAIL ]
 # localhost dual-stack resolution makes this flap across platforms (passes on retry)
