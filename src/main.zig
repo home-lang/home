@@ -3320,6 +3320,10 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
             &parser.module_resolver,
         );
         defer codegen.deinit();
+        // The backend derives each module's symbol prefix from its path, so
+        // that two modules exporting the same name do not collide at link
+        // time.
+        codegen.source_file = file_path;
 
         const asm_code = try codegen.generate(program);
 

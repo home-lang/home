@@ -22,6 +22,75 @@ const StringLiteral = struct {
 /// A module-level mutable binding, lowered to a symbol in .bss or .data.
 /// Kernel subsystems keep their state in these — page bitmaps, counters,
 /// descriptor tables — so nothing in kernel/src/ compiles without them.
+/// A module's symbol prefix, derived from its file path so that two modules
+/// with the same basename — `kernel/src/serial.home` and
+/// `kernel/src/drivers/serial.home` — do not collide. Everything outside
+/// [A-Za-z0-9_] becomes `_`, and any leading path above the source tree is
+/// dropped so the prefix does not depend on where the repository sits.
+fn moduleIdFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    // Resolve `.` and `..` first. An import writes `../mm/buddy.home`, and the
+    // same module reached from two directories must yield the same prefix or
+    // the caller and the definition disagree about the symbol's name.
+    var parts: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+    defer parts.deinit(allocator);
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0 or std.mem.eql(u8, seg, ".")) continue;
+        if (std.mem.eql(u8, seg, "..")) {
+            if (parts.items.len > 0) _ = parts.pop();
+            continue;
+        }
+        try parts.append(allocator, seg);
+    }
+
+    // Anchor at the last "src" segment so the prefix does not depend on where
+    // the repository sits; otherwise fall back to the basename alone.
+    var start: usize = if (parts.items.len > 0) parts.items.len - 1 else 0;
+    var i: usize = parts.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.mem.eql(u8, parts.items[i], "src")) {
+            start = i + 1;
+            break;
+        }
+    }
+
+    var total: usize = 0;
+    for (parts.items[start..], 0..) |seg, idx| {
+        var s2 = seg;
+        if (idx == parts.items.len - start - 1 and std.mem.endsWith(u8, s2, ".home")) {
+            s2 = s2[0 .. s2.len - 5];
+        }
+        total += s2.len + (if (idx > 0) @as(usize, 1) else 0);
+    }
+
+    const out = try allocator.alloc(u8, total);
+    var w: usize = 0;
+    for (parts.items[start..], 0..) |seg, idx| {
+        var s2 = seg;
+        if (idx == parts.items.len - start - 1 and std.mem.endsWith(u8, s2, ".home")) {
+            s2 = s2[0 .. s2.len - 5];
+        }
+        if (idx > 0) {
+            out[w] = '_';
+            w += 1;
+        }
+        for (s2) |c| {
+            out[w] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
+            w += 1;
+        }
+    }
+    return out[0..w];
+}
+
+/// Names that must keep an unmangled symbol: they are named by hand-written
+/// assembly or by the linker script, which cannot know a module prefix.
+fn isBootEntryPoint(name: []const u8) bool {
+    return std.mem.eql(u8, name, "kernel_main") or
+        std.mem.eql(u8, name, "main") or
+        std.mem.eql(u8, name, "_start");
+}
+
 /// Prefix for module-variable symbols. Home keeps functions and variables in
 /// separate namespaces; assembly does not, and this tree has files where a
 /// `var free_pages` sits alongside a `fn free_pages`. Emitting both under the
@@ -425,6 +494,13 @@ pub const HomeKernelCodegen = struct {
     import_arena: std.heap.ArenaAllocator,
     /// Files already pulled in, so a cycle or a diamond import is visited once.
     imported_files: std.StringHashMap(void),
+    /// Path of the file being compiled, which the module prefix derives from.
+    source_file: ?[]const u8,
+    /// Symbol prefix for functions defined in the file being compiled.
+    module_id: []const u8,
+    /// Import alias -> that module's symbol prefix, so `serial.writeChar()`
+    /// can be lowered to the symbol serial.home actually defines.
+    module_aliases: std.StringHashMap([]const u8),
     /// Frame slot holding the hidden destination pointer, for a function that
     /// returns an aggregate. 0 means this function does not return one.
     sret_slot: i32,
@@ -468,6 +544,9 @@ pub const HomeKernelCodegen = struct {
         result.enum_values = std.StringHashMap(i64).init(allocator);
         result.import_arena = std.heap.ArenaAllocator.init(allocator);
         result.imported_files = std.StringHashMap(void).init(allocator);
+        result.source_file = null;
+        result.module_id = "";
+        result.module_aliases = std.StringHashMap([]const u8).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
         result.sret_slot = 0;
@@ -493,6 +572,7 @@ pub const HomeKernelCodegen = struct {
         while (ev_it.next()) |k| self.allocator.free(k.*);
         self.enum_values.deinit();
         self.imported_files.deinit();
+        self.module_aliases.deinit();
         self.pending_structs.deinit(self.allocator);
         self.pointer_type_names.deinit();
         self.import_arena.deinit();
@@ -801,6 +881,13 @@ pub const HomeKernelCodegen = struct {
             // The alias the importing file uses, or the module's own name.
             const alias = decl.alias orelse resolved.name;
 
+            // Only direct imports of the file being compiled establish a
+            // callable alias; deeper levels are pulled in for their types.
+            if (depth == 0) {
+                const imported_id = try moduleIdFromPath(arena, resolved.file_path);
+                try self.module_aliases.put(alias, imported_id);
+            }
+
             try self.registerImportedDecls(imported, alias);
             try self.collectImports(imported, depth + 1);
         }
@@ -1057,6 +1144,28 @@ pub const HomeKernelCodegen = struct {
             if (std.mem.eql(u8, f.name, member)) return f;
         }
         return null;
+    }
+
+    /// The linker symbol for a function defined in the module being compiled.
+    ///
+    /// `export` marks a module's public API, not a global C name. Two modules
+    /// may both export `writeChar`, and callers reach them as
+    /// `serial.writeChar` and `vga.writeChar` — so the symbol has to carry the
+    /// module, or the two definitions collide at link time and the linker
+    /// picks one. That is exactly what happened when the 39-file MVK set was
+    /// first linked together: 13 duplicate symbols, every one of them a real
+    /// pair of distinct functions.
+    ///
+    /// The boot entry points are the exception. `kernel_main` is called from
+    /// hand-written assembly in boot.s, which cannot know a module prefix, so
+    /// those keep their bare names and are the kernel's true ABI surface.
+    fn functionSymbol(self: *HomeKernelCodegen, name: []const u8) ![]const u8 {
+        if (isBootEntryPoint(name) or self.module_id.len == 0) return name;
+        return std.fmt.allocPrint(
+            self.import_arena.allocator(),
+            "{s}__{s}",
+            .{ self.module_id, name },
+        );
     }
 
     /// `line:col` for an expression, for refusal messages. A marker that
@@ -1706,7 +1815,7 @@ pub const HomeKernelCodegen = struct {
                             try self.print("    popq %{s}\n", .{sret_arg_regs[reg_idx]});
                         }
                         try self.writeAll("    popq %rdi\n");
-                        try self.print("    call {s}\n", .{callee});
+                        try self.print("    call {s}\n", .{try self.functionSymbol(callee)});
                         return;
                     }
                 }
@@ -2277,6 +2386,12 @@ pub const HomeKernelCodegen = struct {
 
     /// Generate kernel code from Home AST
     pub fn generate(self: *HomeKernelCodegen, program: *const ast.Program) ![]const u8 {
+        // Establish this module's symbol prefix before anything is emitted.
+        if (self.module_id.len == 0) {
+            if (self.source_file) |path| {
+                self.module_id = try moduleIdFromPath(self.import_arena.allocator(), path);
+            }
+        }
 
         // Emit assembly header
         // `.global` is emitted per function from its declaration. This header
@@ -2361,10 +2476,11 @@ pub const HomeKernelCodegen = struct {
                     std.mem.eql(u8, func.name, "main") or
                     std.mem.eql(u8, func.name, "kernel_main");
 
+                const sym = try self.functionSymbol(func.name);
                 if (is_export) {
-                    try self.print(".global {s}\n", .{func.name});
+                    try self.print(".global {s}\n", .{sym});
                 }
-                try self.print("{s}:\n", .{func.name});
+                try self.print("{s}:\n", .{sym});
 
                 const noreturn_fn = if (func.return_type) |rt|
                     std.mem.eql(u8, rt, "never")
@@ -2812,12 +2928,34 @@ pub const HomeKernelCodegen = struct {
                         const module_name = member.object.Identifier.name;
                         const func_name = member.member;
 
-                        // Look up the symbol in the symbol table
-                        if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
-                            // Generate FFI call to Zig function
+                        // A Home module imported under this alias: call the
+                        // symbol that module defines. This is the whole point
+                        // of module-scoped names — `serial.writeChar` and
+                        // `vga.writeChar` are different functions.
+                        if (self.module_aliases.get(module_name)) |mod_id| {
+                            const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
+                            if (call.args.len > 0) {
+                                var words: usize = 0;
+                                var i: usize = call.args.len;
+                                while (i > 0) {
+                                    i -= 1;
+                                    words += try self.pushArgument(call.args[i]);
+                                }
+                                for (0..words) |reg_idx| {
+                                    if (reg_idx >= arg_regs.len) break;
+                                    try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                                }
+                            }
+                            if (isBootEntryPoint(func_name)) {
+                                try self.print("    call {s}\n", .{func_name});
+                            } else {
+                                try self.print("    call {s}__{s}\n", .{ mod_id, func_name });
+                            }
+                        } else if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
+                            // A Zig module reached through FFI.
                             try self.generateFFICall(symbol, call.args);
                         } else {
-                            std.log.info("Unknown symbol: {s}.{s}", .{module_name, func_name});
+                            try self.print("    # ERROR: unresolved call {s}.{s}\n", .{ module_name, func_name });
                         }
                     }
                 } else if (call.callee.* == .Identifier) {
@@ -2865,8 +3003,15 @@ pub const HomeKernelCodegen = struct {
                             }
                         }
 
-                        // Call function
-                        try self.print("    call {s}\n", .{func_name});
+                        // A name declared in this file resolves to this
+                        // module's symbol. Anything else is left bare — an
+                        // external the linker must supply, which fails loudly
+                        // if it does not exist.
+                        if (self.declared_fns.contains(func_name)) {
+                            try self.print("    call {s}\n", .{try self.functionSymbol(func_name)});
+                        } else {
+                            try self.print("    call {s}\n", .{func_name});
+                        }
                     }
                 }
             },
