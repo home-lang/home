@@ -3189,6 +3189,12 @@ const DeclarationKey = struct {
     virtual_section_start: usize,
 };
 
+const VisibleNamedTypeKey = struct {
+    container: NodeId,
+    name: hir_mod.StringId,
+    virtual_section_start: usize,
+};
+
 const JsDocGlobalDeclEntry = struct {
     name: hir_mod.StringId,
     node: NodeId,
@@ -4620,6 +4626,8 @@ pub const Checker = struct {
     /// conservative keyword prefilter so ordinary type references do not
     /// repeatedly scan an entire source file looking for one.
     source_may_have_umd_namespace_export: bool = false,
+    visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -4971,6 +4979,8 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "namespace") != null and
             std.mem.indexOf(u8, source, "as") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
+        self.visible_named_type_decls.clearRetainingCapacity();
+        self.indexed_named_type_containers.clearRetainingCapacity();
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5396,6 +5406,8 @@ pub const Checker = struct {
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
+        self.visible_named_type_decls.deinit(self.gpa);
+        self.indexed_named_type_containers.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
@@ -72950,7 +72962,8 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -72959,6 +72972,19 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, cur)
             else
                 hir_mod.namespaceBody(self.hir, cur);
+
+            self.indexVisibleNamedTypeDecls(cur, stmts, has_virtual_sections);
+            if (self.indexed_named_type_containers.contains(cur)) {
+                if (self.visible_named_type_decls.get(.{
+                    .container = cur,
+                    .name = name,
+                    .virtual_section_start = anchor_section,
+                })) |decl| return decl;
+                continue;
+            }
+
+            // Allocation failure while building the acceleration index is
+            // non-fatal. Preserve the original linear lookup as a fallback.
             for (stmts) |raw| {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
@@ -72969,12 +72995,42 @@ pub const Checker = struct {
                 {
                     continue;
                 }
-                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                if (has_virtual_sections and self.virtualSectionStartForNode(decl) != anchor_section) continue;
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name == name) return decl;
             }
         }
         return null;
+    }
+
+    fn indexVisibleNamedTypeDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_named_type_containers.contains(container)) return;
+
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const decl_kind = self.hir.kindOf(decl);
+            if (decl_kind != .interface_decl and
+                decl_kind != .type_alias_decl and
+                decl_kind != .class_decl and
+                decl_kind != .class_expr)
+            {
+                continue;
+            }
+            const decl_name = self.declarationName(decl) orelse continue;
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_named_type_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+        }
+        self.indexed_named_type_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn scopedGenericInterfaceInfo(
@@ -130195,121 +130251,122 @@ pub const Checker = struct {
             std.mem.eql(u8, s, "Image")) return true;
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",                    "undefined",              "NaN",
-            "Infinity",                   "globalThis",             "this",
-            "new.target",                 "window",                 "self",
-            "top",                        "document",               "name",
-            "Element",                    "Node",                   "HTMLElement",
-            "HTMLBodyElement",            "HTMLDivElement",         "HTMLAnchorElement",
-            "HTMLImageElement",           "HTMLInputElement",       "HTMLSpanElement",
-            "HTMLButtonElement",          "HTMLFormElement",        "HTMLCanvasElement",
-            "HTMLSelectElement",          "HTMLTextAreaElement",    "HTMLLabelElement",
-            "HTMLLinkElement",            "HTMLScriptElement",      "HTMLStyleElement",
-            "HTMLHeadElement",            "HTMLMetaElement",        "HTMLTitleElement",
-            "HTMLOptionElement",          "HTMLOptGroupElement",    "HTMLUListElement",
-            "HTMLOListElement",           "HTMLLIElement",          "HTMLTableElement",
-            "HTMLTableRowElement",        "HTMLTableCellElement",   "HTMLTableSectionElement",
-            "HTMLIFrameElement",          "HTMLVideoElement",       "HTMLAudioElement",
-            "HTMLMediaElement",           "HTMLSourceElement",      "HTMLTrackElement",
-            "HTMLPictureElement",         "HTMLParagraphElement",   "HTMLHRElement",
-            "HTMLHeadingElement",         "HTMLBRElement",          "HTMLDataListElement",
-            "HTMLOutputElement",          "HTMLDialogElement",      "HTMLDetailsElement",
-            "HTMLEmbedElement",           "HTMLFieldSetElement",    "HTMLLegendElement",
-            "HTMLObjectElement",          "HTMLParamElement",       "HTMLProgressElement",
-            "HTMLQuoteElement",           "HTMLTemplateElement",    "HTMLTimeElement",
-            "Event",                      "EventTarget",            "MouseEvent",
-            "KeyboardEvent",              "FocusEvent",             "Document",
-            "Window",                     "Location",               "Navigator",
-            "History",                    "Storage",                "URL",
-            "URLSearchParams",            "Blob",                   "File",
-            "FileReader",                 "FormData",               "Headers",
-            "HTMLElementTagNameMap",      "Request",                "Response",
+            "console",                      "undefined",                  "NaN",
+            "Infinity",                     "globalThis",                 "this",
+            "new.target",                   "window",                     "self",
+            "top",                          "document",                   "name",
+            "Element",                      "Node",                       "HTMLElement",
+            "HTMLBodyElement",              "HTMLDivElement",             "HTMLAnchorElement",
+            "HTMLImageElement",             "HTMLInputElement",           "HTMLSpanElement",
+            "HTMLButtonElement",            "HTMLFormElement",            "HTMLCanvasElement",
+            "HTMLSelectElement",            "HTMLTextAreaElement",        "HTMLLabelElement",
+            "HTMLLinkElement",              "HTMLScriptElement",          "HTMLStyleElement",
+            "HTMLHeadElement",              "HTMLMetaElement",            "HTMLTitleElement",
+            "HTMLOptionElement",            "HTMLOptGroupElement",        "HTMLUListElement",
+            "HTMLOListElement",             "HTMLLIElement",              "HTMLTableElement",
+            "HTMLTableRowElement",          "HTMLTableCellElement",       "HTMLTableSectionElement",
+            "HTMLIFrameElement",            "HTMLVideoElement",           "HTMLAudioElement",
+            "HTMLMediaElement",             "HTMLSourceElement",          "HTMLTrackElement",
+            "HTMLPictureElement",           "HTMLParagraphElement",       "HTMLHRElement",
+            "HTMLHeadingElement",           "HTMLBRElement",              "HTMLDataListElement",
+            "HTMLOutputElement",            "HTMLDialogElement",          "HTMLDetailsElement",
+            "HTMLEmbedElement",             "HTMLFieldSetElement",        "HTMLLegendElement",
+            "HTMLObjectElement",            "HTMLParamElement",           "HTMLProgressElement",
+            "HTMLQuoteElement",             "HTMLTemplateElement",        "HTMLTimeElement",
+            "Event",                        "EventTarget",                "MouseEvent",
+            "KeyboardEvent",                "FocusEvent",                 "Document",
+            "Window",                       "Location",                   "Navigator",
+            "History",                      "Storage",                    "URL",
+            "URLSearchParams",              "Blob",                       "File",
+            "FileReader",                   "FormData",                   "Headers",
+            "HTMLElementTagNameMap",        "Request",                    "Response",
             // Constructors / namespaces.
-            "Math",                       "JSON",                   "Object",
-            "Array",                      "String",                 "Number",
-            "Boolean",                    "Symbol",                 "BigInt",
-            "Error",                      "TypeError",              "RangeError",
-            "SyntaxError",                "Promise",                "Map",
-            "Set",                        "WeakMap",                "WeakSet",
-            "Date",                       "RegExp",                 "Function",
-            "Proxy",                      "Reflect",                "TemplateStringsArray",
-            "ArrayBuffer",                "ArrayBufferView",        "Uint8Array",
-            "Uint8ClampedArray",
-            "Int8Array",                  "Uint16Array",            "Int16Array",
-            "Uint32Array",                "Int32Array",             "Float16Array",
-            "Float32Array",               "Float64Array",           "BigUint64Array",
-            "BigInt64Array",              "SharedArrayBuffer",      "Atomics",
-            "Intl",                       "Temporal",               "indexedDB",
-            "IDBKeyRange",                "IDBFactory",             "IDBDatabase",
-            "IDBObjectStore",             "IDBIndex",               "IDBCursor",
-            "IDBCursorWithValue",         "IDBTransaction",         "IDBRequest",
-            "IDBOpenDBRequest",           "AudioContext",           "OfflineAudioContext",
-            "MediaStream",                "MediaStreamTrack",       "MediaRecorder",
-            "RTCPeerConnection",          "RTCDataChannel",         "RTCSessionDescription",
-            "RTCIceCandidate",            "caches",                 "Cache",
-            "CacheStorage",               "Notification",           "PaymentRequest",
-            "PaymentResponse",            "ServiceWorker",          "ServiceWorkerRegistration",
-            "ServiceWorkerContainer",     "PushManager",            "PushSubscription",
-            "WebGLRenderingContext",      "WebGL2RenderingContext", "WebGLBuffer",
-            "WebGLTexture",               "WebGLShader",            "WebGLProgram",
-            "WebGLFramebuffer",           "WebGLRenderbuffer",      "WebGLUniformLocation",
-            "WebGLVertexArrayObject",     "WebGLQuery",             "WebGLSampler",
-            "WebGLSync",                  "WebGLTransformFeedback", "WebGLActiveInfo",
-            "WebGLShaderPrecisionFormat", "HTMLElement",            "HTMLDivElement",
-            "HTMLSpanElement",            "HTMLParagraphElement",   "HTMLHeadingElement",
-            "HTMLInputElement",           "HTMLButtonElement",      "HTMLSelectElement",
-            "HTMLOptionElement",          "HTMLTextAreaElement",    "HTMLFormElement",
-            "HTMLImageElement",           "HTMLAnchorElement",      "HTMLCanvasElement",
-            "HTMLVideoElement",           "HTMLAudioElement",       "HTMLIFrameElement",
-            "HTMLLinkElement",            "HTMLMetaElement",        "HTMLScriptElement",
-            "HTMLStyleElement",           "HTMLTableElement",       "HTMLTableRowElement",
-            "HTMLTableCellElement",       "HTMLLabelElement",       "HTMLDialogElement",
-            "HTMLDetailsElement",         "HTMLTemplateElement",    "HTMLPictureElement",
-            "HTMLSourceElement",          "HTMLProgressElement",    "HTMLMeterElement",
-            "HTMLFieldSetElement",        "HTMLLegendElement",      "HTMLOutputElement",
-            "HTMLDataListElement",        "HTMLBodyElement",        "HTMLHeadElement",
-            "HTMLHtmlElement",            "HTMLTitleElement",       "HTMLBaseElement",
-            "GPU",                        "GPUAdapter",             "GPUDevice",
-            "GPUBuffer",                  "GPUTexture",             "GPUTextureView",
-            "GPUSampler",                 "GPUBindGroup",           "GPUBindGroupLayout",
-            "GPUPipelineLayout",          "GPURenderPipeline",      "GPUComputePipeline",
-            "GPUShaderModule",            "GPUCommandEncoder",      "GPUCommandBuffer",
-            "GPURenderPassEncoder",       "GPUComputePassEncoder",  "GPUQueue",
-            "GPUCanvasContext",           "GPUQuerySet",            "GPURenderBundle",
-            "GPURenderBundleEncoder",     "Event",                  "UIEvent",
-            "MouseEvent",                 "KeyboardEvent",          "FocusEvent",
-            "InputEvent",                 "CompositionEvent",       "TouchEvent",
-            "PointerEvent",               "WheelEvent",             "DragEvent",
-            "ClipboardEvent",             "AnimationEvent",         "TransitionEvent",
-            "ProgressEvent",              "SubmitEvent",            "FormDataEvent",
-            "MessageEvent",               "CloseEvent",             "HashChangeEvent",
-            "PopStateEvent",              "StorageEvent",           "ErrorEvent",
-            "BeforeUnloadEvent",          "PageTransitionEvent",    "SecurityPolicyViolationEvent",
-            "CustomEvent",                "CSSStyleSheet",          "CSSStyleDeclaration",
-            "CSSRule",                    "CSSStyleRule",           "CSSGroupingRule",
-            "CSSMediaRule",               "CSSSupportsRule",        "CSSConditionRule",
-            "CSSContainerRule",           "CSSLayerBlockRule",      "CSSLayerStatementRule",
-            "CSSImportRule",              "CSSPageRule",            "CSSKeyframesRule",
-            "CSSKeyframeRule",            "CSSFontFaceRule",        "CSSNamespaceRule",
+            "Math",                         "JSON",                       "Object",
+            "Array",                        "String",                     "Number",
+            "Boolean",                      "Symbol",                     "BigInt",
+            "Error",                        "TypeError",                  "RangeError",
+            "SyntaxError",                  "Promise",                    "Map",
+            "Set",                          "WeakMap",                    "WeakSet",
+            "Date",                         "RegExp",                     "Function",
+            "Proxy",                        "Reflect",                    "TemplateStringsArray",
+            "ArrayBuffer",                  "ArrayBufferView",            "Uint8Array",
+            "Uint8ClampedArray",            "Int8Array",                  "Uint16Array",
+            "Int16Array",                   "Uint32Array",                "Int32Array",
+            "Float16Array",                 "Float32Array",               "Float64Array",
+            "BigUint64Array",               "BigInt64Array",              "SharedArrayBuffer",
+            "Atomics",                      "Intl",                       "Temporal",
+            "indexedDB",                    "IDBKeyRange",                "IDBFactory",
+            "IDBDatabase",                  "IDBObjectStore",             "IDBIndex",
+            "IDBCursor",                    "IDBCursorWithValue",         "IDBTransaction",
+            "IDBRequest",                   "IDBOpenDBRequest",           "AudioContext",
+            "OfflineAudioContext",          "MediaStream",                "MediaStreamTrack",
+            "MediaRecorder",                "RTCPeerConnection",          "RTCDataChannel",
+            "RTCSessionDescription",        "RTCIceCandidate",            "caches",
+            "Cache",                        "CacheStorage",               "Notification",
+            "PaymentRequest",               "PaymentResponse",            "ServiceWorker",
+            "ServiceWorkerRegistration",    "ServiceWorkerContainer",     "PushManager",
+            "PushSubscription",             "WebGLRenderingContext",      "WebGL2RenderingContext",
+            "WebGLBuffer",                  "WebGLTexture",               "WebGLShader",
+            "WebGLProgram",                 "WebGLFramebuffer",           "WebGLRenderbuffer",
+            "WebGLUniformLocation",         "WebGLVertexArrayObject",     "WebGLQuery",
+            "WebGLSampler",                 "WebGLSync",                  "WebGLTransformFeedback",
+            "WebGLActiveInfo",              "WebGLShaderPrecisionFormat", "HTMLElement",
+            "HTMLDivElement",               "HTMLSpanElement",            "HTMLParagraphElement",
+            "HTMLHeadingElement",           "HTMLInputElement",           "HTMLButtonElement",
+            "HTMLSelectElement",            "HTMLOptionElement",          "HTMLTextAreaElement",
+            "HTMLFormElement",              "HTMLImageElement",           "HTMLAnchorElement",
+            "HTMLCanvasElement",            "HTMLVideoElement",           "HTMLAudioElement",
+            "HTMLIFrameElement",            "HTMLLinkElement",            "HTMLMetaElement",
+            "HTMLScriptElement",            "HTMLStyleElement",           "HTMLTableElement",
+            "HTMLTableRowElement",          "HTMLTableCellElement",       "HTMLLabelElement",
+            "HTMLDialogElement",            "HTMLDetailsElement",         "HTMLTemplateElement",
+            "HTMLPictureElement",           "HTMLSourceElement",          "HTMLProgressElement",
+            "HTMLMeterElement",             "HTMLFieldSetElement",        "HTMLLegendElement",
+            "HTMLOutputElement",            "HTMLDataListElement",        "HTMLBodyElement",
+            "HTMLHeadElement",              "HTMLHtmlElement",            "HTMLTitleElement",
+            "HTMLBaseElement",              "GPU",                        "GPUAdapter",
+            "GPUDevice",                    "GPUBuffer",                  "GPUTexture",
+            "GPUTextureView",               "GPUSampler",                 "GPUBindGroup",
+            "GPUBindGroupLayout",           "GPUPipelineLayout",          "GPURenderPipeline",
+            "GPUComputePipeline",           "GPUShaderModule",            "GPUCommandEncoder",
+            "GPUCommandBuffer",             "GPURenderPassEncoder",       "GPUComputePassEncoder",
+            "GPUQueue",                     "GPUCanvasContext",           "GPUQuerySet",
+            "GPURenderBundle",              "GPURenderBundleEncoder",     "Event",
+            "UIEvent",                      "MouseEvent",                 "KeyboardEvent",
+            "FocusEvent",                   "InputEvent",                 "CompositionEvent",
+            "TouchEvent",                   "PointerEvent",               "WheelEvent",
+            "DragEvent",                    "ClipboardEvent",             "AnimationEvent",
+            "TransitionEvent",              "ProgressEvent",              "SubmitEvent",
+            "FormDataEvent",                "MessageEvent",               "CloseEvent",
+            "HashChangeEvent",              "PopStateEvent",              "StorageEvent",
+            "ErrorEvent",                   "BeforeUnloadEvent",          "PageTransitionEvent",
+            "SecurityPolicyViolationEvent", "CustomEvent",                "CSSStyleSheet",
+            "CSSStyleDeclaration",          "CSSRule",                    "CSSStyleRule",
+            "CSSGroupingRule",              "CSSMediaRule",               "CSSSupportsRule",
+            "CSSConditionRule",             "CSSContainerRule",           "CSSLayerBlockRule",
+            "CSSLayerStatementRule",        "CSSImportRule",              "CSSPageRule",
+            "CSSKeyframesRule",             "CSSKeyframeRule",            "CSSFontFaceRule",
+            "CSSNamespaceRule",
             // Global functions.
-            "eval",                       "parseInt",               "parseFloat",
-            "isNaN",                      "isFinite",               "encodeURI",
-            "decodeURI",                  "encodeURIComponent",     "decodeURIComponent",
+                        "eval",                       "parseInt",
+            "parseFloat",                   "isNaN",                      "isFinite",
+            "encodeURI",                    "decodeURI",                  "encodeURIComponent",
+            "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",                 "clearTimeout",           "setInterval",
-            "clearInterval",              "setImmediate",           "clearImmediate",
-            "queueMicrotask",
+                      "setTimeout",                 "clearTimeout",
+            "setInterval",                  "clearInterval",              "setImmediate",
+            "clearImmediate",               "queueMicrotask",
             // Node.js / CommonJS.
-                        "process",                "Buffer",
-            "require",                    "module",                 "exports",
-            "__dirname",                  "__filename",
+                        "process",
+            "Buffer",                       "require",                    "module",
+            "exports",                      "__dirname",                  "__filename",
             // Dynamic `import("ÃÂ¢ÃÂÃÂ¦")` parses the keyword as an
             // identifier callee ÃÂ¢ÃÂÃÂ exempt it from TS2304.
-                        "import",
+            "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-            "super",
+                                  "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
