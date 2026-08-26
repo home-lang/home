@@ -57478,7 +57478,8 @@ fn runOptInTsSuiteFamily(
     const enabled = std.mem.span(enabled_raw);
     if (!std.mem.eql(u8, enabled, "1")) return;
 
-    const paths_or_null = if (envBoolOne(env_prefix ++ "_TESTDATA"))
+    const use_tsgo_testdata = envBoolOne(env_prefix ++ "_TESTDATA");
+    const paths_or_null = if (use_tsgo_testdata)
         try resolveTsgoTestdataCaseFamilyPaths(T.allocator, family)
     else
         try resolveTsCaseFamilyPaths(T.allocator, family);
@@ -57488,6 +57489,11 @@ fn runOptInTsSuiteFamily(
         T.allocator.free(paths.cases);
         T.allocator.free(paths.baselines);
     }
+    const fallback_baseline_root = if (use_tsgo_testdata)
+        null
+    else
+        try resolveOriginalTsBaselineRoot(T.allocator);
+    defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     const start_env = env_prefix ++ "_START";
     const limit_env = env_prefix ++ "_LIMIT";
@@ -57501,6 +57507,7 @@ fn runOptInTsSuiteFamily(
 
     const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
         .baseline_root = paths.baselines,
+        .fallback_baseline_root = fallback_baseline_root,
         .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
