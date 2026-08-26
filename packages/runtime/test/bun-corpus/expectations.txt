@@ -166,20 +166,12 @@ test/js/node/test/parallel/test-http2-create-client-secure-session.js [ FAIL ] #
 test/js/node/test/parallel/test-http2-debug.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-https-fallback.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-misbehaving-multiplex.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-multi-content-length.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-padding-aligned.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-perf_hooks.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-perform-server-handshake.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-ping-settings-heapdump.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-ping.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-res-writable-properties.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-reset-flood.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-respond-file-fd-leak.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-server-http1-client.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-server-push-stream-errors.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-server-push-stream-head.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-settings-unsolicited-ack.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-single-headers-validation-disabled.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-stream-client.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-autoselect-protocol.js [ SKIP ] # hangs; skip until the underlying feature lands
 test/js/node/test/parallel/test-http2-client-connection-tunnelling.js [ SKIP ] # hangs; skip until the underlying feature lands
