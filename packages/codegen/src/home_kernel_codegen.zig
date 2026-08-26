@@ -171,10 +171,15 @@ fn fullRegister(reg: []const u8) []const u8 {
 
 /// Names that must keep an unmangled symbol: they are named by hand-written
 /// assembly or by the linker script, which cannot know a module prefix.
+///
+/// `interrupt_dispatch` is called from the interrupt stubs, which are written
+/// in assembly because an interrupt frame cannot be built in Home. Until a
+/// `link_name` attribute exists, a fixed name is the contract between the two.
 fn isBootEntryPoint(name: []const u8) bool {
     return std.mem.eql(u8, name, "kernel_main") or
         std.mem.eql(u8, name, "main") or
-        std.mem.eql(u8, name, "_start");
+        std.mem.eql(u8, name, "_start") or
+        std.mem.eql(u8, name, "interrupt_dispatch");
 }
 
 /// Prefix for module-variable symbols. Home keeps functions and variables in
@@ -2495,7 +2500,34 @@ pub const HomeKernelCodegen = struct {
         for (slots) |slot| {
             if (!slot.stores) continue;
             if (slot.op.expr.* == .NullLiteral) continue; // `-> T` names no destination
-            try self.print("    movq %{s}, %rax\n", .{fullRegister(slot.reg)});
+
+            // Widen to the full register before storing. An instruction that
+            // writes a sub-register leaves the rest of the enclosing register
+            // alone — `inb %dx, %al` sets only %al — so copying the 64-bit
+            // register carries whatever the operand marshalling happened to
+            // leave in the upper bits. A u8 read back from a port then failed
+            // `c == 10` because the comparison sees all 64.
+            const osize = self.asmOperandSize(slot.op);
+            const signed = self.asmOperandIsSigned(slot.op);
+            if (osize < 8) {
+                const sub = sizedRegister(slot.reg, osize);
+                const insn = if (signed) switch (osize) {
+                    1 => "movsbq",
+                    2 => "movswq",
+                    4 => "movslq",
+                    else => unreachable,
+                } else switch (osize) {
+                    1 => "movzbq",
+                    2 => "movzwq",
+                    // A 32-bit mov zero-extends into the full register.
+                    4 => "movl",
+                    else => unreachable,
+                };
+                const dst = if (!signed and osize == 4) "eax" else "rax";
+                try self.print("    {s} %{s}, %{s}\n", .{ insn, sub, dst });
+            } else {
+                try self.print("    movq %{s}, %rax\n", .{fullRegister(slot.reg)});
+            }
             if (slot.op.expr.* == .Identifier) {
                 const name = slot.op.expr.Identifier.name;
                 if (self.locals.get(name)) |offset| {
@@ -2528,6 +2560,14 @@ pub const HomeKernelCodegen = struct {
         }
         const t = self.typeOfLValue(op.expr) orelse return 8;
         return sizeOfPrimitive(t) orelse 8;
+    }
+
+    /// Whether an asm operand's Home type is signed, so a narrow value read
+    /// back from a register sign-extends rather than zero-extends.
+    fn asmOperandIsSigned(self: *HomeKernelCodegen, op: ast.AsmOperand) bool {
+        const t = self.typeOfLValue(op.expr) orelse return false;
+        return std.mem.eql(u8, t, "i8") or std.mem.eql(u8, t, "i16") or
+            std.mem.eql(u8, t, "i32") or std.mem.eql(u8, t, "isize");
     }
 
     /// Replace every `%[name]` (or `%N` when `name` is a number) in `text`
