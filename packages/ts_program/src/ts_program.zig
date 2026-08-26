@@ -578,6 +578,9 @@ pub const Program = struct {
         errdefer freeStringSlice(self.gpa, out.items);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "namespace") == null and
+                std.mem.indexOf(u8, f.source, "module") == null and
+                std.mem.indexOf(u8, f.source, "global") == null) continue;
             try appendTopLevelNamespaceRootsFromSource(self.gpa, f.source, &out);
             try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
         }
@@ -591,6 +594,8 @@ pub const Program = struct {
         defer namespace_roots.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "namespace") == null and
+                std.mem.indexOf(u8, f.source, "module") == null) continue;
             try collectTopLevelNamespaceRootSlices(self.gpa, f.source, &namespace_roots);
         }
         for (self.files.items) |f| {
@@ -639,6 +644,9 @@ pub const Program = struct {
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "declare") == null or
+                std.mem.indexOf(u8, f.source, "module") == null or
+                std.mem.indexOf(u8, f.source, "interface") == null) continue;
             try self.collectRelativeModuleInterfaceAugmentationsFromSource(f.path, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
@@ -649,6 +657,7 @@ pub const Program = struct {
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "class") == null) continue;
             try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
         }
         var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
@@ -661,6 +670,9 @@ pub const Program = struct {
         }
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "declare") == null or
+                std.mem.indexOf(u8, f.source, "module") == null or
+                std.mem.indexOf(u8, f.source, "namespace") == null) continue;
             try collectRelativeModuleNamespaceStaticAugmentationsFromSource(self.gpa, f.path, f.source, &namespace_augmentations);
         }
         for (out.items) |*class| {
@@ -833,6 +845,10 @@ pub const Program = struct {
         }
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, f.source, "declare") == null or
+                std.mem.indexOf(u8, f.source, "interface") == null or
+                (std.mem.indexOf(u8, f.source, "module") == null and
+                    std.mem.indexOf(u8, f.source, "global") == null)) continue;
             try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
         }
         try self.collectExportedNamespaceInterfaces(&out);
@@ -846,6 +862,10 @@ pub const Program = struct {
     ) ProgramError!void {
         for (self.files.items) |file| {
             if (file.redirect_target != null) continue;
+            if (std.mem.indexOf(u8, file.source, "export") == null or
+                std.mem.indexOf(u8, file.source, "interface") == null or
+                (std.mem.indexOf(u8, file.source, "namespace") == null and
+                    std.mem.indexOf(u8, file.source, "module") == null)) continue;
             try collectExportedNamespaceInterfacesFromSource(self.gpa, file.path, file.source, out);
         }
     }
@@ -854,6 +874,7 @@ pub const Program = struct {
         self: *const Program,
         out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
     ) ProgramError!void {
+        if (out.items.len == 0) return;
         var changed = true;
         while (changed) {
             changed = false;
@@ -1213,6 +1234,12 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.is_declaration) {
+                // A declaration-file CommonJS export requires `export =`.
+                // Avoid reparsing ordinary library declarations when either
+                // required token is absent; false positives still take the
+                // full syntax-aware path below.
+                if (std.mem.indexOf(u8, f.source, "export") == null or
+                    std.mem.indexOfScalar(u8, f.source, '=') == null) continue;
                 const info = moduleExportAssignmentInfo(self.gpa, f.source, f.is_tsx) orelse continue;
                 const private_name = info.private_type_name orelse "";
                 if (private_name.len == 0 and !info.target_is_any) continue;
