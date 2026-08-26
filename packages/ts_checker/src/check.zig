@@ -3716,6 +3716,11 @@ pub const Checker = struct {
     /// `signature_subs`) never pollute the cache.
     subst_memo: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     subst_memo_subs: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
+    /// Lazily records whether this source contains any untyped `let`/`var`
+    /// declaration whose type can evolve through later assignments. Most
+    /// typed sources contain none; in that common case identifier lookup can
+    /// skip the source-order flow search entirely.
+    may_have_evolving_any_candidates: ?bool = null,
     declared_identifier_lookup: bool,
     report_unresolved_in_namespace_scope: bool,
     /// Set while type-checking the contents of a class computed-property
@@ -84389,6 +84394,19 @@ pub const Checker = struct {
         return self.hir.kindOf(v.init) == .literal_undefined or self.hir.kindOf(v.init) == .literal_null;
     }
 
+    fn sourceMayHaveUntypedEvolvingAnyCandidate(self: *Checker) bool {
+        if (self.may_have_evolving_any_candidates) |cached| return cached;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.varDeclIsUntypedEvolvingAnyCandidate(candidate)) {
+                self.may_have_evolving_any_candidates = true;
+                return true;
+            }
+        }
+        self.may_have_evolving_any_candidates = false;
+        return false;
+    }
+
     fn varDeclIsCapturedEvolvingAnyCandidate(self: *Checker, decl: NodeId) bool {
         const dk = self.hir.kindOf(decl);
         if (dk != .var_decl and dk != .let_decl) return false;
@@ -128130,14 +128148,16 @@ pub const Checker = struct {
             (is_this and this_rebound_plain_function and self.thisInsideObjectLiteralMethod(node) and self.currentThisType() != null))
         {
             var active_annotation_t: ?TypeId = null;
+            var visible_annotation_node: ?NodeId = null;
             if (!self.isDeclNameSlot(node)) {
-                if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
+                visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
+                if (visible_annotation_node) |type_node| {
                     if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
                 }
             }
             if (!self.isDeclNameSlot(node)) {
-                const is_evolving_untyped = self.identifierIsUntypedUninitializedVar(node);
-                const visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
+                const may_have_evolving_any = self.sourceMayHaveUntypedEvolvingAnyCandidate();
+                const is_evolving_untyped = may_have_evolving_any and self.identifierIsUntypedUninitializedVar(node);
                 const recovered_annotation_t = self.recoveredSourceParameterAnnotationType(node, id.name);
                 if (recovered_annotation_t) |declared_t| {
                     const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
@@ -128185,7 +128205,7 @@ pub const Checker = struct {
                     if ((self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) != null) return types.Primitive.any;
                 }
                 active_annotation_t = self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
-                if (active_annotation_t == null) {
+                if (active_annotation_t == null and may_have_evolving_any) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
                             if (narrow_t != types.Primitive.any and
@@ -166935,6 +166955,13 @@ pub const Checker = struct {
     }
 
     fn identifierFunctionReferenceHasTooManyRequiredParams(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
+        // This diagnostic can only apply to a callable target. Establish that
+        // from the type before walking lexical declarations to discover
+        // whether an identifier was initialized with a function expression.
+        var target_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(target_t, &target_sigs);
+        if (target_sigs.items.len == 0) return false;
         const init_node = self.visibleFunctionInitializerForIdentifier(arg_node) orelse return false;
         const count = self.functionExpressionRequiredValueParamCount(init_node);
         if (count == 0) return false;
