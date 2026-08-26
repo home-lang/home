@@ -275,6 +275,37 @@ def generate_tsx_components(directory: Path, components: int) -> None:
     write(directory / "src/components.tsx", "".join(blocks))
 
 
+def generate_generic_calls(directory: Path, calls: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "interface Entity<N extends number> {\n"
+        "  readonly id: N;\n"
+        "  readonly label: `entity-${N}`;\n"
+        "  readonly active: boolean;\n"
+        "}\n\n"
+        "type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };\n\n"
+        "declare function project<T, K extends readonly (keyof T)[]>(\n"
+        "  value: T,\n"
+        "  keys: K,\n"
+        "): PickFields<T, K[number]>;\n\n"
+        "declare function field<T, K extends keyof T>(value: T, key: K): T[K];\n\n"
+        "declare function transform<T, U>(value: T, mapper: (input: T) => U): U;\n\n"
+    ]
+    for index in range(calls):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"const entity{index}: Entity<{index}> = {{ id: {index}, label: \"entity-{index}\", active: {active} }};\n"
+            f'const selected{index} = project(entity{index}, ["id", "label"] as const);\n'
+            f'const label{index}: `entity-{index}` = field(selected{index}, "label");\n'
+            f"export const result{index}: PickFields<Entity<{index}>, \"id\" | \"label\"> = transform(\n"
+            f"  selected{index},\n"
+            "  value => ({ id: value.id, label: value.label }),\n"
+            ");\n\n"
+        )
+    write(directory / "src/generic-calls.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -288,6 +319,7 @@ def cmd_corpus() -> None:
         cfg["reexport_graph_barrel_size"],
     )
     generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
+    generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 

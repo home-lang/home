@@ -9,6 +9,7 @@ import_graph_modules = 128
 reexport_graph_leaves = 64
 reexport_graph_barrel_size = 8
 tsx_components = 256
+generic_calls = 256
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -27,6 +28,9 @@ description = "64 leaf modules projected through eight export-star barrel module
 
 [workloads.tsx_components]
 description = "One TSX module with 256 typed generic component declarations and JSX trees."
+
+[workloads.generic_calls]
+description = "One module with 256 constrained generic projections, indexed accesses, and contextual callbacks."
 
 [compilers.tsc]
 version = "7.0.2"
