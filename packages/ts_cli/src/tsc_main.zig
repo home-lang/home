@@ -499,7 +499,8 @@ fn buildOneProject(
     }
 
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
-    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
+    defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
@@ -2050,9 +2051,151 @@ const ResolverMutex = struct {
     }
 };
 
+const ModuleExportCacheKey = struct {
+    path: []const u8,
+    name: []const u8,
+    mode: enum(u8) { normal, import, require },
+};
+
+const ModuleExportCacheContext = struct {
+    pub fn hash(_: ModuleExportCacheContext, key: ModuleExportCacheKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(&.{@backingInt(key.mode)});
+        hasher.update(key.path);
+        hasher.update(&.{0});
+        hasher.update(key.name);
+        return hasher.final();
+    }
+
+    pub fn eql(_: ModuleExportCacheContext, a: ModuleExportCacheKey, b: ModuleExportCacheKey) bool {
+        return a.mode == b.mode and
+            std.mem.eql(u8, a.path, b.path) and
+            std.mem.eql(u8, a.name, b.name);
+    }
+};
+
+const ModuleExportCache = std.HashMapUnmanaged(
+    ModuleExportCacheKey,
+    ts_driver.ExternalResolver.ModuleExport,
+    ModuleExportCacheContext,
+    80,
+);
+
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
-    mutex: ResolverMutex = .{},
+    resolver_mutex: ResolverMutex = .{},
+    cache_mutex: ResolverMutex = .{},
+    cache_arena: std.heap.ArenaAllocator,
+    module_export_cache: ModuleExportCache = .empty,
+    module_compilation_cache: std.StringHashMapUnmanaged(*ts_driver.Compilation) = .empty,
+
+    fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) CheckerResolverAdapter {
+        return .{
+            .resolver = resolver,
+            .cache_arena = std.heap.ArenaAllocator.init(gpa),
+        };
+    }
+
+    fn deinit(self: *CheckerResolverAdapter) void {
+        var compilations = self.module_compilation_cache.valueIterator();
+        while (compilations.next()) |compilation| {
+            const source = compilation.*.source;
+            compilation.*.deinit();
+            self.resolver.gpa.destroy(compilation.*);
+            self.resolver.gpa.free(source);
+        }
+        self.module_compilation_cache.deinit(self.resolver.gpa);
+        self.module_export_cache.deinit(self.resolver.gpa);
+        self.cache_arena.deinit();
+    }
+
+    fn moduleCompilation(
+        self: *CheckerResolverAdapter,
+        path: []const u8,
+    ) ?*ts_driver.Compilation {
+        self.cache_mutex.lock();
+        if (self.module_compilation_cache.get(path)) |cached| {
+            self.cache_mutex.unlock();
+            return cached;
+        }
+        self.cache_mutex.unlock();
+
+        const source = self.resolver.fs.readFile(self.resolver.gpa, path) catch return null;
+        const compilation = ts_program.compileModuleForExportFacts(self.resolver.gpa, path, source) catch {
+            self.resolver.gpa.free(source);
+            return null;
+        };
+
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_compilation_cache.get(path)) |cached| {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return cached;
+        }
+        const stored_path = self.cache_arena.allocator().dupe(u8, path) catch {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        self.module_compilation_cache.put(self.resolver.gpa, stored_path, compilation) catch {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        return compilation;
+    }
+
+    fn cachedModuleExport(
+        self: *CheckerResolverAdapter,
+        key: ModuleExportCacheKey,
+    ) ?ts_driver.ExternalResolver.ModuleExport {
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        return self.module_export_cache.get(key);
+    }
+
+    fn cacheModuleExport(
+        self: *CheckerResolverAdapter,
+        key: ModuleExportCacheKey,
+        result: ts_driver.ExternalResolver.ModuleExport,
+    ) void {
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_export_cache.contains(key)) return;
+        const arena = self.cache_arena.allocator();
+        const stored_path = arena.dupe(u8, key.path) catch return;
+        const stored_name = arena.dupe(u8, key.name) catch return;
+        self.module_export_cache.put(self.resolver.gpa, .{
+            .path = stored_path,
+            .name = stored_name,
+            .mode = key.mode,
+        }, result) catch {};
+    }
+
+    fn resolveModule(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_resolver.Resolution {
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        return self.resolver.resolve(specifier, containing_file) catch null;
+    }
+
+    fn resolveTypeReference(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+        mode: ts_resolver.TypeReferenceResolutionMode,
+    ) ?ts_resolver.Resolution {
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        return self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch null;
+    }
 
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
@@ -2067,8 +2210,8 @@ const CheckerResolverAdapter = struct {
     /// CLI reports it too (not just the conformance harness).
     fn ambiguousProjectRootImpl(self_ptr: *anyopaque) ?ts_driver.ExternalResolver.AmbiguousProjectRoot {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
         const amb = self.resolver.ambiguous_root orelse return null;
         return .{ .entry = amb.entry, .file = amb.file, .is_imports = amb.is_imports };
     }
@@ -2079,9 +2222,7 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const r = self.resolver.resolve(specifier, containing_file) catch return null;
+        const r = self.resolveModule(specifier, containing_file) orelse return null;
         return .{
             .path = r.path,
             .is_declaration = r.is_declaration,
@@ -2107,12 +2248,9 @@ const CheckerResolverAdapter = struct {
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const r = self.resolver.resolve(specifier, containing_file) catch return null;
-        // The resolver's arena outlives the checker calls, so the rendered
-        // module name borrowed by the checker stays valid.
-        const arena = self.resolver.arena.allocator();
+        const r = self.resolveModule(specifier, containing_file) orelse return null;
+        const cache_key: ModuleExportCacheKey = .{ .path = r.path, .name = name, .mode = .normal };
+        if (self.cachedModuleExport(cache_key)) |cached| return cached;
         const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
@@ -2121,32 +2259,50 @@ const CheckerResolverAdapter = struct {
         else
             null;
         defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
-        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, r.path, name);
-        const exported = facts.exported_type;
-        const cannot_be_named = !exported and
-            ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
-        const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-        const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
-        return .{
-            .module_name = module_name,
-            .exported_type = exported,
-            .exported_value = facts.exported_value,
-            .exported_value_readonly = facts.exported_value_readonly,
-            .ambient_const_enum = facts.ambient_const_enum,
-            .cannot_be_named = cannot_be_named,
-            .type_only_export = type_only_pos != null,
-            .export_path = export_path,
-            .export_pos = type_only_pos orelse 0,
-            .export_assignment_type_only = facts.export_assignment_type_only,
-            .export_assignment_class_name = if (export_assignment_class_name) |class_name|
-                arena.dupe(u8, class_name) catch return null
-            else
-                "",
-            .default_export_member_readonly = facts.default_export_member_readonly,
-            .call_only_function = facts.call_only_function,
-            .module_is_external = facts.module_is_external,
+        const compilation = self.moduleCompilation(r.path) orelse return null;
+        const facts = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportFactsFromCompilation(
+                self.resolver.gpa,
+                self.resolver,
+                r.path,
+                compilation,
+                name,
+            );
         };
+        const exported = facts.exported_type;
+        const cannot_be_named = facts.cannot_be_named;
+        const type_only_pos = facts.type_only_pos;
+        const result: ts_driver.ExternalResolver.ModuleExport = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            // The resolver's arena outlives every checker call.
+            const arena = self.resolver.arena.allocator();
+            const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
+            const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
+            break :blk .{
+                .module_name = module_name,
+                .exported_type = exported,
+                .exported_value = facts.exported_value,
+                .exported_value_readonly = facts.exported_value_readonly,
+                .ambient_const_enum = facts.ambient_const_enum,
+                .cannot_be_named = cannot_be_named,
+                .type_only_export = type_only_pos != null,
+                .export_path = export_path,
+                .export_pos = type_only_pos orelse 0,
+                .export_assignment_type_only = facts.export_assignment_type_only,
+                .export_assignment_class_name = if (export_assignment_class_name) |class_name|
+                    arena.dupe(u8, class_name) catch return null
+                else
+                    "",
+                .default_export_member_readonly = facts.default_export_member_readonly,
+                .call_only_function = facts.call_only_function,
+                .module_is_external = facts.module_is_external,
+            };
+        };
+        self.cacheModuleExport(cache_key, result);
+        return result;
     }
 
     fn moduleExportWithModeImpl(
@@ -2157,29 +2313,47 @@ const CheckerResolverAdapter = struct {
         resolution_mode: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
         const mode: ts_resolver.TypeReferenceResolutionMode = if (std.mem.eql(u8, resolution_mode, "require"))
             .require
         else
             .import;
-        const resolved = self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch return null;
-        const src = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
-        defer self.resolver.gpa.free(src);
-        const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
-        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, resolved.path, name);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
-        const arena = self.resolver.arena.allocator();
-        return .{
-            .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
-            .exported_type = facts.exported_type,
-            .exported_value = facts.exported_value,
-            .ambient_const_enum = facts.ambient_const_enum,
-            .type_only_export = type_only_pos != null,
-            .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
-            .export_pos = type_only_pos orelse 0,
-            .module_is_external = facts.module_is_external,
+        const resolved = self.resolveTypeReference(specifier, containing_file, mode) orelse return null;
+        const cache_key: ModuleExportCacheKey = .{
+            .path = resolved.path,
+            .name = name,
+            .mode = if (mode == .require) .require else .import,
         };
+        if (self.cachedModuleExport(cache_key)) |cached| return cached;
+        const compilation = self.moduleCompilation(resolved.path) orelse return null;
+        const facts = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportFactsFromCompilation(
+                self.resolver.gpa,
+                self.resolver,
+                resolved.path,
+                compilation,
+                name,
+            );
+        };
+        const type_only_pos = facts.type_only_pos;
+        const result: ts_driver.ExternalResolver.ModuleExport = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            const arena = self.resolver.arena.allocator();
+            break :blk .{
+                .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
+                .exported_type = facts.exported_type,
+                .exported_value = facts.exported_value,
+                .ambient_const_enum = facts.ambient_const_enum,
+                .type_only_export = type_only_pos != null,
+                .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
+                .export_pos = type_only_pos orelse 0,
+                .module_is_external = facts.module_is_external,
+            };
+        };
+        self.cacheModuleExport(cache_key, result);
+        return result;
     }
 
     fn commonJsExportPrivateNameImpl(
@@ -2188,8 +2362,8 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.CommonJsExportPrivateName {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
         const resolved = self.resolver.resolve(specifier, containing_file) catch return null;
         const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
         defer self.resolver.gpa.free(source);
@@ -2776,7 +2950,8 @@ pub fn main(init: std.process.Init) !void {
         .{};
     compile_opts.strict = opts.strict;
     compile_opts.no_emit = opts.no_emit;
-    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
+    defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
