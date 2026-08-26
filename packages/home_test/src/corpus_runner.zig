@@ -38714,6 +38714,25 @@ const harness_prelude =
     \\    socket.__home_server_stream && socket.__home_server_stream.__home_http2_server ||
     \\    socket.__home_client_stream && socket.__home_client_stream.__home_http2_server || null;
     \\}
+    \\function __home_http2_terminalize_peer(peer, code, cause) {
+    \\  if (!peer || peer.__home_close_emitted) return;
+    \\  const resetCode = Number(code) || 0;
+    \\  const compatRequest = peer.__home_compat_req;
+    \\  const readWasOpen = !peer.__home_request_ended && peer.readableEnded !== true && !(compatRequest && compatRequest.complete);
+    \\  peer.rstCode = resetCode;
+    \\  peer.aborted = readWasOpen;
+    \\  peer.complete = true;
+    \\  peer.closed = true;
+    \\  peer.destroyed = true;
+    \\  if (compatRequest && readWasOpen && !compatRequest.aborted) { compatRequest.aborted = true; compatRequest.complete = true; compatRequest.readable = false; compatRequest.emit("aborted"); }
+    \\  if (compatRequest && !compatRequest.__home_close_emitted) { compatRequest.__home_close_emitted = true; compatRequest.emit("close"); }
+    \\  const compatResponse = peer.__home_compat_res;
+    \\  if (compatResponse && !compatResponse.finished && !compatResponse.__home_close_emitted) { compatResponse.__home_close_emitted = true; compatResponse.emit("close"); }
+    \\  if (readWasOpen) peer.emit("aborted");
+    \\  if (resetCode !== 0 && resetCode !== __home_http2_constants.NGHTTP2_CANCEL) peer.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode), cause));
+    \\  peer.__home_close_emitted = true;
+    \\  peer.emit("close");
+    \\}
     \\function __home_http2_nghttp_error(code) {
     \\  const error = new __home_http2_NghttpError(__home_http2_nghttp2_error_string(code));
     \\  error.code = "ERR_HTTP2_ERROR";
@@ -39386,6 +39405,19 @@ const harness_prelude =
     \\  Object.defineProperty(output, "__home_array_input", { configurable: true, value: Array.isArray(values) });
     \\  return output;
     \\}
+    \\function __home_http2_prepare_push_headers(values, parentHeaders, fallbackScheme, fallbackAuthority) {
+    \\  if (values === undefined) values = {};
+    \\  if (values === null || typeof values !== "object" || Array.isArray(values)) { const error = new TypeError('The "headers" argument must be of type object.' + __home_http2_invalid_arg_type_suffix(values)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\  const validated = __home_http2_validate_request_headers(values, true);
+    \\  for (const name of Object.keys(validated)) {
+    \\    const lower = String(name).toLowerCase();
+    \\    if (["connection", "http2-settings", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(lower) || lower === "te" && String(validated[name]).toLowerCase() !== "trailers") { const error = new TypeError('HTTP/1 Connection specific headers are forbidden: "' + lower + '"'); error.code = "ERR_HTTP2_INVALID_CONNECTION_HEADERS"; throw error; }
+    \\  }
+    \\  const parent = parentHeaders || {};
+    \\  const defaults = { ":method": "GET", ":path": "/", ":scheme": parent[":scheme"] || fallbackScheme || "http" };
+    \\  if (validated[":authority"] === undefined && validated.host === undefined) defaults[":authority"] = parent[":authority"] || parent.host || fallbackAuthority;
+    \\  return __home_http2_normalize_headers(validated, defaults);
+    \\}
     \\function __home_http2_validate_header_context(values, context) {
     \\  const entries = __home_http2_header_entries(values);
     \\  const output = Object.create(null);
@@ -39407,6 +39439,16 @@ const harness_prelude =
     \\  Object.defineProperty(output, "__home_sent_headers", { configurable: true, value: sentHeaders });
     \\  Object.defineProperty(output, "__home_array_input", { configurable: true, value: Array.isArray(values) });
     \\  return output;
+    \\}
+    \\function __home_http2_apply_compat_trailers(request, trailers) {
+    \\  const occurrences = trailers && trailers.__home_raw_occurrences;
+    \\  const entries = Array.isArray(occurrences) && occurrences.length > 0 ? occurrences : Object.entries(trailers || {});
+    \\  for (const entry of entries) {
+    \\    const lower = String(entry[0]).toLowerCase();
+    \\    const value = String(entry[1]);
+    \\    request.rawTrailers.push(lower, value);
+    \\    request.trailers[lower] = request.trailers[lower] === undefined ? value : request.trailers[lower] + ", " + value;
+    \\  }
     \\}
     \\function __home_http2_raw_session(server, origin, fetchOptions, fresh) {
     \\  const requestHeaders = new Headers(fetchOptions && fetchOptions.headers || {});
@@ -39858,8 +39900,8 @@ const harness_prelude =
     \\        const trailerNames = Object.keys(res.__home_trailers);
     \\        if (trailerNames.length > 0 && !clientStream.aborted) { const trailers = {}; for (const name of trailerNames) trailers[name] = Array.isArray(res.__home_trailers[name]) ? res.__home_trailers[name].join(", ") : res.__home_trailers[name]; clientReceive("trailers", trailers); }
     \\        if (!clientStream.__home_response_ended && !clientStream.aborted) { clientStream.__home_response_ended = true; clientReceive("end"); }
-    \\        if (!clientStream.closed) { clientStream.closed = true; clientStream.destroyed = true; clientReceive("close"); }
-    \\        if (typeof clientStream.__home_release_active === "function") clientStream.__home_release_active();
+    \\        if (typeof clientStream.__home_maybe_finish_pair === "function") clientStream.__home_maybe_finish_pair();
+    \\        else { if (!clientStream.closed) { clientStream.closed = true; clientStream.destroyed = true; clientReceive("close"); } if (typeof clientStream.__home_release_active === "function") clientStream.__home_release_active(); }
     \\        finishResponse();
     \\        if (typeof done === "function") done();
     \\        maybeCloseServerStream();
@@ -39892,8 +39934,9 @@ const harness_prelude =
     \\  res.createPushResponse = function(pushHeaders, pushCallback) {
     \\    if (typeof pushCallback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(pushCallback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\    if (!clientStream || !clientStream.session || !serverStream || serverStream.closed) { const error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed"); Promise.resolve().then(() => pushCallback(error)); return undefined; }
+    \\    if (!serverStream.pushAllowed) throw __home_http2_error_with_code("ERR_HTTP2_PUSH_DISABLED", "HTTP/2 server push is disabled");
     \\    const client = clientStream.session;
-    \\    const normalizedPushHeaders = __home_http2_normalize_headers(pushHeaders, { ":method": "GET", ":scheme": clientStream.scheme || "http", ":authority": clientStream.sentHeaders && (clientStream.sentHeaders[":authority"] || clientStream.sentHeaders.host), ":path": "/" });
+    \\    const normalizedPushHeaders = __home_http2_prepare_push_headers(pushHeaders, clientStream.sentHeaders, clientStream.scheme || "http", clientStream.sentHeaders && (clientStream.sentHeaders[":authority"] || clientStream.sentHeaders.host));
     \\    const pushedClient = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, sentHeaders: normalizedPushHeaders });
     \\    client.__home_next_push_stream_id += 2;
     \\    pushedClient.setEncoding = function(value) { this.__home_encoding = String(value || "utf8"); return this; };
@@ -39902,17 +39945,19 @@ const harness_prelude =
     \\    const pushStream = Object.assign(__home_http_event_target(), { id: pushedClient.id, session: serverStream.session, closed: false, destroyed: false });
     \\    const pushResponse = Object.assign(__home_http_event_target(), { stream: pushStream, statusCode: 200, finished: false, writableEnded: false, __home_headers: {} });
     \\    pushResponse.setHeader = function(name, value) { this.__home_headers[String(name).toLowerCase()] = String(value); return this; };
-    \\    pushResponse.end = function(chunk) { if (this.finished) return this; this.finished = true; this.writableEnded = true; pushedClient.emit("push", Object.assign({ ":status": this.statusCode, date: new Date(0).toUTCString() }, this.__home_headers), 4); if (chunk !== undefined && chunk !== null) pushedClient.emit("data", pushedClient.__home_encoding ? Buffer.from(String(chunk)).toString(pushedClient.__home_encoding) : chunk); pushedClient.closed = true; pushedClient.destroyed = true; pushedClient.emit("end"); pushedClient.emit("close"); pushStream.closed = true; pushStream.emit("close"); this.emit("finish"); return this; };
-    \\    client.emit("stream", pushedClient, normalizedPushHeaders, 4);
-    \\    pushCallback(null, pushResponse);
+    \\    pushResponse.end = function(chunk) { if (this.finished) return this; this.finished = true; this.writableEnded = true; const target = this; Promise.resolve().then(() => { pushedClient.emit("push", Object.assign({ ":status": target.statusCode, date: new Date(0).toUTCString() }, target.__home_headers), 4); if (chunk !== undefined && chunk !== null) pushedClient.emit("data", pushedClient.__home_encoding ? Buffer.from(String(chunk)).toString(pushedClient.__home_encoding) : chunk); pushedClient.closed = true; pushedClient.destroyed = true; pushedClient.emit("end"); pushedClient.emit("close"); pushStream.closed = true; pushStream.emit("close"); target.emit("finish"); }); return this; };
+    \\    Promise.resolve().then(() => {
+    \\      client.emit("stream", pushedClient, normalizedPushHeaders, 4);
+    \\      pushCallback(null, pushResponse);
+    \\    });
     \\    return undefined;
     \\  };
     \\  if (serverStream) {
     \\    serverStream.__home_compat_req = req;
     \\    serverStream.__home_compat_res = res;
     \\    serverStream.on("data", chunk => reqDeliver("data", req.__home_encoding ? Buffer.from(chunk).toString(req.__home_encoding) : chunk));
-    \\    serverStream.on("trailers", trailers => { for (const name of Object.keys(trailers || {})) { const lower = String(name).toLowerCase(); const value = String(trailers[name]); req.rawTrailers.push(lower, value); req.trailers[lower] = req.trailers[lower] === undefined ? value : req.trailers[lower] + ", " + value; } });
-    \\    serverStream.on("end", () => { serverStream.readable = false; reqDeliver("end"); maybeCloseServerStream(); });
+    \\    serverStream.on("trailers", trailers => __home_http2_apply_compat_trailers(req, trailers));
+    \\    serverStream.on("end", () => { serverStream.readable = false; reqDeliver("end"); if (clientStream && typeof clientStream.__home_maybe_finish_pair === "function") clientStream.__home_maybe_finish_pair(); maybeCloseServerStream(); });
     \\  }
     \\  function dispatchOrdinaryRequest() { let handled = false; if (server && server.listenerCount("request") > 0) handled = server.emit("request", req, res); if (typeof server.__home_handler === "function") { const result = server.__home_handler(req, res); if (result && (typeof result === "object" || typeof result === "function") && typeof result.then === "function") result.then(undefined, error => res.__home_handle_rejection(error)); handled = true; } return handled; }
     \\  const method = String(req.method).toUpperCase();
@@ -40844,11 +40889,20 @@ const harness_prelude =
     \\      });
     \\      return stream;
     \\    }
-    \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0));
+    \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" || requestHeaders.expect !== undefined);
     \\    if (hasCompatHandler) {
     \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0 });
     \\      stream.__home_server_stream = handlerServerStream;
     \\      handlerServerStream.__home_client_stream = stream;
+    \\      handlerServerStream.pushAllowed = initialSettings.enablePush !== false;
+    \\      stream.__home_maybe_finish_pair = function() {
+    \\        if (!this.__home_response_ended || !handlerServerStream.__home_request_ended || this.closed) return;
+    \\        this.closed = true; this.destroyed = true;
+    \\        this.__home_receive("close");
+    \\        if (!handlerServerStream.__home_close_emitted) { handlerServerStream.closed = true; handlerServerStream.destroyed = true; handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\        this.__home_release_active();
+    \\        __home_http2_maybe_close_client(client);
+    \\      };
     \\      handlerServerStream.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); return this; };
     \\      handlerServerStream.resume = function() { this.__home_resumed = true; return this; };
     \\      handlerServerStream.pause = function() { this.__home_resumed = false; return this; };
@@ -40943,6 +40997,7 @@ const harness_prelude =
     \\          const payload = typeof Buffer === "function" && !(chunk instanceof Buffer) ? Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined) : chunk;
     \\          this.bufferSize += payload.length;
     \\          if (payload.length !== 0) Promise.resolve().then(() => {
+    \\            if (this.destroyed || handlerServerStream.closed || handlerServerStream.destroyed) { this.bufferSize = Math.max(0, this.bufferSize - payload.length); if (typeof cb === "function") cb(); return; }
     \\            handlerServerStream.emit("data", handlerServerStream.__home_encoding ? Buffer.from(payload).toString(handlerServerStream.__home_encoding) : payload);
     \\            const wasBackpressured = this.bufferSize >= Number(this._writableState.highWaterMark || 16384);
     \\            this.bufferSize = Math.max(0, this.bufferSize - payload.length);
@@ -40958,6 +41013,7 @@ const harness_prelude =
     \\      stream.end = function(chunk, encoding, callback) {
     \\        const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
     \\        if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
+    \\        this.writableFinished = true;
     \\        if (!handlerServerStream.__home_request_ended) {
     \\          handlerServerStream.__home_request_ended = true;
     \\          Promise.resolve().then(() => {
@@ -40979,13 +41035,15 @@ const harness_prelude =
     \\        const resetCode = code === undefined ? 0 : Number(code);
     \\        if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\        if (this.closed) return this;
+    \\        const shouldAbort = !this.writableFinished;
     \\        this.closed = true; this.destroyed = true; this.rstCode = resetCode; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
     \\        const target = this;
     \\        Promise.resolve().then(() => {
     \\          const error = resetCode !== 0 && resetCode !== __home_http2_constants.NGHTTP2_CANCEL ? __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode)) : null;
     \\          target._destroy(error, function() {});
+    \\          if (shouldAbort && !target.aborted) { target.aborted = true; target.emit("aborted"); }
     \\          if (error) target.emit("error", error);
-    \\          if (!handlerServerStream.__home_close_emitted) { handlerServerStream.rstCode = resetCode; handlerServerStream.aborted = resetCode !== 0; handlerServerStream.closed = true; handlerServerStream.destroyed = true; if (resetCode !== 0) handlerServerStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode))); handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\          __home_http2_terminalize_peer(handlerServerStream, resetCode);
     \\          target.emit("end");
     \\          if (typeof closeCallback === "function") closeCallback();
     \\          target.emit("close");
@@ -40995,12 +41053,14 @@ const harness_prelude =
     \\      };
     \\      stream.destroy = function(error) {
     \\        if (this.destroyed) return this;
+    \\        const shouldAbort = !this.writableFinished;
     \\        this.closed = true; this.destroyed = true; this.rstCode = error ? __home_http2_constants.NGHTTP2_INTERNAL_ERROR : 0; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
     \\        const target = this;
     \\        Promise.resolve().then(() => {
     \\          target._destroy(error || null, function() {});
+    \\          if (shouldAbort && !target.aborted) { target.aborted = true; target.emit("aborted"); }
     \\          if (error) target.emit("error", error);
-    \\          if (!handlerServerStream.__home_close_emitted) { handlerServerStream.rstCode = target.rstCode; handlerServerStream.aborted = !!error; handlerServerStream.closed = true; handlerServerStream.destroyed = true; if (error) handlerServerStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_INTERNAL_ERROR", error)); handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\          __home_http2_terminalize_peer(handlerServerStream, target.rstCode, error);
     \\          target.emit("close");
     \\          __home_http2_maybe_close_client(client);
     \\        });
@@ -41067,6 +41127,7 @@ const harness_prelude =
     \\      if (server && server.__home_closing || client.__home_server_session.closed) client.closed = true;
     \\      __home_http2_maybe_close_client(client);
     \\    }
+    \\    stream.__home_maybe_finish_pair = maybeFinishStreamPair;
     \\    serverStream.respond = function(responseHeaders, responseOptions) {
     \\      if (this.destroyed || this.closed) throw __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed");
     \\      if (this.__home_response_started) throw __home_http2_error_with_code("ERR_HTTP2_HEADERS_SENT", "Response has already been initiated.");
@@ -41276,8 +41337,7 @@ const harness_prelude =
     \\      if (typeof pushOptions === "function") { callback = pushOptions; pushOptions = {}; }
     \\      if (typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\      if (!this.pushAllowed) throw __home_http2_error_with_code("ERR_HTTP2_PUSH_DISABLED", "HTTP/2 server push is disabled");
-    \\      for (const name of Object.keys(pushHeaders || {})) if (["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(String(name).toLowerCase())) { const error = new TypeError('HTTP/1 Connection specific headers are forbidden: "' + String(name).toLowerCase() + '"'); error.code = "ERR_HTTP2_INVALID_CONNECTION_HEADERS"; throw error; }
-    \\      const normalizedPushHeaders = __home_http2_normalize_headers(__home_http2_validate_request_headers(pushHeaders || {}, true), { ":method": "GET", ":scheme": stream.scheme, ":authority": authorityHostHeader, ":path": "/" });
+    \\      const normalizedPushHeaders = __home_http2_prepare_push_headers(pushHeaders, stream.sentHeaders, stream.scheme, authorityHostHeader);
     \\      const nativeResult = Number(__home_http2_Http2Stream.prototype.pushPromise.call(this, normalizedPushHeaders)) || 0;
     \\      if (nativeResult < 0) {
     \\        let error;
@@ -41419,7 +41479,7 @@ const harness_prelude =
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
     \\      server.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
     \\      client.__home_server_session.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
-    \\      const lateCompatHandler = typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0);
+    \\      const lateCompatHandler = typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || String(requestHeaders[":method"] || "GET").toUpperCase() === "CONNECT" || requestHeaders.expect !== undefined;
     \\      if (lateCompatHandler) {
     \\        try { __home_http2_dispatch_request(server, stream.__home_received_headers, function() {}, serverStream, stream); } catch (error) { process.emit("uncaughtException", error); }
     \\        if (!serverStream.__home_request_ended && String(requestHeaders[":method"] || "GET").toUpperCase() === "GET") { serverStream.__home_request_ended = true; serverStream.__home_receive("end"); }
@@ -41446,6 +41506,7 @@ const harness_prelude =
     \\        const payload = typeof Buffer === "function" && !(chunk instanceof Buffer) ? Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined) : chunk;
     \\        this.bufferSize += payload.length;
     \\        if (payload.length !== 0) Promise.resolve().then(() => {
+    \\          if (this.destroyed || serverStream.closed || serverStream.destroyed) { this.bufferSize = Math.max(0, this.bufferSize - payload.length); if (typeof cb === "function") cb(); return; }
     \\          serverStream.__home_receive("data", payload);
     \\          const wasBackpressured = this.bufferSize >= Number(this._writableState.highWaterMark || 16384);
     \\          this.bufferSize = Math.max(0, this.bufferSize - payload.length);
@@ -41486,6 +41547,7 @@ const harness_prelude =
     \\      if (!Number.isInteger(code) || code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\      if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\      if (this.closed) return this;
+    \\      const shouldAbort = !this.writableFinished;
     \\      this.closed = true;
     \\      this.destroyed = true;
     \\      releaseActiveStream();
@@ -41498,17 +41560,9 @@ const harness_prelude =
     \\          error.code = "ERR_HTTP2_STREAM_ERROR";
     \\        }
     \\        target._destroy(error, function() {});
+    \\        if (shouldAbort && !target.aborted) { target.aborted = true; target.emit("aborted"); }
     \\        if (error) target.emit("error", error);
-    \\        const peer = target.__home_server_stream;
-    \\        if (peer && !peer.__home_close_emitted) {
-    \\          peer.rstCode = code;
-    \\          peer.aborted = code !== 0;
-    \\          peer.closed = true;
-    \\          peer.destroyed = true;
-    \\          if (code !== 0) peer.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(code)));
-    \\          peer.__home_close_emitted = true;
-    \\          peer.emit("close");
-    \\        }
+    \\        __home_http2_terminalize_peer(target.__home_server_stream, code);
     \\        target.emit("end");
     \\        if (typeof callback === "function") callback();
     \\        target.emit("close");
@@ -41518,6 +41572,7 @@ const harness_prelude =
     \\    };
     \\    stream.destroy = function(error) {
     \\      if (this.destroyed) return this;
+    \\      const shouldAbort = !this.writableFinished;
     \\      this.closed = true;
     \\      this.destroyed = true;
     \\      this.__home_suppress_dispatch = true;
@@ -41527,7 +41582,9 @@ const harness_prelude =
     \\      const target = this;
     \\      Promise.resolve().then(() => {
     \\        target._destroy(error || null, function() {});
+    \\        if (shouldAbort && !target.aborted) { target.aborted = true; target.emit("aborted"); }
     \\        if (error) target.emit("error", error);
+    \\        __home_http2_terminalize_peer(target.__home_server_stream, target.rstCode, error);
     \\        target.emit("close");
     \\        __home_http2_maybe_close_client(client);
     \\      });
@@ -154846,6 +154903,31 @@ test "bootstrap HTTP2 compatibility request and response corpus tranche contract
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expect(summary.passed != 0 or summary.allowed_empty_files == 1);
     }
+}
+
+test "bootstrap HTTP2 compatibility trailers destroy upload and push logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("compat requests preserve every ordered raw trailer occurrence", async () => { await new Promise((resolve, reject) => { const expectedRaw = ["x-foo", "xOxOxOx", "x-foo", "OxOxOxO", "x-foo", "xOxOxOx", "x-foo", "OxOxOxO", "x-foo-test", "test, test"]; const server = http2.createServer((request, response) => { let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "test\\ntest"); assert.strictEqual(request.trailers["x-foo"], "xOxOxOx, OxOxOxO, xOxOxOx, OxOxOxO"); assert.strictEqual(request.trailers["x-foo-test"], "test, test"); assert.deepStrictEqual(request.rawTrailers, expectedRaw); response.end(); } catch (error) { reject(error); } }); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request({ ":method": "POST" }, { waitForTrailers: true }); request.on("wantTrailers", () => request.sendTrailers({ "x-fOo": "xOxOxOx", "x-foO": "OxOxOxO", "X-fOo": "xOxOxOx", "X-foO": "OxOxOxO", "x-foo-test": "test, test" })); request.on("error", reject); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.write("test\\n"); request.end("test"); }); }); });
+        \\test("destroy while writing closes and aborts the peer exactly once", async () => { await new Promise((resolve, reject) => { let request; let peerCloses = 0; let peerAborts = 0; const server = http2.createServer(); server.on("stream", stream => { stream.on("error", reject); stream.on("aborted", () => peerAborts++); stream.on("close", () => peerCloses++); stream.on("data", () => { stream.write(Buffer.alloc(1)); Promise.resolve().then(() => request.destroy()); }); stream.resume(); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); request = client.request({ ":method": "POST" }); let closes = 0; request.on("error", reject); request.on("close", () => { closes++; Promise.resolve().then(() => { try { assert.strictEqual(closes, 1); assert.strictEqual(peerCloses, 1); assert.strictEqual(peerAborts, 1); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_NO_ERROR); client.close(); server.close(resolve); } catch (error) { reject(error); } }); }); request.resume(); request.write(Buffer.alloc(65536)); }); }); });
+        \\test("compat early rejection keeps the upload half open until request EOF", async () => { await new Promise((resolve, reject) => { let serverEnded = false; const server = http2.createServer((incoming, response) => { let body = ""; let responded = false; incoming.setEncoding("utf8"); incoming.on("data", chunk => { body += chunk; if (!responded) { responded = true; setImmediate(() => { response.writeHead(400); response.end(); }); } }); incoming.on("end", () => { try { assert.strictEqual(body, "firsttail"); assert.strictEqual(incoming.aborted, false); assert.strictEqual(incoming.complete, true); serverEnded = true; } catch (error) { reject(error); } }); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request({ ":method": "POST" }); let status = 0; let closes = 0; request.on("error", reject); request.on("response", headers => status = headers[":status"]); request.once("end", () => { try { assert.strictEqual(status, 400); assert.strictEqual(request.closed, false); assert.strictEqual(client.__home_active_streams, 1); request.end("tail"); } catch (error) { reject(error); } }); request.on("close", () => { closes++; try { assert.strictEqual(closes, 1); assert.strictEqual(serverEnded, true); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_NO_ERROR); assert.strictEqual(client.__home_active_streams, 0); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.write("first"); }); }); });
+        \\test("compat push responses are asynchronous and preserve defaults and stream ids", async () => { await new Promise((resolve, reject) => { let completed = 0; const finish = (client, server) => { if (++completed !== 3) return; client.close(); server.close(resolve); }; const server = http2.createServer((request, response) => { try { assert.strictEqual(response.stream.id % 2, 1); assert.throws(() => response.createPushResponse({ ":path": "/pushed" }, undefined), { code: "ERR_INVALID_ARG_TYPE" }); assert.throws(() => response.createPushResponse(null, () => {}), { code: "ERR_INVALID_ARG_TYPE" }); assert.throws(() => response.createPushResponse([], () => {}), { code: "ERR_INVALID_ARG_TYPE" }); assert.throws(() => response.createPushResponse({ connection: "close" }, () => {}), { code: "ERR_HTTP2_INVALID_CONNECTION_HEADERS" }); assert.throws(() => response.createPushResponse({ te: "gzip" }, () => {}), { code: "ERR_HTTP2_INVALID_CONNECTION_HEADERS" }); response.write("main"); let synchronous = true; response.createPushResponse({ ":path": "/pushed", ":method": "GET" }, (error, push) => { try { assert.strictEqual(synchronous, false); assert.ifError(error); assert.strictEqual(push.stream.id % 2, 0); push.end("pushed"); response.end(); } catch (cause) { reject(cause); } }); synchronous = false; response.stream.on("close", () => { let closeSynchronous = true; response.createPushResponse({ ":path": "/late" }, error => { try { assert.strictEqual(closeSynchronous, false); assert.strictEqual(error.code, "ERR_HTTP2_INVALID_STREAM"); finish(client, server); } catch (cause) { reject(cause); } }); closeSynchronous = false; }); } catch (error) { reject(error); } }); let client; server.listen(0, () => { client = http2.connect("http://localhost:" + server.address().port); client.on("error", reject); client.on("stream", (pushStream, headers) => { try { assert.strictEqual(headers[":path"], "/pushed"); assert.strictEqual(headers[":method"], "GET"); assert.strictEqual(headers[":scheme"], "http"); assert.strictEqual(headers[":authority"], "localhost:" + server.address().port); } catch (error) { reject(error); } let body = ""; pushStream.setEncoding("utf8"); pushStream.on("data", chunk => body += chunk); pushStream.on("error", reject); pushStream.on("end", () => { try { assert.strictEqual(body, "pushed"); finish(client, server); } catch (error) { reject(error); } }); }); const request = client.request(); let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(body, "main"); finish(client, server); } catch (error) { reject(error); } }); request.end(); }); }); });
+        \\test("compat push disabled state rejects synchronously without a peer stream", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => { try { assert.strictEqual(response.stream.pushAllowed, false); assert.throws(() => response.createPushResponse({ ":path": "/forbidden" }, () => {}), { code: "ERR_HTTP2_PUSH_DISABLED" }); response.end(); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port, { settings: { enablePush: false } }); client.on("stream", () => reject(new Error("disabled push created a peer stream"))); const request = client.request(); request.on("error", reject); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.end(); }); }); });
+        \\test("once expectation and CONNECT handlers retain automatic fallback routing", async () => { const server = http2.createServer(); let expectationCalls = 0; let connectCalls = 0; server.once("checkExpectation", (_request, response) => { expectationCalls++; response.writeHead(418); response.end(); }); server.once("connect", (_request, response) => { connectCalls++; response.writeHead(201); response.end(); }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); const run = headers => new Promise((resolve, reject) => { const request = client.request(headers); let status = 0; request.on("error", reject); request.on("response", values => status = values[":status"]); request.on("end", () => resolve(status)); request.resume(); request.end(); }); assert.strictEqual(await run({ ":method": "POST", expect: "something" }), 418); assert.strictEqual(await run({ ":method": "POST", expect: "something" }), 417); assert.strictEqual(await run({ ":method": "CONNECT", ":authority": "example.com:80" }), 201); assert.strictEqual(await run({ ":method": "CONNECT", ":authority": "example.com:80" }), 405); assert.strictEqual(expectationCalls, 1); assert.strictEqual(connectCalls, 1); client.close(); await new Promise(resolve => server.close(resolve)); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-compat-trailers-destroy-upload-push-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 compat trailers/destroy/upload/push logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "bootstrap HTTP2 compatibility headers socket and hints corpus tranche contracts" {
