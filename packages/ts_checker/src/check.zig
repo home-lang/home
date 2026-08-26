@@ -79987,6 +79987,36 @@ pub const Checker = struct {
     ) CheckError!?bool {
         if (!self.isActualTupleType(check) or !self.isActualTupleType(ext)) return null;
         const check_len: usize = @intCast(self.actualTupleLength(check) orelse return null);
+        if (self.symbolic_tuple_layouts.get(ext)) |layout| {
+            var variadic_index: ?usize = null;
+            for (layout, 0..) |segment, segment_index| {
+                if (!segment.is_variadic) continue;
+                if (variadic_index != null) return null;
+                variadic_index = segment_index;
+            }
+            if (variadic_index) |rest_index| {
+                const fixed_count = layout.len - 1;
+                if (check_len < fixed_count) return false;
+                for (layout[0..rest_index], 0..) |segment, index| {
+                    if (!try self.matchInfer(self.tupleElementType(check, index), segment.type, subs)) return false;
+                }
+                const suffix = layout.len - rest_index - 1;
+                for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
+                    const check_index = check_len - suffix + suffix_index;
+                    if (!try self.matchInfer(self.tupleElementType(check, check_index), segment.type, subs)) return false;
+                }
+                var middle: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer middle.deinit(self.gpa);
+                for (rest_index..check_len - suffix) |index| {
+                    try middle.append(self.gpa, self.tupleElementType(check, index));
+                }
+                const middle_tuple = try self.internTupleFromTypes(
+                    middle.items,
+                    self.typeIsReadonlyArrayLike(check),
+                );
+                return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
+            }
+        }
         const ext_prefix = self.tupleFixedPrefixCount(ext);
         if (check_len < ext_prefix) return false;
         var index: usize = 0;
@@ -99303,7 +99333,20 @@ pub const Checker = struct {
         const kind = self.hir.kindOf(type_node);
         if (kind != .fn_type and kind != .constructor_type) return null;
         const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
-        return if (text.len == 0) null else try self.normalizedTypeAnnotationText(text);
+        if (text.len == 0) return null;
+        const normalized = try self.normalizedTypeAnnotationText(text);
+        if (self.interner.isSignature(info.type)) {
+            const params = self.interner.signatureParams(info.type);
+            if (params.len > 0 and
+                self.signatureMinRequiredArgs(info.type, params) < params.len and
+                !self.rest_signatures.contains(info.type))
+            {
+                if (try self.allocCallableSignatureNamePreservingGenericPrefix(info.type, normalized)) |rendered| {
+                    return rendered;
+                }
+            }
+        }
+        return normalized;
     }
 
     fn allocVisibleSignatureExpandingIndexedMethodAliases(self: *Checker, node: NodeId) CheckError!?[]const u8 {
@@ -153601,7 +153644,8 @@ pub const Checker = struct {
         const raw_constraint = self.typeParameterConstraint(rest_param) orelse return false;
         const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown or
-            try self.genericConstraintAssignable(candidate, constraint))
+            try self.genericConstraintAssignable(candidate, constraint) or
+            try self.argumentAssignableToReducedConditionalTarget(candidate, constraint))
         {
             return false;
         }
@@ -235742,21 +235786,48 @@ test "checker: function type optional trailing parameters are assignable to shor
 
 test "checker: optional parameters render their implicit undefined type" {
     const s = try newSetup(
-        \\interface Source { fn: (x: number, y?: number) => number; }
+        \\interface Source {
+        \\  fn: (x: number, y?: number) => number;
+        \\  ctor: new (x: number, y?: number) => number;
+        \\}
         \\declare const source: Source;
         \\const target: () => number = source.fn;
+        \\const targetCtor: new () => number = source.ctor;
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    var found = false;
+    var found_call = false;
+    var found_construct = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_not_assignable) continue;
         if (std.mem.indexOf(u8, d.message, "(x: number, y?: number | undefined) => number") != null) {
-            found = true;
+            found_call = true;
+        }
+        if (std.mem.indexOf(u8, d.message, "new (x: number, y?: number | undefined) => number") != null) {
+            found_construct = true;
         }
     }
-    try T.expect(found);
+    try T.expect(found_call);
+    try T.expect(found_construct);
+}
+
+test "checker: recursive tuple-prefix constraints accept inferred rest prefixes" {
+    const s = try newSetup(
+        \\interface MultiKeyMap<Keys extends readonly unknown[]> {
+        \\  get<Key extends GetKeys<Keys>>(...key: Key): unknown;
+        \\}
+        \\type GetKeys<Keys extends readonly unknown[]> = Keys extends [...infer Remain, infer Last]
+        \\  ? Keys | GetKeys<Remain>
+        \\  : Keys;
+        \\declare const map: MultiKeyMap<[first: string, second: string]>;
+        \\declare const first: string;
+        \\map.get(first);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: class static member conflicts with exported namespace member" {
