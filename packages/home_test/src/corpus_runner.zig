@@ -38675,7 +38675,13 @@ const harness_prelude =
     \\const __home_http2_sensitive_headers = Symbol("sensitiveHeaders");
     \\const __home_internal_timers_k_timeout = Symbol("kTimeout");
     \\class __home_http2_NghttpError extends Error {
-    \\  constructor(message) { super(String(message)); this.name = "Error"; }
+    \\  constructor(codeOrMessage, customCode) {
+    \\    const numeric = typeof codeOrMessage === "number";
+    \\    super(numeric ? __home_http2_nghttp2_error_string(codeOrMessage) : String(codeOrMessage));
+    \\    this.name = "Error";
+    \\    if (numeric) { this.code = customCode || "ERR_HTTP2_ERROR"; this.errno = codeOrMessage; }
+    \\  }
+    \\  toString() { return this.code ? this.name + " [" + this.code + "]: " + this.message : this.name + ": " + this.message; }
     \\}
     \\function __home_http2_Http2Session() {}
     \\__home_http2_Http2Session.prototype.request = function() { return 0; };
@@ -38689,14 +38695,14 @@ const harness_prelude =
     \\function __home_http2_nghttp2_error_string(code) {
     \\  const messages = {
     \\    [-901]: "Out of memory",
-    \\    [-522]: "Frame size error",
+    \\    [-522]: "The length of the frame is invalid",
     \\    [-517]: "GOAWAY has already been sent",
     \\    [-510]: "Stream was already closed or invalid",
-    \\    [-509]: "The next stream ID is unavailable",
+    \\    [-509]: "No more Stream ID available",
     \\    [-508]: "Data transfer deferred",
     \\    [-501]: "Invalid argument",
     \\  };
-    \\  return messages[Number(code)] || "Unknown nghttp2 error " + String(code);
+    \\  return messages[Number(code)] || "Unknown error code";
     \\}
     \\function __home_http2_error_with_code(code, message, cause) {
     \\  const error = new Error(String(message));
@@ -38734,9 +38740,7 @@ const harness_prelude =
     \\  peer.emit("close");
     \\}
     \\function __home_http2_nghttp_error(code) {
-    \\  const error = new __home_http2_NghttpError(__home_http2_nghttp2_error_string(code));
-    \\  error.code = "ERR_HTTP2_ERROR";
-    \\  return error;
+    \\  return new __home_http2_NghttpError(Number(code));
     \\}
     \\function __home_http2_terminal_stream(client, error, aborted) {
     \\  const stream = Object.assign(__home_http_event_target(), { session: client, pending: false, closed: false, destroyed: true, aborted: false, rstCode: 0 });
@@ -42128,10 +42132,25 @@ const harness_prelude =
     \\  error.code = "ERR_INVALID_ARG_TYPE";
     \\  throw error;
     \\}
-    \\const __home_http2_binding = { constants: __home_http2_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string };
+    \\const __home_http2_options_buffer = new Uint32Array(14);
+    \\function __home_http2_update_options_buffer(options) {
+    \\  const values = options || {};
+    \\  const names = ["maxDeflateDynamicTableSize", "maxReservedRemoteStreams", "maxSendHeaderBlockLength", "peerMaxConcurrentStreams", "paddingStrategy", "maxHeaderListPairs", "maxOutstandingPings", "maxOutstandingSettings", "maxSessionMemory", "maxSettings", "streamResetRate", "streamResetBurst"];
+    \\  let flags = 0;
+    \\  for (let index = 0; index < names.length; index++) {
+    \\    const value = values[names[index]];
+    \\    if (typeof value !== "number") continue;
+    \\    __home_http2_options_buffer[index] = index >= 7 ? Math.max(1, value) : value;
+    \\    flags |= 1 << index;
+    \\  }
+    \\  if (typeof values.strictFieldWhitespaceValidation === "boolean") { __home_http2_options_buffer[12] = values.strictFieldWhitespaceValidation ? 0 : 1; flags |= 1 << 12; }
+    \\  __home_http2_options_buffer[13] = flags;
+    \\  return undefined;
+    \\}
+    \\const __home_http2_binding = { constants: __home_http2_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string, optionsBuffer: __home_http2_options_buffer };
     \\const __home_internal_test_binding = { internalBinding(name) { if (String(name) === "http2") return __home_http2_binding; throw new Error("No such internal binding: " + String(name)); } };
     \\globalThis.__home_modules["internal/test/binding"] = __home_internal_test_binding;
-    \\globalThis.__home_modules["internal/http2/util"] = { kSocket: __home_http2_k_socket, NghttpError: __home_http2_NghttpError, sessionName: __home_http2_session_name, assertWithinRange: __home_http2_assert_within_range, assertIsObject: __home_http2_assert_is_object, assertIsArray: __home_http2_assert_is_array, assertValidPseudoHeader: __home_http2_assert_valid_pseudo_header, getAuthority: __home_http2_get_authority, buildNgHeaderString: __home_http2_build_ng_header_string, toHeaderObject: __home_http2_to_header_object };
+    \\globalThis.__home_modules["internal/http2/util"] = { kSocket: __home_http2_k_socket, NghttpError: __home_http2_NghttpError, sessionName: __home_http2_session_name, assertWithinRange: __home_http2_assert_within_range, assertIsObject: __home_http2_assert_is_object, assertIsArray: __home_http2_assert_is_array, assertValidPseudoHeader: __home_http2_assert_valid_pseudo_header, getAuthority: __home_http2_get_authority, buildNgHeaderString: __home_http2_build_ng_header_string, toHeaderObject: __home_http2_to_header_object, updateOptionsBuffer: __home_http2_update_options_buffer };
     \\globalThis.__home_modules["internal/http2/core"] = { ServerHttp2Session: __home_http2_ServerHttp2Session };
     \\globalThis.__home_modules["internal/timers"] = { kTimeout: __home_internal_timers_k_timeout };
     \\globalThis.__home_modules["http2"] = { connect: __home_http2_connect, createServer: __home_http2_create_server, createSecureServer: __home_http2_create_secure_server, performServerHandshake: __home_http2_perform_server_handshake, Http2ServerRequest: __home_http2_Http2ServerRequest, Http2ServerResponse: __home_http2_Http2ServerResponse, sensitiveHeaders: __home_http2_sensitive_headers, constants: __home_http2_constants, getDefaultSettings: __home_http2_default_settings, getPackedSettings: __home_http2_packed_settings, getUnpackedSettings: __home_http2_unpacked_settings };
@@ -155621,7 +155640,10 @@ test "bootstrap HTTP2 headers control plane and performance corpus tranche contr
         "js/node/test/parallel/test-http2-ping-unsolicited-ack.js",
         "js/node/test/parallel/test-http2-ping.js",
         "js/node/test/parallel/test-http2-util-assert-valid-pseudoheader.js",
+        "js/node/test/parallel/test-http2-util-asserts.js",
         "js/node/test/parallel/test-http2-util-headers-list.js",
+        "js/node/test/parallel/test-http2-util-nghttp2error.js",
+        "js/node/test/parallel/test-http2-util-update-options-buffer.js",
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -156024,8 +156046,9 @@ test "bootstrap HTTP2 internal header utilities logical contracts" {
 
     const source =
         \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
-        \\const { assertValidPseudoHeader, getAuthority, buildNgHeaderString, toHeaderObject } = require("internal/http2/util");
+        \\const { assertValidPseudoHeader, getAuthority, buildNgHeaderString, toHeaderObject, NghttpError, updateOptionsBuffer } = require("internal/http2/util"); const { internalBinding } = require("internal/test/binding");
         \\test("header utility serialization preserves ordering flags and materialization rules", () => { const input = { regular: [1, { toString() { return "two"; } }], ":path": "/", Age: [3], cookie: ["a=1", "b=2"], [http2.sensitiveHeaders]: ["REGULAR"] }; const [encoded, count] = buildNgHeaderString(input, assertValidPseudoHeader, true); assert.strictEqual(encoded, ":path\x00/\x00\x00regular\x001\x00\x01regular\x00two\x00\x01age\x003\x00\x00cookie\x00a=1\x00\x00cookie\x00b=2\x00\x00"); assert.strictEqual(count, 6); assert.throws(() => assertValidPseudoHeader(":invalid"), { name: "TypeError", code: "ERR_HTTP2_INVALID_PSEUDOHEADER", message: '\":invalid\" is an invalid pseudoheader or is used incorrectly' }); assert.throws(() => buildNgHeaderString({ AGE: [1, 2] }, assertValidPseudoHeader, true), { name: "TypeError", code: "ERR_HTTP2_HEADER_SINGLE_VALUE", message: 'Header field "age" must only have a single value' }); assert.throws(() => buildNgHeaderString({ Connection: "close" }, assertValidPseudoHeader, true), { name: "TypeError", code: "ERR_HTTP2_INVALID_CONNECTION_HEADERS" }); assert.strictEqual(getAuthority({ ":authority": "", host: "fallback" }), ""); const sensitive = ["cookie"]; const output = toHeaderObject([":status", "200", ":status", "500", "cookie", "a=1", "cookie", "b=2", "set-cookie", "x", "set-cookie", "y", "age", "1", "age", "2", "x-many", "a", "x-many", "b"], sensitive); assert.strictEqual(Object.getPrototypeOf(output), null); assert.strictEqual(output[":status"], 200); assert.strictEqual(output.cookie, "a=1; b=2"); assert.deepStrictEqual(output["set-cookie"], ["x", "y"]); assert.strictEqual(output.age, "1"); assert.strictEqual(output["x-many"], "a, b"); assert.strictEqual(output[http2.sensitiveHeaders], sensitive); });
+        \\test("nghttp errors and option flags preserve native binding state", () => { const known = new NghttpError(-501); assert.strictEqual(known.errno, -501); assert.strictEqual(known.code, "ERR_HTTP2_ERROR"); assert.strictEqual(known.message, "Invalid argument"); assert.strictEqual(new NghttpError(401).toString(), "Error [ERR_HTTP2_ERROR]: Unknown error code"); const buffer = internalBinding("http2").optionsBuffer; buffer.fill(0); updateOptionsBuffer({ maxDeflateDynamicTableSize: 3, maxOutstandingSettings: 0, strictFieldWhitespaceValidation: true }); assert.strictEqual(buffer[0], 3); assert.strictEqual(buffer[7], 1); assert.strictEqual(buffer[12], 0); assert.strictEqual(buffer[13], (1 << 0) | (1 << 7) | (1 << 12)); updateOptionsBuffer({}); assert.strictEqual(buffer[0], 3); assert.strictEqual(buffer[13], 0); });
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-internal-header-utils-logical-contracts.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -156035,7 +156058,7 @@ test "bootstrap HTTP2 internal header utilities logical contracts" {
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 internal header utility logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
