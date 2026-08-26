@@ -501,7 +501,7 @@ fn buildOneProject(
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
     var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
-    _ = program.loadImportClosure(compile_opts) catch {};
+    _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
     var had_errors = false;
     var stream_ctx: StreamCtx = .{
@@ -2035,8 +2035,24 @@ fn directoryExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
     return true;
 }
 
+const ResolverMutex = struct {
+    state: std.atomic.Value(u32) = .init(0),
+
+    fn lock(self: *ResolverMutex) void {
+        while (true) {
+            if (self.state.cmpxchgWeak(0, 1, .acquire, .monotonic) == null) return;
+            while (self.state.load(.monotonic) != 0) std.atomic.spinLoopHint();
+        }
+    }
+
+    fn unlock(self: *ResolverMutex) void {
+        self.state.store(0, .release);
+    }
+};
+
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
+    mutex: ResolverMutex = .{},
 
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
@@ -2051,6 +2067,8 @@ const CheckerResolverAdapter = struct {
     /// CLI reports it too (not just the conformance harness).
     fn ambiguousProjectRootImpl(self_ptr: *anyopaque) ?ts_driver.ExternalResolver.AmbiguousProjectRoot {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const amb = self.resolver.ambiguous_root orelse return null;
         return .{ .entry = amb.entry, .file = amb.file, .is_imports = amb.is_imports };
     }
@@ -2061,6 +2079,8 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const r = self.resolver.resolve(specifier, containing_file) catch return null;
         return .{
             .path = r.path,
@@ -2087,6 +2107,8 @@ const CheckerResolverAdapter = struct {
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const r = self.resolver.resolve(specifier, containing_file) catch return null;
         // The resolver's arena outlives the checker calls, so the rendered
         // module name borrowed by the checker stays valid.
@@ -2135,6 +2157,8 @@ const CheckerResolverAdapter = struct {
         resolution_mode: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const mode: ts_resolver.TypeReferenceResolutionMode = if (std.mem.eql(u8, resolution_mode, "require"))
             .require
         else
@@ -2164,6 +2188,8 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.CommonJsExportPrivateName {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const resolved = self.resolver.resolve(specifier, containing_file) catch return null;
         const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
         defer self.resolver.gpa.free(source);
@@ -2761,7 +2787,7 @@ pub fn main(init: std.process.Init) !void {
     // lets `--explainFiles` report imported files with their TS1393
     // "Imported via … from file …" reason. Best-effort: resolution gaps
     // simply leave the program partial, as they did before.
-    _ = program.loadImportClosure(compile_opts) catch {};
+    _ = program.loadImportClosureParallel(compile_opts, null) catch {};
     if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input

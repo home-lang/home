@@ -17,6 +17,7 @@
 //! Phase 5 adds incremental rebuilds via the query DB.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ts_driver = @import("ts_driver");
 const ts_resolver = @import("ts_resolver");
 const ts_cache = @import("ts_cache");
@@ -2907,6 +2908,11 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        self.deduplicate_packages = options.deduplicate_packages;
+        const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
+        defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
+        const script_object_expandos = try self.collectScriptObjectExpandos();
+        defer self.gpa.free(script_object_expandos);
         const program_global_var_names = try self.collectProgramGlobalVarNames();
         defer freeStringSlice(self.gpa, program_global_var_names);
         const program_global_type_names = try self.collectProgramGlobalTypeNames();
@@ -2925,7 +2931,13 @@ pub const Program = struct {
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
+        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
+        defer self.gpa.free(known_reference_paths);
+        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
+        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         var shared_options = options;
+        shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
+        shared_options.script_object_expandos = script_object_expandos;
         shared_options.program_global_var_names = program_global_var_names;
         shared_options.program_global_type_names = program_global_type_names;
         shared_options.module_interface_augmentations = module_interface_augmentations;
@@ -2934,6 +2946,7 @@ pub const Program = struct {
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
+        shared_options.known_reference_paths = known_reference_paths;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
 
@@ -2941,10 +2954,15 @@ pub const Program = struct {
         var pending: std.ArrayListUnmanaged(usize) = .empty;
         defer pending.deinit(self.gpa);
         for (self.files.items, 0..) |f, idx| {
-            if (f.compilation == null) try pending.append(self.gpa, idx);
+            if (f.redirect_target == null and f.compilation == null) try pending.append(self.gpa, idx);
         }
         if (pending.items.len == 0) {
+            try self.appendMissingCompilerTypeReferenceDiagnostics(options);
+            try self.appendMissingImportedHelperDiagnostics(options);
             try self.appendRootDirDiagnostics(options);
+            try self.appendProgramGlobalDeclareVarDiagnostics();
+            try self.appendProgramGlobalInterfaceMemberDiagnostics();
+            try self.appendMergedAmbientModuleExportDiagnostics();
             try self.resolveImports();
             return;
         }
@@ -2975,7 +2993,8 @@ pub const Program = struct {
             }
         };
 
-        var threads = self.gpa.alloc(std.Thread, n) catch return error.OutOfMemory;
+        const worker_count = @min(n, pending.items.len);
+        var threads = self.gpa.alloc(std.Thread, worker_count) catch return error.OutOfMemory;
         defer self.gpa.free(threads);
         var spawned: usize = 0;
         for (threads, 0..) |*t, i| {
@@ -2995,8 +3014,12 @@ pub const Program = struct {
             return error.ParseError;
         }
 
-        try self.appendProgramGlobalInterfaceMemberDiagnostics();
+        try self.appendMissingCompilerTypeReferenceDiagnostics(options);
+        try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
+        try self.appendProgramGlobalDeclareVarDiagnostics();
+        try self.appendProgramGlobalInterfaceMemberDiagnostics();
+        try self.appendMergedAmbientModuleExportDiagnostics();
 
         try self.resolveImports();
     }
@@ -3143,13 +3166,32 @@ pub const Program = struct {
     /// `compileAll`) records each added file's `include_reason`, so
     /// `--explainFiles` can later render TS1393.
     pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        return self.loadImportClosureImpl(options, false, null);
+    }
+
+    /// Parallel closure loader for production compilers. Small programs use
+    /// the serial path to avoid worker startup overhead; larger programs use
+    /// the same bounded worker pool as `compileAllParallel` in every round.
+    pub fn loadImportClosureParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!usize {
+        return self.loadImportClosureImpl(options, true, workers);
+    }
+
+    fn loadImportClosureImpl(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+        parallel: bool,
+        workers: ?usize,
+    ) ProgramError!usize {
         self.deduplicate_packages = options.deduplicate_packages;
         const hir_mod = @import("hir");
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
         added += try self.loadCompilerInjectedImports(options);
         while (true) {
-            try self.compileAll(options);
+            if (parallel and builtin.mode != .Debug and self.files.items.len >= 16)
+                try self.compileAllParallel(options, workers)
+            else
+                try self.compileAll(options);
             var new_in_round: usize = 0;
             // Snapshot the count: files appended this round are scanned
             // in the next iteration, keeping the fixpoint simple.
