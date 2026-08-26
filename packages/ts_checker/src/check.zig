@@ -4020,6 +4020,10 @@ pub const Checker = struct {
     /// guard. Add-on-entry / remove-on-exit keeps it to the *active* path
     /// only, so legitimately-shared (non-cyclic) subtrees still re-expand.
     subst_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Coinductive guard for same-generic variance comparisons. Recursive
+    /// aliases can expose the same ordered source/target pair through their
+    /// own type arguments; revisiting that pending relation closes the cycle.
+    variance_relation_in_progress: std.AutoHashMapUnmanaged(u64, void) = .empty,
     /// Set when the depth/count guard trips for the current outer
     /// evaluation so callers can avoid re-rendering an
     /// excessively-deep type. Reset by the outermost
@@ -4377,6 +4381,10 @@ pub const Checker = struct {
     /// Populated by `checkEnumDecl`; consulted by member-access typing
     /// on enum receivers and (in a follow-up) by `const enum` inlining.
     enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64),
+    /// Enum declarations whose member initializers are currently being
+    /// checked. Cyclic qualified references can request the value-side enum
+    /// object before the outer declaration has installed its final HIR type.
+    enum_check_in_progress: std.AutoHashMapUnmanaged(NodeId, void),
     /// `(enum_name, member_name) ÃÂ¢ÃÂÃÂ string value` for enum members
     /// whose initializer folds to a string constant. TypeScript allows
     /// string-literal and no-substitution-template `+` chains in enum
@@ -4880,6 +4888,7 @@ pub const Checker = struct {
             .signature_param_nodes = .empty,
             .signature_param_name_occurrences = .empty,
             .enum_member_values = .empty,
+            .enum_check_in_progress = .empty,
             .enum_member_string_values = .empty,
             .enum_member_string_syntax = .empty,
             .const_enums = .empty,
@@ -5257,6 +5266,7 @@ pub const Checker = struct {
         self.generic_interfaces_by_decl.deinit(self.gpa);
         self.generic_interface_decl_by_instance.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
+        self.variance_relation_in_progress.deinit(self.gpa);
         self.reported_deep_instantiation_nodes.deinit(self.gpa);
         self.type_arg_lower_in_progress.deinit(self.gpa);
         self.reported_circular_type_arg_nodes.deinit(self.gpa);
@@ -5342,6 +5352,7 @@ pub const Checker = struct {
         while (spno_it.next()) |names| self.gpa.free(names.*);
         self.signature_param_name_occurrences.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
+        self.enum_check_in_progress.deinit(self.gpa);
         self.enum_member_string_values.deinit(self.gpa);
         self.enum_member_string_syntax.deinit(self.gpa);
         self.const_enums.deinit(self.gpa);
@@ -29158,6 +29169,9 @@ pub const Checker = struct {
 
     fn exportedValueTypeForNamespaceMember(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!TypeId {
         if (hir_mod.NodeKind.isExpression(self.hir.kindOf(decl))) {
+            if (self.resolving_exported_value_decls.contains(decl)) return types.Primitive.any;
+            try self.resolving_exported_value_decls.put(self.gpa, decl, {});
+            defer _ = self.resolving_exported_value_decls.remove(decl);
             return try self.checkExpression(decl);
         }
         if (self.hir.kindOf(decl) == .namespace_decl) {
@@ -53261,16 +53275,20 @@ pub const Checker = struct {
         if (flags.is_type_parameter) return t;
         if (flags.is_union) {
             const members = self.interner.unionMembers(t);
+            const members_snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(members_snapshot);
             var new_members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_members.deinit(self.gpa);
-            for (members) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
+            for (members_snapshot) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
             return self.interner.internUnion(new_members.items) catch return t;
         }
         if (flags.is_intersection) {
             const members = self.interner.intersectionMembers(t);
+            const members_snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(members_snapshot);
             var new_members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_members.deinit(self.gpa);
-            for (members) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
+            for (members_snapshot) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
             const result = self.interner.internIntersection(new_members.items) catch return t;
             return try self.finishSubstitutedMappedType(t, result, subs);
         }
@@ -53290,9 +53308,11 @@ pub const Checker = struct {
             const payload_idx = self.interner.pool.payloadOf(t);
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const params = self.interner.signatureParams(t);
+            const params_snapshot = try self.gpa.dupe(TypeId, params);
+            defer self.gpa.free(params_snapshot);
             var new_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_params.deinit(self.gpa);
-            for (params) |param_t| try new_params.append(self.gpa, try self.substituteTypeNoCyclesInner(param_t, subs, visited));
+            for (params_snapshot) |param_t| try new_params.append(self.gpa, try self.substituteTypeNoCyclesInner(param_t, subs, visited));
             const ret = if (self.interner.signatureReturn(t)) |ret_t|
                 try self.substituteTypeNoCyclesInner(ret_t, subs, visited)
             else
@@ -67294,6 +67314,10 @@ pub const Checker = struct {
     /// member_name)` for later access typing and (eventually) `const
     /// enum` inlining.
     fn checkEnumDecl(self: *Checker, node: NodeId) CheckError!void {
+        if (self.enum_check_in_progress.contains(node)) return;
+        try self.enum_check_in_progress.put(self.gpa, node, {});
+        defer _ = self.enum_check_in_progress.remove(node);
+
         const e = hir_mod.enumOf(self.hir, node);
         try self.checkTsOnlyDeclInJs(node, "enum", e.name);
         const enum_name: hir_mod.StringId = blk: {
@@ -69750,6 +69774,36 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             if (refs.contains(hir_mod.typeParameterOf(self.hir, tp).name)) return true;
+        }
+        return false;
+    }
+
+    fn indexedAccessReferencesUnresolvedEnclosingAliasParam(
+        self: *Checker,
+        access_node: NodeId,
+        object_node: NodeId,
+        index_node: NodeId,
+    ) CheckError!bool {
+        var alias_node = access_node;
+        while (alias_node != hir_mod.none_node_id and self.hir.kindOf(alias_node) != .type_alias_decl) {
+            alias_node = self.hir.parentOf(alias_node);
+        }
+        if (alias_node == hir_mod.none_node_id) return false;
+
+        const alias = hir_mod.typeAliasOf(self.hir, alias_node);
+        const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        if (params.len == 0) return false;
+
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectTypeIdentifierRefs(object_node, &refs);
+        try self.collectTypeIdentifierRefs(index_node, &refs);
+        for (params) |param_node| {
+            if (self.hir.kindOf(param_node) != .type_parameter) continue;
+            const name = hir_mod.typeParameterOf(self.hir, param_node).name;
+            if (!refs.contains(name)) continue;
+            const bound = self.lookupNarrow(name) orelse continue;
+            if (self.containsFreeTypeParameter(bound)) return true;
         }
         return false;
     }
@@ -75462,6 +75516,21 @@ pub const Checker = struct {
                 // `keyof T`), distribute the indexed access over each
                 // member, yielding the union of value types.
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+                // A generic alias's declared type is lazy in tsc. Keep a
+                // dependent indexed access symbolic until the enclosing
+                // alias parameters have concrete substitutions; eagerly
+                // reducing selectors such as `Implements<Keys<L>, K>` can
+                // expand a mutually recursive alias graph exponentially.
+                // Declaration diagnostics are still covered by
+                // `checkInvalidIndexedAccessTypesInTypeNode`.
+                if (try self.indexedAccessReferencesUnresolvedEnclosingAliasParam(
+                    type_node,
+                    ia.object,
+                    ia.index,
+                )) {
+                    self.instantiation_defer_events +%= 1;
+                    return self.lowerer.lower(type_node);
+                }
                 const obj = blk_obj: {
                     const mapped_index_object = ia.object != hir_mod.none_node_id and
                         self.hir.kindOf(ia.object) == .mapped_type;
@@ -90175,6 +90244,10 @@ pub const Checker = struct {
         const source_name = (try self.genericInstanceBaseName(source_t)) orelse return null;
         const target_name = (try self.genericInstanceBaseName(target_t)) orelse return null;
         if (source_name != target_name) return null;
+        const relation_key = (@as(u64, source_t) << 32) | @as(u64, target_t);
+        if (self.variance_relation_in_progress.contains(relation_key)) return true;
+        try self.variance_relation_in_progress.put(self.gpa, relation_key, {});
+        defer _ = self.variance_relation_in_progress.remove(relation_key);
         const source_flags = self.interner.pool.flagsOf(source_t);
         const target_flags = self.interner.pool.flagsOf(target_t);
         if (!source_flags.is_union and !source_flags.is_intersection and !source_flags.is_signature and
@@ -123309,7 +123382,11 @@ pub const Checker = struct {
         if (!self.containsFreeTypeParameter(param_sig)) return false;
         if (!self.isContextualFunctionExpressionLike(arg_node)) return false;
 
-        const target_params = self.interner.signatureParams(param_sig);
+        // Inference below can intern tuple/object types and grow the shared
+        // signature-parameter pool. Keep this function's positional target
+        // stable across those recursive writes.
+        const target_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_sig));
+        defer self.gpa.free(target_params);
         if (target_params.len == 0) return false;
         const target_has_rest = self.rest_signatures.contains(param_sig);
         const fixed_target_count = if (target_has_rest) target_params.len - 1 else target_params.len;
@@ -152350,8 +152427,8 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!bool {
         if (param_t >= self.interner.pool.typeCount() or arg_t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(param_t).is_mapped or !self.interner.pool.flagsOf(arg_t).is_object_type) return false;
-        const m = self.interner.mappedPayload(param_t);
+        if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
+        const m = self.interner.mappedPayloadOrNull(param_t) orelse return false;
         const indexed = self.mappedTemplateIndexedAccess(m.template) orelse return false;
         const constraint_operand = self.directKeyofOperand(m.constraint) orelse return false;
         if (constraint_operand != indexed.object_tp) {
@@ -153528,6 +153605,7 @@ pub const Checker = struct {
         const display = self.alias_display_names.get(source_t) orelse return result_t;
         var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
         defer visited.deinit(self.gpa);
+        try visited.put(self.gpa, source_t, {});
         if (try self.substitutedAliasDisplayText(source_t, display, subs, &visited)) |substituted| {
             try self.alias_display_names.put(self.gpa, result_t, substituted.text);
             try self.alias_type_args.put(self.gpa, result_t, substituted.args);
@@ -164642,14 +164720,14 @@ pub const Checker = struct {
     fn mappedArrayLikeArgumentAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) bool {
         if (arg_t >= self.interner.pool.typeCount() or param_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
-        if (!self.interner.pool.flagsOf(param_t).is_mapped) return false;
+        if (!self.typeIsMappedPayloadType(param_t)) return false;
         return self.isTupleShapedTarget(arg_t) or self.objectTypeIsArrayLikeContainer(arg_t);
     }
 
     fn mappedArgumentAssignableWithReverseInference(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
         if (arg_t >= self.interner.pool.typeCount() or param_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
-        if (!self.interner.pool.flagsOf(param_t).is_mapped) return false;
+        if (!self.typeIsMappedPayloadType(param_t)) return false;
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         const inferred = try self.inferFromReverseMappedObjectLiteral(param_t, arg_t, &subs);
@@ -170693,9 +170771,8 @@ pub const Checker = struct {
     }
 
     fn typeIsMappedPayloadType(self: *Checker, t: TypeId) bool {
-        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(t).is_mapped) return false;
-        return self.interner.pool.payloadOf(t) < self.interner.pool.mapped_payloads.items.len;
+        if (t < types.Primitive.first_dynamic) return false;
+        return self.interner.mappedPayloadOrNull(t) != null;
     }
 
     fn tryReportMappedTargetPropertyMismatch(
@@ -188527,7 +188604,7 @@ test "checker: excess required parameters disable contextual implicit any" {
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.parameter_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
 }
 
 test "checker: contextually typed excess rest parameter suppresses TS7019" {
@@ -213928,6 +214005,21 @@ test "checker: type-parameter variance ÃÂ¢ÃÂÃÂ no modifier defa
     try T.expectEqual(types.Variance.bivariant, s.ti.typeParameterVariance(tp_id));
 }
 
+test "checker: invariant alias relations close recursive type argument comparisons" {
+    const s = try newSetup(
+        \\type Identity<Value> = Value;
+        \\type Invariant<in out Value> = Identity<Value>;
+        \\declare let one: Invariant<1>;
+        \\declare let oneOrTwo: Invariant<1 | 2>;
+        \\one = oneOrTwo;
+        \\oneOrTwo = one;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variance_annotation_unsupported_alias_body));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+}
+
 test "checker: variance inference ÃÂ¢ÃÂÃÂ T in return position is covariant" {
     const s = try newSetup("function f<T>(): T { return null as any; }");
     defer destroySetup(s);
@@ -225277,6 +225369,11 @@ test "checker: parity 4451-5250 callback params infer fixed generic rest tuple a
         \\  ...args: TS): void;
         \\call((x: number, y: number) => x + y);
         \\call((x: number, y: number) => x + y, 4, 2);
+        \\declare function capture<TS extends unknown[]>(handler: (...args: TS) => unknown): TS;
+        \\capture((p00: number, p01: number, p02: number, p03: number, p04: number, p05: number,
+        \\  p06: number, p07: number, p08: number, p09: number, p10: number, p11: number,
+        \\  p12: number, p13: number, p14: number, p15: number, p16: number, p17: number,
+        \\  p18: number, p19: number, p20: number, p21: number, p22: number, p23: number) => p23);
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
@@ -234998,6 +235095,20 @@ test "checker: exported initializer can dynamically import its own module" {
         \\  const namespace = await import("./test");
         \\  return namespace;
         \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.resolving_exported_value_decls.count());
+}
+
+test "checker: circular virtual default export expressions do not recurse" {
+    const s = try newSetup(
+        \\// @filename: a.ts
+        \\import b from "./b";
+        \\export default { value: b.value };
+        \\// @filename: b.ts
+        \\import a from "./a";
+        \\export default { value: a.value };
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -254462,6 +254573,21 @@ test "checker: infiniteConstraints2 clean conditional base constraint terminates
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.circular_type_arguments));
 }
 
+test "checker: dependent generic alias indexes defer until instantiation" {
+    const s = try newSetup(
+        \\type Select<T, K extends keyof T> = {
+        \\    yes: T[K];
+        \\    no: never;
+        \\}[K extends keyof T ? "yes" : "no"];
+        \\type Selected = Select<{ value: string }, "value">;
+        \\const selected: Selected = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: recursive indexed access simplification reports upstream recursion diagnostics" {
     // Repro from tsgo `testdata/tests/cases/compiler/
     // recursiveIndexedAccessSimplification.ts` (#63270). The important
@@ -264117,6 +264243,17 @@ test "checker: parity 1351 quoted enum forward references do not recurse" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.enum_member_initializer_late_reference));
+}
+
+test "checker: cyclic enum member expressions do not recurse" {
+    const s = try newSetup(
+        \\enum A { X = B.X + 1 }
+        \\enum B { X = A.X + 1 }
+        \\enum Self { X = Self.X + 1 }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.enum_member_initializer_late_reference));
 }
 
 test "checker: parity 1401 non-strict union indexes validate every constituent" {
