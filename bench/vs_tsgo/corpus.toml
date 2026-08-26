@@ -5,6 +5,7 @@
 [generated]
 many_files_count = 256
 deep_types_repetitions = 240
+import_graph_modules = 128
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -14,6 +15,9 @@ description = "256 independent files using generics, unions, callbacks, and infe
 
 [workloads.deep_types]
 description = "One large file stressing conditional, mapped, indexed, and template literal types."
+
+[workloads.import_graph]
+description = "128 modules in a relative-import chain with cross-file generic types and values."
 
 [compilers.tsc]
 version = "7.0.2"

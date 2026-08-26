@@ -156,12 +156,55 @@ def generate_deep_types(directory: Path, repetitions: int) -> None:
     write(directory / "src/deep-types.ts", "".join(blocks))
 
 
+def import_graph_source(index: int) -> str:
+    if index == 0:
+        return """export interface Model0<T> {
+  readonly current: T;
+}
+
+export function make0<T>(value: T): Model0<T> {
+  return { current: value };
+}
+
+export const marker0: Model0<number> = make0(0);
+"""
+
+    previous = index - 1
+    return f"""import {{ Model{previous}, make{previous} }} from "./module-{previous:04d}";
+
+export interface Model{index}<T> {{
+  readonly current: T;
+  readonly previous: Model{previous}<T>;
+}}
+
+export function make{index}<T>(value: T): Model{index}<T> {{
+  return {{ current: value, previous: make{previous}(value) }};
+}}
+
+export const marker{index}: Model{index}<number> = make{index}({index});
+"""
+
+
+def generate_import_graph(directory: Path, modules: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    for index in range(modules):
+        write(directory / f"src/module-{index:04d}.ts", import_graph_source(index))
+    last = modules - 1
+    write(
+        directory / "src/index.ts",
+        f'import {{ Model{last}, make{last} }} from "./module-{last:04d}";\n'
+        f"export const result: Model{last}<string> = make{last}(\"home\");\n",
+    )
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
     generate_startup(CORPUS / "startup")
     generate_many_files(CORPUS / "many_files", cfg["many_files_count"])
     generate_deep_types(CORPUS / "deep_types", cfg["deep_types_repetitions"])
+    generate_import_graph(CORPUS / "import_graph", cfg["import_graph_modules"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
