@@ -74,6 +74,19 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
+**Frontend performance snapshot** (Apple M3 Pro, 30 interleaved runs after
+five warmups; lower is better):
+
+| Workload | tsc 7.0.2 | tsgo 7.0.0-dev.20260707.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| Startup | 47.9 ms | 44.9 ms | **4.1 ms** | **11.02× faster** |
+| 256 files | 62.0 ms | 62.1 ms | **38.2 ms** | **1.62× faster** |
+| Deep types | 67.5 ms | 69.7 ms | **55.8 ms** | **1.21× faster** |
+
+See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
+for workload definitions, uncertainty, environment details, caveats, and exact
+reproduction commands.
+
 | Measurement | Pass rate | Notes |
 |---|---|---|
 | **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
