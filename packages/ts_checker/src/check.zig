@@ -99247,6 +99247,25 @@ pub const Checker = struct {
         return source_display;
     }
 
+    fn memberAccessDeclaredSignatureDiagnosticName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, node);
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t == types.Primitive.none or receiver_t >= self.interner.pool.typeCount()) return null;
+        const info = self.interner.objectMemberInfo(receiver_t, member.name) orelse return null;
+        if (info.decl_node == hir_mod.none_node_id) return null;
+        const type_node = switch (self.hir.kindOf(info.decl_node)) {
+            .interface_member => hir_mod.interfaceMemberOf(self.hir, info.decl_node).type_node,
+            .object_property => hir_mod.objectPropertyOf(self.hir, info.decl_node).type_annotation,
+            else => return null,
+        };
+        if (type_node == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(type_node);
+        if (kind != .fn_type and kind != .constructor_type) return null;
+        const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(type_node), " \t\r\n");
+        return if (text.len == 0) null else try self.normalizedTypeAnnotationText(text);
+    }
+
     fn allocVisibleSignatureExpandingIndexedMethodAliases(self: *Checker, node: NodeId) CheckError!?[]const u8 {
         const type_node = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
         const kind = self.hir.kindOf(type_node);
@@ -144502,7 +144521,16 @@ pub const Checker = struct {
             const function = hir_mod.fnDeclOf(self.hir, node);
             if (function.name != hir_mod.none_node_id) return self.hir.spanOf(function.name).start;
         }
-        return self.symbolOperandAnchorPos(node);
+        if (self.symbolOperandAnchorPos(node)) |pos| return pos;
+        if (kind != .arrow_fn) return null;
+
+        // A recovered parenthesized arrow can end immediately before `||`
+        // instead of a matching `)`. Its leading `(` still belongs to the
+        // operand and is where TypeScript anchors TS2872.
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start == 0 or span.start > src.len or src[span.start - 1] != '(') return null;
+        return span.start - 1;
     }
 
     /// True when `node` is the direct cond of an `if`/`while`/`do-while`
@@ -145978,7 +146006,7 @@ pub const Checker = struct {
             if (self.class_name_by_instance.get(target_t)) |class_name| {
                 if (self.class_static_member_names.getPtr(class_name)) |statics| {
                     if (statics.contains(name)) {
-                        if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
+                        if (try self.missingPropertyTypeNameAt(target_t, node)) |target_text| {
                             const class_str = if (std.mem.indexOfScalar(u8, target_text, '<') != null)
                                 target_text
                             else
@@ -146000,7 +146028,14 @@ pub const Checker = struct {
                 }
             }
         }
-        if (try self.allocPropertyMissingTargetTypeNameAt(node, target_t)) |target_text| {
+        const namespace_local_target_text = if (self.class_decl_by_instance.get(target_t)) |class_decl|
+            if (self.declarationsShareNamespacePath(class_decl, node))
+                try self.missingPropertyTypeNameAt(target_t, node)
+            else
+                null
+        else
+            null;
+        if (namespace_local_target_text orelse try self.allocPropertyMissingTargetTypeNameAt(node, target_t)) |target_text| {
             // TS2551: when a similarly-spelled member exists on the
             // receiver type, upstream emits the did-you-mean variant
             // instead of the bare TS2339. Skip for ECMAScript private
@@ -177030,7 +177065,7 @@ pub const Checker = struct {
             (try self.jsDocAssignmentIdentifierTypeName(value_node, source)) orelse
             (if (target_reduces_to_never) try self.assignmentSourceNameAgainstNever(value_node, source) else null) orelse
             (try self.visibleMixedCompoundAnnotationNameForIdentifier(value_node)) orelse
-            (try self.visibleSimpleAliasAnnotationNameForIdentifier(value_node, source)) orelse
+            (try self.singleLiteralAliasAssignmentName(value_node, source)) orelse
             (try self.assignmentIntersectionConstraintSourceName(value_node, source, target)) orelse
             (if (target_annotation_is_nonnullable) try self.partialIndexedAccessSourceNameForIdentifier(value_node) else null) orelse
             (if (target_annotation_is_nonnullable) try self.sourceIndexedAccessAnnotationNameForIdentifier(value_node) else null) orelse
@@ -177038,11 +177073,12 @@ pub const Checker = struct {
             (try self.enumAnnotationDisplayNameForIdentifier(value_node)) orelse
             self.visibleTupleAnnotationDisplayTextForIdentifier(value_node) orelse
             self.objectAnnotationNameForIdentifier(value_node) orelse
-            (try self.singleLiteralAliasAssignmentName(value_node, source)) orelse
+            (try self.visibleSimpleAliasAnnotationNameForIdentifier(value_node, source)) orelse
             (try self.templateLiteralAssignmentSourceName(source)) orelse
             (try self.overloadedSignatureObjectAssignmentName(value_node, source)) orelse
             (try self.visibleGenericAssignmentAnnotationName(value_node, source)) orelse
             (try self.assignmentIdentifierObjectUnionAnnotationName(value_node, source)) orelse
+            (try self.memberAccessDeclaredSignatureDiagnosticName(value_node)) orelse
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(value_node, source)) orelse
             (try self.functionExpressionAssignmentDiagnosticName(value_node, source)) orelse
             (if (checked_js_default_parameter_union) try self.allocAssignmentDiagnosticTypeName(self.widenLiteralType(source)) else null) orelse
@@ -177057,6 +177093,7 @@ pub const Checker = struct {
         else
             target;
         const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, diagnostic_target)) orelse
+            (try self.memberAccessDeclaredSignatureDiagnosticName(target_node)) orelse
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
             (if (target_reduces_to_never) @as(?[]const u8, "never") else null) orelse
             (try self.normalizedKeyofIdentifierAnnotationName(target_node)) orelse
@@ -241685,7 +241722,35 @@ test "checker: TS2322 renders single-literal aliases as literal text" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'B' is not assignable to type '1'."));
-    try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type 'A' is not assignable to type 'B'."));
+    try T.expect(checkerHasCodeWithMessage(b, TsCodes.type_not_assignable, "Type '1' is not assignable to type 'B'."));
+}
+
+test "checker: callable member diagnostics preserve declaration optionality" {
+    const b = try newBoundSetup(
+        \\class GenericTarget {
+        \\  a: <T>() => T;
+        \\}
+        \\class Source<T> {
+        \\  a2: (x?: T) => T;
+        \\  a4: (x: T, y?: T) => T;
+        \\}
+        \\function compare<T>(target: GenericTarget, source: Source<T>) {
+        \\  target.a = source.a2;
+        \\  target.a = source.a4;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '(x?: T) => T' is not assignable to type '<T>() => T'.",
+    ));
+    try T.expect(checkerHasCodeWithMessage(
+        b,
+        TsCodes.type_not_assignable,
+        "Type '(x: T, y?: T) => T' is not assignable to type '<T>() => T'.",
+    ));
 }
 
 test "checker: TS2322 renders string-mapped single-literal aliases as literal text" {
