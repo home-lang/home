@@ -10713,6 +10713,7 @@ test "conformance: controlFlowConditionalExpression matches TS2454" {
         .expects_error = true,
         .expected_errors = "controlFlowConditionalExpression.ts(4,1): error TS2454: Variable 'cond' is used before being assigned.",
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);
@@ -10740,6 +10741,7 @@ test "conformance: controlFlowBinaryAndExpression matches TS2454" {
         .expects_error = true,
         .expected_errors = "controlFlowBinaryAndExpression.ts(8,1): error TS2454: Variable 'cond' is used before being assigned.",
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);
@@ -10778,6 +10780,7 @@ test "conformance: controlFlowForInStatement matches TS2454" {
         \\controlFlowForInStatement.ts(12,9): error TS2454: Variable 'cond' is used before being assigned.
         ,
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);
@@ -10816,6 +10819,7 @@ test "conformance: instanceofOperatorWithLHSIsObject matches TS2454" {
         \\instanceofOperatorWithLHSIsObject.ts(14,10): error TS2454: Variable 'd' is used before being assigned.
         ,
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);
@@ -10877,6 +10881,7 @@ test "conformance: additionOperatorWithNumberAndEnum matches TS2454 baseline" {
         \\additionOperatorWithNumberAndEnum.ts(23,15): error TS2454: Variable 'c' is used before being assigned.
         ,
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);
@@ -53216,6 +53221,7 @@ test "conformance: stringNamedPropertyAccess TS2454 baseline" {
         \\stringNamedPropertyAccess.ts(18,10): error TS2454: Variable 'a' is used before being assigned.
         ,
         .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
     });
     defer {
         T.allocator.free(result.name);

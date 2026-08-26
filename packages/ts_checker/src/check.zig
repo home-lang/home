@@ -164436,7 +164436,10 @@ pub const Checker = struct {
         if (self.callableArgumentCannotSatisfyCustomRestTuple(arg_t, param_t)) return false;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (self.hir.kindOf(arg_node) == .logical_op) {
-            return try self.logicalExpressionAssignableToTarget(arg_node, param_t);
+            const logical = hir_mod.logicalOf(self.hir, arg_node);
+            if (logical.op == .@"and" or logical.op == .@"or") {
+                return try self.logicalExpressionAssignableToTarget(arg_node, param_t);
+            }
         }
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
