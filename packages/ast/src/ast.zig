@@ -2370,6 +2370,10 @@ pub const FnDecl = struct {
     is_exported: bool = false, // export keyword for C ABI exports
     is_inline: bool = false, // inline keyword for inline-hint functions
     is_forward_decl: bool = false, // `fn name(args)` with no body (issue #17): binds the name, no definition emitted
+    /// `extern fn name(args)` — the symbol is defined outside Home, by
+    /// hand-written assembly or another object file, so it must not be given a
+    /// module prefix at any reference site.
+    is_extern: bool = false,
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)

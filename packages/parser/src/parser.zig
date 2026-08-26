@@ -1627,6 +1627,7 @@ pub const Parser = struct {
         fn_decl.requires_clauses = try requires_clauses.toOwnedSlice(self.allocator);
         fn_decl.ensures_clauses = try ensures_clauses.toOwnedSlice(self.allocator);
         fn_decl.is_forward_decl = is_forward_decl;
+        fn_decl.is_extern = is_extern;
 
         return ast.Stmt{ .FnDecl = fn_decl };
     }

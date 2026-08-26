@@ -590,6 +590,11 @@ pub const HomeKernelCodegen = struct {
     /// Import alias -> that module's symbol prefix, so `serial.writeChar()`
     /// can be lowered to the symbol serial.home actually defines.
     module_aliases: std.StringHashMap([]const u8),
+    /// Functions declared `extern`. Their symbols are defined outside Home —
+    /// by hand-written assembly or another object file — so they keep the name
+    /// as written at every reference site. Mangling them produced calls to
+    /// module-prefixed symbols that nothing defines.
+    extern_fns: std.StringHashMap(void),
     /// Frame slot holding the hidden destination pointer, for a function that
     /// returns an aggregate. 0 means this function does not return one.
     sret_slot: i32,
@@ -639,6 +644,7 @@ pub const HomeKernelCodegen = struct {
         result.source_file = null;
         result.module_id = "";
         result.module_aliases = std.StringHashMap([]const u8).init(allocator);
+        result.extern_fns = std.StringHashMap(void).init(allocator);
         result.type_aliases = std.StringHashMap([]const u8).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
@@ -1295,6 +1301,7 @@ pub const HomeKernelCodegen = struct {
 
     fn functionSymbol(self: *HomeKernelCodegen, name: []const u8) ![]const u8 {
         if (isBootEntryPoint(name) or self.module_id.len == 0) return name;
+        if (self.extern_fns.contains(name)) return name;
         return std.fmt.allocPrint(
             self.import_arena.allocator(),
             "{s}__{s}",
@@ -2954,6 +2961,14 @@ pub const HomeKernelCodegen = struct {
             }
         }
 
+        // Extern names must be known before any call is lowered, since a call
+        // can precede the declaration in the file.
+        for (program.statements) |stmt| {
+            if (stmt == .FnDecl and stmt.FnDecl.is_extern) {
+                try self.extern_fns.put(stmt.FnDecl.name, {});
+            }
+        }
+
         try self.foldModuleConstants(program);
         try self.collectEnums(program);
         try self.layoutStructs(program);
@@ -2987,8 +3002,9 @@ pub const HomeKernelCodegen = struct {
     fn generateStmt(self: *HomeKernelCodegen, stmt: ast.Stmt) !void {
         switch (stmt) {
             .FnDecl => |func| {
-                // Forward declarations (issue #17) bind the name only.
-                if (func.is_forward_decl) return;
+                // Forward declarations (issue #17) bind the name only, and an
+                // extern names a symbol something else defines.
+                if (func.is_forward_decl or func.is_extern) return;
 
                 // Respect the `export` keyword. The previous heuristic — any
                 // name starting with "kernel_", plus "main" — both missed
