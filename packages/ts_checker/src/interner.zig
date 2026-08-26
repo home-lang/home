@@ -1318,6 +1318,18 @@ pub const Interner = struct {
         return self.pool.mapped_payloads.items[self.pool.payloadOf(id)];
     }
 
+    pub fn mappedPayloadOrNull(self: *const Interner, id: TypeId) ?types.MappedPayload {
+        if (id >= self.pool.typeCount()) return null;
+        const flags = self.pool.flagsOf(id);
+        // Union flags are the OR of their constituent flags, so a union that
+        // contains a mapped type also advertises `is_mapped` even though its
+        // payload indexes the union table.
+        if (!flags.is_mapped or flags.is_union or flags.is_intersection) return null;
+        const idx: usize = self.pool.payloadOf(id);
+        if (idx >= self.pool.mapped_payloads.items.len) return null;
+        return self.pool.mapped_payloads.items[idx];
+    }
+
     pub fn typeSymbol(self: *const Interner, id: TypeId) u32 {
         if (id >= self.pool.headers.items.len) return 0;
         return self.pool.headers.items[id].symbol;
@@ -1591,6 +1603,23 @@ test "Interner: fresh type parameters preserve declaration identity" {
     try T.expect(outer != inner);
     try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(outer));
     try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(inner));
+}
+
+test "Interner: mapped payload lookup rejects aggregate union flags" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+
+    const mapped = try i.internMapped(
+        types.Primitive.string_t,
+        types.Primitive.number_t,
+        .none,
+        .none,
+    );
+    const union_t = try i.internUnion(&.{ mapped, types.Primitive.undefined_t });
+
+    try T.expect(i.mappedPayloadOrNull(mapped) != null);
+    try T.expect(i.pool.flagsOf(union_t).is_mapped);
+    try T.expect(i.mappedPayloadOrNull(union_t) == null);
 }
 
 test "Variance: HIR bit encoding round-trip" {
