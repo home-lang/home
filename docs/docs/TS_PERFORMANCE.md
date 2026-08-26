@@ -9,17 +9,18 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `4cc8f423a` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `e83cca939` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
 
 | Workload | tsc 7.0.2 | tsgo 7.0.0-dev.20260707.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 59.4 ± 21.9 ms | 56.9 ± 11.1 ms | **4.7 ± 0.7 ms** | **12.08× faster** |
-| `many_files` | 89.3 ± 25.8 ms | 88.0 ± 26.2 ms | **52.7 ± 17.1 ms** | **1.67× faster** |
-| `deep_types` | 89.0 ± 24.5 ms | 78.2 ± 14.8 ms | **57.3 ± 8.1 ms** | **1.36× faster** |
-| `import_graph` | 62.6 ± 8.5 ms | 63.5 ± 8.7 ms | **38.2 ± 5.4 ms** | **1.64× faster** |
-| `reexport_graph` | 56.6 ± 8.4 ms | 58.8 ± 8.1 ms | **48.1 ± 8.4 ms** | **1.18× faster** |
+| `startup` | 49.7 ± 5.9 ms | 49.1 ± 5.1 ms | **4.7 ± 1.2 ms** | **10.35× faster** |
+| `many_files` | 74.4 ± 9.7 ms | 73.5 ± 8.1 ms | **46.1 ± 8.1 ms** | **1.59× faster** |
+| `deep_types` | 66.7 ± 4.5 ms | 68.3 ± 11.9 ms | **51.5 ± 5.6 ms** | **1.29× faster** |
+| `import_graph` | 57.5 ± 3.4 ms | 58.3 ± 4.4 ms | **35.9 ± 4.6 ms** | **1.60× faster** |
+| `reexport_graph` | 58.8 ± 9.3 ms | 59.5 ± 11.3 ms | **45.5 ± 5.4 ms** | **1.29× faster** |
+| `tsx_components` | 55.9 ± 4.2 ms | 58.8 ± 11.7 ms | **53.5 ± 1.6 ms** | **1.04× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -51,6 +52,7 @@ not a claim that every real project or machine has the same speedup.
 | `deep_types` | One source file with 240 repeated generic models | Conditional, mapped, indexed, recursive, and template-literal type work |
 | `import_graph` | 128 modules in a relative-import chain | Module resolution, export lookup, import closure, and cross-file generic checking |
 | `reexport_graph` | 64 leaf modules projected through eight barrels | Recursive export-star projection, module resolution, and ambiguity checking |
+| `tsx_components` | One module with 256 typed generic component declarations and JSX trees | TSX scanning, parsing, contextual props, expressions, and checking |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -89,8 +91,12 @@ workload-specific shortcuts:
 - optimized builds compile sufficiently large programs with a bounded worker
   pool, while small programs remain serial to avoid thread startup overhead;
 - cross-file export queries reuse bind-only module analyses and immutable
-  per-export answers; and
+  per-export answers;
 - resolver mutation is synchronized separately from export-analysis caches so
-  independent cache misses can parse and bind concurrently; and
+  independent cache misses can parse and bind concurrently;
 - export-star ambiguity checks enumerate and cache real projected names instead
-  of rescanning modules or guessing from the number of barrel declarations.
+  of rescanning modules or guessing from the number of barrel declarations;
+- JSX namespace, pragma, and source-feature probes reuse immutable per-source
+  facts; and
+- recovered parameter annotations are indexed in one source pass instead of
+  rescanning the file for every identifier use.
