@@ -38701,6 +38701,11 @@ const harness_prelude =
     \\  const name = "http2." + String(endpoint) + ".stream." + String(lifecycle);
     \\  return __home_http2_diagnostics_channel_cache[name] || (__home_http2_diagnostics_channel_cache[name] = __home_diagnostics_channel(name));
     \\}
+    \\function __home_http2_publish_diagnostics_event(endpoint, lifecycle, stream, detail) {
+    \\  if (!stream) return;
+    \\  const channel = __home_http2_diagnostics_channel(endpoint, lifecycle);
+    \\  if (channel.hasSubscribers) channel.publish(Object.assign({ stream }, detail || {}));
+    \\}
     \\function __home_http2_publish_diagnostics(endpoint, lifecycle, stream, detail) {
     \\  if (!stream) return;
     \\  const key = String(endpoint) + "." + String(lifecycle);
@@ -38708,9 +38713,7 @@ const harness_prelude =
     \\  if (seen.has(key)) return;
     \\  seen.add(key);
     \\  __home_http2_diagnostics_seen.set(stream, seen);
-    \\  const channel = __home_http2_diagnostics_channel(endpoint, lifecycle);
-    \\  if (!channel.hasSubscribers) return;
-    \\  channel.publish(Object.assign({ stream }, detail || {}));
+    \\  __home_http2_publish_diagnostics_event(endpoint, lifecycle, stream, detail);
     \\}
     \\function __home_http2_publish_terminal_diagnostics(endpoint, stream, destroyed, rstCode, error) {
     \\  if (!stream) return;
@@ -40165,18 +40168,24 @@ const harness_prelude =
     \\    if (!serverStream.pushAllowed) throw __home_http2_error_with_code("ERR_HTTP2_PUSH_DISABLED", "HTTP/2 server push is disabled");
     \\    const client = clientStream.session;
     \\    const normalizedPushHeaders = __home_http2_prepare_push_headers(pushHeaders, clientStream.sentHeaders, clientStream.scheme || "http", clientStream.sentHeaders && (clientStream.sentHeaders[":authority"] || clientStream.sentHeaders.host));
-    \\    const pushedClient = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, aborted: false, sentHeaders: normalizedPushHeaders });
-    \\    Object.setPrototypeOf(pushedClient, __home_http2_Http2Stream.prototype);
+    \\    const pushedClient = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, aborted: false, rstCode: 0, sentHeaders: normalizedPushHeaders });
+    \\    Object.setPrototypeOf(pushedClient, __home_http2_ClientHttp2Stream.prototype);
     \\    client.__home_next_push_stream_id += 2;
     \\    pushedClient.setEncoding = function(value) { this.__home_encoding = String(value || "utf8"); return this; };
     \\    pushedClient.resume = function() { return this; };
     \\    pushedClient.pause = function() { return this; };
-    \\    const pushStream = Object.assign(__home_http_event_target(), { id: pushedClient.id, session: serverStream.session, closed: false, destroyed: false, aborted: false });
-    \\    Object.setPrototypeOf(pushStream, __home_http2_Http2Stream.prototype);
+    \\    const pushStream = Object.assign(__home_http_event_target(), { id: pushedClient.id, session: serverStream.session, closed: false, destroyed: false, aborted: false, rstCode: 0, __home_push_headers: normalizedPushHeaders });
+    \\    Object.setPrototypeOf(pushStream, __home_http2_ServerHttp2Stream.prototype);
+    \\    pushStream.__home_client_stream = pushedClient;
+    \\    pushedClient.__home_server_stream = pushStream;
     \\    const pushResponse = Object.assign(__home_http_event_target(), { stream: pushStream, statusCode: 200, finished: false, writableEnded: false, __home_headers: {} });
     \\    pushResponse.setHeader = function(name, value) { this.__home_headers[String(name).toLowerCase()] = String(value); return this; };
-    \\    pushResponse.end = function(chunk) { if (this.finished) return this; this.finished = true; this.writableEnded = true; const target = this; Promise.resolve().then(() => { pushedClient.emit("push", Object.assign({ ":status": target.statusCode, date: new Date(0).toUTCString() }, target.__home_headers), 4); if (chunk !== undefined && chunk !== null) pushedClient.emit("data", pushedClient.__home_encoding ? Buffer.from(String(chunk)).toString(pushedClient.__home_encoding) : chunk); pushedClient.closed = true; pushedClient.destroyed = true; pushedClient.emit("end"); pushedClient.emit("close"); pushStream.closed = true; pushStream.emit("close"); target.emit("finish"); }); return this; };
+    \\    pushResponse.end = function(chunk) { if (this.finished) return this; this.finished = true; this.writableEnded = true; const target = this; Promise.resolve().then(() => { const responseHeaders = Object.assign({ ":status": target.statusCode, date: new Date(0).toUTCString() }, target.__home_headers); __home_http2_publish_diagnostics("server", "finish", pushStream, { headers: responseHeaders, flags: 0 }); __home_http2_publish_diagnostics("client", "finish", pushedClient, { headers: responseHeaders, flags: 4 }); pushedClient.emit("push", responseHeaders, 4); if (chunk !== undefined && chunk !== null) pushedClient.emit("data", pushedClient.__home_encoding ? Buffer.from(String(chunk)).toString(pushedClient.__home_encoding) : chunk); __home_http2_publish_terminal_diagnostics("client", pushedClient, false, __home_http2_constants.NGHTTP2_NO_ERROR); pushedClient.destroyed = true; pushedClient.emit("end"); pushedClient.emit("close"); __home_http2_publish_terminal_diagnostics("server", pushStream, false, __home_http2_constants.NGHTTP2_NO_ERROR); pushStream.destroyed = true; pushStream.emit("close"); target.emit("finish"); }); return this; };
+    \\    __home_http2_publish_diagnostics("server", "created", pushStream, { headers: normalizedPushHeaders });
+    \\    __home_http2_publish_diagnostics("server", "start", pushStream, { headers: normalizedPushHeaders });
     \\    Promise.resolve().then(() => {
+    \\      __home_http2_publish_diagnostics("client", "created", pushedClient, { headers: normalizedPushHeaders });
+    \\      __home_http2_publish_diagnostics("client", "start", pushedClient, { headers: normalizedPushHeaders });
     \\      client.emit("stream", pushedClient, normalizedPushHeaders, 4);
     \\      pushCallback(null, pushResponse);
     \\    });
@@ -41712,23 +41721,29 @@ const harness_prelude =
     \\      const maxReserved = Number(options && options.maxReservedRemoteStreams);
     \\      const rejectReserved = Number.isFinite(maxReserved) && Number(client.__home_reserved_remote_streams || 0) >= maxReserved;
     \\      if (!rejectReserved) client.__home_reserved_remote_streams = Number(client.__home_reserved_remote_streams || 0) + 1;
-    \\      const pushed = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, aborted: false, sentHeaders: normalizedPushHeaders, _writableState: { ended: String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD" } });
-    \\      Object.setPrototypeOf(pushed, __home_http2_Http2Stream.prototype);
-    \\      pushed.__home_rejected_reserved = rejectReserved;
+    \\      const pushId = client.__home_next_push_stream_id;
+    \\      const pushedServer = Object.assign(__home_http_event_target(), { id: pushId, session: serverStream.session, closed: false, destroyed: false, aborted: false, rstCode: 0, __home_push_headers: normalizedPushHeaders, _writableState: { ended: String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD" } });
+    \\      Object.setPrototypeOf(pushedServer, __home_http2_ServerHttp2Stream.prototype);
+    \\      const pushedClient = Object.assign(__home_http_event_target(), { id: pushId, session: client, closed: false, destroyed: false, aborted: false, rstCode: 0, sentHeaders: normalizedPushHeaders, _writableState: { ended: true } });
+    \\      Object.setPrototypeOf(pushedClient, __home_http2_ClientHttp2Stream.prototype);
+    \\      pushedServer.__home_client_stream = pushedClient;
+    \\      pushedClient.__home_server_stream = pushedServer;
+    \\      pushedServer.__home_rejected_reserved = rejectReserved;
+    \\      const releasePushReservation = () => { if (rejectReserved || pushedServer.__home_reservation_released) return; pushedServer.__home_reservation_released = true; Promise.resolve().then(() => { client.__home_reserved_remote_streams = Math.max(0, Number(client.__home_reserved_remote_streams || 0) - 1); }); };
     \\      client.__home_next_push_stream_id += 2;
-    \\      pushed.__home_pending_read = [];
-    \\      pushed.__home_event_on = pushed.on;
-    \\      pushed.__home_event_emit = pushed.emit;
-    \\      pushed.__home_schedule_read = stream.__home_schedule_read;
-    \\      pushed.__home_drain_read = function() { const hasData = this.__home_pending_read.some(entry => entry[0] === "data"); if (!this.__home_resumed && !this.__home_flowing && (hasData || this.listenerCount("end") === 0)) return; const entry = this.__home_pending_read.shift(); if (!entry) return; let value = entry[1]; if (entry[0] === "data" && this.__home_encoding) value = Buffer.from(value).toString(this.__home_encoding); this.__home_event_emit.call(this, entry[0], value); if (typeof entry[2] === "function") entry[2](); if (this.__home_pending_read.length > 0) this.__home_schedule_read(); };
-    \\      pushed.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
-    \\      pushed.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "close"].includes(String(name))) this.__home_schedule_read(); return this; };
-    \\      pushed.addListener = pushed.on;
-    \\      pushed.resume = function() { this.__home_resumed = true; this.__home_schedule_read(); return this; };
-    \\      pushed.pause = function() { this.__home_resumed = false; return this; };
-    \\      pushed.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); this.__home_schedule_read(); return this; };
-    \\      pushed.respond = function(headers) { this.sentHeaders = __home_http2_normalize_headers(__home_http2_validate_header_context(headers, "response"), { ":status": 200 }); if (!this.__home_rejected_reserved) this.emit("push", this.sentHeaders, 4); if (String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD") Promise.resolve().then(() => this.end()); return this; };
-    \\      pushed.respondWithFD = function(fd, headers, fileOptions) {
+    \\      pushedClient.__home_pending_read = [];
+    \\      pushedClient.__home_event_on = pushedClient.on;
+    \\      pushedClient.__home_event_emit = pushedClient.emit;
+    \\      pushedClient.__home_schedule_read = stream.__home_schedule_read;
+    \\      pushedClient.__home_drain_read = function() { const hasData = this.__home_pending_read.some(entry => entry[0] === "data"); if (!this.__home_resumed && !this.__home_flowing && (hasData || this.listenerCount("end") === 0)) return; const entry = this.__home_pending_read.shift(); if (!entry) return; let value = entry[1]; if (entry[0] === "data" && this.__home_encoding) value = Buffer.from(value).toString(this.__home_encoding); if (entry[0] === "end") this.readableEnded = true; this.__home_event_emit.call(this, entry[0], value); if (typeof entry[2] === "function") entry[2](); if (this.__home_pending_read.length > 0) this.__home_schedule_read(); };
+    \\      pushedClient.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
+    \\      pushedClient.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "close"].includes(String(name))) this.__home_schedule_read(); return this; };
+    \\      pushedClient.addListener = pushedClient.on;
+    \\      pushedClient.resume = function() { this.__home_resumed = true; this.__home_schedule_read(); return this; };
+    \\      pushedClient.pause = function() { this.__home_resumed = false; return this; };
+    \\      pushedClient.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); this.__home_schedule_read(); return this; };
+    \\      pushedServer.respond = function(headers) { this.sentHeaders = __home_http2_normalize_headers(__home_http2_validate_header_context(headers, "response"), { ":status": 200 }); __home_http2_publish_diagnostics("server", "finish", this, { headers: this.sentHeaders, flags: 0 }); if (!this.__home_rejected_reserved) { __home_http2_publish_diagnostics("client", "finish", pushedClient, { headers: this.sentHeaders, flags: 4 }); pushedClient.emit("push", this.sentHeaders, 4); } if (String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD") Promise.resolve().then(() => this.end()); return this; };
+    \\      pushedServer.respondWithFD = function(fd, headers, fileOptions) {
     \\        let descriptor; let sourcePath;
     \\        if (typeof fd === "number") { descriptor = fd; const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[fd]; sourcePath = entry && entry.path; }
     \\        else if (fd && fd.__home_file_handle) { descriptor = Number(fd.__home_fd); sourcePath = String(fd.__home_file_path); }
@@ -41745,15 +41760,19 @@ const harness_prelude =
     \\        });
     \\        return undefined;
     \\      };
-    \\      pushed.write = function(chunk) { if (this._writableState.ended) { const error = __home_http2_error_with_code("ERR_STREAM_WRITE_AFTER_END", "write after end"); Promise.resolve().then(() => this.emit("error", error)); return false; } if (chunk !== undefined && chunk !== null) this.__home_receive("data", chunk instanceof Buffer ? chunk : Buffer.from(chunk)); return true; };
-    \\      pushed.end = function(chunk) { if (!this._writableState.ended && chunk !== undefined && chunk !== null) this.__home_receive("data", chunk instanceof Buffer ? chunk : Buffer.from(chunk)); this._writableState.ended = true; this.closed = true; this.destroyed = true; this.__home_receive("end"); this.__home_receive("close"); if (!this.__home_rejected_reserved) Promise.resolve().then(() => { client.__home_reserved_remote_streams = Math.max(0, Number(client.__home_reserved_remote_streams || 0) - 1); }); return this; };
-    \\      pushed.pushStream = function() { throw __home_http2_error_with_code("ERR_HTTP2_NESTED_PUSH", "A push stream cannot initiate another push stream"); };
-    \\      pushed.close = function() { if (!this.closed) { this.closed = true; this.emit("close"); } return this; };
-    \\      pushed.destroy = function(error) { if (error) this.emit("error", error); return this.close(); };
+    \\      pushedServer.write = function(chunk) { if (this._writableState.ended) { const error = __home_http2_error_with_code("ERR_STREAM_WRITE_AFTER_END", "write after end"); Promise.resolve().then(() => this.emit("error", error)); return false; } if (chunk !== undefined && chunk !== null && !pushedClient.aborted) pushedClient.__home_receive("data", chunk instanceof Buffer ? chunk : Buffer.from(chunk)); return true; };
+    \\      pushedServer.end = function(chunk) { if (this.closed) return this; if (!this._writableState.ended && chunk !== undefined && chunk !== null && !pushedClient.aborted) pushedClient.__home_receive("data", chunk instanceof Buffer ? chunk : Buffer.from(chunk)); this._writableState.ended = true; __home_http2_publish_terminal_diagnostics("server", this, false, __home_http2_constants.NGHTTP2_NO_ERROR); this.destroyed = true; this.emit("close"); if (!pushedClient.closed) { pushedClient.__home_receive("end"); __home_http2_publish_terminal_diagnostics("client", pushedClient, false, __home_http2_constants.NGHTTP2_NO_ERROR); pushedClient.destroyed = true; pushedClient.__home_receive("close"); } releasePushReservation(); return this; };
+    \\      pushedServer.pushStream = function() { throw __home_http2_error_with_code("ERR_HTTP2_NESTED_PUSH", "A push stream cannot initiate another push stream"); };
+    \\      pushedServer.close = function(code) { if (this.closed) return this; const resetCode = Number(code) || 0; __home_http2_publish_terminal_diagnostics("server", this, resetCode !== 0, resetCode); this.destroyed = true; this.emit("close"); if (!pushedClient.closed) { const peerError = resetCode !== 0 && resetCode !== __home_http2_constants.NGHTTP2_CANCEL ? __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode)) : null; __home_http2_publish_terminal_diagnostics("client", pushedClient, resetCode !== 0, resetCode, peerError); if (peerError) pushedClient.emit("error", peerError); if (!peerError) pushedClient.__home_receive("end"); pushedClient.destroyed = true; pushedClient.__home_receive("close"); } releasePushReservation(); return this; };
+    \\      pushedServer.destroy = function(error) { if (this.destroyed) return this; const resetCode = error ? __home_http2_constants.NGHTTP2_INTERNAL_ERROR : __home_http2_constants.NGHTTP2_NO_ERROR; __home_http2_publish_terminal_diagnostics("server", this, true, resetCode, error); if (error) this.emit("error", error); this.emit("close"); if (!pushedClient.closed) { const peerError = error ? __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_INTERNAL_ERROR", error) : null; __home_http2_publish_terminal_diagnostics("client", pushedClient, true, resetCode, peerError); if (peerError) pushedClient.emit("error", peerError); else pushedClient.__home_receive("end"); pushedClient.__home_receive("close"); } releasePushReservation(); return this; };
+    \\      __home_http2_publish_diagnostics("server", "created", pushedServer, { headers: normalizedPushHeaders });
+    \\      __home_http2_publish_diagnostics("server", "start", pushedServer, { headers: normalizedPushHeaders });
     \\      Promise.resolve().then(() => {
-    \\        if (!rejectReserved) client.emit("stream", pushed, normalizedPushHeaders, 4);
-    \\        callback(null, pushed, normalizedPushHeaders);
-    \\        if (rejectReserved) { pushed.aborted = true; pushed.rstCode = __home_http2_constants.NGHTTP2_CANCEL; pushed.closed = true; pushed.destroyed = true; pushed.emit("aborted"); pushed.emit("close"); }
+    \\        __home_http2_publish_diagnostics("client", "created", pushedClient, { headers: normalizedPushHeaders });
+    \\        __home_http2_publish_diagnostics("client", "start", pushedClient, { headers: normalizedPushHeaders });
+    \\        if (!rejectReserved) client.emit("stream", pushedClient, normalizedPushHeaders, 4);
+    \\        callback(null, pushedServer, normalizedPushHeaders);
+    \\        if (rejectReserved) { pushedServer.aborted = true; pushedClient.aborted = true; __home_http2_publish_terminal_diagnostics("server", pushedServer, true, __home_http2_constants.NGHTTP2_CANCEL); __home_http2_publish_terminal_diagnostics("client", pushedClient, true, __home_http2_constants.NGHTTP2_CANCEL); pushedServer.emit("aborted"); pushedServer.emit("close"); pushedClient.emit("aborted"); pushedClient.emit("close"); }
     \\      });
     \\      void pushOptions;
     \\      return undefined;
@@ -41906,19 +41925,29 @@ const harness_prelude =
     \\      if (queuedBytes !== 0 && !stream.destroyed && !serverStream.closed && !serverStream.destroyed) {
     \\        const payload = queued.length === 1 ? queued[0].payload : Buffer.concat(queued.map(entry => entry.payload), queuedBytes);
     \\        serverStream.__home_receive("data", payload);
+    \\        if (queued.length === 1) {
+    \\          __home_http2_publish_diagnostics_event("client", "bodyChunkSent", stream, { writev: false, data: queued[0].chunk, encoding: queued[0].encoding });
+    \\        } else {
+    \\          const allBuffers = queued.every(entry => entry.encoding === "buffer");
+    \\          const data = allBuffers ? queued.map(entry => entry.chunk) : queued.map(entry => ({ chunk: entry.chunk, encoding: entry.encoding }));
+    \\          __home_http2_publish_diagnostics_event("client", "bodyChunkSent", stream, { writev: true, data, encoding: "" });
+    \\        }
     \\      }
     \\      stream.bufferSize = Math.max(0, stream.bufferSize - queuedBytes);
     \\      for (const entry of queued) if (typeof entry.callback === "function") entry.callback();
     \\      if (wasBackpressured && stream.bufferSize < Number(stream._writableState.highWaterMark || 16384)) Promise.resolve().then(() => stream.emit("drain"));
-    \\      if (stream.__home_end_requested) finishRequestInput();
+    \\      if (stream.__home_end_requested) { __home_http2_publish_diagnostics("client", "bodySent", stream); finishRequestInput(); }
     \\    }
     \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; Promise.resolve().then(flushOutbound); }
     \\    stream.write = function(chunk, encoding, callback) {
     \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (chunk !== undefined && chunk !== null) {
-    \\        const payload = typeof Buffer === "function" && !(chunk instanceof Buffer) ? Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined) : chunk;
+    \\        const isString = typeof chunk === "string";
+    \\        const diagnosticEncoding = isString ? (typeof encoding === "string" ? encoding : "utf8") : "buffer";
+    \\        const diagnosticChunk = isString ? chunk : (chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+    \\        const payload = isString ? Buffer.from(chunk, diagnosticEncoding) : diagnosticChunk;
     \\        this.bufferSize += payload.length;
-    \\        if (payload.length !== 0) { this.__home_outbound_queue.push({ payload, callback: cb }); scheduleOutboundFlush(); }
+    \\        if (payload.length !== 0) { this.__home_outbound_queue.push({ payload, chunk: diagnosticChunk, encoding: diagnosticEncoding, callback: cb }); scheduleOutboundFlush(); }
     \\        else if (typeof cb === "function") Promise.resolve().then(cb);
     \\        return this.bufferSize < Number(this._writableState.highWaterMark || 16384);
     \\      }
@@ -155597,6 +155626,46 @@ test "bootstrap HTTP2 normal stream diagnostics identity and lifecycle logical c
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 normal stream diagnostics logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 push endpoint diagnostics identity and lifecycle logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const dc = require("diagnostics_channel"); const http2 = require("http2"); const { Duplex } = require("stream");
+        \\test("push peers are distinct branded endpoints with ordered clean diagnostics", async () => { await new Promise((resolve, reject) => { const order = { client: [], server: [] }; const counts = Object.create(null); let pushedServer; let pushedClient; let rootServerSession; const isPush = (endpoint, stream) => endpoint === "client" ? stream.sentHeaders && stream.sentHeaders[":path"] === "/pushed" : stream.__home_push_headers && stream.__home_push_headers[":path"] === "/pushed"; for (const endpoint of ["client", "server"]) for (const lifecycle of ["created", "start", "finish", "close", "error"]) dc.subscribe("http2." + endpoint + ".stream." + lifecycle, message => { if (!isPush(endpoint, message.stream)) return; counts[endpoint + "." + lifecycle] = (counts[endpoint + "." + lifecycle] || 0) + 1; order[endpoint].push(lifecycle); assert.ok(message.stream instanceof Duplex); assert.strictEqual(message.stream.constructor.name, endpoint === "client" ? "ClientHttp2Stream" : "ServerHttp2Stream"); if (endpoint === "client") pushedClient = message.stream; else pushedServer = message.stream; if (lifecycle === "start") assert.deepStrictEqual(order[endpoint], ["created", "start"]); if (lifecycle === "finish") { assert.strictEqual(typeof message.flags, "number"); assert.deepStrictEqual(order[endpoint], ["created", "start", "finish"]); } if (lifecycle === "close") { assert.strictEqual(message.stream.closed, true); assert.strictEqual(message.stream.destroyed, false); assert.strictEqual(message.stream.rstCode, http2.constants.NGHTTP2_NO_ERROR); assert.deepStrictEqual(order[endpoint], ["created", "start", "finish", "close"]); } if (lifecycle === "error") reject(new Error("unexpected clean push diagnostic error")); }); const server = http2.createServer(); server.on("stream", (stream, headers) => { if (headers[":path"] !== "/") return; rootServerSession = stream.session; stream.pushStream({ ":path": "/pushed" }, (error, push) => { try { assert.ifError(error); assert.strictEqual(push, pushedServer); assert.notStrictEqual(push, pushedClient); assert.strictEqual(push.id, pushedClient.id); assert.strictEqual(push.session, rootServerSession); assert.strictEqual(pushedClient.__home_server_stream, push); assert.strictEqual(push.__home_client_stream, pushedClient); push.respond({ "x-push": "yes" }); push.end("payload"); stream.respond(); stream.end("root"); } catch (cause) { reject(cause); } }); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); client.on("error", reject); client.on("stream", (push, headers) => { try { assert.strictEqual(headers[":path"], "/pushed"); assert.strictEqual(push, pushedClient); assert.strictEqual(push.session, client); } catch (error) { reject(error); } push.on("error", reject); push.on("push", headers => { try { assert.strictEqual(headers["x-push"], "yes"); } catch (error) { reject(error); } }); push.on("close", () => { try { assert.deepStrictEqual(Object.assign({}, counts), { "server.created": 1, "server.start": 1, "client.created": 1, "client.start": 1, "server.finish": 1, "client.finish": 1, "server.close": 1, "client.close": 1 }); assert.deepStrictEqual(order.server, ["created", "start", "finish", "close"]); assert.deepStrictEqual(order.client, ["created", "start", "finish", "close"]); client.close(); server.close(resolve); } catch (error) { reject(error); } }); push.resume(); }); const request = client.request({ ":path": "/" }); request.on("error", reject); request.resume(); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-push-endpoint-diagnostics-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 push endpoint diagnostics logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 client body diagnostics shapes and ordering logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const dc = require("diagnostics_channel"); const http2 = require("http2"); const { Duplex } = require("stream");
+        \\test("body diagnostics preserve write and writev inputs before bodySent", async () => { await new Promise((resolve, reject) => { const order = Object.create(null); let chunks = 0; let sent = 0; dc.subscribe("http2.client.stream.bodyChunkSent", message => { try { const path = message.stream.sentHeaders[":path"]; if (!String(path).startsWith("/body/")) return; assert.ok(message.stream instanceof Duplex); assert.strictEqual(message.stream.constructor.name, "ClientHttp2Stream"); (order[path] ||= []).push("chunk"); chunks++; if (path === "/body/string") { assert.strictEqual(message.writev, false); assert.strictEqual(message.data, "foo"); assert.strictEqual(message.encoding, "utf8"); } else if (path === "/body/buffer") { assert.strictEqual(message.writev, false); assert.ok(Buffer.from("foo").equals(message.data)); assert.strictEqual(message.encoding, "buffer"); } else if (path === "/body/buffers") { assert.strictEqual(message.writev, true); assert.strictEqual(message.encoding, ""); assert.strictEqual(message.data.length, 2); assert.ok(Buffer.from("foo").equals(message.data[0])); assert.ok(Buffer.from("bar").equals(message.data[1])); } else if (path === "/body/mixed") { assert.strictEqual(message.writev, true); assert.strictEqual(message.encoding, ""); assert.strictEqual(message.data.length, 3); assert.deepStrictEqual(message.data[0], { chunk: "héllo", encoding: "latin1" }); assert.ok(Buffer.from("foo").equals(message.data[1].chunk)); assert.strictEqual(message.data[1].encoding, "buffer"); assert.ok(Buffer.from("bar").equals(message.data[2].chunk)); assert.strictEqual(message.data[2].encoding, "buffer"); } else reject(new Error("unexpected body chunk path " + path)); } catch (error) { reject(error); } }); dc.subscribe("http2.client.stream.bodySent", message => { try { const path = message.stream.sentHeaders[":path"]; if (!String(path).startsWith("/body/")) return; assert.ok(message.stream instanceof Duplex); assert.strictEqual(message.stream.constructor.name, "ClientHttp2Stream"); const events = order[path] || []; if (path === "/body/empty") assert.deepStrictEqual(events, []); else assert.deepStrictEqual(events, ["chunk"]); events.push("sent"); order[path] = events; sent++; } catch (error) { reject(error); } }); const server = http2.createServer(); server.on("stream", stream => { stream.on("error", reject); stream.resume(); stream.respond(); stream.end(); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); client.on("error", reject); let closed = 0; const request = path => { const stream = client.request({ ":method": "POST", ":path": path }); stream.on("error", reject); stream.on("response", () => stream.resume()); stream.on("close", () => { if (++closed !== 5) return; Promise.resolve().then(() => { try { assert.strictEqual(chunks, 4); assert.strictEqual(sent, 5); for (const path of ["/body/string", "/body/buffer", "/body/buffers", "/body/mixed"]) assert.deepStrictEqual(order[path], ["chunk", "sent"]); assert.deepStrictEqual(order["/body/empty"], ["sent"]); client.close(); server.close(resolve); } catch (error) { reject(error); } }); }); return stream; }; request("/body/string").end("foo"); request("/body/buffer").end(Buffer.from("foo")); const buffers = request("/body/buffers"); buffers.write(Buffer.from("foo")); buffers.end(Buffer.from("bar")); const mixed = request("/body/mixed"); mixed.write("héllo", "latin1"); mixed.write(Buffer.from("foo")); mixed.end(new TextEncoder().encode("bar")); request("/body/empty").end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-client-body-diagnostics-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 client body diagnostics logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
