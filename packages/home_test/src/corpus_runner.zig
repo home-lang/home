@@ -40955,7 +40955,7 @@ const harness_prelude =
     \\      stream.destroy = stream.close;
     \\      return stream;
     \\    }
-    \\    if (!server && http1Server && !http1Server.stopped) {
+    \\    if (!server && (http1Server && !http1Server.stopped || nodeHttp1Server)) {
     \\      stream.write = function() { return false; };
     \\      stream.end = function() { return this; };
     \\      stream.close = function() { this.closed = true; this.destroyed = true; this.emit("close"); return this; };
@@ -41620,19 +41620,53 @@ const harness_prelude =
     \\        serverStream.__home_receive("end");
     \\      }
     \\    });
+    \\    stream.__home_outbound_queue = [];
+    \\    stream.__home_end_callbacks = [];
+    \\    stream.__home_close_after_flush_callbacks = [];
+    \\    function completeRequestInput() {
+    \\      if (stream.__home_end_completion_done) return;
+    \\      stream.__home_end_completion_done = true;
+    \\      const endCallbacks = stream.__home_end_callbacks.splice(0);
+    \\      for (const endCallback of endCallbacks) endCallback();
+    \\      if (stream.__home_close_after_flush) {
+    \\        stream.__home_close_after_flush = false;
+    \\        const closeCallbacks = stream.__home_close_after_flush_callbacks.splice(0);
+    \\        stream.close(0, () => { for (const closeCallback of closeCallbacks) closeCallback(); });
+    \\      }
+    \\    }
+    \\    function finishRequestInput() {
+    \\      if (stream.__home_end_flushed) return;
+    \\      stream.__home_end_flushed = true;
+    \\      if (!serverStream.__home_request_ended) {
+    \\        serverStream.__home_request_ended = true;
+    \\        const waitsForDelivery = serverStream.__home_resumed || serverStream.__home_flowing || serverStream.listenerCount("end") > 0;
+    \\        serverStream.__home_receive("end", undefined, () => { Promise.resolve().then(maybeFinishStreamPair); if (requestOptions && requestOptions.waitForTrailers && !stream.aborted) stream.emit("wantTrailers"); completeRequestInput(); });
+    \\        if (!waitsForDelivery) Promise.resolve().then(completeRequestInput);
+    \\        return;
+    \\      }
+    \\      completeRequestInput();
+    \\    }
+    \\    function flushOutbound() {
+    \\      stream.__home_outbound_flush_scheduled = false;
+    \\      const queued = stream.__home_outbound_queue.splice(0);
+    \\      const queuedBytes = queued.reduce((total, entry) => total + entry.payload.length, 0);
+    \\      const wasBackpressured = stream.bufferSize >= Number(stream._writableState.highWaterMark || 16384);
+    \\      if (queuedBytes !== 0 && !stream.destroyed && !serverStream.closed && !serverStream.destroyed) {
+    \\        const payload = queued.length === 1 ? queued[0].payload : Buffer.concat(queued.map(entry => entry.payload), queuedBytes);
+    \\        serverStream.__home_receive("data", payload);
+    \\      }
+    \\      stream.bufferSize = Math.max(0, stream.bufferSize - queuedBytes);
+    \\      for (const entry of queued) if (typeof entry.callback === "function") entry.callback();
+    \\      if (wasBackpressured && stream.bufferSize < Number(stream._writableState.highWaterMark || 16384)) Promise.resolve().then(() => stream.emit("drain"));
+    \\      if (stream.__home_end_requested) finishRequestInput();
+    \\    }
+    \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; Promise.resolve().then(flushOutbound); }
     \\    stream.write = function(chunk, encoding, callback) {
     \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (chunk !== undefined && chunk !== null) {
     \\        const payload = typeof Buffer === "function" && !(chunk instanceof Buffer) ? Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined) : chunk;
     \\        this.bufferSize += payload.length;
-    \\        if (payload.length !== 0) Promise.resolve().then(() => {
-    \\          if (this.destroyed || serverStream.closed || serverStream.destroyed) { this.bufferSize = Math.max(0, this.bufferSize - payload.length); if (typeof cb === "function") cb(); return; }
-    \\          serverStream.__home_receive("data", payload);
-    \\          const wasBackpressured = this.bufferSize >= Number(this._writableState.highWaterMark || 16384);
-    \\          this.bufferSize = Math.max(0, this.bufferSize - payload.length);
-    \\          if (typeof cb === "function") cb();
-    \\          if (wasBackpressured && this.bufferSize < Number(this._writableState.highWaterMark || 16384)) Promise.resolve().then(() => this.emit("drain"));
-    \\        });
+    \\        if (payload.length !== 0) { this.__home_outbound_queue.push({ payload, callback: cb }); scheduleOutboundFlush(); }
     \\        else if (typeof cb === "function") Promise.resolve().then(cb);
     \\        return this.bufferSize < Number(this._writableState.highWaterMark || 16384);
     \\      }
@@ -41645,15 +41679,9 @@ const harness_prelude =
     \\      if (this.closed || this.destroyed) { if (typeof cb === "function") Promise.resolve().then(cb); return this; }
     \\      this.writableFinished = true;
     \\      if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
-    \\      if (!serverStream.__home_request_ended) {
-    \\        serverStream.__home_request_ended = true;
-    \\        Promise.resolve().then(() => {
-    \\          serverStream.__home_receive("end");
-    \\          Promise.resolve().then(maybeFinishStreamPair);
-    \\          if (requestOptions && requestOptions.waitForTrailers && !this.aborted) this.emit("wantTrailers");
-    \\        });
-    \\      }
-    \\      if (typeof cb === "function") Promise.resolve().then(cb);
+    \\      this.__home_end_requested = true;
+    \\      if (typeof cb === "function") this.__home_end_callbacks.push(cb);
+    \\      scheduleOutboundFlush();
     \\      return this;
     \\    };
     \\    stream.sendTrailers = function(trailers) {
@@ -41667,6 +41695,7 @@ const harness_prelude =
     \\      if (!Number.isInteger(code) || code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\      if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\      if (this.closed) return this;
+    \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; if (typeof callback === "function") this.__home_close_after_flush_callbacks.push(callback); scheduleOutboundFlush(); return this; }
     \\      const shouldAbort = !this.writableFinished;
     \\      this.closed = true;
     \\      this.destroyed = true;
@@ -155235,6 +155264,46 @@ test "bootstrap HTTP2 supplied transport adoption logical contracts" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 supplied transport adoption logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 client HTTP1 mismatch logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http = require("http"); const http2 = require("http2"); const { NghttpError } = require("internal/http2/util");
+        \\test("HTTP2 clients fail once and report the HTTP1 preface parse boundary", async () => { await new Promise((resolve, reject) => { const order = []; let clientErrors = 0; let clientCloses = 0; let requestErrors = 0; let requestCloses = 0; let parseErrors = 0; const server = http.createServer(() => reject(new Error("HTTP1 request handler unexpectedly ran"))); server.on("clientError", (error, socket) => { parseErrors++; order.push("clientError"); try { assert.strictEqual(error.code, "HPE_PAUSED_H2_UPGRADE"); assert.strictEqual(error.bytesParsed, 24); socket.destroy(); } catch (cause) { reject(cause); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); request.on("error", error => { requestErrors++; order.push("request-error"); try { assert.ok(error instanceof NghttpError); assert.strictEqual(error.code, "ERR_HTTP2_ERROR"); assert.strictEqual(error.message, "Protocol error"); } catch (cause) { reject(cause); } }); request.on("close", () => { requestCloses++; order.push("request-close"); }); client.on("error", error => { clientErrors++; order.push("client-error"); try { assert.ok(error instanceof NghttpError); assert.strictEqual(error.code, "ERR_HTTP2_ERROR"); assert.strictEqual(error.name, "Error"); assert.strictEqual(error.message, "Protocol error"); } catch (cause) { reject(cause); } }); client.on("close", () => { clientCloses++; order.push("client-close"); Promise.resolve().then(() => { try { assert.strictEqual(parseErrors, 1); assert.strictEqual(requestErrors, 1); assert.strictEqual(requestCloses, 1); assert.strictEqual(clientErrors, 1); assert.strictEqual(clientCloses, 1); assert.deepStrictEqual(order, ["clientError", "request-error", "request-close", "client-error", "client-close"]); server.close(resolve); } catch (error) { reject(error); } }); }); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-client-http1-mismatch-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 client/HTTP1 mismatch logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 outbound batching and clean close logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("same-turn writes batch before EOF and clean close", async () => { await new Promise((resolve, reject) => { const streams = []; let writeCallbacks = 0; let completed = 0; const server = http2.createServer(); server.on("stream", stream => { const state = { dataEvents: 0, endEvents: 0, closeEvents: 0, bytes: 0 }; streams.push(state); stream.on("data", chunk => { state.dataEvents++; state.bytes += chunk.length; }); stream.on("end", () => state.endEvents++); stream.on("error", reject); stream.on("close", () => { state.closeEvents++; try { assert.strictEqual(state.dataEvents, 1); assert.strictEqual(state.endEvents, 1); assert.strictEqual(state.closeEvents, 1); assert.strictEqual(state.bytes, 300); if (++completed === 2) { assert.strictEqual(writeCallbacks, 20); client.close(); server.close(resolve); } } catch (error) { reject(error); } }); }); let client; server.listen(0, () => { client = http2.connect("http://localhost:" + server.address().port); client.on("error", reject); for (let streamIndex = 0; streamIndex < 2; streamIndex++) { const stream = client.request({ ":method": "POST" }); stream.on("error", reject); for (let writeIndex = 0; writeIndex < 10; writeIndex++) { assert.strictEqual(stream.write(Buffer.alloc(30), error => { try { assert.strictEqual(error, undefined); writeCallbacks++; } catch (cause) { reject(cause); } }), true); assert.strictEqual(stream.bufferSize, 30 * (writeIndex + 1)); } stream.end(); stream.close(); } }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-outbound-batching-clean-close-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 outbound batching/clean close logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);

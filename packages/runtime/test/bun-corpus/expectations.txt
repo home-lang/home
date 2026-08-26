@@ -158,9 +158,7 @@ test/js/node/test/parallel/test-http2-alpn.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-async-local-storage.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-backpressure.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-binding.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-buffersize.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-destroy.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-client-http1-server.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-onconnect-errors.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-set-priority.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-socket-destroy.js [ FAIL ] # not yet passing
