@@ -28461,7 +28461,24 @@ pub const Checker = struct {
             if (try self.virtualCommonJsModuleExportObjectType(parent, spec)) |commonjs_t| return commonjs_t;
             if (try self.programCommonJsWholeExportType(parent, spec)) |whole_t| return whole_t;
         }
+        if (imp.namespace_binding == decl and self.sourceDirectiveValueMentions("esModuleInterop", "true")) {
+            const export_t = (try self.virtualExportAssignmentExpressionType(parent, imp.module)) orelse
+                (try self.virtualExportAssignmentTargetStaticType(parent, imp.module));
+            if (export_t) |target_t| return try self.commonJsInteropNamespaceType(target_t);
+        }
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
+    }
+
+    fn commonJsInteropNamespaceType(self: *Checker, target_t: TypeId) CheckError!TypeId {
+        const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{.{
+            .name = default_name,
+            .type = target_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        }};
+        return self.interner.internObjectType(&members) catch return error.OutOfMemory;
     }
 
     fn moduleNamespaceTypeForLocalImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
@@ -28485,6 +28502,11 @@ pub const Checker = struct {
                 if (try self.virtualCommonJsRepeatedWholeObjectExportType(stmt, imp.module)) |whole_t| return whole_t;
                 if (try self.virtualCommonJsModuleExportObjectType(stmt, self.string_interner.get(imp.module))) |commonjs_t| return commonjs_t;
                 if (try self.programCommonJsWholeExportType(stmt, self.string_interner.get(imp.module))) |whole_t| return whole_t;
+            }
+            if (imp.namespace_binding == binding and self.sourceDirectiveValueMentions("esModuleInterop", "true")) {
+                const export_t = (try self.virtualExportAssignmentExpressionType(stmt, imp.module)) orelse
+                    (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module));
+                if (export_t) |target_t| return try self.commonJsInteropNamespaceType(target_t);
             }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
@@ -59029,7 +59051,7 @@ pub const Checker = struct {
                 // situation, never TS2305. In resolver-less single-file mode
                 // home tolerates the unresolved import (treats it as `any`).
                 // Fixes builtin-corpus `09-import` (`import { foo } from "./bar"`).
-                if (self.external_resolver == null) continue;
+                continue;
             }
             const ambient_module_name = if (external_status == .missing)
                 self.externalAmbientModuleDisplayName(node, spec, sp.imported)
@@ -83924,6 +83946,21 @@ pub const Checker = struct {
             hir_mod.arrayLiteralElements(self.hir, v.init).len == 0;
     }
 
+    fn initialEvolvingAnyFlowType(self: *Checker, variable: hir_mod.VarDeclPayload) ?TypeId {
+        if (variable.init == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(variable.init)) {
+            .literal_null => if (!self.strict_flags.strict_null_checks and !self.strict_flags.no_implicit_any)
+                types.Primitive.any
+            else
+                types.Primitive.null_t,
+            .literal_undefined => if (!self.strict_flags.strict_null_checks and !self.strict_flags.no_implicit_any)
+                types.Primitive.any
+            else
+                types.Primitive.undefined_t,
+            else => null,
+        };
+    }
+
     fn mergeDefiniteEvolvingAnyFlowTypes(self: *Checker, lhs: ?TypeId, rhs: ?TypeId) CheckError!?TypeId {
         const left = lhs orelse return null;
         const right = rhs orelse return null;
@@ -84121,13 +84158,7 @@ pub const Checker = struct {
         if (declaration == hir_mod.none_node_id) return null;
 
         const recovered_variable = hir_mod.varDeclOf(self.hir, declaration);
-        var flow: ?TypeId = if (recovered_variable.init == hir_mod.none_node_id)
-            null
-        else switch (self.hir.kindOf(recovered_variable.init)) {
-            .literal_null => types.Primitive.null_t,
-            .literal_undefined => types.Primitive.undefined_t,
-            else => null,
-        };
+        var flow: ?TypeId = self.initialEvolvingAnyFlowType(recovered_variable);
         candidate = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
             if (self.hir.kindOf(candidate) != .assignment) continue;
@@ -84201,13 +84232,7 @@ pub const Checker = struct {
         if (declaration_pos >= use_pos) return null;
         const declaration = self.unwrapExportDecl(statements[declaration_pos]);
         const variable = hir_mod.varDeclOf(self.hir, declaration);
-        var flow: ?TypeId = if (variable.init == hir_mod.none_node_id)
-            null
-        else switch (self.hir.kindOf(variable.init)) {
-            .literal_null => types.Primitive.null_t,
-            .literal_undefined => types.Primitive.undefined_t,
-            else => null,
-        };
+        var flow: ?TypeId = self.initialEvolvingAnyFlowType(variable);
         for (statements[declaration_pos + 1 .. use_pos]) |stmt| {
             flow = try self.identifierFlowTypeAfterStatement(stmt, name, flow, false);
         }
@@ -86285,6 +86310,14 @@ pub const Checker = struct {
             } else {
                 init_type = try self.checkExpression(v.init);
                 init_type = try self.narrowWhileConditionedDestructuringSource(node, v, init_type);
+            }
+            if (declared_type == types.Primitive.none and
+                self.hir.kindOf(node) != .const_decl and
+                !self.strict_flags.strict_null_checks and
+                !self.strict_flags.no_implicit_any and
+                (init_type == types.Primitive.null_t or init_type == types.Primitive.undefined_t))
+            {
+                init_type = types.Primitive.any;
             }
             if (declared_type == types.Primitive.none and
                 init_type == types.Primitive.undefined_t and
@@ -106600,17 +106633,9 @@ pub const Checker = struct {
                         // `export = <value>` module yields the ESM-interop
                         // namespace `{ default: <value> }` (esModuleInterop).
                         // Mirrors `modulePreserve4`'s `await import("./d")`.
-                        if (try self.virtualExportAssignmentExpressionType(node, lit.value)) |ee_t| {
-                            const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
-                            const members = [_]types.ObjectMember{.{
-                                .name = default_name,
-                                .type = ee_t,
-                                .is_optional = false,
-                                .is_readonly = true,
-                                .is_method = false,
-                            }};
-                            break :blk_import self.interner.internObjectType(&members) catch return error.OutOfMemory;
-                        }
+                        const export_t = (try self.virtualExportAssignmentExpressionType(node, lit.value)) orelse
+                            (try self.virtualExportAssignmentTargetStaticType(node, lit.value));
+                        if (export_t) |target_t| break :blk_import try self.commonJsInteropNamespaceType(target_t);
                         break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
                     break :blk try self.buildStructuralPromise(import_t);
@@ -158564,6 +158589,22 @@ pub const Checker = struct {
                 .{ pair.arg, pair.param },
             );
         }
+        if (display_arg_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(display_arg_t).is_object_type and
+            !self.objectHasCallOrConstructSignature(display_arg_t))
+        {
+            if (self.firstSignatureType(param_t)) |param_sig| {
+                if (try self.allocObjectTypeShape(display_arg_t)) |arg_text| {
+                    if (try self.allocCallableSignatureName(param_sig)) |param_text| {
+                        return try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                            .{ arg_text, param_text },
+                        );
+                    }
+                }
+            }
+        }
         if (try self.argumentNamedSourceToCallSignatureNames(display_arg_t, param_t)) |pair| {
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -187996,6 +188037,47 @@ test "checker: module preserve default imports accept export-equals and CommonJS
         try T.expect(d.code != TsCodes.no_default_export);
         try T.expect(d.code != TsCodes.no_default_export_named_import_suggestion);
     }
+}
+
+test "checker: esModuleInterop namespace imports expose export-equals through default" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @esModuleInterop: true
+        \\// @filename: /foo.d.ts
+        \\declare function foo(): void;
+        \\declare namespace foo {}
+        \\export = foo;
+        \\// @filename: /index.ts
+        \\import * as foo from "./foo";
+        \\const value: { readonly default: () => void } = foo;
+        \\function invoke(f: () => void) { f(); }
+        \\invoke(foo);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '{ default: () => void; }' is not assignable to parameter of type '() => void'.",
+    ));
+}
+
+test "checker: dynamic import exposes named export-equals target through default" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @esModuleInterop: true
+        \\// @filename: /foo.d.ts
+        \\declare function foo(): void;
+        \\declare namespace foo {}
+        \\export = foo;
+        \\// @filename: /index.ts
+        \\import("./foo").then(value => value.default());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_not_callable));
 }
 
 test "checker: re-export default alias from CommonJS module.exports target is allowed" {
@@ -242976,6 +243058,18 @@ test "checker: relative import with external resolver and no virtual sections st
     try T.expect(saw_ts2307);
 }
 
+test "checker: unresolved named import does not add TS2305 after TS2307" {
+    const s = try newSetup(
+        \\import { value } from "./missing";
+    );
+    defer destroySetup(s);
+    var stub = NeverResolveExternalResolver{};
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &NeverResolveExternalResolver.vtable });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_module));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_exported_member));
+}
+
 /// Test-only `ExternalResolver` impl whose `resolve` always returns
 /// `null`. Used to simulate a program-routed compile where the bundled
 /// resolver cannot find a relative specifier.
@@ -263366,6 +263460,19 @@ test "checker: computed enum updates respect the readonly reverse index" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_index_signature));
+}
+
+test "checker: non-strict null mutable variables widen before truthiness narrowing" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\namespace N {
+        \\  export var writer = null;
+        \\  if (writer) writer.alert();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: enum arithmetic updates require a writable reference" {
