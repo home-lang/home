@@ -40244,6 +40244,67 @@ const harness_prelude =
     \\  }
     \\  return new URL(String(authority));
     \\}
+    \\const __home_http2_socket_forbidden = new Set(["destroy", "emit", "end", "pause", "read", "resume", "write", "setEncoding", "setKeepAlive", "setNoDelay"]);
+    \\function __home_http2_no_socket_manipulation_error() { return __home_http2_error_with_code("ERR_HTTP2_NO_SOCKET_MANIPULATION", "HTTP/2 sockets should not be directly manipulated (e.g. read and written)"); }
+    \\function __home_http2_socket_unbound_error() { return __home_http2_error_with_code("ERR_HTTP2_SOCKET_UNBOUND", "The socket has been disconnected from the Http2Session"); }
+    \\function __home_http2_bind_session_socket(session, rawSocket) {
+    \\  session[__home_http2_k_socket] = rawSocket;
+    \\  session.__home_socket_unbound = false;
+    \\  if (!rawSocket._handle) rawSocket._handle = {};
+    \\  if (rawSocket.__home_refed === undefined) rawSocket.__home_refed = true;
+    \\  if (typeof rawSocket._handle.hasRef !== "function") rawSocket._handle.hasRef = () => rawSocket.__home_refed !== false;
+    \\  if (rawSocket.readable === undefined) rawSocket.readable = true;
+    \\  if (rawSocket.writable === undefined) rawSocket.writable = true;
+    \\  if (typeof rawSocket.address !== "function") rawSocket.address = function() { return { address: this.localAddress || "127.0.0.1", family: this.localFamily || "IPv4", port: Number(this.localPort) || 0 }; };
+    \\  if (!session.__home_socket_proxy) session.__home_socket_proxy = new Proxy(rawSocket, {
+    \\    get(_target, property) {
+    \\      if (session.__home_socket_unbound) throw __home_http2_socket_unbound_error();
+    \\      if (__home_http2_socket_forbidden.has(property)) throw __home_http2_no_socket_manipulation_error();
+    \\      if (property === "setTimeout" || property === "ref" || property === "unref") return typeof session[property] === "function" ? session[property].bind(session) : session[property];
+    \\      const value = rawSocket[property];
+    \\      return typeof value === "function" ? value.bind(rawSocket) : value;
+    \\    },
+    \\    set(_target, property, value) {
+    \\      if (session.__home_socket_unbound) throw __home_http2_socket_unbound_error();
+    \\      if (__home_http2_socket_forbidden.has(property)) throw __home_http2_no_socket_manipulation_error();
+    \\      if (property === "setTimeout" || property === "ref" || property === "unref") session[property] = value;
+    \\      else rawSocket[property] = value;
+    \\      return true;
+    \\    },
+    \\    has(_target, property) {
+    \\      if (session.__home_socket_unbound) throw __home_http2_socket_unbound_error();
+    \\      return property in rawSocket || property in session;
+    \\    },
+    \\    getPrototypeOf() {
+    \\      if (session.__home_socket_unbound) throw __home_http2_socket_unbound_error();
+    \\      return typeof __home_net_Socket === "function" ? __home_net_Socket.prototype : Object.getPrototypeOf(rawSocket);
+    \\    },
+    \\  });
+    \\  if (!session.__home_socket_accessor) {
+    \\    session.__home_socket_accessor = true;
+    \\    Object.defineProperty(session, "socket", { configurable: true, enumerable: true, get() { return this.__home_socket_unbound ? undefined : this.__home_socket_proxy; } });
+    \\  }
+    \\  return session.__home_socket_proxy;
+    \\}
+    \\function __home_http2_unbind_session_socket(session) { if (session) session.__home_socket_unbound = true; }
+    \\function __home_http2_make_session_timeout(session) {
+    \\  const custom = Symbol.for("nodejs.util.inspect.custom");
+    \\  const list = { [custom]() { return "TimersList {\n  _idleNext: [Timeout],\n  _idlePrev: [Timeout]\n}"; } };
+    \\  const timeout = { _idleTimeout: 0, _idlePrev: list, _idleNext: list, [custom]() { return "Timeout {\n  _idleTimeout: " + String(this._idleTimeout) + ",\n  _idlePrev: [TimersList],\n  _idleNext: [TimersList]\n}"; } };
+    \\  Object.defineProperty(timeout, "__home_handle", { configurable: true, writable: true, value: null });
+    \\  session[__home_internal_timers_k_timeout] = timeout;
+    \\  return timeout;
+    \\}
+    \\function __home_http2_clear_session_timeout(session) { const timeout = session && session[__home_internal_timers_k_timeout]; if (timeout && timeout.__home_handle) clearTimeout(timeout.__home_handle); if (timeout) timeout.__home_handle = null; }
+    \\function __home_http2_set_session_timeout(session, milliseconds, timeoutListener) {
+    \\  if (timeoutListener !== undefined && typeof timeoutListener !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(timeoutListener)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\  const timeout = session[__home_internal_timers_k_timeout] || __home_http2_make_session_timeout(session);
+    \\  timeout._idleTimeout = Math.max(0, Number(milliseconds) || 0);
+    \\  __home_http2_clear_session_timeout(session);
+    \\  if (typeof timeoutListener === "function") session.once("timeout", timeoutListener);
+    \\  if (timeout._idleTimeout > 0) timeout.__home_handle = setTimeout(() => { timeout.__home_handle = null; if (!session.closed && !session.destroyed) session.emit("timeout"); }, timeout._idleTimeout);
+    \\  return session;
+    \\}
     \\function __home_http2_maybe_close_client(client) {
     \\  if (!client || !client.closed || client.__home_close_emitted) return;
     \\  const active = Object.values(client.__home_streams || {}).some(stream => stream && !stream.closed && !stream.destroyed);
@@ -40257,6 +40318,7 @@ const harness_prelude =
     \\    if (!socket.destroyed && typeof socket.destroy === "function") socket.destroy();
     \\  }
     \\  client.emit("close");
+    \\  Promise.resolve().then(() => __home_http2_unbind_session_socket(client));
     \\  if (client.__home_server_session && typeof client.__home_server_session.close === "function") client.__home_server_session.close();
     \\}
     \\function __home_http2_conformance_connect(authority, options) {
@@ -40447,8 +40509,8 @@ const harness_prelude =
     \\  client.__home_server_session.state = { effectiveLocalWindowSize: 65535, effectiveRecvDataLength: 0, nextStreamID: 2, localWindowSize: 65535, lastProcStreamID: 0, remoteWindowSize: 65535, outboundQueueSize: 0, deflateDynamicTableSize: 0, inflateDynamicTableSize: 0 };
     \\  function unregisterServerSession(target) { if (!server || !server.__home_sessions) return; target.__home_server_registered = false; server.__home_sessions.delete(target); server.__home_finish_close(); }
     \\  client.__home_server_session.setLocalWindowSize = function(size) { if (typeof size !== "number") { const error = new TypeError('The "windowSize" argument must be of type number.' + __home_http2_invalid_arg_type_suffix(size)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; } const value = Number(size); if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) { const error = new RangeError('The value of "windowSize" is out of range'); error.code = "ERR_OUT_OF_RANGE"; throw error; } this.state.effectiveLocalWindowSize = value; this.state.localWindowSize = value; return undefined; };
-    \\  client.__home_server_session[__home_internal_timers_k_timeout] = { _idleTimeout: 0 };
-    \\  client.__home_server_session.setTimeout = function(milliseconds, timeoutListener) { this[__home_internal_timers_k_timeout] = { _idleTimeout: Number(milliseconds) || 0 }; if (typeof timeoutListener === "function") this.once("timeout", timeoutListener); return this; };
+    \\  __home_http2_make_session_timeout(client.__home_server_session);
+    \\  client.__home_server_session.setTimeout = function(milliseconds, timeoutListener) { return __home_http2_set_session_timeout(this, milliseconds, timeoutListener); };
     \\  client.__home_server_session.settings = function(update, settingsCallback) {
     \\    const values = update || {};
     \\    this.__home_pending_settings_ack_count++;
@@ -40501,8 +40563,8 @@ const harness_prelude =
     \\    return this;
     \\  };
     \\  client.__home_server_session.ping = function(payload, callback) { return __home_http2_ping(this, client, payload, callback, server && server.__home_options && server.__home_options.maxOutstandingPings); };
-    \\  client.__home_server_session.ref = function() { this.__home_unrefed = false; return this; };
-    \\  client.__home_server_session.unref = function() { this.__home_unrefed = true; return this; };
+    \\  client.__home_server_session.ref = function() { this.__home_unrefed = false; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = true; return this; };
+    \\  client.__home_server_session.unref = function() { this.__home_unrefed = true; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = false; return this; };
     \\  client.__home_server_session.origin = function() {
     \\    if (arguments.length === 0) return undefined;
     \\    const origins = Array.from(arguments, __home_http2_normalize_origin);
@@ -40587,9 +40649,8 @@ const harness_prelude =
     \\  if (typeof transportSocket.end !== "function") transportSocket.end = function() { return this.destroy(); };
     \\  if (typeof transportSocket.setTimeout !== "function") transportSocket.setTimeout = function() { return this; };
     \\  if (typeof transportSocket.setNoDelay !== "function") transportSocket.setNoDelay = function() { return this; };
-    \\  client[__home_http2_k_socket] = transportSocket;
-    \\  client.__home_server_session.socket = serverTransportSocket;
-    \\  client.__home_server_session[__home_http2_k_socket] = serverTransportSocket;
+    \\  __home_http2_bind_session_socket(client, transportSocket);
+    \\  __home_http2_bind_session_socket(client.__home_server_session, serverTransportSocket);
     \\  serverTransportSocket.on("error", error => {
     \\    if (transportSocket.__home_suppress_h2_session_error && client.__home_termination_scheduled) return;
     \\    const session = client.__home_server_session;
@@ -40631,7 +40692,7 @@ const harness_prelude =
     \\    });
     \\    return undefined;
     \\  };
-    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
+    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; __home_http2_clear_session_timeout(this); if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { __home_http2_unbind_session_socket(this); this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
     \\  client.__home_server_session.destroy = function(codeOrError) {
     \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; if (codeOrError) Promise.resolve().then(() => this.emit("error", codeOrError)); return this.close(); }
     \\    if (this.destroyed) return this;
@@ -40659,7 +40720,8 @@ const harness_prelude =
     \\    });
     \\    return this;
     \\  };
-    \\  client.socket = Object.assign(__home_http_event_target(), { __home_http2_client: client, write() { const error = new Error("HTTP/2 sockets should not be directly manipulated"); error.code = "ERR_HTTP2_NO_SOCKET_MANIPULATION"; throw error; }, end() { const error = new Error("HTTP/2 sockets should not be directly manipulated"); error.code = "ERR_HTTP2_NO_SOCKET_MANIPULATION"; throw error; } });
+    \\  __home_http2_make_session_timeout(client);
+    \\  client.setTimeout = function(milliseconds, timeoutListener) { return __home_http2_set_session_timeout(this, milliseconds, timeoutListener); };
     \\  if (client.encrypted) client.socket.once("secureConnect", function() {});
     \\  client.state = { effectiveLocalWindowSize: 65535, effectiveRecvDataLength: 0, nextStreamID: 1, localWindowSize: 65535, lastProcStreamID: 0, remoteWindowSize: 65535, outboundQueueSize: 0, deflateDynamicTableSize: 0, inflateDynamicTableSize: 0 };
     \\  client.__home_local_window_size = Number(options && options.settings && options.settings.initialWindowSize) || 65535;
@@ -40709,6 +40771,8 @@ const harness_prelude =
     \\    Promise.resolve().then(() => {
     \\      if (cause) this.emit("error", cause);
     \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\      __home_http2_clear_session_timeout(this);
+    \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
     \\      for (const id of Object.keys(this.__home_streams)) {
     \\        const stream = this.__home_streams[id];
     \\        if (!stream || stream.closed) continue;
@@ -40771,8 +40835,8 @@ const harness_prelude =
     \\  client.destroy = function(error) {
     \\    return this.__home_terminate("destroy", error || null, false);
     \\  };
-    \\  client.ref = function() { this.__home_unrefed = false; return this; };
-    \\  client.unref = function() { this.__home_unrefed = true; return this; };
+    \\  client.ref = function() { this.__home_unrefed = false; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = true; return this; };
+    \\  client.unref = function() { this.__home_unrefed = true; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = false; return this; };
     \\  client.ping = function(payload, callback) {
     \\    this.__home_assert_active();
     \\    return __home_http2_ping(this, this.__home_server_session, payload, callback, options && options.maxOutstandingPings);
@@ -41903,7 +41967,7 @@ const harness_prelude =
     \\        client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      }
     \\    }
-    \\    if (client.encrypted && !client.__home_secure_connect_emitted) { client.__home_secure_connect_emitted = true; client.socket.emit("secureConnect"); }
+    \\    if (client.encrypted && !client.__home_secure_connect_emitted) { client.__home_secure_connect_emitted = true; transportSocket.emit("secureConnect"); }
     \\    if (client.destroyed || client.__home_close_emitted || client.__home_termination_scheduled) return;
     \\    if (typeof connectListener === "function") {
     \\      try { connectListener.call(client, client); } catch (error) { client.destroy(error); return; }
@@ -155729,8 +155793,10 @@ test "bootstrap HTTP2 session settings shutdown and socket corpus tranche contra
         "js/node/test/parallel/test-http2-single-headers-validation-disabled.js",
         "js/node/test/parallel/test-http2-single-headers-validation.js",
         "js/node/test/parallel/test-http2-socket-close.js",
+        "js/node/test/parallel/test-http2-socket-proxy.js",
         "js/node/test/parallel/test-http2-socket-proxy-handler-for-has.js",
         "js/node/test/parallel/test-http2-too-many-settings.js",
+        "js/node/test/parallel/test-http2-unbound-socket-proxy.js",
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();

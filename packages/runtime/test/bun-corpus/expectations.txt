@@ -190,13 +190,10 @@ test/js/node/test/parallel/test-http2-server-socket-destroy.js [ FAIL ] # not ye
 test/js/node/test/parallel/test-http2-server-stream-session-destroy.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-settings-unsolicited-ack.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-single-headers-validation-disabled.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-socket-proxy.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-stream-client.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-asserts.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-nghttp2error.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-update-options-buffer.js [ FAIL ] # not yet passing
-test/js/node/test/sequential/test-http2-timeout-large-write-file.js [ FAIL ] # not yet passing
-test/js/node/test/sequential/test-http2-timeout-large-write.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-autoselect-protocol.js [ SKIP ] # hangs; skip until the underlying feature lands
 test/js/node/test/parallel/test-http2-client-connection-tunnelling.js [ SKIP ] # hangs; skip until the underlying feature lands
 test/js/node/test/parallel/test-http2-client-jsstream-destroy.js [ SKIP ] # hangs; skip until the underlying feature lands
