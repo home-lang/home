@@ -38672,7 +38672,7 @@ const harness_prelude =
     \\const __home_http2_raw_sessions = globalThis.__home_http2_raw_sessions || (globalThis.__home_http2_raw_sessions = Object.create(null));
     \\globalThis.__home_http2_priority_warnings = globalThis.__home_http2_priority_warnings || Object.create(null);
     \\const __home_http2_k_socket = Symbol("kSocket");
-    \\const __home_http2_sensitive_headers = Symbol("sensitiveHeaders");
+    \\const __home_http2_sensitive_headers = Symbol.for("nodejs.http2.sensitiveHeaders");
     \\const __home_internal_timers_k_timeout = Symbol("kTimeout");
     \\class __home_http2_NghttpError extends Error {
     \\  constructor(codeOrMessage, customCode) {
@@ -39159,7 +39159,7 @@ const harness_prelude =
     \\        session.emit("remoteSettings", session.remoteSettings);
     \\        send(__home_http2_frame(4, 1, 0, Buffer.alloc(0)));
     \\      }
-    \\      else if (type === 7 && payload.length >= 8 && (payload.readUInt32BE(0) & 0x7fffffff) > 0) { const error = __home_http2_error_with_code("ERR_HTTP2_ERROR", "Protocol error"); Promise.resolve().then(() => server.emit("sessionError", error, session)); close(true); return; }
+    \\      else if (type === 7 && payload.length >= 8 && ((payload.readUInt32BE(0) & 0x7fffffff) & 1) !== 0) { const error = __home_http2_error_with_code("ERR_HTTP2_ERROR", "Protocol error"); Promise.resolve().then(() => server.emit("sessionError", error, session)); close(true); return; }
     \\      else if (type === 6 && (streamId !== 0 || length !== 8)) { sendGoaway(streamId !== 0 ? 1 : 6); return; }
     \\      else if (type === 6 && !(flags & 1)) send(__home_http2_frame(6, 1, 0, payload));
     \\      else if (type === 6 && (flags & 1)) { failRawSession(__home_http2_error_with_code("ERR_HTTP2_ERROR", "Protocol error"), null); return; }
@@ -39370,13 +39370,23 @@ const harness_prelude =
     \\  if (headers.host !== undefined) return headers.host;
     \\  return undefined;
     \\}
+    \\function __home_http2_sensitive_names(headers, explicitNames) {
+    \\  const names = [];
+    \\  const explicit = Array.from(explicitNames || [], value => String(value).toLowerCase());
+    \\  for (const rawName of Object.keys(headers || {})) {
+    \\    const name = String(rawName).toLowerCase();
+    \\    const value = headers[rawName];
+    \\    if ((explicit.includes(name) || name === "authorization" || name === "cookie" && typeof value === "string" && value.length < 20) && !names.includes(name)) names.push(name);
+    \\  }
+    \\  for (const name of explicit) if (!names.includes(name)) names.push(name);
+    \\  return names;
+    \\}
     \\function __home_http2_build_ng_header_string(arrayOrMap, validatePseudoHeaderValue, strictSingleValueFields) {
     \\  let headers = "";
     \\  let pseudoHeaders = "";
     \\  let count = 0;
     \\  const singles = new Set();
-    \\  const sensitive = arrayOrMap && arrayOrMap[__home_http2_sensitive_headers] || [];
-    \\  const neverIndex = Array.from(sensitive, value => String(value).toLowerCase());
+    \\  const neverIndex = __home_http2_sensitive_names(arrayOrMap, arrayOrMap && arrayOrMap[__home_http2_sensitive_headers]);
     \\  function processHeader(rawKey, rawValue) {
     \\    const key = String(rawKey).toLowerCase();
     \\    const isStrictSingle = strictSingleValueFields && __home_http2_single_value_headers.has(key);
@@ -40970,6 +40980,8 @@ const harness_prelude =
     \\    if ((suppliedMethod !== "CONNECT" || extendedConnect) && requestHeaders[":authority"] === undefined && requestHeaders.host === undefined) defaultHeaders[":authority"] = client.encrypted && secureServername ? secureServername + (authorityPort === 443 ? "" : ":" + String(authorityPort)) : authorityHostHeader;
     \\    const combinedHeaders = Object.assign(Object.create(null), requestHeaders, defaultHeaders);
     \\    if (server && (!server.__home_options || server.__home_options.strictFieldWhitespaceValidation !== false)) for (const name of Object.keys(combinedHeaders)) if (!String(name).startsWith(":") && /^[ \t]|[ \t]$/.test(String(combinedHeaders[name]))) delete combinedHeaders[name];
+    \\    const receivedSensitiveHeaders = __home_http2_sensitive_names(combinedHeaders, requestHeaders[__home_http2_sensitive_headers]);
+    \\    if (receivedSensitiveHeaders.length > 0) combinedHeaders[__home_http2_sensitive_headers] = receivedSensitiveHeaders;
     \\    stream.__home_received_headers = combinedHeaders;
     \\    stream.sentHeaders = Object.create(null);
     \\    if (requestHeaders.__home_array_input) {
@@ -41436,8 +41448,7 @@ const harness_prelude =
     \\      else normalizedHeaders[":status"] = Number(normalizedHeaders[":status"]);
     \\      if (!hasDate) normalizedHeaders.date = new Date(0).toUTCString();
     \\      if (!options || options.strictFieldWhitespaceValidation !== false) for (const name of Object.keys(normalizedHeaders)) if (!String(name).startsWith(":") && /^[ \t]|[ \t]$/.test(String(normalizedHeaders[name]))) delete normalizedHeaders[name];
-    \\      const sensitiveHeaders = normalizedHeaders[__home_http2_sensitive_headers] ? Array.from(normalizedHeaders[__home_http2_sensitive_headers]) : [];
-    \\      if (normalizedHeaders.cookie !== undefined && !sensitiveHeaders.includes("cookie")) sensitiveHeaders.unshift("cookie");
+    \\      const sensitiveHeaders = __home_http2_sensitive_names(normalizedHeaders, normalizedHeaders[__home_http2_sensitive_headers]);
     \\      if (sensitiveHeaders.length > 0) normalizedHeaders[__home_http2_sensitive_headers] = sensitiveHeaders;
     \\      this.sentHeaders = Object.create(null);
     \\      const publicHeaders = validatedHeaders.__home_sent_headers || validatedHeaders;
@@ -156045,10 +156056,12 @@ test "bootstrap HTTP2 internal header utilities logical contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net");
         \\const { assertValidPseudoHeader, getAuthority, buildNgHeaderString, toHeaderObject, NghttpError, updateOptionsBuffer } = require("internal/http2/util"); const { internalBinding } = require("internal/test/binding");
         \\test("header utility serialization preserves ordering flags and materialization rules", () => { const input = { regular: [1, { toString() { return "two"; } }], ":path": "/", Age: [3], cookie: ["a=1", "b=2"], [http2.sensitiveHeaders]: ["REGULAR"] }; const [encoded, count] = buildNgHeaderString(input, assertValidPseudoHeader, true); assert.strictEqual(encoded, ":path\x00/\x00\x00regular\x001\x00\x01regular\x00two\x00\x01age\x003\x00\x00cookie\x00a=1\x00\x00cookie\x00b=2\x00\x00"); assert.strictEqual(count, 6); assert.throws(() => assertValidPseudoHeader(":invalid"), { name: "TypeError", code: "ERR_HTTP2_INVALID_PSEUDOHEADER", message: '\":invalid\" is an invalid pseudoheader or is used incorrectly' }); assert.throws(() => buildNgHeaderString({ AGE: [1, 2] }, assertValidPseudoHeader, true), { name: "TypeError", code: "ERR_HTTP2_HEADER_SINGLE_VALUE", message: 'Header field "age" must only have a single value' }); assert.throws(() => buildNgHeaderString({ Connection: "close" }, assertValidPseudoHeader, true), { name: "TypeError", code: "ERR_HTTP2_INVALID_CONNECTION_HEADERS" }); assert.strictEqual(getAuthority({ ":authority": "", host: "fallback" }), ""); const sensitive = ["cookie"]; const output = toHeaderObject([":status", "200", ":status", "500", "cookie", "a=1", "cookie", "b=2", "set-cookie", "x", "set-cookie", "y", "age", "1", "age", "2", "x-many", "a", "x-many", "b"], sensitive); assert.strictEqual(Object.getPrototypeOf(output), null); assert.strictEqual(output[":status"], 200); assert.strictEqual(output.cookie, "a=1; b=2"); assert.deepStrictEqual(output["set-cookie"], ["x", "y"]); assert.strictEqual(output.age, "1"); assert.strictEqual(output["x-many"], "a, b"); assert.strictEqual(output[http2.sensitiveHeaders], sensitive); });
         \\test("nghttp errors and option flags preserve native binding state", () => { const known = new NghttpError(-501); assert.strictEqual(known.errno, -501); assert.strictEqual(known.code, "ERR_HTTP2_ERROR"); assert.strictEqual(known.message, "Invalid argument"); assert.strictEqual(new NghttpError(401).toString(), "Error [ERR_HTTP2_ERROR]: Unknown error code"); const buffer = internalBinding("http2").optionsBuffer; buffer.fill(0); updateOptionsBuffer({ maxDeflateDynamicTableSize: 3, maxOutstandingSettings: 0, strictFieldWhitespaceValidation: true }); assert.strictEqual(buffer[0], 3); assert.strictEqual(buffer[7], 1); assert.strictEqual(buffer[12], 0); assert.strictEqual(buffer[13], (1 << 0) | (1 << 7) | (1 << 12)); updateOptionsBuffer({}); assert.strictEqual(buffer[0], 3); assert.strictEqual(buffer[13], 0); });
+        \\test("sensitive header metadata follows Bun's registry and automatic indexing rules", () => { assert.strictEqual(Symbol.keyFor(http2.sensitiveHeaders), "nodejs.http2.sensitiveHeaders"); const [short] = buildNgHeaderString({ authorization: "Bearer secret", cookie: "a=1" }, assertValidPseudoHeader, true); assert.strictEqual(short, "authorization\x00Bearer secret\x00\x01cookie\x00a=1\x00\x01"); const [long] = buildNgHeaderString({ cookie: "12345678901234567890" }, assertValidPseudoHeader, true); assert.strictEqual(long, "cookie\x0012345678901234567890\x00\x00"); });
+        \\test("server accepts an even GOAWAY last-stream identifier", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); server.on("error", reject); server.on("sessionError", reject); server.listen(0, () => { const socket = new net.Socket(); socket.connect(server.address()); socket.on("connect", () => { socket.write(Buffer.from("PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n")); socket.write(Buffer.from([0, 0, 0, 4, 0, 0, 0, 0, 0])); socket.write(Buffer.from([0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0])); Promise.resolve().then(() => { socket.destroy(); server.close(resolve); }); }); }); }); });
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-internal-header-utils-logical-contracts.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -156058,7 +156071,7 @@ test "bootstrap HTTP2 internal header utilities logical contracts" {
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 internal header utility logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
