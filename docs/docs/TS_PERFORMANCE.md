@@ -10,19 +10,21 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `b509aa125` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `9c6c03f11` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
+The local raw-result identifier is `20260826T221047Z`.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 75.2 ± 5.5 ms | 45.9 ± 8.4 ms | **4.0 ± 0.3 ms** | **11.42× faster** |
-| `many_files` | 252.6 ± 20.1 ms | 64.3 ± 10.1 ms | **38.4 ± 6.7 ms** | **1.67× faster** |
-| `deep_types` | 160.1 ± 11.8 ms | 61.8 ± 4.3 ms | **49.6 ± 2.1 ms** | **1.25× faster** |
-| `import_graph` | 163.7 ± 23.6 ms | 55.7 ± 4.5 ms | **33.5 ± 7.1 ms** | **1.67× faster** |
-| `reexport_graph` | 123.5 ± 2.6 ms | 53.4 ± 7.3 ms | **40.4 ± 1.7 ms** | **1.32× faster** |
-| `tsx_components` | 211.8 ± 4.3 ms | 59.0 ± 1.3 ms | **53.6 ± 1.1 ms** | **1.10× faster** |
-| `generic_calls` | 250.4 ± 19.1 ms | 71.4 ± 2.6 ms | **68.6 ± 2.3 ms** | **1.04× faster** |
+| `startup` | 65.5 ± 14.4 ms | 38.5 ± 4.5 ms | **3.3 ± 0.2 ms** | **11.85× faster** |
+| `many_files` | 205.5 ± 2.3 ms | 52.6 ± 1.2 ms | **30.7 ± 0.5 ms** | **1.71× faster** |
+| `deep_types` | 133.1 ± 19.2 ms | 52.2 ± 2.3 ms | **19.7 ± 0.4 ms** | **2.65× faster** |
+| `import_graph` | 130.0 ± 5.8 ms | 45.2 ± 1.1 ms | **25.6 ± 1.7 ms** | **1.76× faster** |
+| `reexport_graph` | 95.4 ± 2.9 ms | 40.9 ± 1.2 ms | **30.9 ± 1.6 ms** | **1.33× faster** |
+| `tsx_components` | 158.9 ± 1.2 ms | 46.2 ± 0.8 ms | **28.2 ± 0.4 ms** | **1.64× faster** |
+| `generic_calls` | 181.3 ± 4.6 ms | 56.0 ± 3.4 ms | **45.2 ± 2.7 ms** | **1.24× faster** |
+| `control_flow` | 203.8 ± 73.2 ms | 62.7 ± 16.1 ms | **55.5 ± 11.3 ms** | **1.13× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -58,6 +60,7 @@ not a claim that every real project or machine has the same speedup.
 | `reexport_graph` | 64 leaf modules projected through eight barrels | Recursive export-star projection, module resolution, and ambiguity checking |
 | `tsx_components` | One module with 256 typed generic component declarations and JSX trees | TSX scanning, parsing, contextual props, expressions, and checking |
 | `generic_calls` | One module with 256 typed generic call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
+| `control_flow` | One module with 256 exhaustive discriminated-union functions | Narrowing, branch joins, definite assignment, exhaustive switches, property reads, and typed object returns |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -107,4 +110,18 @@ workload-specific shortcuts:
   rescanning the file for every identifier use;
 - identifier resolution skips evolving-`any` flow walks when the source has no
   eligible declarations, reuses its lexical annotation lookup, and avoids
-  declaration scans for function-arity checks against non-callable targets.
+  declaration scans for function-arity checks against non-callable targets;
+- checker compatibility paths use conservative source-feature facts to skip
+  impossible UMD, import, CommonJS, namespace, class, enum, and expando scans;
+- simple annotated bindings reuse their already-resolved declaration type, and
+  visible type-existence queries reuse the per-scope declaration index; and
+- program-level declaration, namespace, interface, class, and CommonJS
+  collectors skip files whose source cannot contain the syntax they collect.
+
+The `control_flow` workload was deliberately added before these optimizations.
+Its five-run red baseline (`20260826T203831Z`) measured Home at
+2,927.8 ± 159.6 ms versus native TypeScript 7 at 81.5 ± 21.8 ms. The unchanged
+workload now measures 55.5 ± 11.3 ms in the 30-run snapshot above: a 52.8×
+Home improvement and a 1.13× win over the fastest competitor. The improvement
+came from removing repeated general-purpose source and HIR scans; the corpus,
+compiler options, validity gate, and measurement schedule were not weakened.
