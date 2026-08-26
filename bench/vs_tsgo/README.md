@@ -40,6 +40,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `deep_types` | 1 large file | Conditional, mapped, indexed, and template literal types |
 | `import_graph` | 128 linked modules | Module resolution, export lookup, and cross-file checking |
 | `reexport_graph` | 64 leaves + 8 barrels | Recursive export-star projection through barrel modules |
+| `tsx_components` | 256 typed components | TSX scanning, parsing, contextual props, expressions, and checking |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
 They do not stand in for application-scale measurements; pinned real-world

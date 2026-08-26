@@ -8,6 +8,7 @@ deep_types_repetitions = 240
 import_graph_modules = 128
 reexport_graph_leaves = 64
 reexport_graph_barrel_size = 8
+tsx_components = 256
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -23,6 +24,9 @@ description = "128 modules in a relative-import chain with cross-file generic ty
 
 [workloads.reexport_graph]
 description = "64 leaf modules projected through eight export-star barrel modules."
+
+[workloads.tsx_components]
+description = "One TSX module with 256 typed generic component declarations and JSX trees."
 
 [compilers.tsc]
 version = "7.0.2"

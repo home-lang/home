@@ -63,17 +63,21 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def shared_config() -> str:
+def shared_config(*, jsx: bool = False) -> str:
+    compiler_options: dict[str, object] = {
+        "strict": True,
+        "noEmit": True,
+        "noLib": True,
+        "skipLibCheck": True,
+        "pretty": False,
+    }
+    if jsx:
+        compiler_options["jsx"] = "preserve"
+    include = ["src/**/*.ts", "src/**/*.tsx"] if jsx else ["src/**/*.ts"]
     return json.dumps(
         {
-            "compilerOptions": {
-                "strict": True,
-                "noEmit": True,
-                "noLib": True,
-                "skipLibCheck": True,
-                "pretty": False,
-            },
-            "include": ["src/**/*.ts"],
+            "compilerOptions": compiler_options,
+            "include": include,
         },
         indent=2,
     ) + "\n"
@@ -236,6 +240,41 @@ def generate_reexport_graph(directory: Path, leaves: int, barrel_size: int) -> N
     write(directory / "src/index.ts", "".join(index_lines))
 
 
+def generate_tsx_components(directory: Path, components: int) -> None:
+    write(directory / "tsconfig.json", shared_config(jsx=True))
+    generate_minimal_lib(directory)
+    blocks = [
+        "declare global {\n"
+        "  namespace JSX {\n"
+        "    interface Element { readonly kind: string; }\n"
+        "    interface IntrinsicElements {\n"
+        "      article: { readonly id?: string; readonly children?: unknown };\n"
+        "      h2: { readonly children?: unknown };\n"
+        "      span: { readonly children?: unknown };\n"
+        "    }\n"
+        "  }\n"
+        "}\n\n"
+        "interface CardProps<T> {\n"
+        "  readonly label: string;\n"
+        "  readonly value: T;\n"
+        "  readonly active: boolean;\n"
+        "}\n\n"
+    ]
+    for index in range(components):
+        blocks.append(
+            f"export function Card{index}(props: CardProps<number>): JSX.Element {{\n"
+            "  return (\n"
+            f'    <article id="card-{index}">\n'
+            "      <h2>{props.label}</h2>\n"
+            "      <span>{props.active ? props.value : 0}</span>\n"
+            "    </article>\n"
+            "  );\n"
+            "}\n\n"
+            f'export const card{index}: JSX.Element = <Card{index} label="Card {index}" value={{{index}}} active={{{index} % 2 == 0}} />;\n\n'
+        )
+    write(directory / "src/components.tsx", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -248,6 +287,7 @@ def cmd_corpus() -> None:
         cfg["reexport_graph_leaves"],
         cfg["reexport_graph_barrel_size"],
     )
+    generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
