@@ -45,6 +45,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `generic_calls` | 256 typed call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
 | `control_flow` | 256 exhaustive functions | Discriminated-union narrowing, branch joins, definite assignment, and exhaustiveness |
 | `overload_resolution` | 128 groups × 8 calls | Overload candidate selection, generic literal inference, and contextual argument typing |
+| `class_hierarchy` | 128 generic class families | Inheritance, overrides, constructors, instance members, and structural interface checking |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
 They do not stand in for application-scale measurements; pinned real-world

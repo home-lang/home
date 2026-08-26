@@ -12,6 +12,7 @@ tsx_components = 256
 generic_calls = 256
 control_flow_functions = 256
 overload_call_groups = 128
+class_hierarchy_families = 128
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -39,6 +40,9 @@ description = "One module with 256 exhaustive discriminated-union functions and 
 
 [workloads.overload_resolution]
 description = "One module with 128 call groups selecting among eight generic overloads with contextual arguments."
+
+[workloads.class_hierarchy]
+description = "One module with 128 generic class families covering inheritance, overrides, constructors, and structural use."
 
 [compilers.tsc]
 version = "6.0.3"

@@ -402,6 +402,45 @@ def generate_overload_resolution(directory: Path, groups: int) -> None:
     write(directory / "src/overload-resolution.ts", "".join(blocks))
 
 
+def generate_class_hierarchy(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        blocks.append(
+            f"interface View{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "  readonly label: string;\n"
+            "  describe(prefix: string): string;\n"
+            "}\n\n"
+            f"class Base{index}<T, N extends number> {{\n"
+            "  constructor(public readonly id: N, protected readonly value: T) {}\n"
+            "  getValue(): T { return this.value; }\n"
+            "  describe(prefix: string): string { return prefix; }\n"
+            "}\n\n"
+            f"class Derived{index} extends Base{index}<{{ readonly label: string; readonly score: number }}, {index}> implements View{index}<{index}> {{\n"
+            "  readonly label: string;\n"
+            "  constructor(label: string, score: number) {\n"
+            f"    super({index}, {{ label, score }});\n"
+            "    this.label = label;\n"
+            "  }\n"
+            "  override getValue(): { readonly label: string; readonly score: number } {\n"
+            "    return super.getValue();\n"
+            "  }\n"
+            "  override describe(prefix: string): string {\n"
+            "    return `${prefix}:${this.label}`;\n"
+            "  }\n"
+            "  score(): number { return this.getValue().score; }\n"
+            "}\n\n"
+            f'const instance{index}: Derived{index} = new Derived{index}("item-{index}", {index});\n'
+            f"const view{index}: View{index}<{index}> = instance{index};\n"
+            f"export const classResult{index}: readonly [{index}, string, number, string] = [\n"
+            f'  view{index}.id, view{index}.label, instance{index}.score(), view{index}.describe("class"),\n'
+            "];\n\n"
+        )
+    write(directory / "src/class-hierarchy.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -418,6 +457,7 @@ def cmd_corpus() -> None:
     generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
     generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
+    generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
