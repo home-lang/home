@@ -51829,7 +51829,6 @@ pub const Checker = struct {
         class_name: hir_mod.StringId,
     ) CheckError!void {
         if (instance_t < types.Primitive.first_dynamic or instance_t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(instance_t)) return;
         var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer path.deinit(self.gpa);
         var stack: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -156391,7 +156390,7 @@ pub const Checker = struct {
                             emitted_rest_mismatch = true;
                             continue;
                         }
-                        const msg = try self.formatArgumentNotAssignable(diagnostic_arg_t, target_t, j);
+                        const msg = try self.formatCallArgumentNotAssignable(args[j], diagnostic_arg_t, target_t, j);
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[j],
                             .code = TsCodes.argument_type_mismatch,
@@ -158731,6 +158730,15 @@ pub const Checker = struct {
         param_t: TypeId,
         position: usize,
     ) CheckError![]const u8 {
+        if (self.qualifiedClassArgumentDiagnosticName(arg_node, arg_t)) |arg_name| {
+            if (try self.simpleDiagnosticTypeName(param_t)) |param_name| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                    .{ arg_name, param_name },
+                );
+            }
+        }
         if (try self.namedFunctionDeclarationDiagnosticName(arg_node)) |arg_name| {
             if (try self.arraySortComparatorDiagnosticName(arg_node, param_t)) |param_name| {
                 return try std.fmt.allocPrint(
@@ -158772,6 +158780,15 @@ pub const Checker = struct {
             );
         }
         return try self.formatArgumentNotAssignable(arg_t, param_t, position);
+    }
+
+    fn qualifiedClassArgumentDiagnosticName(self: *Checker, arg_node: NodeId, arg_t: TypeId) ?[]const u8 {
+        const display = self.alias_display_names.get(arg_t) orelse return null;
+        if (std.mem.indexOfScalar(u8, display, '.') == null) return null;
+        const class_name = self.classNameForInstanceType(arg_t) orelse return null;
+        const declaring_class = self.class_decl_by_instance.get(arg_t) orelse return display;
+        const visible_class = self.findVisibleNamedTypeDecl(arg_node, class_name) orelse return display;
+        return if (visible_class == declaring_class) null else display;
     }
 
     fn namedFunctionDeclarationDiagnosticName(self: *Checker, node: NodeId) CheckError!?[]const u8 {
