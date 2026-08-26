@@ -4616,6 +4616,10 @@ pub const Checker = struct {
     parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
     parameter_annotation_index_built: bool = false,
     source_has_virtual_sections: bool = false,
+    /// UMD globals require an `export as namespace` declaration. Cache a
+    /// conservative keyword prefilter so ordinary type references do not
+    /// repeatedly scan an entire source file looking for one.
+    source_may_have_umd_namespace_export: bool = false,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -4962,6 +4966,10 @@ pub const Checker = struct {
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
+        self.source_may_have_umd_namespace_export =
+            std.mem.indexOf(u8, source, "export") != null and
+            std.mem.indexOf(u8, source, "namespace") != null and
+            std.mem.indexOf(u8, source, "as") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
     }
 
@@ -12446,25 +12454,24 @@ pub const Checker = struct {
         for (stmts, 0..) |left_raw, left_i| {
             const left = self.unwrapExportDecl(left_raw);
             if (left == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(left) != .enum_decl) continue;
             const left_name = self.declarationName(left) orelse continue;
             const left_section = self.virtualSectionStartForNode(left);
-            for (stmts[left_i + 1 ..]) |right_raw| {
+            for (stmts, 0..) |right_raw, right_i| {
+                if (right_i == left_i) continue;
                 const right = self.unwrapExportDecl(right_raw);
                 if (right == hir_mod.none_node_id) continue;
                 if (self.virtualSectionStartForNode(right) != left_section) continue;
                 const right_name = self.declarationName(right) orelse continue;
                 if (right_name != left_name) continue;
 
-                const left_is_enum = self.hir.kindOf(left) == .enum_decl;
                 const right_is_enum = self.hir.kindOf(right) == .enum_decl;
-                if (left_is_enum and right_is_enum) {
+                if (right_is_enum) {
+                    if (right_i < left_i) continue;
                     try self.checkMergedEnumMemberDuplicateDiagnostics(left, right);
                     continue;
                 }
-                if (left_is_enum and self.enumMergeConflictsWithKind(right)) {
-                    try self.reportEnumDeclarationMergeDiagnostic(left);
-                    try self.reportEnumDeclarationMergeDiagnostic(right);
-                } else if (right_is_enum and self.enumMergeConflictsWithKind(left)) {
+                if (self.enumMergeConflictsWithKind(right)) {
                     try self.reportEnumDeclarationMergeDiagnostic(left);
                     try self.reportEnumDeclarationMergeDiagnostic(right);
                 }
@@ -12487,25 +12494,39 @@ pub const Checker = struct {
     }
 
     fn checkTypeAliasDeclarationMergeDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
-        for (stmts, 0..) |left_raw, left_i| {
-            const left = self.unwrapExportDecl(left_raw);
-            if (left == hir_mod.none_node_id) continue;
-            const left_kind = self.hir.kindOf(left);
-            if (left_kind != .type_alias_decl and left_kind != .class_decl and left_kind != .interface_decl) continue;
-            const left_name = self.declarationName(left) orelse continue;
-            const left_section = self.virtualSectionStartForNode(left);
-            for (stmts[left_i + 1 ..]) |right_raw| {
-                const right = self.unwrapExportDecl(right_raw);
-                if (right == hir_mod.none_node_id) continue;
-                if (self.virtualSectionStartForNode(right) != left_section) continue;
-                const right_kind = self.hir.kindOf(right);
-                if (right_kind != .type_alias_decl and right_kind != .class_decl and right_kind != .interface_decl) continue;
-                if (left_kind != .type_alias_decl and right_kind != .type_alias_decl) continue;
-                if (left_kind == .type_alias_decl and right_kind == .type_alias_decl) continue;
-                const right_name = self.declarationName(right) orelse continue;
-                if (right_name != left_name) continue;
-                try self.reportDuplicateIdentifierWithOther(left, left_name, right);
-                try self.reportDuplicateIdentifierWithOther(right, right_name, left);
+        var merge_targets: std.AutoHashMapUnmanaged(DeclarationKey, std.ArrayListUnmanaged(NodeId)) = .empty;
+        defer {
+            var it = merge_targets.valueIterator();
+            while (it.next()) |nodes| nodes.deinit(self.gpa);
+            merge_targets.deinit(self.gpa);
+        }
+
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .interface_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            const key: DeclarationKey = .{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(node),
+            };
+            const gop = try merge_targets.getOrPut(self.gpa, key);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, node);
+        }
+
+        for (stmts) |raw| {
+            const alias = self.unwrapExportDecl(raw);
+            if (alias == hir_mod.none_node_id or self.hir.kindOf(alias) != .type_alias_decl) continue;
+            const name = self.declarationName(alias) orelse continue;
+            const targets = merge_targets.get(.{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(alias),
+            }) orelse continue;
+            for (targets.items) |target| {
+                try self.reportDuplicateIdentifierWithOther(alias, name, target);
+                try self.reportDuplicateIdentifierWithOther(target, name, alias);
             }
         }
     }
@@ -13937,6 +13958,7 @@ pub const Checker = struct {
     }
 
     fn findUmdNamespaceExportSection(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?usize {
+        if (!self.source_may_have_umd_namespace_export) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);

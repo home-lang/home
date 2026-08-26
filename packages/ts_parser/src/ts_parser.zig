@@ -144,6 +144,10 @@ pub const Parser = struct {
     builder: hir_mod.Builder,
     interner: *string_interner.Interner,
     source: []const u8,
+    /// Conformance fixtures may concatenate virtual files behind
+    /// `@filename:` comments. Cache marker presence once so ordinary source
+    /// files do not rescan their entire contents for every grammar check.
+    has_virtual_sections: bool,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     pending_statements: std.ArrayListUnmanaged(NodeId),
     /// Extra for-init declarators (`for (var i = 0, j = 10; ...)`)
@@ -358,6 +362,8 @@ pub const Parser = struct {
             .builder = hir_mod.Builder.init(hir),
             .interner = interner,
             .source = source,
+            .has_virtual_sections = std.mem.indexOf(u8, source, "@filename:") != null or
+                std.mem.indexOf(u8, source, "@Filename:") != null,
             .diagnostics = .empty,
             .pending_statements = .empty,
             .for_init_extras = .empty,
@@ -2260,9 +2266,7 @@ pub const Parser = struct {
     /// one section must not make a *script* section a module. When no markers
     /// exist, falls back to the whole-source indicator.
     fn sectionHasTopLevelModuleSyntaxAt(self: *const Parser, pos: u32) bool {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
+        if (!self.has_virtual_sections) {
             return self.top_level_module_syntax_indicator;
         }
         var sec_start: u32 = 0;
@@ -2313,9 +2317,7 @@ pub const Parser = struct {
     fn hasNonNamespaceExportModuleIndicator(self: *const Parser, pos: u32) bool {
         var sec_start: u32 = 0;
         var sec_end: u32 = @intCast(self.source.len);
-        if (std.mem.indexOf(u8, self.source, "@filename:") != null or
-            std.mem.indexOf(u8, self.source, "@Filename:") != null)
-        {
+        if (self.has_virtual_sections) {
             var line_start: usize = 0;
             while (line_start < self.source.len) {
                 const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
@@ -8035,11 +8037,7 @@ pub const Parser = struct {
     }
 
     fn virtualSectionFilenameAt(self: *const Parser, pos: u32) ?[]const u8 {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
-            return null;
-        }
+        if (!self.has_virtual_sections) return null;
         const limit: usize = @min(@as(usize, pos), self.source.len);
         var last: ?usize = null;
         var line_start: usize = 0;
@@ -8063,11 +8061,7 @@ pub const Parser = struct {
     }
 
     fn nextVirtualSectionBoundaryAfter(self: *const Parser, pos: u32) ?u32 {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
-            return null;
-        }
+        if (!self.has_virtual_sections) return null;
         var line_start: usize = @min(@as(usize, pos), self.source.len);
         while (line_start > 0 and self.source[line_start - 1] != '\n') line_start -= 1;
         while (line_start < self.source.len) {
