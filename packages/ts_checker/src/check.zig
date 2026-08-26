@@ -20305,6 +20305,10 @@ pub const Checker = struct {
         const m = hir_mod.memberOf(self.hir, node);
         if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        if (self.findNamedDeclInVirtualSection(m.object, obj_id.name)) |declaration| {
+            const kind = self.hir.kindOf(declaration);
+            if (kind == .class_decl or kind == .class_expr) return null;
+        }
         if (!self.identifierNamesFunctionValueInScope(obj_id.name, node)) return null;
         return .{ .obj_name = obj_id.name, .prop_name = m.name };
     }
@@ -23365,7 +23369,11 @@ pub const Checker = struct {
             if (!self.functionExpressionHasContextSensitiveParameters(args[i])) continue;
             const callback_t = param_ts[i];
             if (!self.interner.isSignature(callback_t)) continue;
-            if ((self.interner.signatureReturn(callback_t) orelse continue) != param_t) continue;
+            const callback_return = self.interner.signatureReturn(callback_t) orelse continue;
+            const callback_return_param = self.firstFreeTypeParameter(callback_return) orelse callback_return;
+            if (callback_return != param_t and
+                callback_return_param != param_t and
+                !self.sameTypeParameterName(callback_return_param, param_t)) continue;
             // Preserve the scalar literal only for a purely covariant
             // callback result. If the same type parameter also appears
             // in a callback parameter (`(acc: U) => U`), the concrete
@@ -105742,6 +105750,8 @@ pub const Checker = struct {
                     try self.checkObjectDestructuringAssignment(a.target, assignment_check_value_t, a.value);
                 }
                 _ = try self.tryReportSameGenericFunctionArgumentAnnotationMismatch(node, a.value, a.target);
+                const filtered_projection_assignment_diag_fired = a.op == null and
+                    try self.tryReportDistinctFilteredProjectionAssignment(node, a.value, a.target);
                 // Note: an `array-literal vs tuple-shape` mismatch used to
                 // emit a generic `Type is not assignable to target type.`
                 // here, but the broader assignment-typing path below
@@ -105759,6 +105769,7 @@ pub const Checker = struct {
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
+                    !filtered_projection_assignment_diag_fired and
                     try self.tryReportRemappedMappedIdentifierAssignment(node, a.target, a.value);
                 const mapped_index_assignment_diag_fired = a.op == null and
                     !target_is_destructuring and
@@ -105769,6 +105780,7 @@ pub const Checker = struct {
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
+                    !filtered_projection_assignment_diag_fired and
                     !remapped_mapped_assignment_diag_fired and
                     try self.tryReportMappedIndexSignatureAssignment(node, a.value, a.target, assignment_check_value_t, target_t);
                 const dedicated_generic_indexed_assignment =
@@ -105777,6 +105789,7 @@ pub const Checker = struct {
                     !exact_optional_assignment_fired and
                     !readonly_target_fired and
                     !assignment_target_diag_fired and
+                    !filtered_projection_assignment_diag_fired and
                     !remapped_mapped_assignment_diag_fired and
                     !mapped_index_assignment_diag_fired and
                     !dedicated_generic_indexed_assignment and
@@ -106947,7 +106960,20 @@ pub const Checker = struct {
                     }
                 }
                 if (self.hir.kindOf(c.callee) == .member_access) {
+                    const this_diag_start = self.diagnostics.items.len;
                     try self.checkMethodThisCompatibility(node, c.callee, callee_t);
+                    var this_context_failed = false;
+                    for (self.diagnostics.items[this_diag_start..]) |diagnostic| {
+                        if (diagnostic.code == TsCodes.this_context_not_assignable) {
+                            this_context_failed = true;
+                            break;
+                        }
+                    }
+                    if (this_context_failed) {
+                        for (args) |arg| {
+                            self.removePriorDiagnosticsInNodeSpan(arg, TsCodes.type_not_assignable);
+                        }
+                    }
                     try self.checkFunctionApplyArgumentTuple(c.callee, args, arg_types.items);
                 } else if (!self.callCalleeHasSyntacticThisReceiver(c.callee)) {
                     try self.checkBareCallThisCompatibility(node, callee_t, args, arg_types.items);
@@ -107492,7 +107518,8 @@ pub const Checker = struct {
                     var failed_contextual_generic_return_inference = false;
                     const receiver_specialized_signature = self.hir.kindOf(c.callee) == .member_access and
                         effective_callee_t != callee_t;
-                    const callee_has_signature_type_params = self.generic_signature_params.get(effective_callee_t) != null;
+                    const callee_has_signature_type_params = self.generic_signature_params.get(effective_callee_t) != null or
+                        self.generic_signature_params.get(callee_t) != null;
                     const callee_is_recorded_generic_fn = self.hir.kindOf(c.callee) == .identifier and
                         self.generic_fns.get(hir_mod.identifierOf(self.hir, c.callee).name) != null;
                     const callee_is_non_generic_inference_site = !callee_has_signature_type_params and
@@ -107520,7 +107547,12 @@ pub const Checker = struct {
                                         .param_index = @intCast(i),
                                     });
                                     if (self.callbackHasQualifiedTypeofInstantiationReturn(args[i])) continue;
-                                    const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
+                                    const arg_has_own_type_params = self.isContextualFunctionExpressionLike(args[i]) and
+                                        hir_mod.fnDeclOf(self.hir, args[i]).type_params_len != 0;
+                                    const suppress_generic_callback_inference = if (arg_has_own_type_params)
+                                        false
+                                    else
+                                        try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                     if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
                                         if (suppress_generic_callback_inference) {
                                             // The specialized pass handled all valid
@@ -107530,7 +107562,11 @@ pub const Checker = struct {
                                         } else if (arg_types.items[i] < self.interner.pool.typeCount() and
                                             self.interner.pool.flagsOf(arg_types.items[i]).is_signature)
                                         {
-                                            const inference_arg_t = try self.genericInferenceFunctionArgumentType(args[i], arg_types.items[i]);
+                                            const inference_arg_t = try self.genericInferenceFunctionArgumentType(
+                                                args[i],
+                                                arg_types.items[i],
+                                                param_t,
+                                            );
                                             try self.inferFromPair(param_t, inference_arg_t, &call_subs);
                                         } else if (self.signatureIsConstruct(param_t)) {
                                             _ = try self.inferFromConstructSignatureArgument(param_t, arg_types.items[i], &call_subs);
@@ -107600,7 +107636,12 @@ pub const Checker = struct {
                                             .param_index = @intCast(i),
                                         });
                                         if (self.callbackHasQualifiedTypeofInstantiationReturn(args[i])) continue;
-                                        const suppress_generic_callback_inference = try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
+                                        const arg_has_own_type_params = self.isContextualFunctionExpressionLike(args[i]) and
+                                            hir_mod.fnDeclOf(self.hir, args[i]).type_params_len != 0;
+                                        const suppress_generic_callback_inference = if (arg_has_own_type_params)
+                                            false
+                                        else
+                                            try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
                                         if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
                                             if (suppress_generic_callback_inference) {
                                                 // The specialized pass handled all valid
@@ -107610,7 +107651,11 @@ pub const Checker = struct {
                                             } else if (arg_types.items[i] < self.interner.pool.typeCount() and
                                                 self.interner.pool.flagsOf(arg_types.items[i]).is_signature)
                                             {
-                                                const inference_arg_t = try self.genericInferenceFunctionArgumentType(args[i], arg_types.items[i]);
+                                                const inference_arg_t = try self.genericInferenceFunctionArgumentType(
+                                                    args[i],
+                                                    arg_types.items[i],
+                                                    param_t,
+                                                );
                                                 try self.inferFromPair(param_t, inference_arg_t, &call_subs);
                                             } else if (self.signatureIsConstruct(param_t)) {
                                                 _ = try self.inferFromConstructSignatureArgument(param_t, arg_types.items[i], &call_subs);
@@ -107627,6 +107672,17 @@ pub const Checker = struct {
                                         try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                                     }
                                 }
+                            }
+                            // The context-sensitive callback phase can expose
+                            // an enclosing, shadowed type parameter through
+                            // the callback's provisional signature. Direct
+                            // covariant scalar evidence has higher priority,
+                            // so restore it before normalizing substitutions.
+                            for (0..n) |i| {
+                                const param_t = param_ts[i];
+                                if (!self.bareTypeParameterIsContextualReturnCandidate(param_t, param_ts, args, n)) continue;
+                                const literal_t = try self.expressionLiteralType(args[i], arg_types.items[i]);
+                                try call_subs.put(self.gpa, param_t, literal_t);
                             }
                         }
                         try self.applyParameterlessCallbackConstraintFallback(
@@ -107674,6 +107730,11 @@ pub const Checker = struct {
                     if (!explicit_type_arg_resolution_failed and !repeated_direct_candidates_are_accepted) {
                         const strict_bind_diag_start = self.diagnostics.items.len;
                         try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
+                        if (self.diagnosticExists(node, TsCodes.this_context_not_assignable)) {
+                            for (args) |arg| {
+                                self.removePriorDiagnosticsInNodeSpan(arg, TsCodes.type_not_assignable);
+                            }
+                        }
                         self.rewriteStrictBindThisMismatch(node, args, effective_callee_t, strict_bind_diag_start);
                     }
                     if (self.interner.signatureReturn(effective_callee_t)) |ret| {
@@ -112194,6 +112255,14 @@ pub const Checker = struct {
                         const spread = hir_mod.jsxSpreadAttributeOf(self.hir, attrs[0]);
                         const spread_t = try self.checkedExpressionType(spread.expression);
                         if (self.engine.isAssignableTo(spread_t, target) catch false) {
+                            if (try self.tryReportJsxWeakTypeNoOverlap(
+                                el.tag,
+                                spread_t,
+                                target,
+                                target,
+                            )) {
+                                return (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
+                            }
                             return (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
                         }
                     }
@@ -121674,6 +121743,7 @@ pub const Checker = struct {
     }
 
     fn checkMethodThisCompatibility(self: *Checker, call_node: NodeId, callee: NodeId, callee_t: TypeId) CheckError!void {
+        if (self.diagnosticExists(call_node, TsCodes.this_context_not_assignable)) return;
         if (self.hir.kindOf(callee) != .member_access) return;
         const m = hir_mod.memberOf(self.hir, callee);
         const receiver_t = if (try self.staticClassMemberAccess(m.object, m.name)) |static_access|
@@ -123976,8 +124046,55 @@ pub const Checker = struct {
         return has_annotated_rest_before_fixed_target;
     }
 
-    fn genericInferenceFunctionArgumentType(self: *Checker, arg_node: NodeId, fallback: TypeId) CheckError!TypeId {
+    fn genericInferenceFunctionArgumentType(
+        self: *Checker,
+        arg_node: NodeId,
+        fallback: TypeId,
+        contextual_target: ?TypeId,
+    ) CheckError!TypeId {
         if (!self.isContextualFunctionExpressionLike(arg_node)) return fallback;
+        const f = hir_mod.fnDeclOf(self.hir, arg_node);
+        if (f.type_params_len != 0) {
+            if (contextual_target) |target| {
+                if (self.interner.isSignature(target)) {
+                    var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                    defer source_subs.deinit(self.gpa);
+                    const source_params = self.interner.signatureParams(fallback);
+                    const target_params = self.interner.signatureParams(target);
+                    const count = @min(source_params.len, target_params.len);
+                    for (0..count) |i| {
+                        try self.inferFromPair(source_params[i], target_params[i], &source_subs);
+                    }
+                    for (self.hir.childSlice(f.type_params_start, f.type_params_len)) |type_param_node| {
+                        const type_param = self.hir.typeOf(type_param_node);
+                        if (type_param == types.Primitive.none or source_subs.contains(type_param)) continue;
+                        try source_subs.put(self.gpa, type_param, types.Primitive.unknown);
+                    }
+                    const contextualized = self.substituteType(fallback, &source_subs) catch fallback;
+                    const body_signature = try self.functionExpressionInferenceSignature(
+                        arg_node,
+                        contextualized,
+                        false,
+                    );
+                    const body_return = self.interner.signatureReturn(body_signature) orelse
+                        self.interner.signatureReturn(contextualized) orelse types.Primitive.any;
+                    const contextualized_params = self.interner.signatureParams(contextualized);
+                    const inference_signature = self.interner.internSignature(
+                        contextualized_params,
+                        body_return,
+                        false,
+                    ) catch return error.OutOfMemory;
+                    try self.copySignatureParamNames(inference_signature, contextualized);
+                    if (self.rest_signatures.contains(contextualized)) {
+                        try self.rest_signatures.put(self.gpa, inference_signature, {});
+                    }
+                    if (self.signature_min_args.get(contextualized)) |min_args| {
+                        try self.signature_min_args.put(self.gpa, inference_signature, min_args);
+                    }
+                    return inference_signature;
+                }
+            }
+        }
         return self.functionExpressionInferenceSignature(arg_node, fallback, false);
     }
 
@@ -147729,6 +147846,67 @@ pub const Checker = struct {
             (try self.genericArrayConstrainedSignaturePair(target, source));
     }
 
+    fn isFilteredMappedKeyAlias(self: *Checker, name: hir_mod.StringId) bool {
+        const key_info = self.generic_aliases.get(name) orelse return false;
+        if (key_info.body_node == hir_mod.none_node_id or self.hir.kindOf(key_info.body_node) != .indexed_access_type) return false;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, key_info.body_node);
+        if (self.hir.kindOf(indexed.object) != .mapped_type or self.hir.kindOf(indexed.index) != .keyof_type) return false;
+        const mapped = hir_mod.mappedTypeOf(self.hir, indexed.object);
+        if (self.hir.kindOf(mapped.value) != .conditional_type) return false;
+        const conditional = hir_mod.conditionalTypeOf(self.hir, mapped.value);
+        const true_is_never = self.nodeSourceTextIs(conditional.true_branch, "never");
+        const false_is_never = self.nodeSourceTextIs(conditional.false_branch, "never");
+        return true_is_never != false_is_never;
+    }
+
+    fn filteredProjectionKeyAliasName(self: *Checker, annotation: NodeId) ?hir_mod.StringId {
+        if (annotation == hir_mod.none_node_id or self.hir.kindOf(annotation) != .type_ref) return null;
+        const outer_ref = hir_mod.typeRefOf(self.hir, annotation);
+        if (outer_ref.qualifier_len != 0) return null;
+        if (self.isFilteredMappedKeyAlias(outer_ref.name)) return outer_ref.name;
+        const outer_info = self.generic_aliases.get(outer_ref.name) orelse return null;
+        if (outer_info.body_node == hir_mod.none_node_id or self.hir.kindOf(outer_info.body_node) != .type_ref) return null;
+        const pick_ref = hir_mod.typeRefOf(self.hir, outer_info.body_node);
+        if (pick_ref.qualifier_len != 0 or
+            !std.mem.eql(u8, self.string_interner.get(pick_ref.name), "Pick")) return null;
+        const pick_args = hir_mod.typeRefArgs(self.hir, outer_info.body_node);
+        if (pick_args.len != 2 or self.hir.kindOf(pick_args[1]) != .type_ref) return null;
+        const key_ref = hir_mod.typeRefOf(self.hir, pick_args[1]);
+        if (key_ref.qualifier_len != 0 or !self.isFilteredMappedKeyAlias(key_ref.name)) return null;
+        return key_ref.name;
+    }
+
+    fn tryReportDistinctFilteredProjectionAssignment(
+        self: *Checker,
+        assignment_node: NodeId,
+        source_node: NodeId,
+        target_node: NodeId,
+    ) CheckError!bool {
+        const source_annotation = self.visibleAnnotatedIdentifierTypeNode(source_node) orelse return false;
+        const target_annotation = self.visibleAnnotatedIdentifierTypeNode(target_node) orelse return false;
+        const source_key = self.filteredProjectionKeyAliasName(source_annotation) orelse return false;
+        const target_key = self.filteredProjectionKeyAliasName(target_annotation) orelse return false;
+        if (source_key == target_key) return false;
+        const source_key_info = self.generic_aliases.get(source_key) orelse return false;
+        const target_key_info = self.generic_aliases.get(target_key) orelse return false;
+        if (typeTextsEqualIgnoringWhitespace(
+            self.nodeSourceTextOrEmpty(source_key_info.body_node),
+            self.nodeSourceTextOrEmpty(target_key_info.body_node),
+        )) return false;
+        const source_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(source_annotation));
+        const target_name = try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(target_annotation));
+        try self.report(
+            assignment_node,
+            TsCodes.type_not_assignable,
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            ),
+        );
+        return true;
+    }
+
     fn parseGenericUnarySignatureAnnotation(self: *Checker, text: []const u8) CheckError!?ParsedGenericUnarySignature {
         var compact: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
@@ -164917,7 +165095,7 @@ pub const Checker = struct {
                     return true;
                 }
             }
-            const relation_arg_t = try self.genericInferenceFunctionArgumentType(arg_node, arg_t);
+            const relation_arg_t = try self.genericInferenceFunctionArgumentType(arg_node, arg_t, param_t);
             const fn_assignable = try self.functionExpressionAssignableToSignatureTarget(arg_node, relation_arg_t, param_t);
             if (fn_assignable) {
                 if (self.firstSignatureType(param_t)) |sig| {
@@ -179458,17 +179636,37 @@ pub const Checker = struct {
         if (try self.jsxAttrsBagHasOnlyIgnoredMembers(source)) return false;
         var no_overlap = self.engine.weakTypeNoCommonProperties(source, relation_target);
         if (!no_overlap and self.jsxHasIntrinsicAttributesDecl(anchor) and
-            relation_target < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(relation_target).is_object_type and
-            self.interner.objectMembers(relation_target).len == 0 and
             source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type and
+            self.jsxTargetHasOnlyIntrinsicKey(relation_target, 0) and
             !try self.jsxAttrsBagHasOnlyIgnoredMembers(source))
         {
             const key_name = self.string_interner.intern("key") catch return error.OutOfMemory;
             no_overlap = self.interner.objectMember(source, key_name) == null;
         }
         return no_overlap;
+    }
+
+    fn jsxTargetHasOnlyIntrinsicKey(self: *Checker, target: TypeId, depth: u8) bool {
+        if (depth >= 16 or target >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (!self.jsxTargetHasOnlyIntrinsicKey(member, depth + 1)) return false;
+            }
+            return self.interner.intersectionMembers(target).len > 0;
+        }
+        if (!flags.is_object_type or self.objectHasCallOrConstructSignature(target)) return false;
+        if (self.interner.objectStringIndex(target) != types.Primitive.none or
+            self.interner.objectNumberIndex(target) != types.Primitive.none or
+            self.interner.objectSymbolIndex(target) != types.Primitive.none)
+        {
+            return false;
+        }
+        for (self.interner.objectMembers(target)) |member| {
+            if (!std.mem.eql(u8, self.string_interner.get(member.name), "key") or !member.is_optional) return false;
+        }
+        return true;
     }
 
     /// Render an intersection target the way tsc's `getIntersectionType`
@@ -195802,6 +196000,26 @@ test "checker: JSX parity class spreads elaborate missing and weak managed props
         "Type '{ prop1: boolean; }' has no properties in common with type 'IntrinsicAttributes & IntrinsicClassAttributes<Weak> & { children?: ReactNode | undefined; }'.",
     ));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
+}
+
+test "checker: parity final JSX function spread reports weak IntrinsicAttributes overlap" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicAttributes { key?: string; }
+        \\}
+        \\function Empty() { return null; }
+        \\const attrs = { prop1: true };
+        \\const element = <Empty {...attrs} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_properties_in_common));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.no_properties_in_common,
+        "Type '{ prop1: boolean; }' has no properties in common with type 'IntrinsicAttributes'.",
+    ));
 }
 
 test "checker: JSX parity union class props retain managed intersection grouping" {
@@ -213821,6 +214039,27 @@ test "checker: filtered mapped key projections remain subsets of keyof source" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
+test "checker: parity final complementary filtered mapped projections remain disjoint" {
+    const s = try newSetup(
+        \\type FunctionPropertyNames<T> = { [K in keyof T]: T[K] extends Function ? K : never }[keyof T];
+        \\type FunctionProperties<T> = Pick<T, FunctionPropertyNames<T>>;
+        \\type NonFunctionPropertyNames<T> = { [K in keyof T]: T[K] extends Function ? never : K }[keyof T];
+        \\type NonFunctionProperties<T> = Pick<T, NonFunctionPropertyNames<T>>;
+        \\function mapped<T>(y: FunctionProperties<T>, z: NonFunctionProperties<T>) {
+        \\  y = z;
+        \\  z = y;
+        \\}
+        \\function keys<T>(y: FunctionPropertyNames<T>, z: NonFunctionPropertyNames<T>) {
+        \\  y = z;
+        \\  z = y;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
 test "checker: named objects satisfy compatible generic string index constraints" {
     const s = try newSetup(
         \\function accept<T extends Record<string, unknown>>(value: T): T { return value; }
@@ -215505,6 +215744,39 @@ test "checker: contextual generic callback instantiation rejects conflicting par
         s,
         TsCodes.argument_type_mismatch,
         "Argument of type '<T>(x: T, y: T) => T' is not assignable to parameter of type '(x: string, y: number) => string'.",
+    ));
+}
+
+test "checker: parity final call inference contextualizes generic callbacks and prioritizes scalar literals" {
+    const s = try newSetup(
+        \\declare function foo2<T, U>(x: T, cb: (a: T) => U): U;
+        \\declare function foo3<T, U>(x: T, cb: (a: T) => U, y: U): U;
+        \\foo2(1, function <Z>(a: Z) { return ""; });
+        \\foo3(1, function (a) { return ""; }, 1);
+        \\class C<X> { foo2<T, U>(x: T, cb: (a: T) => U): U { return null as any; } }
+        \\class C3<X, Y> { foo3<T, U>(x: T, cb: (a: T) => U, y: U): U { return null as any; } }
+        \\declare const c: C<number>;
+        \\declare const c3: C3<number, number>;
+        \\c.foo2(1, function <Z>(a: Z) { return ""; });
+        \\c3.foo3(1, function (a) { return ""; }, 1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type '(a: number) => string' is not assignable to parameter of type '(a: number) => 1'.",
+    ));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type 'Z'.",
+    ));
+    try T.expect(!checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type 'U'.",
     ));
 }
 
@@ -233183,7 +233455,7 @@ test "checker: checkjs expando JSDoc property type participates in parent assign
     try T.expect(found);
 }
 
-test "checker: checkjs virtual constructor function conflicts with sibling class" {
+test "checker: parity final checkjs virtual constructor function conflicts with sibling class" {
     const s = try newSetup(
         \\// @target: es2015
         \\// @allowJs: true
@@ -233201,7 +233473,12 @@ test "checker: checkjs virtual constructor function conflicts with sibling class
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.duplicate_identifier));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'prop' does not exist on type '() => void'.",
+    ));
 }
 
 test "checker: checkjs virtual prototype assignment sees sibling constructor" {
@@ -259505,7 +259782,7 @@ test "checker: async generator protocols preserve yield-star and next semantics"
     ));
 }
 
-test "checker: generic thenables validate explicit this for calls and await" {
+test "checker: parity final generic thenables validate explicit this for calls and await" {
     const b = try newBoundSetup(
         \\// @target: esnext
         \\type Either<E, A> = Left<E> | Right<A>;
@@ -259527,7 +259804,7 @@ test "checker: generic thenables validate explicit this for calls and await" {
         \\  }
         \\}
         \\const failed: EPromise<number, string> = EPromise.fail(1);
-        \\failed.then(value => value.toUpperCase());
+        \\failed.then(value => value.toUpperCase()).then(console.log);
         \\async function test() { await failed; }
     );
     defer destroyBoundSetup(b);
