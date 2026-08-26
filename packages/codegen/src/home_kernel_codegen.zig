@@ -221,9 +221,12 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
         std.mem.eql(u8, type_name, "int") or std.mem.eql(u8, type_name, "uint")) return 8;
     // Pointers are word-sized whatever they point at.
     if (type_name.len > 0 and (type_name[0] == '*' or type_name[0] == '&')) return 8;
-    // A function type in a value position is a function pointer.
-    if (std.mem.startsWith(u8, type_name, "fn(") or
-        std.mem.startsWith(u8, type_name, "fn (")) return 8;
+    // A function type in a value position is a function pointer. Matched on
+    // the leading `fn` rather than an exact prefix, because the parser
+    // reconstructs an alias target's spelling and the exact punctuation that
+    // follows is not something this needs to depend on.
+    if (std.mem.startsWith(u8, type_name, "fn") and
+        (type_name.len == 2 or !std.ascii.isAlphanumeric(type_name[2]))) return 8;
     return null;
 }
 
@@ -509,6 +512,9 @@ pub const HomeKernelCodegen = struct {
     current_return_type: []const u8,
     /// Interned `*T` names, so pointerTo can return a stable slice.
     pointer_type_names: std.StringHashMap([]const u8),
+    /// Type aliases: `type DriverInitFn = fn(): u32`. Resolved wherever a
+    /// written type is sized, so an alias is as good as the type it names.
+    type_aliases: std.StringHashMap([]const u8),
     /// Struct declarations from imported modules, awaiting layout alongside
     /// this file's own. Each carries the qualified name it is written as.
     pending_structs: std.ArrayList(PendingStruct),
@@ -547,6 +553,7 @@ pub const HomeKernelCodegen = struct {
         result.source_file = null;
         result.module_id = "";
         result.module_aliases = std.StringHashMap([]const u8).init(allocator);
+        result.type_aliases = std.StringHashMap([]const u8).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
         result.sret_slot = 0;
@@ -573,6 +580,7 @@ pub const HomeKernelCodegen = struct {
         self.enum_values.deinit();
         self.imported_files.deinit();
         self.module_aliases.deinit();
+        self.type_aliases.deinit();
         self.pending_structs.deinit(self.allocator);
         self.pointer_type_names.deinit();
         self.import_arena.deinit();
@@ -800,6 +808,27 @@ pub const HomeKernelCodegen = struct {
         }
         if (self.structs.get(type_name)) |info| return info.size;
         if (self.enum_sizes.get(type_name)) |n| return n;
+        // An alias is as good as what it names. A struct field written as a
+        // type alias was otherwise unsizable, which makes the *whole* struct
+        // unlayoutable — core/driver_init.home lost every field of
+        // DriverDescriptor to one `init_fn: DriverInitFn`.
+        if (self.resolveAlias(type_name)) |target| return self.sizeOf(target);
+        return null;
+    }
+
+    /// Follow a type alias to the name it ultimately denotes, or null if this
+    /// is not an alias. Bounded, so a cycle (`type A = B` / `type B = A`)
+    /// cannot spin.
+    fn resolveAlias(self: *HomeKernelCodegen, name: []const u8) ?[]const u8 {
+        var current = name;
+        var hops: usize = 0;
+        while (hops < 8) : (hops += 1) {
+            const next = self.type_aliases.get(current) orelse {
+                return if (hops == 0) null else current;
+            };
+            if (std.mem.eql(u8, next, current)) return null;
+            current = next;
+        }
         return null;
     }
 
@@ -815,6 +844,7 @@ pub const HomeKernelCodegen = struct {
         if (split.alignment) |explicit| return explicit;
         const type_name = split.bare;
         if (self.structs.get(type_name)) |info| return info.alignment;
+        if (self.resolveAlias(type_name)) |target| return self.alignOf(target);
         if (self.arrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
         if (isSliceType(type_name)) return 8;
         const size = self.sizeOf(type_name) orelse 8;
@@ -1131,6 +1161,7 @@ pub const HomeKernelCodegen = struct {
         const type_name = splitAlign(raw).bare;
         if (self.arrayType(type_name) != null) return true;
         if (isSliceType(type_name)) return true;
+        if (self.resolveAlias(type_name)) |target| return self.isStorageType(target);
         if (self.structs.get(type_name)) |info| {
             // A bitfield struct IS its backing integer, so one that fits in a
             // register is a value and is assigned like one — otherwise
@@ -1319,7 +1350,12 @@ pub const HomeKernelCodegen = struct {
                 // A function's address is its label. Interrupt tables are
                 // built out of these.
                 if (self.declared_fns.contains(id.name)) {
-                    try self.print("    leaq {s}(%rip), %rax\n", .{id.name});
+                    // The address of a function is the address of its symbol,
+                    // which carries the module prefix like any other. Emitting
+                    // the bare name here produced a reference no object
+                    // defined — `&scheduler_tick` handed to a callback
+                    // registration linked against nothing.
+                    try self.print("    leaq {s}(%rip), %rax\n", .{try self.functionSymbol(id.name)});
                     return "fn()";
                 }
                 try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
@@ -2135,6 +2171,48 @@ pub const HomeKernelCodegen = struct {
         }
     }
 
+    /// Call through a function pointer held in a struct field. Returns false
+    /// if the member is not such a field, so the caller can fall through to
+    /// its own diagnostic.
+    fn emitIndirectMemberCall(
+        self: *HomeKernelCodegen,
+        member: *const ast.MemberExpr,
+        args: []const *const ast.Expr,
+    ) anyerror!bool {
+        const base_type = self.typeOfLValue(member.object) orelse return false;
+        var owner = splitAlign(base_type).bare;
+        if (isPointerType(owner)) owner = pointeeType(owner) orelse owner;
+        const field = self.findField(owner, member.member) orelse return false;
+
+        // Only a function-typed field is callable.
+        const bare_field = splitAlign(field.type_name).bare;
+        const resolved = self.resolveAlias(bare_field) orelse bare_field;
+        if (!std.mem.startsWith(u8, resolved, "fn")) return false;
+
+        const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
+        if (args.len > 0) {
+            var words: usize = 0;
+            var i: usize = args.len;
+            while (i > 0) {
+                i -= 1;
+                words += try self.pushArgument(args[i]);
+            }
+            for (0..words) |reg_idx| {
+                if (reg_idx >= arg_regs.len) break;
+                try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+            }
+        }
+
+        // Load the pointer last, so evaluating the arguments cannot clobber it.
+        _ = try self.emitAddress(member.object) orelse return false;
+        if (field.offset > 0) {
+            try self.print("    addq ${d}, %rax\n", .{field.offset});
+        }
+        try self.writeAll("    movq (%rax), %rax\n");
+        try self.writeAll("    call *%rax\n");
+        return true;
+    }
+
     /// Push one call argument, returning how many machine words it occupies.
     /// Pushes happen in reverse argument order, so within a slice the length
     /// is pushed first and the pointer second — leaving the pointer on top,
@@ -2358,6 +2436,26 @@ pub const HomeKernelCodegen = struct {
                     if (s2.else_block) |eb| try self.reserveLocals(eb.statements);
                 },
                 .WhileStmt => |s2| try self.reserveLocals(s2.body.statements),
+                // Loop bodies declare locals too. Only WhileStmt was walked,
+                // so a `let` inside a for or do-while got no frame slot and no
+                // recorded type — every later use of it was refused as an
+                // undefined variable or an untyped base, pointing at the use
+                // rather than at the declaration that was skipped.
+                .ForStmt => |s2| {
+                    // The iterator binding is a local of the loop as well.
+                    if (!self.locals.contains(s2.iterator)) {
+                        self.stack_offset -= 8;
+                        try self.locals.put(s2.iterator, self.stack_offset);
+                    }
+                    if (s2.index) |idx| {
+                        if (!self.locals.contains(idx)) {
+                            self.stack_offset -= 8;
+                            try self.locals.put(idx, self.stack_offset);
+                        }
+                    }
+                    try self.reserveLocals(s2.body.statements);
+                },
+                .DoWhileStmt => |s2| try self.reserveLocals(s2.body.statements),
                 .BlockStmt => |s2| try self.reserveLocals(s2.statements),
                 .ReturnStmt => |s2| {
                     if (s2.value) |v| try self.reserveLocalsInExpr(v);
@@ -2448,6 +2546,17 @@ pub const HomeKernelCodegen = struct {
         // field of a type declared in another module, and until that type can
         // be sized the *whole* struct is unlayoutable — not just the field.
         try self.collectImports(program, 0);
+
+        // Type aliases first: a struct field may be written as an alias, and
+        // an unsizable field makes the whole struct unlayoutable.
+        for (program.statements) |stmt| {
+            if (stmt == .TypeAliasDecl) {
+                const decl = stmt.TypeAliasDecl;
+                if (!self.type_aliases.contains(decl.name)) {
+                    try self.type_aliases.put(decl.name, decl.target_type);
+                }
+            }
+        }
 
         try self.foldModuleConstants(program);
         try self.collectEnums(program);
@@ -2971,6 +3080,10 @@ pub const HomeKernelCodegen = struct {
                         } else if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
                             // A Zig module reached through FFI.
                             try self.generateFFICall(symbol, call.args);
+                        } else if (try self.emitIndirectMemberCall(member, call.args)) {
+                            // A function pointer held in a struct field —
+                            // `driver.init_fn()`. Driver tables and callback
+                            // records are built out of these.
                         } else {
                             try self.print("    # ERROR: unresolved call {s}.{s}\n", .{ module_name, func_name });
                         }
@@ -3133,6 +3246,29 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IndexExpr, .MemberExpr => {
+                // `module.CONSTANT` is a compile-time value, not a field read.
+                // Imported constants are registered under their qualified name,
+                // but only the identifier path consulted that table — so a
+                // constant reached through its module alias was treated as a
+                // field of a value and refused.
+                if (expr.* == .MemberExpr) {
+                    const m = expr.MemberExpr;
+                    if (m.object.* == .Identifier) {
+                        const key = try std.fmt.allocPrint(
+                            self.import_arena.allocator(),
+                            "{s}.{s}",
+                            .{ m.object.Identifier.name, m.member },
+                        );
+                        if (self.globals.get(key)) |value| {
+                            try self.print("    movq ${d}, %rax\n", .{value});
+                            return;
+                        }
+                        if (self.enum_values.get(key)) |value| {
+                            try self.print("    movq ${d}, %rax\n", .{value});
+                            return;
+                        }
+                    }
+                }
                 // A bitfield member is a bit range inside an integer, not a
                 // value at a byte offset: load the whole backing integer,
                 // shift it down, and mask.
