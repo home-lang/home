@@ -2371,6 +2371,7 @@ pub fn compileSource(
             c,
             source,
             helperDiagnosticsUseCommonJsModule(source, options),
+            options.emit.es_module_interop or (directiveBool(source, "esModuleInterop") orelse false),
             options.emit.es_target != .esnext,
             options.emit.es_target == .es5,
             options.emit.es_target != .esnext or
@@ -2514,12 +2515,13 @@ fn appendMissingImportedHelperDiagnostics(
     c: *Compilation,
     source: []const u8,
     commonjs_module: bool,
+    es_module_interop: bool,
     lower_stage3_decorators: bool,
     lower_array_spread: bool,
     lower_resource_declarations: bool,
 ) CompileError!void {
     const tslib_source = tslibDeclarationSource(source) orelse {
-        if (sourceExternalEmitHelperPosition(c, source, commonjs_module, lower_array_spread, lower_resource_declarations)) |pos| {
+        if (sourceExternalEmitHelperPosition(c, source, commonjs_module, es_module_interop, lower_array_spread, lower_resource_declarations)) |pos| {
             try c.diagnostics.append(gpa, .{
                 .phase = .bind,
                 .pos = @intCast(pos),
@@ -2535,7 +2537,7 @@ fn appendMissingImportedHelperDiagnostics(
     try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
     if (lower_array_spread) try appendImportedArraySpreadHelperArityDiagnostic(gpa, c, tslib_source);
     try appendMissingStage3DecoratorHelperDiagnostics(gpa, c, source, tslib_source, lower_stage3_decorators);
-    if (commonjs_module) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
+    if (commonjs_module and es_module_interop) try appendMissingCommonJsInteropHelperDiagnostics(gpa, c, tslib_source);
 }
 
 fn helperDiagnosticsUseCommonJsModule(source: []const u8, options: CompileOptions) bool {
@@ -2872,6 +2874,14 @@ fn appendMissingCommonJsInteropHelperDiagnostics(
             .span_len = span.end - span.start,
         });
     }
+    if (std.mem.indexOf(u8, tslib_source, "__importDefault") == null) {
+        if (firstCommonJsInteropDefaultReExportPosition(c)) |pos| {
+            try appendMissingNamedHelperDiagnostic(gpa, c, "__importDefault", .{
+                .pos = pos,
+                .span_len = "default".len,
+            });
+        }
+    }
 }
 
 fn appendMissingNamedHelperDiagnostic(
@@ -2988,6 +2998,7 @@ fn sourceExternalEmitHelperPosition(
     c: *const Compilation,
     source: []const u8,
     commonjs_module: bool,
+    es_module_interop: bool,
     lower_array_spread: bool,
     lower_resource_declarations: bool,
 ) ?usize {
@@ -3001,7 +3012,10 @@ fn sourceExternalEmitHelperPosition(
     }
     if (commonjs_module) {
         if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+    }
+    if (commonjs_module and es_module_interop) {
         if (firstCommonJsInteropImportPosition(c)) |import_pos| best = minOptionalPos(best, import_pos);
+        if (firstCommonJsInteropDefaultReExportPosition(c)) |export_pos| best = minOptionalPos(best, export_pos);
     }
     return best;
 }
@@ -3030,6 +3044,23 @@ fn firstCommonJsInteropImportPosition(c: *const Compilation) ?usize {
         if (import.is_type_only or import.is_require_equals or import.import_equals != hir_mod.none_node_id) continue;
         if (import.default_binding == hir_mod.none_node_id and import.namespace_binding == hir_mod.none_node_id) continue;
         best = minOptionalPos(best, c.hir.spanOf(node).start);
+    }
+    return best;
+}
+
+fn firstCommonJsInteropDefaultReExportPosition(c: *const Compilation) ?usize {
+    var best: ?usize = null;
+    var node: NodeId = 1;
+    while (node < c.hir.nodeCount()) : (node += 1) {
+        if (c.hir.kindOf(node) != .export_decl) continue;
+        const export_decl = hir_mod.exportOf(&c.hir, node);
+        if (export_decl.is_type_only or c.interner.get(export_decl.module).len == 0) continue;
+        for (hir_mod.exportNamed(&c.hir, node)) |specifier_node| {
+            if (c.hir.kindOf(specifier_node) != .import_specifier) continue;
+            const specifier = hir_mod.importSpecifierOf(&c.hir, specifier_node);
+            if (specifier.is_type_only or !std.mem.eql(u8, c.interner.get(specifier.imported), "default")) continue;
+            best = minOptionalPos(best, @intCast(specifier.imported_pos));
+        }
     }
     return best;
 }
@@ -5356,6 +5387,34 @@ test "driver: importHelpers reports missing tslib for commonjs namespace re-expo
     var saw_2354 = false;
     for (c.diagnostics.items) |d| {
         if (d.code == 2354 and d.pos == 24 and
+            std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null)
+        {
+            saw_2354 = true;
+        }
+    }
+    try T.expect(saw_2354);
+}
+
+test "driver: importHelpers reports missing tslib for interop default re-export" {
+    const source =
+        \\// @importHelpers: true
+        \\// @esModuleInterop: true
+        \\export { default as value } from "./a";
+    ;
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .module_kind = "commonjs",
+        .emit = .{ .es_module_interop = true },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    const expected: u32 = @intCast(std.mem.indexOf(u8, source, "default") orelse return error.TestUnexpectedResult);
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and d.pos == expected and
             std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null)
         {
             saw_2354 = true;
