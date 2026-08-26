@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Reproducible frontend benchmarks for tsc, tsgo, and home-tsc."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import platform
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 and older
+    tomllib = None
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+CORPUS = HERE / "corpus"
+TOOLS = HERE / ".tools"
+RESULTS = HERE / "results"
+MANIFEST = HERE / "corpus.toml"
+
+
+def run(command: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    print("+", " ".join(command), flush=True)
+    return subprocess.run(command, cwd=cwd, check=check, text=True)
+
+
+def manifest() -> dict:
+    if tomllib is not None:
+        with MANIFEST.open("rb") as handle:
+            return tomllib.load(handle)
+
+    # The benchmark manifest intentionally uses only tables and scalar values,
+    # so older system Pythons do not need a third-party TOML dependency.
+    result: dict = {}
+    current = result
+    for raw_line in MANIFEST.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = result
+            for part in line[1:-1].split("."):
+                current = current.setdefault(part, {})
+            continue
+        key, raw_value = (part.strip() for part in line.split("=", 1))
+        if raw_value.startswith('"'):
+            current[key] = json.loads(raw_value)
+        else:
+            current[key] = int(raw_value)
+    return result
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def shared_config() -> str:
+    return json.dumps(
+        {
+            "compilerOptions": {
+                "strict": True,
+                "noEmit": True,
+                "noLib": True,
+                "skipLibCheck": True,
+                "pretty": False,
+            },
+            "include": ["src/**/*.ts"],
+        },
+        indent=2,
+    ) + "\n"
+
+
+def generate_minimal_lib(directory: Path) -> None:
+    write(
+        directory / "src/lib.d.ts",
+        "interface Object {}\n"
+        "interface Function {}\n"
+        "interface CallableFunction extends Function {}\n"
+        "interface NewableFunction extends Function {}\n"
+        "interface IArguments { readonly length: number; [index: number]: unknown; }\n"
+        "interface String {}\n"
+        "interface Number {}\n"
+        "interface Boolean {}\n"
+        "interface RegExp {}\n"
+        "interface Array<T> { readonly length: number; [index: number]: T; }\n"
+        "interface ReadonlyArray<T> { readonly length: number; readonly [index: number]: T; }\n",
+    )
+
+
+def generate_startup(directory: Path) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    write(
+        directory / "src/index.ts",
+        "type Pair<T> = readonly [T, T];\n"
+        "const pair: Pair<number> = [1, 2];\n"
+        "export const total: number = pair[0] + pair[1];\n",
+    )
+
+
+def many_file_source(index: int) -> str:
+    return f"""export interface Entity{index}<T> {{
+  readonly id: number;
+  readonly value: T;
+  map<U>(fn: (value: T) => U): Entity{index}<U>;
+}}
+
+export type Result{index}<T, E = string> =
+  | {{ readonly ok: true; readonly value: T }}
+  | {{ readonly ok: false; readonly error: E }};
+
+export type Unwrap{index}<T> = T extends Result{index}<infer U, unknown> ? U : never;
+
+export function transform{index}<T, U>(
+  input: Entity{index}<T>,
+  fn: (value: T) => U,
+): Result{index}<Entity{index}<U>> {{
+  return {{ ok: true, value: input.map(fn) }};
+}}
+
+export const marker{index}: Result{index}<number> = {{ ok: true, value: {index} }};
+"""
+
+
+def generate_many_files(directory: Path, files: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    for index in range(files):
+        write(directory / f"src/entity-{index:04d}.ts", many_file_source(index))
+
+
+def generate_deep_types(directory: Path, repetitions: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "type Primitive = string | number | boolean | bigint | symbol | null | undefined;\n",
+        "type DeepReadonly<T> = T extends Primitive ? T : T extends readonly (infer U)[] ? readonly DeepReadonly<U>[] : { readonly [K in keyof T]: DeepReadonly<T[K]> };\n",
+        "type Paths<T> = T extends object ? { [K in keyof T & string]: K | `${K}.${Paths<T[K]> & string}` }[keyof T & string] : never;\n",
+    ]
+    for index in range(repetitions):
+        blocks.append(
+            f"interface Model{index}<T> {{ id: number; payload: T; nested: {{ left: T; right: readonly T[] }}; }}\n"
+            f"type ReadonlyModel{index} = DeepReadonly<Model{index}<{{ name: string; score: number }}>>;\n"
+            f"type ModelPaths{index} = Paths<Model{index}<{{ name: string; score: number }}>>;\n"
+            f"const path{index}: ModelPaths{index} = \"nested.left.name\";\n"
+        )
+    write(directory / "src/deep-types.ts", "".join(blocks))
+
+
+def cmd_corpus() -> None:
+    cfg = manifest()["generated"]
+    shutil.rmtree(CORPUS, ignore_errors=True)
+    generate_startup(CORPUS / "startup")
+    generate_many_files(CORPUS / "many_files", cfg["many_files_count"])
+    generate_deep_types(CORPUS / "deep_types", cfg["deep_types_repetitions"])
+    print(f"Generated deterministic corpus in {CORPUS}")
+
+
+def cmd_setup() -> None:
+    versions = manifest()["compilers"]
+    TOOLS.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "npm",
+            "install",
+            "--no-save",
+            "--no-package-lock",
+            "--prefix",
+            str(TOOLS),
+            f"typescript@{versions['tsc']['version']}",
+            f"@typescript/native-preview@{versions['tsgo']['version']}",
+        ]
+    )
+
+
+def compiler_commands() -> dict[str, list[str]]:
+    home = Path(os.environ.get("HOME_TSC", ROOT / "zig-out/bin/home-tsc"))
+    commands = {
+        "tsc": [str(TOOLS / "node_modules/.bin/tsc")],
+        "tsgo": [str(TOOLS / "node_modules/.bin/tsgo")],
+        "home": [str(home)],
+    }
+    missing = [name for name, command in commands.items() if not Path(command[0]).is_file()]
+    if missing:
+        raise SystemExit(f"missing {', '.join(missing)}; run './run.sh setup' and build home-tsc")
+    return commands
+
+
+def version_output(command: list[str]) -> str:
+    result = subprocess.run(command + ["--version"], check=True, capture_output=True, text=True)
+    return (result.stdout or result.stderr).strip()
+
+
+def validate(commands: dict[str, list[str]], workload: str) -> None:
+    config = CORPUS / workload / "tsconfig.json"
+    for name, command in commands.items():
+        result = subprocess.run(
+            command + ["--noEmit", "-p", str(config)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or result.stdout or result.stderr:
+            details = (result.stdout + result.stderr).strip()
+            raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
+
+
+def cmd_cold(runs: int, warmup: int) -> Path:
+    if not shutil.which("hyperfine"):
+        raise SystemExit("hyperfine is required (brew install hyperfine)")
+    if not CORPUS.is_dir():
+        cmd_corpus()
+    commands = compiler_commands()
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = RESULTS / stamp
+    output.mkdir(parents=True)
+    metadata = {
+        "timestamp_utc": stamp,
+        "system": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "runs": runs,
+        "warmup": warmup,
+        "compilers": {name: version_output(command) for name, command in commands.items()},
+    }
+    write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
+    for workload in manifest()["workloads"]:
+        validate(commands, workload)
+        config = CORPUS / workload / "tsconfig.json"
+        for name, command in commands.items():
+            benchmark = command + ["--noEmit", "-p", str(config)]
+            run(
+                [
+                    "hyperfine",
+                    "--shell=none",
+                    "--warmup",
+                    str(warmup),
+                    "--runs",
+                    str(runs),
+                    "--export-json",
+                    str(output / f"{workload}-{name}.json"),
+                    "--command-name",
+                    f"{name} {workload}",
+                    shlex.join(benchmark),
+                ]
+            )
+    print(f"Results: {output}")
+    return output
+
+
+def latest_results() -> Path:
+    candidates = sorted(path for path in RESULTS.iterdir() if path.is_dir()) if RESULTS.is_dir() else []
+    if not candidates:
+        raise SystemExit("no results found; run './run.sh cold'")
+    return candidates[-1]
+
+
+def cmd_report(directory: Path | None) -> None:
+    source = directory or latest_results()
+    run([sys.executable, str(HERE / "compare.py"), str(source)])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("corpus", help="regenerate deterministic benchmark inputs")
+    sub.add_parser("setup", help="install pinned tsc and tsgo locally")
+    cold = sub.add_parser("cold", help="run validated cold frontend benchmarks")
+    cold.add_argument("--runs", type=int, default=10)
+    cold.add_argument("--warmup", type=int, default=3)
+    report = sub.add_parser("report", help="render a Markdown report")
+    report.add_argument("results", nargs="?", type=Path)
+    sub.add_parser("all", help="generate corpus, set up tools, benchmark, and report")
+    args = parser.parse_args()
+    if args.command == "corpus":
+        cmd_corpus()
+    elif args.command == "setup":
+        cmd_setup()
+    elif args.command == "cold":
+        cmd_cold(args.runs, args.warmup)
+    elif args.command == "report":
+        cmd_report(args.results)
+    else:
+        cmd_corpus()
+        cmd_setup()
+        cmd_report(cmd_cold(10, 3))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

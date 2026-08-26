@@ -1,117 +1,81 @@
 #!/usr/bin/env python3
-"""bench/vs_tsgo/compare.py — render hyperfine JSON results into a Markdown
-table (per TS_PARITY_PLAN §6.4) or print the planned corpus actions.
-
-Usage:
-    compare.py <results-dir>            # render results to stdout
-    compare.py --plan-corpus <toml>     # print planned `git clone` actions
-
-This script intentionally has zero non-stdlib dependencies — it reads
-hyperfine's standard JSON schema and tomllib (Python 3.11+) for the
-corpus manifest.
-"""
+"""Render Hyperfine JSON from bench/vs_tsgo as a Markdown table."""
 
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:  # Python <3.11
-    tomllib = None
+
+def load_result(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        print(f"warning: skipped {path}: {error}", file=sys.stderr)
+        return None
+    results = data.get("results", [])
+    return results[0] if results else None
 
 
-def cmd_render(results_dir: Path) -> int:
-    rows: dict[str, dict[str, dict]] = {}  # workload -> compiler -> stats
-
-    for entry in sorted(results_dir.iterdir()):
-        if entry.suffix != ".json":
-            continue
-        # Filename: <workload>-<compiler>.json
-        name = entry.stem
-        if "-" not in name:
-            continue
-        workload, _, compiler = name.partition("-")
-        try:
-            with entry.open() as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"# warning: skipped {entry}: {e}", file=sys.stderr)
-            continue
-        if not data.get("results"):
-            continue
-        r = data["results"][0]
-        rows.setdefault(workload, {})[compiler] = {
-            "mean": r.get("mean", 0.0),
-            "stddev": r.get("stddev", 0.0),
-            "min": r.get("min", 0.0),
-            "max": r.get("max", 0.0),
-        }
-
-    if not rows:
-        print(f"# no results found in {results_dir}", file=sys.stderr)
-        return 1
-
-    print(f"# bench/vs_tsgo report — {results_dir.name}")
-    print()
-    print("| Workload | tsc | tsgo | home | tsgo/tsc | home/tsgo |")
-    print("|---|---|---|---|---|---|")
-    for workload in sorted(rows):
-        compilers = rows[workload]
-        tsc = compilers.get("tsc", {}).get("mean")
-        tsgo = compilers.get("tsgo", {}).get("mean")
-        home = compilers.get("home", {}).get("mean")
-        tsc_s = f"{tsc:.3f}s" if tsc else "—"
-        tsgo_s = f"{tsgo:.3f}s" if tsgo else "—"
-        home_s = f"{home:.3f}s" if home else "—"
-        ratio_tsgo = f"{tsgo / tsc:.2f}×" if tsc and tsgo else "—"
-        ratio_home = f"{home / tsgo:.2f}×" if tsgo and home else "—"
-        print(f"| {workload} | {tsc_s} | {tsgo_s} | {home_s} | {ratio_tsgo} | {ratio_home} |")
-
-    print()
-    print("`tsgo/tsc` < 1 means tsgo is faster than tsc.")
-    print("`home/tsgo` < 1 means home is faster than tsgo (the goal: ≤ 0.5).")
-    return 0
-
-
-def cmd_plan_corpus(toml_path: Path) -> int:
-    if tomllib is None:
-        print("# Python 3.11+ required for --plan-corpus", file=sys.stderr)
-        return 1
-    with toml_path.open("rb") as f:
-        manifest = tomllib.load(f)
-    workloads = manifest.get("workloads", {})
-    print(f"# planned corpus: {len(workloads)} workloads")
-    for name, info in sorted(workloads.items()):
-        sha = info.get("sha", "")
-        url = info.get("url", "")
-        loc = info.get("expected_loc", "?")
-        if all(c == "0" for c in sha):
-            placeholder = " (PLACEHOLDER — needs real SHA)"
-        else:
-            placeholder = ""
-        print(f"  - {name:<24} {url}@{sha[:8]:<10} ~{loc} LOC{placeholder}")
-    return 0
+def format_time(result: dict | None) -> str:
+    if not result:
+        return "—"
+    return f"{result['mean'] * 1000:.1f} ± {result['stddev'] * 1000:.1f} ms"
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("results_dir", nargs="?", help="directory of hyperfine JSON files")
-    p.add_argument("--plan-corpus", metavar="TOML",
-                   help="instead of rendering, print the planned corpus actions")
-    args = p.parse_args()
-
-    if args.plan_corpus:
-        return cmd_plan_corpus(Path(args.plan_corpus))
-    if not args.results_dir:
-        p.print_help(sys.stderr)
+    if len(sys.argv) != 2:
+        print(f"usage: {Path(sys.argv[0]).name} <results-directory>", file=sys.stderr)
+        return 2
+    directory = Path(sys.argv[1])
+    rows: dict[str, dict[str, dict]] = {}
+    for path in sorted(directory.glob("*.json")):
+        if path.name == "metadata.json":
+            continue
+        workload, separator, compiler = path.stem.rpartition("-")
+        if not separator or compiler not in {"tsc", "tsgo", "home"}:
+            continue
+        result = load_result(path)
+        if result:
+            rows.setdefault(workload, {})[compiler] = result
+    if not rows:
+        print(f"no benchmark results found in {directory}", file=sys.stderr)
         return 1
-    return cmd_render(Path(args.results_dir))
+
+    metadata_path = directory / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+    print(f"# TypeScript frontend benchmark — {directory.name}")
+    print()
+    if metadata:
+        versions = metadata.get("compilers", {})
+        print(
+            f"{metadata.get('machine', 'unknown host')}; "
+            f"{metadata.get('runs', '?')} runs after {metadata.get('warmup', '?')} warmups; "
+            f"tsc `{versions.get('tsc', '?')}`, tsgo `{versions.get('tsgo', '?')}`, "
+            f"Home `{versions.get('home', '?')}`."
+        )
+        print()
+    print("| Workload | tsc | tsgo | Home | Home vs fastest competitor |")
+    print("|---|---:|---:|---:|---:|")
+    for workload, compilers in rows.items():
+        tsc = compilers.get("tsc")
+        tsgo = compilers.get("tsgo")
+        home = compilers.get("home")
+        competitors = [result["mean"] for result in (tsc, tsgo) if result]
+        if home and competitors:
+            speedup = min(competitors) / home["mean"]
+            comparison = f"**{speedup:.2f}× faster**" if speedup >= 1 else f"{1 / speedup:.2f}× slower"
+        else:
+            comparison = "—"
+        print(
+            f"| `{workload}` | {format_time(tsc)} | {format_time(tsgo)} | "
+            f"{format_time(home)} | {comparison} |"
+        )
+    print()
+    print("Times are mean ± sample standard deviation. A Home win is measured against the faster of tsc and tsgo.")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

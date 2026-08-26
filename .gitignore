@@ -94,6 +94,11 @@ js/web/html/form-data-fixture.txt
 app-with-resources
 /out
 
+# Reproducible TypeScript benchmark outputs and local pinned compilers
+/bench/vs_tsgo/.tools/
+/bench/vs_tsgo/corpus/
+/bench/vs_tsgo/results/
+
 # Local native build artifacts (lol-html staticlib etc.)
 .native/
 /.survey
