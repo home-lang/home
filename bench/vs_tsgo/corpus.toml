@@ -33,7 +33,7 @@ description = "One TSX module with 256 typed generic component declarations and 
 description = "One module with 256 constrained generic projections, indexed accesses, and contextual callbacks."
 
 [compilers.tsc]
-version = "7.0.2"
+version = "6.0.3"
 
 [compilers.tsgo]
 version = "7.0.0-dev.20260707.2"

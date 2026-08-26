@@ -1,7 +1,8 @@
 # TypeScript frontend benchmarks
 
-This harness compares pinned `tsc`, pinned `tsgo`, and a local release build of
-`home-tsc` on identical, deterministic TypeScript projects.
+This harness compares the pinned JavaScript `tsc` 6.x compiler, the pinned
+native `tsgo` 7.x compiler, and a local release build of `home-tsc` on
+identical, deterministic TypeScript projects.
 
 ## Run it
 
