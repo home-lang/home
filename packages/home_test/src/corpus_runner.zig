@@ -39613,6 +39613,7 @@ const harness_prelude =
     \\        if (property === "setTimeout") return serverStream.session && typeof serverStream.session.setTimeout === "function" ? serverStream.session.setTimeout.bind(serverStream.session) : undefined;
     \\        if (property === "address") return transportSocket && typeof transportSocket.address === "function" ? transportSocket.address.bind(transportSocket) : function() { return { address: "127.0.0.1", family: "IPv4", port: Number(server && server.__home_port) || 0 }; };
     \\        if (property === "remotePort") return transportSocket && transportSocket.remotePort || Number(server && server.__home_port) || 1;
+    \\        if (["remoteAddress", "remoteFamily", "localAddress", "localFamily"].includes(property)) return transportSocket && transportSocket[property];
     \\        if (property === "_server") return transportSocket && transportSocket._server || server || true;
     \\        if (property in serverStream) return serverStream[property];
     \\        if (transportSocket && property in transportSocket) return transportSocket[property];
@@ -40338,7 +40339,11 @@ const harness_prelude =
     \\  client.__home_server_session.settings = function(update, settingsCallback) {
     \\    const values = update || {};
     \\    if (this.localSettings && this.localSettings.enableConnectProtocol === true && values.enableConnectProtocol === false) {
+    \\      if (this.__home_fatal_settings_scheduled || this.__home_fatal_settings_done) return this;
+    \\      this.__home_fatal_settings_scheduled = true;
     \\      Promise.resolve().then(() => {
+    \\        if (this.__home_fatal_settings_done) return;
+    \\        this.__home_fatal_settings_done = true;
     \\        for (const id of Object.keys(client.__home_streams)) {
     \\          const pending = client.__home_streams[id];
     \\          if (!pending || pending.destroyed) continue;
@@ -40346,16 +40351,21 @@ const harness_prelude =
     \\          pending.closed = true;
     \\          pending.__home_suppress_dispatch = true;
     \\          pending.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"));
-    \\          pending.emit("close");
+    \\          if (!pending.__home_close_emitted) { pending.__home_close_emitted = true; pending.emit("close"); }
+    \\          const peer = pending.__home_server_stream;
+    \\          if (peer) { peer.closed = true; peer.destroyed = true; peer.readable = false; peer.writable = false; }
+    \\          if (typeof pending.__home_release_active === "function") pending.__home_release_active();
+    \\          delete client.__home_streams[id];
     \\        }
     \\        const error = __home_http2_error_with_code("ERR_HTTP2_ERROR", "Protocol error");
     \\        client.closed = true;
     \\        client.destroyed = true;
-    \\        client.emit("error", error);
+    \\        if (!client.__home_fatal_settings_error_emitted) { client.__home_fatal_settings_error_emitted = true; client.emit("error", error); }
     \\        if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\        this.closed = true;
     \\        this.destroyed = true;
-    \\        this.emit("close");
+    \\        if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\        if (server && server.__home_sessions) { server.__home_sessions.delete(this); server.__home_finish_close(); }
     \\        if (typeof settingsCallback === "function") settingsCallback(error);
     \\      });
     \\      return this;
@@ -40426,6 +40436,7 @@ const harness_prelude =
     \\  client.__home_padding_transport = !!(suppliedTransport && suppliedTransport.__home_peer && Number(options && options.paddingStrategy) === __home_http2_constants.PADDING_STRATEGY_ALIGNED);
     \\  if (client.__home_padding_transport) { suppliedTransport.write(Buffer.alloc(24)); suppliedTransport.write(Buffer.alloc(9)); serverTransportSocket.write(Buffer.alloc(9)); serverTransportSocket.write(Buffer.alloc(9)); }
     \\  serverTransportSocket.remoteAddress = serverTransportSocket.remoteAddress || options.localAddress || "127.0.0.1";
+    \\  serverTransportSocket.remoteFamily = serverTransportSocket.remoteFamily || (options.family === 6 ? "IPv6" : "IPv4");
     \\  serverTransportSocket.remotePort = serverTransportSocket.remotePort || authorityPort;
     \\  if (client.encrypted) { if (serverTransportSocket.servername === undefined) serverTransportSocket.servername = secureServername; if (serverTransportSocket.alpnProtocol === undefined) serverTransportSocket.alpnProtocol = transportSocket.alpnProtocol || "h2"; serverTransportSocket.encrypted = true; }
     \\  const rawTransportEmit = typeof transportSocket.emit === "function" ? transportSocket.emit.bind(transportSocket) : null;
@@ -40948,7 +40959,7 @@ const harness_prelude =
     \\      });
     \\      return stream;
     \\    }
-    \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" || requestHeaders.expect !== undefined);
+    \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" && server.listenerCount("stream") === 0 || requestHeaders.expect !== undefined);
     \\    if (hasCompatHandler) {
     \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0, sentInfoHeaders: [] });
     \\      Object.defineProperty(handlerServerStream, "writableHighWaterMark", { configurable: true, enumerable: true, get() { return Number(this._writableState && this._writableState.highWaterMark || 16384); } });
@@ -41548,7 +41559,8 @@ const harness_prelude =
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
     \\      server.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
     \\      client.__home_server_session.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
-    \\      const lateCompatHandler = typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || String(requestHeaders[":method"] || "GET").toUpperCase() === "CONNECT" || requestHeaders.expect !== undefined;
+    \\      const lateMethod = String(requestHeaders[":method"] || "GET").toUpperCase();
+    \\      const lateCompatHandler = typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || lateMethod === "CONNECT" && server.listenerCount("stream") === 0 || requestHeaders.expect !== undefined;
     \\      if (lateCompatHandler) {
     \\        try { __home_http2_dispatch_request(server, stream.__home_received_headers, function() {}, serverStream, stream); } catch (error) { process.emit("uncaughtException", error); }
     \\        if (!serverStream.__home_request_ended && String(requestHeaders[":method"] || "GET").toUpperCase() === "GET") { serverStream.__home_request_ended = true; serverStream.__home_receive("end"); }
@@ -155089,6 +155101,29 @@ test "bootstrap HTTP2 compatibility socket and informational response logical co
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 compat socket/information logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 CONNECT method lifecycle logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net");
+        \\test("extended CONNECT inherits required pseudoheaders and closes cleanly", async () => { await new Promise((resolve, reject) => { let streams = 0; const server = http2.createServer({ settings: { enableConnectProtocol: true } }); server.on("stream", (stream, headers) => { streams++; try { assert.strictEqual(headers[":method"], "CONNECT"); assert.strictEqual(headers[":protocol"], "foo"); assert.strictEqual(headers[":scheme"], "http"); assert.strictEqual(headers[":path"], "/"); assert.strictEqual(headers[":authority"], "localhost:" + server.address().port); stream.respond(); stream.end("ok"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); client.on("error", reject); client.once("remoteSettings", settings => { try { assert.strictEqual(settings.enableConnectProtocol, true); } catch (error) { reject(error); } const request = client.request({ ":method": "CONNECT", ":protocol": "foo" }); let body = ""; let responses = 0; let ends = 0; let closes = 0; request.setEncoding("utf8"); request.on("error", reject); request.on("response", headers => { responses++; try { assert.strictEqual(headers[":status"], 200); } catch (error) { reject(error); } }); request.on("data", chunk => body += chunk); request.on("end", () => ends++); request.on("close", () => { closes++; try { assert.strictEqual(body, "ok"); assert.strictEqual(responses, 1); assert.strictEqual(ends, 1); assert.strictEqual(closes, 1); assert.strictEqual(request.rstCode, 0); assert.strictEqual(streams, 1); assert.strictEqual(client.__home_active_streams, 0); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); }); });
+        \\test("extended CONNECT cannot be disabled after advertisement", async () => { await new Promise((resolve, reject) => { let serverStreams = 0; let requestErrors = 0; let requestClosed = false; let clientErrors = 0; const server = http2.createServer({ settings: { enableConnectProtocol: true } }); server.on("stream", () => serverStreams++); server.on("session", session => session.settings({ enableConnectProtocol: false })); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); client.on("error", error => { clientErrors++; try { assert.strictEqual(error.code, "ERR_HTTP2_ERROR"); assert.strictEqual(error.name, "Error"); assert.strictEqual(error.message, "Protocol error"); } catch (cause) { reject(cause); } }); client.on("close", () => { try { assert.strictEqual(clientErrors, 1); assert.strictEqual(requestErrors, 1); assert.strictEqual(requestClosed, true); assert.strictEqual(serverStreams, 0); assert.strictEqual(client.__home_active_streams, 0); server.close(resolve); } catch (error) { reject(error); } }); client.once("remoteSettings", settings => { try { assert.strictEqual(settings.enableConnectProtocol, true); } catch (error) { reject(error); } const request = client.request({ ":method": "CONNECT", ":protocol": "foo" }); request.on("error", error => { requestErrors++; try { assert.strictEqual(error.code, "ERR_HTTP2_STREAM_ERROR"); } catch (cause) { reject(cause); } }); request.on("close", () => requestClosed = true); request.end(); }); }); }); });
+        \\test("ordinary CONNECT validates pseudoheaders and carries a bidirectional tunnel", async () => { const reject = error => { throw error; }; let targetReceived = ""; const target = net.createServer(socket => { socket.setEncoding("utf8"); socket.on("data", chunk => targetReceived += chunk); socket.on("end", () => socket.end("hello")); }); await new Promise(resolve => target.listen(0, resolve)); const proxy = http2.createServer(); let proxyStreams = 0; proxy.on("stream", (stream, headers) => { proxyStreams++; try { assert.strictEqual(headers[":method"], "CONNECT"); assert.strictEqual(headers[":authority"], "localhost:" + target.address().port); assert.strictEqual(headers[":scheme"], undefined); assert.strictEqual(headers[":path"], undefined); const socket = net.connect(target.address().port, "localhost", () => { stream.respond(); socket.pipe(stream); stream.pipe(socket); }); socket.on("error", reject); } catch (error) { reject(error); } }); await new Promise(resolve => proxy.listen(0, resolve)); const client = http2.connect("http://localhost:" + proxy.address().port); client.on("error", reject); try { assert.throws(() => client.request({ ":method": "CONNECT" }), { code: "ERR_HTTP2_CONNECT_AUTHORITY" }); assert.throws(() => client.request({ ":method": "CONNECT", ":authority": "localhost:" + target.address().port, ":scheme": "http" }), { code: "ERR_HTTP2_CONNECT_SCHEME" }); assert.throws(() => client.request({ ":method": "CONNECT", ":authority": "localhost:" + target.address().port, ":path": "/" }), { code: "ERR_HTTP2_CONNECT_PATH" }); } catch (error) { reject(error); } await new Promise((resolve, rejectRequest) => { const request = client.request({ ":method": "CONNECT", ":authority": "localhost:" + target.address().port }); let body = ""; let responses = 0; let ends = 0; let closes = 0; request.setEncoding("utf8"); request.on("error", rejectRequest); request.on("response", headers => { responses++; try { assert.strictEqual(headers[":status"], 200); } catch (error) { rejectRequest(error); } }); request.on("data", chunk => body += chunk); request.on("end", () => ends++); request.on("close", () => { closes++; try { assert.strictEqual(targetReceived, "hello"); assert.strictEqual(body, "hello"); assert.strictEqual(responses, 1); assert.strictEqual(ends, 1); assert.strictEqual(closes, 1); assert.strictEqual(proxyStreams, 1); assert.strictEqual(client.__home_active_streams, 0); resolve(); } catch (error) { rejectRequest(error); } }); request.end("hello"); }); client.close(); await new Promise(resolve => proxy.close(resolve)); await new Promise(resolve => target.close(resolve)); });
+        \\test("localAddress reaches the compatibility connection metadata", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((request, response) => { try { assert.strictEqual(request.connection.remoteAddress, "127.0.0.2"); assert.strictEqual(request.connection.remoteFamily, "IPv4"); response.end("ok"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port, { localAddress: "127.0.0.2", family: 4 }); const request = client.request(); request.on("error", reject); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-connect-method-lifecycle-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 CONNECT method lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }

@@ -164,10 +164,6 @@ test/js/node/test/parallel/test-http2-client-http1-server.js [ FAIL ] # not yet 
 test/js/node/test/parallel/test-http2-client-onconnect-errors.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-set-priority.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-client-socket-destroy.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-compat-serverresponse-drain.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-compat-socket.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-connect-method-extended-cant-turn-off.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-connect-method-extended.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-create-client-secure-session.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-debug.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-https-fallback.js [ FAIL ] # not yet passing
