@@ -1417,8 +1417,21 @@ pub const TypeChecker = struct {
                 if (decl.value) |value| {
                     // BIDIRECTIONAL CHECKING: If type annotation exists, CHECK the value
                     // Otherwise, SYNTHESIZE the type from the value
+                    // A binding is entered into scope even when its
+                    // initializer cannot be typed. Previously a failure here
+                    // propagated out of this arm and `env.define` below never
+                    // ran, so the name simply did not exist — and every later
+                    // use of it reported "Undefined variable", pointing at the
+                    // use rather than at the initializer that actually failed.
+                    // One un-inferable `let` produced fifteen errors in
+                    // home-os's vmm.home, none of them at the real cause.
+                    //
+                    // Void is this checker's "unknown", and it already treats
+                    // Void as compatible with everything (see
+                    // checkExpressionAgainst), so an un-typed binding degrades
+                    // to gradual typing instead of cascading.
                     const value_type = if (decl.type_name) |type_name| blk: {
-                        const declared_type = try self.parseTypeName(type_name);
+                        const declared_type = self.parseTypeName(type_name) catch Type.Void;
                         // CHECK mode: propagate the declared type as a
                         // hint into the initializer so numeric literals
                         // and array literals adopt the destination
@@ -1426,12 +1439,14 @@ pub const TypeChecker = struct {
                         // default. The synthesized value type is then
                         // validated against the declared type the same
                         // way `checkExpression` did.
-                        const synthesized = try self.inferExpressionWithHint(value, declared_type);
-                        try self.checkExpressionAgainst(value, declared_type, synthesized);
+                        const synthesized = self.inferExpressionWithHint(value, declared_type) catch {
+                            break :blk declared_type;
+                        };
+                        self.checkExpressionAgainst(value, declared_type, synthesized) catch {};
                         break :blk declared_type;
                     } else blk: {
-                        // SYNTHESIS mode: infer type from value
-                        break :blk try self.synthesizeExpression(value);
+                        // SYNTHESIS mode: infer type from value.
+                        break :blk self.synthesizeExpression(value) catch Type.Void;
                     };
 
                     // If the value is an identifier, mark it as moved (if movable)
@@ -3276,6 +3291,21 @@ pub const TypeChecker = struct {
             return Type.Void;
         }
 
+        // Slicing a pointer produces a slice of the pointee. This is how a
+        // kernel turns an address handed to it by a syscall into something
+        // with a length — `ptr[0..len]` — and it is the one slice form a
+        // JavaScript type system has no reason to allow, since it has no
+        // pointers. Without it the only way to pass such data on is a bare
+        // pointer to a parameter that will read `.len` off it.
+        if (array_type == .Reference or array_type == .MutableReference) {
+            const pointee = switch (array_type) {
+                .Reference => |inner| inner,
+                .MutableReference => |inner| inner,
+                else => unreachable,
+            };
+            return Type{ .Array = .{ .element_type = pointee } };
+        }
+
         // Array must be an array type
         if (array_type != .Array) {
             try self.addError("Cannot slice non-array type", slice.node.loc);
@@ -3844,6 +3874,20 @@ pub const TypeChecker = struct {
         return Type{ .Tuple = .{ .element_types = element_types } };
     }
 
+    /// Width of an arbitrary-width integer type name such as `u4` or `i40`,
+    /// or null if the name is not of that form. The standard widths are
+    /// matched by name before this is reached, so it only sees the rest.
+    fn parseArbitraryIntWidth(name: []const u8) ?u16 {
+        if (name.len < 2) return null;
+        if (name[0] != 'u' and name[0] != 'i') return null;
+        for (name[1..]) |c| {
+            if (!std.ascii.isDigit(c)) return null;
+        }
+        const width = std.fmt.parseInt(u16, name[1..], 10) catch return null;
+        if (width == 0 or width > 128) return null;
+        return width;
+    }
+
     fn parseTypeName(self: *TypeChecker, name: []const u8) !Type {
         // Built-in primitive types
         if (std.mem.eql(u8, name, "int")) return Type.Int;
@@ -3876,6 +3920,27 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "Int")) return Type.Int;
         if (std.mem.eql(u8, name, "Float")) return Type.Float;
         if (std.mem.eql(u8, name, "Bool")) return Type.Bool;
+
+        // Arbitrary-width integers: `u4`, `u6`, `u12`, `u40`, `u63`, and so
+        // on. These are what a systems language needs and what a JavaScript
+        // type system has no concept of — a page table entry is a `u40`
+        // address beside a `u3` of available bits, and an interrupt gate is
+        // a `u128` of fields that are not byte-aligned.
+        //
+        // They are modelled as the smallest standard-width integer that holds
+        // them, which keeps signedness and storage class exact and loses only
+        // range precision. Without this, a binding declared `let n: u4` did
+        // not resolve to a type at all, so the binding was never entered into
+        // scope and every later use of it was reported as an undefined
+        // variable — an error a long way from its cause.
+        if (parseArbitraryIntWidth(name)) |width| {
+            const unsigned = name[0] == 'u';
+            if (width <= 8) return if (unsigned) Type.U8 else Type.I8;
+            if (width <= 16) return if (unsigned) Type.U16 else Type.I16;
+            if (width <= 32) return if (unsigned) Type.U32 else Type.I32;
+            if (width <= 64) return if (unsigned) Type.U64 else Type.I64;
+            if (width <= 128) return if (unsigned) Type.U128 else Type.I128;
+        }
 
         // Check if it's a mutable type (mut T) - for by-value mutable parameters
         // This is different from &mut T which is a mutable reference

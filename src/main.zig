@@ -1352,7 +1352,21 @@ fn ciCommand(allocator: std.mem.Allocator, target: []const u8) !void {
 
 fn writeStdout(bytes: []const u8) !void {
     const stdout_file = std.Io.File.stdout();
-    try stdout_file.writeStreamingAll(g_io, bytes);
+    stdout_file.writeStreamingAll(g_io, bytes) catch |err| switch (err) {
+        error.BrokenPipe => return,
+        else => return err,
+    };
+}
+
+fn completionShellName(shell_path: []const u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, shell_path, "/");
+    return std.fs.path.basename(trimmed);
+}
+
+test "completions infer the shell executable from SHELL" {
+    try std.testing.expectEqualStrings("bash", completionShellName("/bin/bash"));
+    try std.testing.expectEqualStrings("zsh", completionShellName("/usr/local/bin/zsh/"));
+    try std.testing.expectEqualStrings("fish", completionShellName("fish"));
 }
 
 fn cleanCommand() !void {
@@ -3182,6 +3196,11 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
     // Set source root for module resolution based on the file being compiled
     try parser.module_resolver.setSourceRoot(file_path);
+    // Give the resolver the Io context. Parser.init has to construct it with
+    // null — it has no access to g_io — but the kernel backend reads imported
+    // modules through this resolver to pick up their type declarations, and
+    // without an Io it cannot open a file at all.
+    parser.module_resolver.io = g_io;
 
     const program = try parser.parse();
 
@@ -3301,6 +3320,10 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
             &parser.module_resolver,
         );
         defer codegen.deinit();
+        // The backend derives each module's symbol prefix from its path, so
+        // that two modules exporting the same name do not collide at link
+        // time.
+        codegen.source_file = file_path;
 
         const asm_code = try codegen.generate(program);
 
@@ -5361,13 +5384,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, command, "completions")) {
-        if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'completions' requires bash, zsh, or fish\n\n", .{ Color.Red.code(), Color.Reset.code() });
-            printUsage();
-            std.process.exit(1);
-        }
+        const shell_name = if (args.len >= 3)
+            args[2]
+        else blk: {
+            const shell_path = init.environ_map.get("SHELL") orelse {
+                std.debug.print("{s}Error:{s} 'completions' requires bash, zsh, or fish when SHELL is unset\n\n", .{ Color.Red.code(), Color.Reset.code() });
+                printUsage();
+                std.process.exit(1);
+            };
+            break :blk completionShellName(shell_path);
+        };
 
-        try completionsCommand(args[2]);
+        try completionsCommand(shell_name);
         return;
     }
 

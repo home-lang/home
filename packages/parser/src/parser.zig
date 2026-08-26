@@ -1738,11 +1738,13 @@ pub const Parser = struct {
         //   `packed struct(u8) { ... }` (always anonymous — `bound_name`
         //   is non-null here because the outer form is
         //   `const Name = packed struct(u8) { ... }`).
-        // Accept and discard the backing type for now — codegen will
-        // recover the layout from field types and the `packed` attribute.
+        // The backing type is recorded on the declaration: a bitfield
+        // struct's fields are bit ranges within that integer, and codegen
+        // cannot recover which integer from the field types alone.
+        var backing_type: ?[]const u8 = null;
         if (bound_name != null and self.check(.LeftParen)) {
             _ = self.advance();
-            _ = try self.parseTypeAnnotation();
+            backing_type = try self.parseTypeAnnotation();
             _ = try self.expect(.RightParen, "Expected ')' after struct backing type");
         }
 
@@ -1752,13 +1754,10 @@ pub const Parser = struct {
         };
 
         // Optional explicit backing type for fixed-layout structs:
-        //   `packed struct IDTEntry: u128 { ... }`. Currently we accept
-        //   the type and discard it — codegen will recover the layout
-        //   from field types and the `packed` attribute. The token is
-        //   consumed so it doesn't trip the `{`-after-name check.
+        //   `packed struct IDTEntry: u128 { ... }`.
         if (self.check(.Colon)) {
             _ = self.advance();
-            _ = try self.parseTypeAnnotation();
+            backing_type = try self.parseTypeAnnotation();
         }
 
         // Parse generic type parameters if present: struct Name<T, U> or struct Name<T: Trait>
@@ -2071,6 +2070,8 @@ pub const Parser = struct {
             struct_decl.layout = .Aligned;
             struct_decl.alignment = explicit_alignment;
         }
+        // Propagate the backing type of a bitfield struct.
+        struct_decl.backing_type = backing_type;
 
         return ast.Stmt{ .StructDecl = struct_decl };
     }
@@ -6680,6 +6681,41 @@ pub const Parser = struct {
     /// `else` token (which sits at NullCoalesce) reliably terminates the
     /// then-branch. `else` is mandatory; an if-without-else used as an
     /// expression is a type error caught downstream.
+    /// Parse the `{ ... }` body of an if-expression branch, with the opening
+    /// brace already consumed.
+    ///
+    /// A branch may hold a sequence of statements whose value is its trailing
+    /// expression, not only a single expression:
+    ///
+    ///     let pdpt = if create {
+    ///         getOrCreatePDPT(idx, user)
+    ///     } else {
+    ///         let phys = physicalAddress(entry)
+    ///         if aligned(phys) { fromInt(phys) } else { null }
+    ///     }
+    ///
+    /// This used to parse the branch with `expression()`, which reads exactly
+    /// one expression. A branch holding a statement therefore left the parser
+    /// mid-block, and the following `expect(RightBrace)` consumed the brace
+    /// closing the *enclosing function*. The result parsed without error into
+    /// a different program: the `let` binding vanished and every statement
+    /// after it was hoisted to module scope. Nothing downstream could see the
+    /// cause — the type checker simply reported the vanished name as
+    /// undefined at each of its uses.
+    ///
+    /// A single-expression branch still yields that expression directly, so
+    /// the common case produces the same AST as before.
+    fn braceBranch(self: *Parser) !*ast.Expr {
+        const block = try self.blockExprParse();
+        if (block.* == .BlockExpr) {
+            const stmts = block.BlockExpr.statements;
+            if (stmts.len == 1 and stmts[0] == .ExprStmt) {
+                return stmts[0].ExprStmt;
+            }
+        }
+        return block;
+    }
+
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
         // Parse condition - let expression() handle all grouping naturally.
@@ -6698,8 +6734,7 @@ pub const Parser = struct {
             then_branch = try self.parsePrecedence(.Or);
         } else if (uses_brace) {
             _ = self.advance(); // consume `{`
-            then_branch = try self.expression();
-            _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+            then_branch = try self.braceBranch();
         } else {
             // Bare expression form (issue #54): the arm is just an
             // expression. Parse at Or-precedence so `else` terminates it.
@@ -6715,8 +6750,7 @@ pub const Parser = struct {
             else_branch = try self.ifExpr();
         } else if (uses_brace and self.check(.LeftBrace)) {
             _ = self.advance();
-            else_branch = try self.expression();
-            _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
+            else_branch = try self.braceBranch();
         } else if (uses_then) {
             else_branch = try self.parsePrecedence(.Or);
         } else {

@@ -2159,6 +2159,12 @@ pub const StructDecl = struct {
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)
     layout: StructLayout = .Auto, // Struct memory layout
     alignment: ?u32 = null, // Explicit alignment in bytes (for Aligned layout)
+    /// Backing integer type of a bitfield struct, from either
+    /// `packed struct(u64) { ... }` or `packed struct Name: u64 { ... }`.
+    /// When set, the struct IS that integer and its fields are bit ranges
+    /// within it, so codegen must extract and insert rather than load and
+    /// store at byte offsets.
+    backing_type: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, fields: []const StructField, type_params: []const GenericParam, loc: SourceLocation) !*StructDecl {
         const decl = try allocator.create(StructDecl);

@@ -10216,9 +10216,9 @@ pub const Parser = struct {
                 // Mirrors tsgo's `isBindingIdentifier`: contextual and
                 // strict-mode-reserved words follow `with`, the final ES
                 // reserved word, in both token enums.
-                const raw = @intFromEnum(kind);
-                return raw >= @intFromEnum(TokenKind.kw_yield) and
-                    raw <= @intFromEnum(TokenKind.kw_accessor);
+                const raw = @backingInt(kind);
+                return raw >= @backingInt(TokenKind.kw_yield) and
+                    raw <= @backingInt(TokenKind.kw_accessor);
             },
         };
     }
@@ -16677,11 +16677,13 @@ pub const Parser = struct {
                                 },
                                 else => {
                                     while (i < close_at and
-                                        (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                        (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1)
+                                    {}
                                     if (i < close_at and self.source[i] == '-') {
                                         i += 1;
                                         while (i < close_at and
-                                            (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1) {}
+                                            (self.source[i] == 'i' or self.source[i] == 'm' or self.source[i] == 's')) : (i += 1)
+                                        {}
                                     }
                                     if (i < close_at and self.source[i] == ':') i += 1;
                                 },
@@ -18313,7 +18315,7 @@ pub const Parser = struct {
             const t = self.peek();
             if (!allow_in and t.kind == .kw_in) break;
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
-            if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
+            if (@backingInt(prec) < @backingInt(min_prec)) break;
             if ((t.kind == .kw_as or t.kind == .kw_satisfies) and t.flags.preceded_by_newline) break;
             // TSX-only ASI guard: in `.tsx` sources, a `<` token that
             // starts on a new line and is followed by a JSX-name part
@@ -18379,7 +18381,7 @@ pub const Parser = struct {
             const next_min: prec_mod.Prec = if (prec_mod.isRightAssociative(prec))
                 prec
             else
-                @enumFromInt(@intFromEnum(prec) + 1);
+                @fromBackingInt(@intCast(@backingInt(prec) + 1));
             if (self.peek().kind == .close_paren) {
                 const missing = self.advance();
                 try self.reportCodeAt(missing.span.start, missing.line, 1109, "Expression expected.");
@@ -18474,7 +18476,7 @@ pub const Parser = struct {
     fn assertionMustStopBeforeNextOperator(self: *Parser, last_binary_prec: ?prec_mod.Prec) bool {
         const last_prec = last_binary_prec orelse return false;
         const next_prec = prec_mod.binaryPrec(self.peek().kind) orelse return false;
-        return @intFromEnum(next_prec) > @intFromEnum(last_prec);
+        return @backingInt(next_prec) > @backingInt(last_prec);
     }
 
     fn tokenCanStartTypeAssertionType(kind: TokenKind) bool {

@@ -358,9 +358,9 @@ fn NewLexer_(
 
                             // legacy octal literals
                             '0'...'7' => {
-                                const octal_start = (iter.i + width2) - 2;
+                                const octal_start = (iter.i + width2) -| 2;
                                 if (comptime is_json) {
-                                    lexer.end = start + iter.i - width2;
+                                    lexer.end = (start + iter.i) -| width2;
                                     try lexer.syntaxError();
                                 }
 
@@ -416,7 +416,7 @@ fn NewLexer_(
                                 iter.c = @as(i32, @intCast(value));
                                 if (is_bad) {
                                     lexer.addRangeError(
-                                        logger.Range{ .loc = .{ .start = @as(i32, @intCast(octal_start)) }, .len = @as(i32, @intCast(iter.i - octal_start)) },
+                                        logger.Range{ .loc = .{ .start = @as(i32, @intCast(start + octal_start)) }, .len = @as(i32, @intCast(iter.i -| octal_start)) },
                                         "Invalid legacy octal literal",
                                         .{},
                                         false,
@@ -447,7 +447,7 @@ fn NewLexer_(
                                         value = value * 16 | (c3 + 10 - 'A');
                                     },
                                     else => {
-                                        lexer.end = start + iter.i - width3;
+                                        lexer.end = (start + iter.i) -| width3;
                                         return lexer.syntaxError();
                                     },
                                 }
@@ -466,7 +466,7 @@ fn NewLexer_(
                                         value = value * 16 | (c3 + 10 - 'A');
                                     },
                                     else => {
-                                        lexer.end = start + iter.i - width3;
+                                        lexer.end = (start + iter.i) -| width3;
                                         return lexer.syntaxError();
                                     },
                                 }
@@ -485,11 +485,13 @@ fn NewLexer_(
                                 // variable-length
                                 if (c3 == '{') {
                                     if (comptime is_json) {
-                                        lexer.end = start + iter.i - width2;
+                                        lexer.end = (start + iter.i) -| width2;
                                         try lexer.syntaxError();
                                     }
 
-                                    const hex_start = (iter.i + start) - width - width2 - width3;
+                                    // iter.i is already positioned at `{`. Back up over
+                                    // the preceding backslash and `u`, but not `{` itself.
+                                    const hex_start = (iter.i -| width) -| width2;
                                     var is_first = true;
                                     var is_out_of_range = false;
                                     variableLength: while (true) {
@@ -529,7 +531,7 @@ fn NewLexer_(
 
                                     if (is_out_of_range) {
                                         try lexer.addRangeError(
-                                            .{ .loc = .{ .start = @as(i32, @intCast(start + hex_start)) }, .len = @as(i32, @intCast(((iter.i + start) - hex_start))) },
+                                            .{ .loc = .{ .start = @as(i32, @intCast(start + hex_start)) }, .len = @as(i32, @intCast(iter.i -| hex_start)) },
                                             "Unicode escape sequence is out of range",
                                             .{},
                                             true,
@@ -555,7 +557,7 @@ fn NewLexer_(
                                                 value = value * 16 | (c3 + 10 - 'A');
                                             },
                                             else => {
-                                                lexer.end = start + iter.i - width3;
+                                                lexer.end = (start + iter.i) -| width3;
                                                 return lexer.syntaxError();
                                             },
                                         }
@@ -573,7 +575,7 @@ fn NewLexer_(
                             },
                             '\r' => {
                                 if (comptime is_json) {
-                                    lexer.end = start + iter.i - width2;
+                                    lexer.end = (start + iter.i) -| width2;
                                     try lexer.syntaxError();
                                 }
 
@@ -586,7 +588,7 @@ fn NewLexer_(
                             },
                             '\n', 0x2028, 0x2029 => {
                                 if (comptime is_json) {
-                                    lexer.end = start + iter.i - width2;
+                                    lexer.end = (start + iter.i) -| width2;
                                     try lexer.syntaxError();
                                 }
 
@@ -598,7 +600,7 @@ fn NewLexer_(
                                     switch (c2) {
                                         '"', '\\', '/' => {},
                                         else => {
-                                            lexer.end = start + iter.i - width2;
+                                            lexer.end = (start + iter.i) -| width2;
                                             try lexer.syntaxError();
                                         },
                                     }
@@ -2090,7 +2092,8 @@ fn NewLexer_(
                     bun.assert(lexer.temp_buffer_u16.items.len == 0);
                     defer lexer.temp_buffer_u16.clearRetainingCapacity();
                     try lexer.temp_buffer_u16.ensureUnusedCapacity(lexer.string_literal_raw_content.len);
-                    try lexer.decodeEscapeSequences(lexer.string_literal_start, lexer.string_literal_raw_content, std.array_list.Managed(u16), &lexer.temp_buffer_u16);
+                    // Raw content starts one byte after the opening quote.
+                    try lexer.decodeEscapeSequences(lexer.string_literal_start + 1, lexer.string_literal_raw_content, std.array_list.Managed(u16), &lexer.temp_buffer_u16);
                     const first_non_ascii = strings.firstNonASCII16(lexer.temp_buffer_u16.items);
                     // prefer to store an ascii e.string rather than a utf-16 one. ascii takes less memory, and `+` folding is not yet supported on utf-16.
                     if (first_non_ascii != null) {
