@@ -4704,6 +4704,12 @@ pub const Checker = struct {
     /// Class/enum use-before-declaration analysis recursively collects names
     /// and references. Skip it when attached source cannot declare either.
     source_may_have_class_or_enum_declaration: bool = false,
+    /// Enum member lookup walks enclosing statement lists. A class-only file
+    /// cannot satisfy it even though the broader class/enum feature bit is set.
+    source_may_have_enum_declaration: bool = false,
+    /// Checked-JS computed prototype replacement requires a computed access to
+    /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
+    source_may_have_computed_prototype_assignment: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     /// First simple variable declaration per lexical statement container.
@@ -4711,6 +4717,12 @@ pub const Checker = struct {
     /// avoids rescanning large blocks for every later identifier read.
     visible_annotated_value_decls: std.AutoHashMapUnmanaged(VisibleAnnotatedValueKey, NodeId) = .empty,
     indexed_annotated_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    /// Successful heritage resolution is immutable for a checked source node.
+    /// Cache only successes so forward and recovery paths can still resolve
+    /// after later declarations have been registered.
+    class_extends_instance_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_extends_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_extends_call_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -5093,11 +5105,20 @@ pub const Checker = struct {
         self.source_may_have_class_or_enum_declaration =
             std.mem.indexOf(u8, source, "class") != null or
             std.mem.indexOf(u8, source, "enum") != null;
+        self.source_may_have_enum_declaration = std.mem.indexOf(u8, source, "enum") != null;
+        self.source_may_have_computed_prototype_assignment =
+            std.mem.indexOf(u8, source, "prototype") != null and
+            std.mem.indexOfScalar(u8, source, '[') != null and
+            std.mem.indexOfScalar(u8, source, '=') != null and
+            std.mem.indexOfScalar(u8, source, '{') != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
         self.visible_annotated_value_decls.clearRetainingCapacity();
         self.indexed_annotated_value_containers.clearRetainingCapacity();
+        self.class_extends_instance_type_cache.clearRetainingCapacity();
+        self.class_extends_static_type_cache.clearRetainingCapacity();
+        self.class_extends_call_static_type_cache.clearRetainingCapacity();
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5527,6 +5548,9 @@ pub const Checker = struct {
         self.indexed_named_type_containers.deinit(self.gpa);
         self.visible_annotated_value_decls.deinit(self.gpa);
         self.indexed_annotated_value_containers.deinit(self.gpa);
+        self.class_extends_instance_type_cache.deinit(self.gpa);
+        self.class_extends_static_type_cache.deinit(self.gpa);
+        self.class_extends_call_static_type_cache.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
         self.jsx_local_factory_namespace_type_cache.deinit(self.gpa);
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
@@ -20263,6 +20287,8 @@ pub const Checker = struct {
                 self.hir.kindOf(assignment.target) != .member_access) continue;
             const member = hir_mod.memberOf(self.hir, assignment.target);
             if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) continue;
+            const object_name = self.string_interner.get(hir_mod.identifierOf(self.hir, member.object).name);
+            if (std.mem.eql(u8, object_name, "this") or std.mem.eql(u8, object_name, "super")) continue;
             self.may_have_expando_property_assignments = true;
             return true;
         }
@@ -52886,7 +52912,8 @@ pub const Checker = struct {
     }
 
     fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
-        return switch (self.hir.kindOf(extends_expr)) {
+        if (self.class_extends_instance_type_cache.get(extends_expr)) |cached| return cached;
+        const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findLocalValueDeclBefore(self.enclosingClassNode(extends_expr), id.name)) |local_decl| {
@@ -52989,6 +53016,8 @@ pub const Checker = struct {
             },
             else => null,
         };
+        if (result) |resolved| self.class_extends_instance_type_cache.put(self.gpa, extends_expr, resolved) catch {};
+        return result;
     }
 
     fn instantiatedHeritageValueTypeRefInstance(
@@ -54013,7 +54042,8 @@ pub const Checker = struct {
     }
 
     fn classExtendsStaticType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
-        return switch (self.hir.kindOf(extends_expr)) {
+        if (self.class_extends_static_type_cache.get(extends_expr)) |cached| return cached;
+        const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
@@ -54083,22 +54113,23 @@ pub const Checker = struct {
             },
             else => null,
         };
+        if (result) |resolved| self.class_extends_static_type_cache.put(self.gpa, extends_expr, resolved) catch {};
+        return result;
     }
 
     fn classExtendsCallStaticType(self: *Checker, extends_expr: NodeId) CheckError!TypeId {
+        if (self.class_extends_call_static_type_cache.get(extends_expr)) |cached| return cached;
         const type_args = hir_mod.callTypeArgs(self.hir, extends_expr);
-        if (type_args.len == 0) {
-            const static_t = try self.checkExpression(extends_expr);
-            return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
-        }
         const callee = hir_mod.callOf(self.hir, extends_expr).callee;
-        if (self.hir.kindOf(callee) == .identifier) {
-            const static_t = try self.checkExpression(extends_expr);
-            return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
-        }
-        const uninstantiated_t = try self.checkExpression(callee);
-        const static_t = try self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
-        return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
+        const static_t = if (type_args.len == 0 or self.hir.kindOf(callee) == .identifier)
+            try self.checkExpression(extends_expr)
+        else blk: {
+            const uninstantiated_t = try self.checkExpression(callee);
+            break :blk try self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
+        };
+        const result = try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
+        self.class_extends_call_static_type_cache.put(self.gpa, extends_expr, result) catch {};
+        return result;
     }
 
     fn refineHeritageFactoryStaticTypeFromArgs(
@@ -69361,7 +69392,7 @@ pub const Checker = struct {
     }
 
     fn enumDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
-        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
+        if (self.source != null and !self.source_may_have_enum_declaration) return null;
         if (self.module) |module| {
             if (module.root.lookup(name)) |sym| {
                 if (sym.decls.items.len > 0) {
@@ -119905,7 +119936,21 @@ pub const Checker = struct {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const use_start = self.hir.spanOf(node).start;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+        const statements = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleAnnotatedValueDecls(root, statements);
+        if (self.indexed_annotated_value_containers.contains(root)) {
+            const declaration = self.visible_annotated_value_decls.get(.{
+                .container = root,
+                .name = name,
+                .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                    self.virtualSectionStartForNode(node)
+                else
+                    0,
+            }) orelse return null;
+            if (self.hir.spanOf(declaration).start > use_start) return null;
+            return hir_mod.varDeclOf(self.hir, declaration).type_annotation;
+        }
+        for (statements) |stmt| {
             if (self.hir.spanOf(stmt).start > use_start) break;
             const decl = self.unwrapExportDecl(stmt);
             const dk = self.hir.kindOf(decl);
@@ -143556,6 +143601,7 @@ pub const Checker = struct {
     }
 
     fn checkJsComputedPrototypeObjectLiteralOwnerName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (self.source != null and !self.source_may_have_computed_prototype_assignment) return null;
         const node_span = self.hir.spanOf(node);
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {

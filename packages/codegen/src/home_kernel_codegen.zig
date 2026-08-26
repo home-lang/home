@@ -172,14 +172,16 @@ fn fullRegister(reg: []const u8) []const u8 {
 /// Names that must keep an unmangled symbol: they are named by hand-written
 /// assembly or by the linker script, which cannot know a module prefix.
 ///
-/// `interrupt_dispatch` is called from the interrupt stubs, which are written
-/// in assembly because an interrupt frame cannot be built in Home. Until a
-/// `link_name` attribute exists, a fixed name is the contract between the two.
+/// `interrupt_dispatch` and `syscall_entry_dispatch` are called from the stubs in
+/// kernel/src/idt_stubs.s, which are written in assembly because an interrupt
+/// frame cannot be built in Home. Until a `link_name` attribute exists, a
+/// fixed name is the contract between the two.
 fn isBootEntryPoint(name: []const u8) bool {
     return std.mem.eql(u8, name, "kernel_main") or
         std.mem.eql(u8, name, "main") or
         std.mem.eql(u8, name, "_start") or
-        std.mem.eql(u8, name, "interrupt_dispatch");
+        std.mem.eql(u8, name, "interrupt_dispatch") or
+        std.mem.eql(u8, name, "syscall_entry_dispatch");
 }
 
 /// Prefix for module-variable symbols. Home keeps functions and variables in
