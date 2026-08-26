@@ -39036,6 +39036,8 @@ const harness_prelude =
     \\  Object.setPrototypeOf(session, __home_http2_ServerHttp2Session.prototype);
     \\  let input = Buffer.alloc(0);
     \\  let receivedPreface = false;
+    \\  let connectionEmitted = false;
+    \\  let activeSession = null;
     \\  let closeEmitted = false;
     \\  let closing = false;
     \\  let invalidFrames = 0;
@@ -39045,12 +39047,34 @@ const harness_prelude =
     \\  socket.allowHalfOpen = !!(server && server.allowHalfOpen);
     \\  socket.__home_port = port;
     \\  socket.__home_hostname = hostname;
+    \\  socket.__home_http2_server = server;
     \\  socket.__home_http2_session = session;
     \\  session.socket = socket;
     \\  session[__home_http2_k_socket] = socket;
     \\  socket.setTimeout = function() { return this; };
     \\  socket.setNoDelay = function() { return this; };
     \\  function send(bytes) { const value = Buffer.from(bytes); Promise.resolve().then(() => { if (!closeEmitted) socket.emit("data", value); }); }
+    \\  function activateSession(candidate) {
+    \\    const selected = candidate || session;
+    \\    if (activeSession) return activeSession;
+    \\    if (!connectionEmitted) { socket.__home_pending_http2_session = selected; return selected; }
+    \\    activeSession = selected;
+    \\    socket.__home_http2_session = selected;
+    \\    selected.socket = socket;
+    \\    selected[__home_http2_k_socket] = socket;
+    \\    if (!selected.__home_server_registered) {
+    \\      selected.__home_server_registered = true;
+    \\      if (server && server.__home_sessions) server.__home_sessions.add(selected);
+    \\      if (server) server.emit("session", selected);
+    \\    }
+    \\    if (selected === session) {
+    \\      const timeout = Number(server && server.timeout) || 0;
+    \\      if (timeout > 0) setTimeout(() => { if (selected.closed || selected.destroyed) return; if (server.listenerCount("timeout") > 0) server.emit("timeout", selected); else selected.close(); }, timeout);
+    \\      send(__home_http2_frame(4, 0, 0, Buffer.alloc(0)));
+    \\    }
+    \\    return selected;
+    \\  }
+    \\  socket.__home_http2_adopt_session = function(candidate) { return activateSession(candidate); };
     \\  function close(hadError) {
     \\    if (closeEmitted || closing) return;
     \\    closing = true;
@@ -39058,9 +39082,11 @@ const harness_prelude =
     \\      if (closeEmitted) return;
     \\      closeEmitted = true;
     \\      socket.destroyed = true;
-    \\      session.closed = true;
-    \\      session.emit("close");
-    \\      if (server && server.__home_sessions) { server.__home_sessions.delete(session); server.__home_finish_close(); }
+    \\      if (activeSession === session) {
+    \\        session.closed = true;
+    \\        if (!session.__home_close_emitted) { session.__home_close_emitted = true; session.emit("close"); }
+    \\        if (session.__home_server_registered && server && server.__home_sessions) { session.__home_server_registered = false; server.__home_sessions.delete(session); server.__home_finish_close(); }
+    \\      }
     \\      socket.emit("end");
     \\      socket.emit("close", !!hadError);
     \\    });
@@ -39098,7 +39124,10 @@ const harness_prelude =
     \\      if (__home_net_latin1(input.subarray(0, magic.length)) !== magic) { sendGoaway(1); input = Buffer.alloc(0); return; }
     \\      input = input.subarray(magic.length);
     \\      receivedPreface = true;
+    \\      if (!connectionEmitted) return;
+    \\      activateSession(session);
     \\    }
+    \\    if (!activeSession) { if (!connectionEmitted) return; activateSession(session); }
     \\    while (!closeEmitted && !closing && input.length >= 9) {
     \\      const length = input.readUIntBE(0, 3);
     \\      if (length > 16384) { const error = __home_http2_error_with_code("ERR_HTTP2_ERROR", "Protocol error"); session.destroyed = true; session.emit("error", error); sendGoaway(6); input = Buffer.alloc(0); return; }
@@ -39167,12 +39196,11 @@ const harness_prelude =
     \\  session.close = function() { this.closed = true; close(false); return this; };
     \\  session.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this.close(); };
     \\  Promise.resolve().then(() => {
-    \\    if (server && server.__home_sessions) server.__home_sessions.add(session);
     \\    if (server) { server.emit("connection", socket); if (server.__home_secure) server.emit("secureConnection", socket); }
-    \\    server.emit("session", session);
-    \\    const timeout = Number(server && server.timeout) || 0;
-    \\    if (timeout > 0) setTimeout(() => { if (session.closed || session.destroyed) return; if (server.listenerCount("timeout") > 0) server.emit("timeout", session); else session.close(); }, timeout);
-    \\    send(__home_http2_frame(4, 0, 0, Buffer.alloc(0)));
+    \\    connectionEmitted = true;
+    \\    if (socket.__home_pending_http2_session) activateSession(socket.__home_pending_http2_session);
+    \\    else if (receivedPreface) activateSession(session);
+    \\    if (receivedPreface) processInput();
     \\    socket.connecting = false;
     \\    socket.emit("connect");
     \\    if (typeof connectCallback === "function") connectCallback();
@@ -40342,6 +40370,7 @@ const harness_prelude =
     \\  Object.setPrototypeOf(client.__home_server_session, __home_http2_ServerHttp2Session.prototype);
     \\  client.__home_server_session.localSettings = Object.assign({}, __home_http2_default_settings(), server && server.__home_settings || {});
     \\  client.__home_server_session.state = { effectiveLocalWindowSize: 65535, effectiveRecvDataLength: 0, nextStreamID: 2, localWindowSize: 65535, lastProcStreamID: 0, remoteWindowSize: 65535, outboundQueueSize: 0, deflateDynamicTableSize: 0, inflateDynamicTableSize: 0 };
+    \\  function unregisterServerSession(target) { if (!server || !server.__home_sessions) return; target.__home_server_registered = false; server.__home_sessions.delete(target); server.__home_finish_close(); }
     \\  client.__home_server_session.setLocalWindowSize = function(size) { if (typeof size !== "number") { const error = new TypeError('The "windowSize" argument must be of type number.' + __home_http2_invalid_arg_type_suffix(size)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; } const value = Number(size); if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) { const error = new RangeError('The value of "windowSize" is out of range'); error.code = "ERR_OUT_OF_RANGE"; throw error; } this.state.effectiveLocalWindowSize = value; this.state.localWindowSize = value; return undefined; };
     \\  client.__home_server_session[__home_internal_timers_k_timeout] = { _idleTimeout: 0 };
     \\  client.__home_server_session.setTimeout = function(milliseconds, timeoutListener) { this[__home_internal_timers_k_timeout] = { _idleTimeout: Number(milliseconds) || 0 }; if (typeof timeoutListener === "function") this.once("timeout", timeoutListener); return this; };
@@ -40374,7 +40403,7 @@ const harness_prelude =
     \\        this.closed = true;
     \\        this.destroyed = true;
     \\        if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
-    \\        if (server && server.__home_sessions) { server.__home_sessions.delete(this); server.__home_finish_close(); }
+    \\        unregisterServerSession(this);
     \\        if (typeof settingsCallback === "function") settingsCallback(error);
     \\      });
     \\      return this;
@@ -40487,7 +40516,7 @@ const harness_prelude =
     \\    if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\    session.closed = true; session.destroyed = true;
     \\    if (!session.__home_close_emitted) { session.__home_close_emitted = true; session.emit("close"); }
-    \\    if (server && server.__home_sessions) { server.__home_sessions.delete(session); server.__home_finish_close(); }
+    \\    unregisterServerSession(session);
     \\  });
     \\  client.__home_server_session.encrypted = client.encrypted;
     \\  client.__home_server_session.alpnProtocol = client.encrypted ? String(serverTransportSocket.alpnProtocol || "h2") : "h2c";
@@ -40511,11 +40540,11 @@ const harness_prelude =
     \\      for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending || pending.closed) continue; pending.aborted = true; pending.closed = true; pending.destroyed = true; pending.rstCode = code; const peer = pending.__home_server_stream; if (peer) { peer.closed = true; peer.destroyed = true; peer.rstCode = code; } pending.emit("error", sessionError); pending.emit("close"); if (peer && !peer.__home_close_emitted) { peer.__home_close_emitted = true; peer.emit("close"); } delete client.__home_streams[id]; }
     \\      client.closed = true; client.destroyed = true; client.emit("error", sessionError); if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\      this.closed = true; this.destroyed = true; if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
-    \\      if (server && server.__home_sessions) { server.__home_sessions.delete(this); server.__home_finish_close(); }
+    \\      unregisterServerSession(this);
     \\    });
     \\    return undefined;
     \\  };
-    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } if (server && server.__home_sessions) { server.__home_sessions.delete(this); server.__home_finish_close(); } }); } return this; };
+    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
     \\  client.__home_server_session.destroy = function(codeOrError) {
     \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; if (codeOrError) Promise.resolve().then(() => this.emit("error", codeOrError)); return this.close(); }
     \\    if (this.destroyed) return this;
@@ -40539,7 +40568,7 @@ const harness_prelude =
     \\      client.emit("error", sessionError);
     \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
     \\      if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
-    \\      if (server && server.__home_sessions) { server.__home_sessions.delete(this); server.__home_finish_close(); }
+    \\      unregisterServerSession(this);
     \\    });
     \\    return this;
     \\  };
@@ -41717,8 +41746,17 @@ const harness_prelude =
     \\    for (const id of Object.keys(client.__home_streams)) if (client.__home_streams[id]) client.__home_streams[id].pending = false;
     \\    if (server) {
     \\      if (__home_http2_transport_server(transportSocket) !== server && __home_http2_transport_server(serverTransportSocket) !== server) server.emit("connection", serverTransportSocket);
-    \\      server.__home_sessions.add(client.__home_server_session);
-    \\      server.emit("session", client.__home_server_session);
+    \\      const adoptSession = serverTransportSocket && serverTransportSocket.__home_http2_adopt_session || transportSocket && transportSocket.__home_http2_adopt_session;
+    \\      if (typeof adoptSession === "function") {
+    \\        const adopted = adoptSession.call(serverTransportSocket || transportSocket, client.__home_server_session);
+    \\        if (adopted !== client.__home_server_session) { client.__home_terminate("destroy", __home_http2_error_with_code("ERR_HTTP2_SOCKET_BOUND", "The socket is already bound to an Http2Session"), false); return; }
+    \\      } else {
+    \\        if (!client.__home_server_session.__home_server_registered) {
+    \\          client.__home_server_session.__home_server_registered = true;
+    \\          server.__home_sessions.add(client.__home_server_session);
+    \\          server.emit("session", client.__home_server_session);
+    \\        }
+    \\      }
     \\      if (client.closed || client.destroyed || client.__home_server_session.closed || client.__home_server_session.destroyed) return;
     \\      const serverTimeout = Number(server.timeout) || 0;
     \\      if (serverTimeout > 0) setTimeout(() => { const session = client.__home_server_session; if (session.closed || session.destroyed) return; if (server.listenerCount("timeout") > 0) server.emit("timeout", session); else session.close(); }, serverTimeout);
@@ -155183,6 +155221,26 @@ test "bootstrap HTTP2 secure client notification and cleanup logical contracts" 
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
+test "bootstrap HTTP2 supplied transport adoption logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net"); const { kSocket } = require("internal/http2/util");
+        \\test("pending and preconnected sockets activate exactly one server session", async () => { const server = http2.createServer(); let connections = 0; let sessionCloses = 0; const sessions = []; let streams = 0; server.on("connection", () => connections++); server.on("session", session => { sessions.push(session); session.once("close", () => sessionCloses++); }); server.on("stream", stream => { try { assert.strictEqual(stream.session, sessions[streams]); streams++; stream.respond(); stream.end("ok"); } catch (error) { stream.destroy(error); } }); await new Promise(resolve => server.listen(0, resolve)); const run = async preconnected => { const priorConnections = connections; const priorSessions = sessions.length; const priorSessionCloses = sessionCloses; const raw = net.connect(server.address().port, "localhost"); let rawConnects = 0; let rawCloses = 0; raw.on("connect", () => rawConnects++); raw.on("close", () => rawCloses++); if (preconnected) { await new Promise((resolve, reject) => { raw.once("connect", resolve); raw.once("error", reject); }); assert.strictEqual(connections, priorConnections + 1); assert.strictEqual(sessions.length, priorSessions); } await new Promise((resolve, reject) => { let callbackCalls = 0; let connectEvents = 0; let clientCloses = 0; let responseBody = ""; let client; client = http2.connect("http://localhost:" + server.address().port, { createConnection() { return raw; } }, function(session) { callbackCalls++; try { assert.strictEqual(this, client); assert.strictEqual(session, client); assert.strictEqual(arguments.length, 1); } catch (error) { reject(error); } }); assert.strictEqual(client[kSocket], raw); client.on("error", reject); client.on("connect", (session, socket) => { connectEvents++; try { assert.strictEqual(session, client); assert.strictEqual(socket, raw); assert.strictEqual(callbackCalls, 1); assert.strictEqual(connections, priorConnections + 1); assert.strictEqual(sessions.length, priorSessions + 1); const request = client.request(); request.setEncoding("utf8"); request.on("error", reject); request.on("data", chunk => responseBody += chunk); request.on("close", () => client.close()); request.end(); } catch (error) { reject(error); } }); client.on("close", () => { clientCloses++; Promise.resolve().then(() => Promise.resolve()).then(() => { try { assert.strictEqual(responseBody, "ok"); assert.strictEqual(callbackCalls, 1); assert.strictEqual(connectEvents, 1); assert.strictEqual(clientCloses, 1); assert.strictEqual(rawConnects, 1); assert.strictEqual(rawCloses, 1); assert.strictEqual(raw.destroyed, true); assert.strictEqual(sessionCloses, priorSessionCloses + 1); assert.strictEqual(server.__home_sessions.size, 0); resolve(); } catch (error) { reject(error); } }); }); }); }; await run(false); await run(true); await new Promise(resolve => server.close(resolve)); assert.strictEqual(connections, 2); assert.strictEqual(sessions.length, 2); assert.strictEqual(streams, 2); assert.strictEqual(sessionCloses, 2); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-supplied-transport-adoption-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 supplied transport adoption logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
 test "bootstrap HTTP2 CONNECT session and diagnostics corpus tranche contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -155710,7 +155768,7 @@ test "bootstrap HTTP2 settings graceful shutdown and socket logical contracts" {
     const source =
         \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net");
         \\test("settings state filters custom identifiers and acknowledges updates", async () => { await new Promise((resolve, reject) => { let serverSession; const server = http2.createServer({ remoteCustomSettings: [55], settings: { customSettings: { 1244: 456 } } }); server.on("session", session => { serverSession = session; session.settings({ maxConcurrentStreams: 2 }); }); server.on("stream", stream => { try { assert.strictEqual(stream.session.localSettings.customSettings[1244], 456); assert.strictEqual(stream.session.remoteSettings.customSettings[55], 12); assert.strictEqual(stream.session.remoteSettings.customSettings[155], undefined); stream.respond(); stream.end("ok"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`, { settings: { enablePush: false, customSettings: { 55: 12, 155: 144 } }, remoteCustomSettings: [1244] }); let ready = false; const request = client.request(); request.on("ready", () => { try { ready = true; assert.strictEqual(client.pendingSettingsAck, true); client.settings({ maxHeaderListSize: 1 }, error => { if (error) reject(error); }); } catch (error) { reject(error); } }); request.on("response", () => { try { assert.strictEqual(client.remoteSettings.customSettings[1244], 456); } catch (error) { reject(error); } }); request.on("end", () => { try { assert.strictEqual(ready, true); assert.strictEqual(serverSession.localSettings.maxConcurrentStreams, 2); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
-        \\test("raw SETTINGS emits remote state while surplus acknowledgements are ignored", () => { const frame = (flags, payload) => { const body = payload || Buffer.alloc(0); const out = Buffer.alloc(9 + body.length); out.writeUIntBE(body.length, 0, 3); out[3] = 4; out[4] = flags; body.copy(out, 9); return out; }; const server = http2.createServer(); const socket = __home_net_connect_http2_server(server, 1, "localhost"); const session = socket.__home_http2_session; let events = 0; session.on("remoteSettings", settings => { events++; assert.strictEqual(settings.maxFrameSize, 16384); }); socket.write(Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); socket.write(frame(1)); socket.write(frame(1)); socket.write(frame(0)); assert.strictEqual(events, 1); socket.destroy(); server.close(); });
+        \\test("raw SETTINGS emits remote state while surplus acknowledgements are ignored", async () => { const frame = (flags, payload) => { const body = payload || Buffer.alloc(0); const out = Buffer.alloc(9 + body.length); out.writeUIntBE(body.length, 0, 3); out[3] = 4; out[4] = flags; body.copy(out, 9); return out; }; const server = http2.createServer(); const socket = __home_net_connect_http2_server(server, 1, "localhost"); const session = socket.__home_http2_session; let events = 0; session.on("remoteSettings", settings => { events++; assert.strictEqual(settings.maxFrameSize, 16384); }); socket.write(Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); socket.write(frame(1)); socket.write(frame(1)); socket.write(frame(0)); await Promise.resolve(); assert.strictEqual(events, 1); socket.destroy(); server.close(); });
         \\test("paused short responses deliver data and end before close", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); server.on("stream", stream => { stream.respond(); stream.end("test"); }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`); const request = client.request(); let earlyClose = false; const early = () => earlyClose = true; request.on("close", early); setTimeout(() => { request.removeListener("close", early); let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "test"); assert.strictEqual(earlyClose, false); } catch (error) { reject(error); } }); request.on("close", () => { client.close(); server.close(resolve); }); }, 10); request.end(); }); }); });
         \\test("single-value strictness is opt-out and remains strict by default", async () => { const strictServer = http2.createServer(); await new Promise(resolve => strictServer.listen(0, resolve)); const strictClient = http2.connect(`http://localhost:${strictServer.address().port}`); assert.throws(() => strictClient.request({ "user-agent": ["a", "b"] }), { code: "ERR_HTTP2_HEADER_SINGLE_VALUE" }); strictClient.close(); strictServer.close(); await new Promise((resolve, reject) => { const server = http2.createServer({ strictSingleValueFields: false }); server.on("stream", (stream, _headers, _flags, rawHeaders) => { try { assert.deepStrictEqual(rawHeaders.slice(-4), ["user-agent", "a", "user-agent", "b"]); stream.respond(); stream.end(); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`, { strictSingleValueFields: false }); const request = client.request({ "user-agent": ["a", "b"] }); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.end(); }); }); });
         \\test("manual socket adoption and socket proxy membership share transport lifecycle", async () => { await new Promise((resolve, reject) => { let rawSocket; const h2Server = http2.createSecureServer({}, (request, response) => { try { assert.strictEqual(request.socket.encrypted, true); assert.strictEqual("encrypted" in request.socket, true); response.end(); } catch (error) { reject(error); } }); const netServer = net.createServer(socket => { rawSocket = socket; h2Server.emit("connection", socket); }); h2Server.on("session", session => session.on("error", () => {})); netServer.listen(0, () => { const client = http2.connect(`https://localhost:${netServer.address().port}`, { rejectUnauthorized: false }); client.on("error", () => {}); client.on("close", () => netServer.close(resolve)); const request = client.request(); request.on("error", () => {}); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); setTimeout(() => rawSocket.destroy(), 1); } catch (error) { reject(error); } }); request.end(); }); }); });
