@@ -38717,6 +38717,13 @@ const harness_prelude =
     \\  if (cause !== undefined) error.cause = cause;
     \\  return error;
     \\}
+    \\function __home_http2_validate_stream_close(code, callback) {
+    \\  const resetCode = code === undefined ? 0 : code;
+    \\  if (typeof resetCode !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_http2_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\  if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 && <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\  if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\  return resetCode;
+    \\}
     \\function __home_http2_reset_name(code) {
     \\  const names = { 0: "NGHTTP2_NO_ERROR", 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 3: "NGHTTP2_FLOW_CONTROL_ERROR", 4: "NGHTTP2_SETTINGS_TIMEOUT", 5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR", 7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL", 9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR", 11: "NGHTTP2_ENHANCE_YOUR_CALM", 12: "NGHTTP2_INADEQUATE_SECURITY", 13: "NGHTTP2_HTTP_1_1_REQUIRED" };
     \\  return names[Number(code)] || String(code);
@@ -40542,7 +40549,7 @@ const harness_prelude =
     \\  __home_http2_make_session_timeout(client.__home_server_session);
     \\  client.__home_server_session.setTimeout = function(milliseconds, timeoutListener) { return __home_http2_set_session_timeout(this, milliseconds, timeoutListener); };
     \\  client.__home_server_session.settings = function(update, settingsCallback) {
-    \\    const values = update || {};
+    \\    const values = Object.assign({}, update || {});
     \\    this.__home_pending_settings_ack_count++;
     \\    this.pendingSettingsAck = true;
     \\    if (this.__home_pending_settings_ack_count > this.__home_max_outstanding_settings) {
@@ -40587,9 +40594,7 @@ const harness_prelude =
     \\      });
     \\      return this;
     \\    }
-    \\    this.localSettings = Object.assign({}, this.localSettings || {}, values);
-    \\    client.remoteSettings = Object.assign({}, client.remoteSettings || __home_http2_default_settings(), values);
-    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
+    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.localSettings = Object.assign({}, this.localSettings || {}, values); client.remoteSettings = Object.assign({}, client.remoteSettings || __home_http2_default_settings(), values); this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
     \\    return this;
     \\  };
     \\  client.__home_server_session.ping = function(payload, callback) { return __home_http2_ping(this, client, payload, callback, server && server.__home_options && server.__home_options.maxOutstandingPings); };
@@ -41344,8 +41349,7 @@ const harness_prelude =
     \\        return undefined;
     \\      };
     \\      stream.close = function(code, closeCallback) {
-    \\        const resetCode = code === undefined ? 0 : Number(code);
-    \\        if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\        const resetCode = __home_http2_validate_stream_close(code, closeCallback);
     \\        if (this.closed) return this;
     \\        const shouldAbort = !this.writableFinished;
     \\        this.closed = true; this.destroyed = true; this.rstCode = resetCode; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
@@ -41885,10 +41889,7 @@ const harness_prelude =
     \\      return undefined;
     \\    };
     \\    stream.close = function(code, callback) {
-    \\      if (code === undefined) code = 0;
-    \\      if (typeof code !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_http2_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
-    \\      if (!Number.isInteger(code) || code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
-    \\      if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\      code = __home_http2_validate_stream_close(code, callback);
     \\      if (this.closed) return this;
     \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; if (typeof callback === "function") this.__home_close_after_flush_callbacks.push(callback); scheduleOutboundFlush(); return this; }
     \\      const shouldAbort = !this.writableFinished;

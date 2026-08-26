@@ -207,13 +207,7 @@ test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # legacy-parser e
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/http2/ [ SKIP ] # socket-layer connect-race lifetime under investigation
 
-# v26.3.0-verbatim deviations (test content is byte-identical to node v26.3.0):
-# validator wording: Bun's shared range template says "and" where node's validators say "&&"
-test/js/node/test/parallel/test-http2-client-rststream-before-connect.js [ FAIL ]
-# customSettings/remoteCustomSettings not implemented
-test/js/node/test/parallel/test-http2-session-settings.js [ FAIL ]
-# requires internal/test/binding (nghttp2 prototype monkey-patching)
-# flow-control violations surface as stream errors, node/nghttp2 surfaces ERR_HTTP2_ERROR "Protocol error"
+# v26.3.0-verbatim platform deviation (test content is byte-identical to node v26.3.0):
 # multi-localhost (127.0.0.2) binding not supported on Windows
 [ WINDOWS ] test/js/node/test/parallel/test-http2-connect-options.js [ FAIL ]
 # localhost dual-stack resolution makes this flap across platforms (passes on retry)
