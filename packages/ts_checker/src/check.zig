@@ -4685,6 +4685,9 @@ pub const Checker = struct {
     /// Namespace-style `import local = Qualified.Name` lookup otherwise walks
     /// enclosing statement lists for every qualified/member access.
     source_may_have_import_equals: bool = false,
+    /// Import lookup helpers otherwise walk the source root for every
+    /// identifier and type reference, even in import-free programs.
+    source_may_have_import_declaration: bool = false,
     /// CommonJS binding lookup walks the source root for every candidate
     /// member access. Attached source without `require` cannot produce one.
     source_may_have_require_binding: bool = false,
@@ -5070,6 +5073,7 @@ pub const Checker = struct {
         self.source_may_have_import_equals =
             std.mem.indexOf(u8, source, "import") != null and
             std.mem.indexOfScalar(u8, source, '=') != null;
+        self.source_may_have_import_declaration = std.mem.indexOf(u8, source, "import") != null;
         self.source_may_have_require_binding = std.mem.indexOf(u8, source, "require") != null;
         self.source_may_have_namespace_declaration =
             std.mem.indexOf(u8, source, "namespace") != null or
@@ -60841,6 +60845,7 @@ pub const Checker = struct {
     }
 
     fn importedTypeRefForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -61170,6 +61175,7 @@ pub const Checker = struct {
     }
 
     fn importedReferenceLibTypeForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -61576,6 +61582,7 @@ pub const Checker = struct {
         self: *Checker,
         object: NodeId,
     ) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_require_binding) return null;
         if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, object).name;
         const root = self.rootBlockFor(object);
@@ -63006,6 +63013,7 @@ pub const Checker = struct {
     }
 
     fn localImportBindingExistsAt(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -69336,6 +69344,7 @@ pub const Checker = struct {
     }
 
     fn enumDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
         if (self.module) |module| {
             if (module.root.lookup(name)) |sym| {
                 if (sym.decls.items.len > 0) {
@@ -73135,6 +73144,7 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -73509,6 +73519,7 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) bool {
+        if (self.findVisibleNamedTypeDecl(anchor, name) != null) return true;
         const anchor_section = self.virtualSectionStartForNode(anchor);
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -73521,11 +73532,7 @@ pub const Checker = struct {
             for (stmts) |raw| {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
-                if (decl_kind != .interface_decl and
-                    decl_kind != .type_alias_decl and
-                    decl_kind != .class_decl and
-                    decl_kind != .class_expr and
-                    decl_kind != .enum_decl and
+                if (decl_kind != .enum_decl and
                     decl_kind != .namespace_decl)
                 {
                     continue;
@@ -92457,6 +92464,7 @@ pub const Checker = struct {
     }
 
     fn namespaceImportSpecifierForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?[]const u8 {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
