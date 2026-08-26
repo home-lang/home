@@ -21898,6 +21898,19 @@ pub const Checker = struct {
         if (self.hir.kindOf(cond) == .call_expr) {
             if (!when_true) return;
             const c = hir_mod.callOf(self.hir, cond);
+            if (self.hir.kindOf(c.callee) == .member_access) {
+                const member = hir_mod.memberOf(self.hir, c.callee);
+                if (self.hir.kindOf(member.object) == .identifier and
+                    std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, member.object).name), "ArrayBuffer") and
+                    std.mem.eql(u8, self.string_interner.get(member.name), "isView"))
+                {
+                    const args = hir_mod.callArgs(self.hir, cond);
+                    if (args.len > 0 and self.hir.kindOf(args[0]) == .identifier) {
+                        _ = pending.remove(hir_mod.identifierOf(self.hir, args[0]).name);
+                    }
+                }
+                return;
+            }
             if (self.hir.kindOf(c.callee) != .identifier) return;
             const callee = hir_mod.identifierOf(self.hir, c.callee);
             const pred = self.fn_predicates.get(callee.name) orelse return;
@@ -57732,6 +57745,24 @@ pub const Checker = struct {
         const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
         const roots = [_][]const u8{ "node_modules", "" };
         const prefixes = [_][]const u8{ "ts3.1", "" };
+        if (self.virtualTsconfigSectionText()) |tsconfig| {
+            if (jsonArrayValueOf(tsconfig, "moduleSuffixes")) |raw_suffixes| {
+                var suffixes = JsonStringArrayIterator{ .src = raw_suffixes };
+                while (suffixes.next()) |suffix| {
+                    const base = if (subpath.len == 0)
+                        try std.fmt.allocPrint(self.gpa, "index{s}", .{suffix})
+                    else
+                        try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ subpath, suffix });
+                    defer self.gpa.free(base);
+                    for (roots) |root| {
+                        for (prefixes) |prefix| {
+                            if (try self.virtualPackageDeclarationFilenameAt(root, package_name, prefix, base, ".d.ts")) |path| return path;
+                        }
+                    }
+                }
+                return null;
+            }
+        }
         for (roots) |root| {
             for (prefixes) |prefix| {
                 if (try self.virtualPackageDeclarationFilenameAt(root, package_name, prefix, subpath, ".d.ts")) |path| return path;
@@ -58961,6 +58992,13 @@ pub const Checker = struct {
                 try self.programCommonJsModuleExportsName(node, spec, sp.imported))
             {
                 continue;
+            }
+            if (!std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections()) {
+                const virtual_decl = try self.virtualBareModuleDeclarationFilename(spec);
+                if (virtual_decl) |path| {
+                    self.gpa.free(path);
+                    if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
+                }
             }
             const external_status = self.externalModuleNamedExportRuntimeStatus(node, spec, sp.imported);
             switch (external_status) {
@@ -80933,6 +80971,7 @@ pub const Checker = struct {
             "AsyncIterable",
             "IterableIterator",
             "AsyncIterableIterator",
+            "ArrayBufferView",
             "Uint8Array",
             "Uint8ClampedArray",
             "Int8Array",
@@ -88693,6 +88732,15 @@ pub const Checker = struct {
         if (!self.virtualSectionIsJsLike(fn_node)) return;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.flags.is_constructor) return;
+        const function_name = if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier)
+            self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name)
+        else
+            "<anonymous>";
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}', which lacks return-type annotation, implicitly has an 'any' return type.",
+            .{function_name},
+        );
         const src = self.source orelse return;
         var blocks: std.ArrayListUnmanaged(JsDocBody) = .empty;
         defer blocks.deinit(self.gpa);
@@ -88707,8 +88755,8 @@ pub const Checker = struct {
                 try self.reportAt(
                     fn_node,
                     @as(u32, @intCast(block.start + overload_rel + 1)),
-                    TsCodes.overload_return_implicitly_any,
-                    "This overload implicitly returns the type 'any' because it lacks a return type annotation.",
+                    TsCodes.function_return_implicitly_any,
+                    message,
                 );
                 offset = overload_rel + "@overload".len;
             }
@@ -124269,6 +124317,22 @@ pub const Checker = struct {
                             return;
                         }
                     }
+                    if (std.mem.eql(u8, obj_name, "ArrayBuffer") and
+                        std.mem.eql(u8, prop_name, "isView"))
+                    {
+                        const args = hir_mod.callArgs(self.hir, cond);
+                        if (args.len >= 1 and self.hir.kindOf(args[0]) == .identifier) {
+                            const arg_id = hir_mod.identifierOf(self.hir, args[0]);
+                            const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(args[0]);
+                            const view_t = self.lowerBuiltinObjectType("ArrayBufferView") orelse types.Primitive.object_t;
+                            const narrowed = if (when_true)
+                                view_t
+                            else
+                                self.subtractType(current, view_t) catch current;
+                            try self.recordNarrow(arg_id.name, narrowed);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -129506,7 +129570,8 @@ pub const Checker = struct {
             "Set",                        "WeakMap",                "WeakSet",
             "Date",                       "RegExp",                 "Function",
             "Proxy",                      "Reflect",                "TemplateStringsArray",
-            "ArrayBuffer",                "Uint8Array",             "Uint8ClampedArray",
+            "ArrayBuffer",                "ArrayBufferView",        "Uint8Array",
+            "Uint8ClampedArray",
             "Int8Array",                  "Uint16Array",            "Int16Array",
             "Uint32Array",                "Int32Array",             "Float16Array",
             "Float32Array",               "Float64Array",           "BigUint64Array",
@@ -144021,13 +144086,16 @@ pub const Checker = struct {
         });
     }
 
-    /// Walk back over any immediately-preceding `(` characters so the
-    /// anchor for symbol-operator diagnostics on parenthesized
-    /// operands lands at the opening paren (matching tsc's column).
+    /// Walk back over immediately-preceding `(` characters only when the
+    /// expression also ends before a matching `)`. This distinguishes an
+    /// explicitly parenthesized operand from the mandatory `(` in `if (x)`.
     fn symbolOperandAnchorPos(self: *Checker, node: NodeId) ?u32 {
         const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
         if (span.start == 0 or span.start > src.len) return null;
+        var after: usize = @min(src.len, span.end);
+        while (after < src.len and std.ascii.isWhitespace(src[after])) : (after += 1) {}
+        if (after >= src.len or src[after] != ')') return null;
         var i: usize = span.start;
         while (i > 0 and src[i - 1] == '(') : (i -= 1) {}
         if (i == span.start) return null;
@@ -186178,6 +186246,24 @@ test "checker: `symbol || x` collapses to symbol so instanceof flags TS2358" {
     try T.expect(found);
 }
 
+test "checker: instanceof diagnostic excludes a statement condition parenthesis" {
+    const src =
+        \\function test(x: number | string) {
+        \\    if (x instanceof Object) {}
+        \\}
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const expected: u32 = @intCast(std.mem.indexOf(u8, src, "x instanceof") orelse return error.TestUnexpectedResult);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.instanceof_left_type) continue;
+        try T.expectEqual(expected, d.pos orelse s.hir.spanOf(d.node).start);
+        return;
+    }
+    return error.MissingDiagnostic;
+}
+
 test "checker: later declarators in a variable declaration list bind" {
     const b = try newBoundSetup(
         \\var a: string, b: number;
@@ -216818,6 +216904,22 @@ test "checker: Array.isArray(x) narrows x in then-branch" {
     try T.expectEqual(types.Primitive.object_t, s.hir.typeOf(v_init));
 }
 
+test "checker: ArrayBuffer.isView narrows to the ArrayBufferView lib type" {
+    const s = try newSetup(
+        \\var obj: Object;
+        \\if (ArrayBuffer.isView(obj)) {
+        \\  var view: ArrayBufferView = obj;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
 test "checker: typeof x === \"function\" narrows x in then-branch" {
     const s = try newSetup(
         \\function f(x: any) {
@@ -229853,7 +229955,7 @@ test "checker: checkjs JSDoc @overload declares overload signatures" {
     }
 }
 
-test "checker: checkjs JSDoc @overload without returns reports TS7012" {
+test "checker: checkjs JSDoc @overload without returns reports named TS7010" {
     const source =
         \\// @checkjs: true
         \\// @filename: /a.js
@@ -229882,14 +229984,14 @@ test "checker: checkjs JSDoc @overload without returns reports TS7012" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
-    var ts7012: usize = 0;
+    var ts7010: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.overload_return_implicitly_any) {
-            ts7012 += 1;
-            try T.expectEqualStrings("This overload implicitly returns the type 'any' because it lacks a return type annotation.", d.message);
+        if (d.code == TsCodes.function_return_implicitly_any) {
+            ts7010 += 1;
+            try T.expectEqualStrings("'id', which lacks return-type annotation, implicitly has an 'any' return type.", d.message);
         }
     }
-    try T.expectEqual(@as(usize, 2), ts7012);
+    try T.expectEqual(@as(usize, 2), ts7010);
 }
 
 test "checker: checkjs JSDoc @template with constraint" {
@@ -240495,6 +240597,26 @@ test "checker: virtual moduleSuffixes resolves relative import before unsuffixed
         \\export function ios() {}
         \\// @filename: /foo.ts
         \\export function base() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.no_exported_member);
+    }
+}
+
+test "checker: virtual moduleSuffixes resolves bare package declarations before unsuffixed files" {
+    const s = try newSetup(
+        \\// @filename: /tsconfig.json
+        \\// { "compilerOptions": { "moduleSuffixes": [".ios"] } }
+        \\// @filename: /index.ts
+        \\import { ios } from "some-library";
+        \\ios();
+        \\// @filename: /node_modules/some-library/index.ios.d.ts
+        \\export declare function ios(): void;
+        \\// @filename: /node_modules/some-library/index.d.ts
+        \\export declare function base(): void;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
