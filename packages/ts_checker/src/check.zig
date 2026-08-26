@@ -3721,6 +3721,10 @@ pub const Checker = struct {
     /// typed sources contain none; in that common case identifier lookup can
     /// skip the source-order flow search entirely.
     may_have_evolving_any_candidates: ?bool = null,
+    /// Lazily records whether any simple assignment targets an identifier's
+    /// dotted member. Function-expando definite-assignment analysis cannot
+    /// produce state or diagnostics without at least one such assignment.
+    may_have_expando_property_assignments: ?bool = null,
     declared_identifier_lookup: bool,
     report_unresolved_in_namespace_scope: bool,
     /// Set while type-checking the contents of a class computed-property
@@ -4674,6 +4678,23 @@ pub const Checker = struct {
     /// conservative keyword prefilter so ordinary type references do not
     /// repeatedly scan an entire source file looking for one.
     source_may_have_umd_namespace_export: bool = false,
+    /// `declare var name: any` compatibility lookup is source-based. Keep a
+    /// conservative syntax prefilter so ordinary function-local declarations
+    /// do not rescan a source that cannot contain that form.
+    source_may_have_declare_any_var: bool = false,
+    /// Namespace-style `import local = Qualified.Name` lookup otherwise walks
+    /// enclosing statement lists for every qualified/member access.
+    source_may_have_import_equals: bool = false,
+    /// CommonJS binding lookup walks the source root for every candidate
+    /// member access. Attached source without `require` cannot produce one.
+    source_may_have_require_binding: bool = false,
+    /// Namespace value lookup walks lexical and root statement lists. Source
+    /// text without any namespace/module spelling cannot produce those HIR
+    /// declarations; HIR-only checker setups retain the unfiltered path.
+    source_may_have_namespace_declaration: bool = false,
+    /// Class/enum use-before-declaration analysis recursively collects names
+    /// and references. Skip it when attached source cannot declare either.
+    source_may_have_class_or_enum_declaration: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     allow_js_enabled: bool = false,
@@ -5041,6 +5062,22 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "export") != null and
             std.mem.indexOf(u8, source, "namespace") != null and
             std.mem.indexOf(u8, source, "as") != null;
+        self.source_may_have_declare_any_var =
+            std.mem.indexOf(u8, source, "declare") != null and
+            std.mem.indexOf(u8, source, "var") != null and
+            std.mem.indexOfScalar(u8, source, ':') != null and
+            std.mem.indexOf(u8, source, "any") != null;
+        self.source_may_have_import_equals =
+            std.mem.indexOf(u8, source, "import") != null and
+            std.mem.indexOfScalar(u8, source, '=') != null;
+        self.source_may_have_require_binding = std.mem.indexOf(u8, source, "require") != null;
+        self.source_may_have_namespace_declaration =
+            std.mem.indexOf(u8, source, "namespace") != null or
+            std.mem.indexOf(u8, source, "module") != null or
+            std.mem.indexOf(u8, source, "global") != null;
+        self.source_may_have_class_or_enum_declaration =
+            std.mem.indexOf(u8, source, "class") != null or
+            std.mem.indexOf(u8, source, "enum") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
@@ -13962,6 +13999,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasUmdNamespaceExport(self: *Checker, name: hir_mod.StringId) bool {
+        if (!self.source_may_have_umd_namespace_export) return false;
         const src = self.source orelse return false;
         if (self.sourceHasVirtualFilenameSections() and self.sourceDirectiveIsTrue("@noImplicitReferences")) return false;
         const name_str = self.string_interner.get(name);
@@ -20190,9 +20228,27 @@ pub const Checker = struct {
     /// behavior for function declarations and function-valued bindings.
     fn checkExpandoPropertyUsedBeforeAssignment(self: *Checker, stmts: []const NodeId) CheckError!void {
         if (!self.strict_flags.strict_null_checks) return;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return;
         var states: ExpandoAssignmentMap = .empty;
         defer states.deinit(self.gpa);
         for (stmts) |s| try self.scanExpandoPropertyUseBeforeAssign(s, &states);
+    }
+
+    fn hirMayHaveExpandoPropertyAssignment(self: *Checker) bool {
+        if (self.may_have_expando_property_assignments) |cached| return cached;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, assignment.target);
+            if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) continue;
+            self.may_have_expando_property_assignments = true;
+            return true;
+        }
+        self.may_have_expando_property_assignments = false;
+        return false;
     }
 
     fn checkExpandoPropertyCircularInference(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -24912,6 +24968,7 @@ pub const Checker = struct {
     }
 
     fn checkClassUsedBeforeDeclaration(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return;
         var class_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer class_names.deinit(self.gpa);
         var enum_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
@@ -25990,6 +26047,7 @@ pub const Checker = struct {
         class_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
         out: *std.ArrayListUnmanaged(NameRef),
     ) CheckError!void {
+        if (self.source != null and !self.source_may_have_import_equals) return;
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .member_access => {
@@ -44756,6 +44814,7 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         // A namespace referenced from inside another namespace is resolved
         // relative to that lexical namespace, not only from the source-file
         // root. This is the value-space counterpart of qualified type lookup.
@@ -49451,6 +49510,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasDeclareAnyVarName(self: *Checker, name: hir_mod.StringId) bool {
+        if (!self.source_may_have_declare_any_var) return false;
         const src = self.source orelse return false;
         const raw = self.string_interner.get(name);
         var search_start: usize = 0;
@@ -77406,6 +77466,7 @@ pub const Checker = struct {
     }
 
     fn localImportEqualsDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_equals) return null;
         var cur = anchor;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -78253,6 +78314,7 @@ pub const Checker = struct {
         stmts: []const NodeId,
         path: []const hir_mod.StringId,
     ) ?NodeId {
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         if (path.len == 0) return null;
         for (stmts) |raw| {
             const node = self.unwrapExportDecl(raw);
@@ -91535,6 +91597,8 @@ pub const Checker = struct {
         source_t: TypeId,
         target_t: TypeId,
     ) CheckError!bool {
+        if (!self.objectHasCallOrConstructSignature(source_t) and
+            !self.objectHasCallOrConstructSignature(target_t)) return true;
         const source_this = (try self.memberAccessEffectiveThisType(value_node, source_t)) orelse return true;
         if (source_this == types.Primitive.void_t) return true;
         const target_this = (try self.memberAccessEffectiveThisType(target_node, target_t)) orelse return true;
@@ -119867,6 +119931,37 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Signature and declaration checking store the resolved static type on a
+    /// simple binding name. Reuse that result for later identifier reads
+    /// instead of walking the same lexical scopes and lowering the same
+    /// annotation again. Destructuring bindings stay on the existing path,
+    /// which projects the requested element from the full annotation.
+    fn cachedSimpleAnnotatedIdentifierType(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?TypeId {
+        const owner = self.hir.parentOf(type_node);
+        if (owner == hir_mod.none_node_id) return null;
+        const name_node: NodeId = switch (self.hir.kindOf(owner)) {
+            .parameter => blk: {
+                const parameter = hir_mod.parameterOf(self.hir, owner);
+                if (parameter.type_annotation != type_node) return null;
+                break :blk parameter.name;
+            },
+            .var_decl, .let_decl, .const_decl => blk: {
+                const variable = hir_mod.varDeclOf(self.hir, owner);
+                if (variable.type_annotation != type_node) return null;
+                break :blk variable.name;
+            },
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, name_node).name != name) return null;
+        const cached = self.hir.typeOf(name_node);
+        return if (cached != types.Primitive.none) cached else null;
+    }
+
     fn expressionRootHasUnresolvedAnnotation(self: *Checker, node: NodeId) bool {
         var root = node;
         while (root != hir_mod.none_node_id) {
@@ -122767,6 +122862,7 @@ pub const Checker = struct {
         local_name: hir_mod.StringId,
         anchor: NodeId,
     ) ?[]const u8 {
+        if (self.source != null and !self.source_may_have_require_binding) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const section = self.virtualSectionStartForNode(anchor);
@@ -128149,16 +128245,28 @@ pub const Checker = struct {
         {
             var active_annotation_t: ?TypeId = null;
             var visible_annotation_node: ?NodeId = null;
+            var cached_visible_annotation_t: ?TypeId = null;
             if (!self.isDeclNameSlot(node)) {
                 visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
                 if (visible_annotation_node) |type_node| {
-                    if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
+                    cached_visible_annotation_t = self.cachedSimpleAnnotatedIdentifierType(type_node, id.name);
+                    const cached_annotation = cached_visible_annotation_t orelse types.Primitive.none;
+                    if ((cached_annotation == types.Primitive.none or
+                        cached_annotation == types.Primitive.any or
+                        cached_annotation == types.Primitive.unknown) and
+                        self.typeAnnotationShouldBecomeErrorAny(type_node))
+                    {
+                        return types.Primitive.any;
+                    }
                 }
             }
             if (!self.isDeclNameSlot(node)) {
                 const may_have_evolving_any = self.sourceMayHaveUntypedEvolvingAnyCandidate();
                 const is_evolving_untyped = may_have_evolving_any and self.identifierIsUntypedUninitializedVar(node);
-                const recovered_annotation_t = self.recoveredSourceParameterAnnotationType(node, id.name);
+                const recovered_annotation_t = if (visible_annotation_node == null)
+                    self.recoveredSourceParameterAnnotationType(node, id.name)
+                else
+                    null;
                 if (recovered_annotation_t) |declared_t| {
                     const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
                     const narrow_t = self.lookupNarrow(id.name);
@@ -128204,7 +128312,8 @@ pub const Checker = struct {
                 if (!is_evolving_untyped and self.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, id.name)) {
                     if ((self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) != null) return types.Primitive.any;
                 }
-                active_annotation_t = self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
+                active_annotation_t = cached_visible_annotation_t orelse
+                    self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
                 if (active_annotation_t == null and may_have_evolving_any) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
