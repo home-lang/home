@@ -8286,6 +8286,59 @@ test "Program: reverse mapped inference changes union arms for the same source" 
     try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
 }
 
+test "Program: inferred tuple keys instantiate mapped generic returns across program globals" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"strict":true,"noEmit":true,"noLib":true,"skipLibCheck":true,"pretty":false}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const main_id = try p.add("/proj/main.ts",
+        \\interface Entity<N extends number> {
+        \\  readonly id: N;
+        \\  readonly label: `entity-${N}`;
+        \\  readonly active: boolean;
+        \\}
+        \\type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };
+        \\declare function project<T, K extends readonly (keyof T)[]>(value: T, keys: K): PickFields<T, K[number]>;
+        \\declare function field<T, K extends keyof T>(value: T, key: K): T[K];
+        \\const entity: Entity<1> = { id: 1, label: "entity-1", active: true };
+        \\const selected = project(entity, ["id", "label"] as const);
+        \\const label: "entity-1" = field(selected, "label");
+    );
+    _ = try p.add("/proj/lib.d.ts",
+        \\interface Object {}
+        \\interface Function {}
+        \\interface CallableFunction extends Function {}
+        \\interface NewableFunction extends Function {}
+        \\interface IArguments { readonly length: number; [index: number]: unknown; }
+        \\interface String {}
+        \\interface Number {}
+        \\interface Boolean {}
+        \\interface RegExp {}
+        \\interface Array<T> { readonly length: number; [index: number]: T; }
+        \\interface ReadonlyArray<T> { readonly length: number; readonly [index: number]: T; }
+    );
+
+    const callback = struct {
+        fn call(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+    }.call;
+    var options = ts_driver.optionsFromConfig(&cfg);
+    options.no_emit = true;
+    _ = try p.loadImportClosureParallel(options, null);
+    try p.compileAllStreaming(options, {}, callback);
+    const compilation = p.fileById(main_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+}
+
 test "Program: relative module augmentation preserves missing member diagnostic" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

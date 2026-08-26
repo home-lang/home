@@ -4983,6 +4983,30 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
 }
 
+test "driver: inferred tuple keys instantiate mapped generic returns" {
+    var c = try compileSource(T.allocator,
+        \\interface Entity<N extends number> {
+        \\  readonly id: N;
+        \\  readonly label: `entity-${N}`;
+        \\  readonly active: boolean;
+        \\}
+        \\type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };
+        \\declare function project<T, K extends readonly (keyof T)[]>(value: T, keys: K): PickFields<T, K[number]>;
+        \\declare function field<T, K extends keyof T>(value: T, key: K): T[K];
+        \\const entity: Entity<1> = { id: 1, label: "entity-1", active: true };
+        \\const selected = project(entity, ["id", "label"] as const);
+        \\const label: "entity-1" = field(selected, "label");
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2322);
+        try T.expect(d.code != 2345);
+    }
+}
+
 test "driver: emitWithCache hits on repeat compile" {
     var cache = try ts_cache.Cache.init(T.allocator, null);
     defer cache.deinit();

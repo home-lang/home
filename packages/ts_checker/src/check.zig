@@ -75980,6 +75980,20 @@ pub const Checker = struct {
                 if (self.hir.kindOf(ia.object) == .intersection_type and self.containsFreeTypeParameter(obj)) {
                     return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
                 }
+                // An indexed access through an array-constrained type
+                // parameter is still dependent on the eventual tuple
+                // argument. Reducing `K[number]` through K's array
+                // constraint here loses tuple precision before call
+                // inference can substitute K. Other generic indexed
+                // accesses, such as `T["x"]`, continue through the normal
+                // resolution path below.
+                if (self.isBareTypeParameter(obj) and idx == types.Primitive.number_t) {
+                    if (self.typeParameterConstraint(obj)) |constraint| {
+                        if (self.typeIsArrayLikeObject(constraint)) {
+                            return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                        }
+                    }
+                }
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
                 return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
             },
@@ -155389,7 +155403,7 @@ pub const Checker = struct {
             var new_parts: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_parts.deinit(self.gpa);
             var changed = false;
-            var all_literal = true;
+            var all_concrete = true;
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             defer buf.deinit(self.gpa);
             for (texts_snapshot, 0..) |text_sid, i| {
@@ -155398,15 +155412,13 @@ pub const Checker = struct {
                     const new_part = try self.substituteType(part_types_snapshot[i], subs);
                     try new_parts.append(self.gpa, new_part);
                     if (new_part != part_types_snapshot[i]) changed = true;
-                    if (self.stringLiteralValueFromType(new_part)) |lit_sid| {
-                        try buf.appendSlice(self.gpa, self.string_interner.get(lit_sid));
-                    } else {
-                        all_literal = false;
+                    if (all_concrete and !try self.appendTemplateTypeSubstitutionString(new_part, &buf)) {
+                        all_concrete = false;
                     }
                 }
             }
             if (!changed) return t;
-            if (all_literal) {
+            if (all_concrete) {
                 const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
                 return self.interner.internStringLiteral(sid) catch return t;
             }
@@ -229600,6 +229612,46 @@ test "checker: homomorphic mapped inference accepts intersection argument" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: inferred tuple keys instantiate mapped generic returns" {
+    const b = try newBoundSetup(
+        \\interface Entity<N extends number> {
+        \\  readonly id: N;
+        \\  readonly label: `entity-${N}`;
+        \\  readonly active: boolean;
+        \\}
+        \\type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };
+        \\declare function project<T, K extends readonly (keyof T)[]>(value: T, keys: K): PickFields<T, K[number]>;
+        \\declare function field<T, K extends keyof T>(value: T, key: K): T[K];
+        \\const entity: Entity<1> = { id: 1, label: "entity-1", active: true };
+        \\const selected = project(entity, ["id", "label"] as const);
+        \\const label: "entity-1" = field(selected, "label");
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_property_initialization = true,
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    const selected_t = statementVarInitType(s, 5);
+    try T.expect(s.ti.pool.flagsOf(selected_t).is_object_type);
+    const id_name = s.sint.lookup("id").?;
+    const label_name = s.sint.lookup("label").?;
+    const active_name = s.sint.lookup("active").?;
+    try T.expect((try s.checker.lookupObjectMember(selected_t, id_name)) != null);
+    const label_t = (try s.checker.lookupObjectMember(selected_t, label_name)) orelse return error.TestExpectedEqual;
+    try expectStringLiteralType(s, label_t, "entity-1");
+    try T.expect((try s.checker.lookupObjectMember(selected_t, active_name)) == null);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
 }
