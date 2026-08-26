@@ -10,22 +10,23 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `9c6a93b3f` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `71833644d` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260826T231722Z`.
+The local raw-result identifier is `20260826T234231Z`.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 74.8 ± 13.6 ms | 42.2 ± 3.9 ms | **3.7 ± 0.4 ms** | **11.26× faster** |
-| `many_files` | 229.6 ± 13.9 ms | 58.9 ± 1.9 ms | **33.7 ± 1.1 ms** | **1.75× faster** |
-| `deep_types` | 194.4 ± 111.2 ms | 65.5 ± 30.1 ms | **24.7 ± 12.0 ms** | **2.65× faster** |
-| `import_graph` | 146.0 ± 5.7 ms | 51.7 ± 1.8 ms | **29.5 ± 2.3 ms** | **1.75× faster** |
-| `reexport_graph` | 103.0 ± 10.0 ms | 43.5 ± 3.6 ms | **29.0 ± 2.3 ms** | **1.50× faster** |
-| `tsx_components` | 160.6 ± 6.7 ms | 46.5 ± 1.0 ms | **27.7 ± 0.6 ms** | **1.68× faster** |
-| `generic_calls` | 191.2 ± 35.5 ms | 56.1 ± 1.7 ms | **38.8 ± 0.7 ms** | **1.45× faster** |
-| `control_flow` | 209.6 ± 69.8 ms | 61.7 ± 7.5 ms | **56.7 ± 25.4 ms** | **1.09× faster** |
-| `overload_resolution` | 207.2 ± 10.5 ms | 66.4 ± 3.7 ms | **58.1 ± 2.2 ms** | **1.14× faster** |
+| `startup` | 69.5 ± 6.9 ms | 43.1 ± 11.0 ms | **4.2 ± 3.7 ms** | **10.36× faster** |
+| `many_files` | 224.0 ± 10.0 ms | 57.5 ± 2.4 ms | **33.8 ± 1.8 ms** | **1.70× faster** |
+| `deep_types` | 134.1 ± 7.7 ms | 53.7 ± 1.3 ms | **18.4 ± 0.3 ms** | **2.92× faster** |
+| `import_graph` | 128.1 ± 2.5 ms | 44.9 ± 1.6 ms | **25.6 ± 1.0 ms** | **1.76× faster** |
+| `reexport_graph` | 101.7 ± 8.3 ms | 42.7 ± 1.3 ms | **29.3 ± 1.7 ms** | **1.46× faster** |
+| `tsx_components` | 165.6 ± 16.2 ms | 50.3 ± 9.3 ms | **28.2 ± 0.9 ms** | **1.79× faster** |
+| `generic_calls` | 180.3 ± 8.7 ms | 54.5 ± 1.7 ms | **35.7 ± 1.0 ms** | **1.53× faster** |
+| `control_flow` | 187.2 ± 8.6 ms | 57.5 ± 1.3 ms | **49.1 ± 0.8 ms** | **1.17× faster** |
+| `overload_resolution` | 200.3 ± 7.8 ms | 63.4 ± 1.2 ms | **54.4 ± 0.8 ms** | **1.17× faster** |
+| `class_hierarchy` | 194.1 ± 57.8 ms | 53.6 ± 9.8 ms | **50.7 ± 15.9 ms** | **1.06× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -63,6 +64,7 @@ not a claim that every real project or machine has the same speedup.
 | `generic_calls` | One module with 256 typed generic call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
 | `control_flow` | One module with 256 exhaustive discriminated-union functions | Narrowing, branch joins, definite assignment, exhaustive switches, property reads, and typed object returns |
 | `overload_resolution` | One module with 128 groups of eight typed overload calls | Literal-discriminated overload selection, generic inference, object and tuple payloads, callbacks, and typed result consumption |
+| `class_hierarchy` | One module with 128 independent generic base/derived/interface families | Class heritage resolution, generic substitution, constructors, overrides, protected members, interface compatibility, and typed instance consumption |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -121,6 +123,13 @@ workload-specific shortcuts:
 - overload resolution rejects definite exact-literal mismatches before generic
   inference and substitution, while composite, contextual, spread, enum, and
   ambiguous candidates retain the complete resolver; and
+- successful class heritage instance, static, and constructor resolutions are
+  cached by extends expression while unresolved and forward-reference paths
+  retain the complete resolver;
+- conservative source facts skip impossible enum and JavaScript prototype
+  searches, `this` and `super` member assignments avoid irrelevant function
+  expando discovery, and top-level annotation lookup reuses the existing
+  virtual-section-aware declaration index; and
 - program-level declaration, namespace, interface, class, and CommonJS
   collectors skip files whose source cannot contain the syntax they collect.
 
@@ -139,3 +148,12 @@ workload now measures 58.1 ± 2.2 ms in the 30-run snapshot above: a 2.18×
 Home improvement and a 1.14× win over the fastest competitor. The optimized
 path only eliminates candidates whose fixed primitive literal parameter is
 provably incompatible with the corresponding literal expression.
+
+The `class_hierarchy` workload was also frozen before optimization. Its
+five-run red baseline (`20260826T232221Z`) measured Home at 79.4 ± 2.8 ms
+versus native TypeScript 7 at 59.6 ± 1.5 ms. The unchanged workload now
+measures 50.7 ± 15.9 ms in the 30-run snapshot above: a 1.57× Home
+improvement and a 1.06× win over the fastest competitor. The optimization
+caches successful general-purpose heritage resolutions and removes source or
+HIR scans only when conservative facts prove the searched construct cannot
+apply; the source, compiler options, validity gate, and schedule are unchanged.
