@@ -39091,8 +39091,10 @@ const harness_prelude =
     \\}
     \\function __home_net_connect_http2_server(server, port, hostname, connectCallback) {
     \\  const socket = __home_http_event_target();
-    \\  const session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null), remoteSettings: Object.assign({}, __home_http2_default_settings(), { customSettings: Object.create(null) }) });
+    \\  const session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null) });
     \\  Object.setPrototypeOf(session, __home_http2_ServerHttp2Session.prototype);
+    \\  session.__home_remote_custom_settings = Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
+    \\  session.remoteSettings = __home_http2_materialize_remote_settings(null, null, session);
     \\  let input = Buffer.alloc(0);
     \\  let receivedPreface = false;
     \\  let connectionEmitted = false;
@@ -39205,17 +39207,17 @@ const harness_prelude =
     \\      if (validation && validation.streamError) { sendRst(streamId, validation.streamError); continue; }
     \\      if (type === 4 && !(flags & 1)) {
     \\        const update = {};
-    \\        const custom = Object.assign(Object.create(null), session.remoteSettings.customSettings || {});
+    \\        const custom = Object.create(null);
     \\        const knownSettings = { 1: "headerTableSize", 2: "enablePush", 3: "maxConcurrentStreams", 4: "initialWindowSize", 5: "maxFrameSize", 6: "maxHeaderListSize", 8: "enableConnectProtocol" };
-    \\        const acceptedCustom = new Set(Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : []);
     \\        for (let offset = 0; offset < payload.length; offset += 6) {
     \\          const id = payload.readUInt16BE(offset);
     \\          const value = payload.readUInt32BE(offset + 2);
     \\          const name = knownSettings[id];
     \\          if (name) update[name] = name === "enablePush" || name === "enableConnectProtocol" ? value === 1 : value;
-    \\          else if (acceptedCustom.has(id)) custom[id] = value;
+    \\          else custom[id] = value;
     \\        }
-    \\        session.remoteSettings = Object.assign({}, session.remoteSettings, update, { customSettings: custom });
+    \\        if (Object.keys(custom).length > 0) update.customSettings = custom;
+    \\        session.remoteSettings = __home_http2_materialize_remote_settings(session.remoteSettings, update, session);
     \\        session.emit("remoteSettings", session.remoteSettings);
     \\        send(__home_http2_frame(4, 1, 0, Buffer.alloc(0)));
     \\      }
@@ -40712,6 +40714,7 @@ const harness_prelude =
     \\  client.__home_max_outstanding_settings = typeof options.maxOutstandingSettings === "number" && options.maxOutstandingSettings >= 1 ? options.maxOutstandingSettings : 10;
     \\  client.localSettings = Object.assign({}, __home_http2_default_settings(), initialSettings);
     \\  client.remoteSettings = null;
+    \\  client.__home_remote_custom_settings = Array.isArray(options.remoteCustomSettings) ? options.remoteCustomSettings.map(Number) : [];
     \\  client.__home_pending_settings = [];
     \\  client.__home_next_stream_id = 1;
     \\  client.__home_next_push_stream_id = 2;
@@ -40720,6 +40723,7 @@ const harness_prelude =
     \\  client[Symbol.for("nodejs.rejection")] = function(error, type) { const target = arguments[2]; if (String(type) === "stream" && target && typeof target.destroy === "function") { target.destroy(error); return; } this.emit("error", error); };
     \\  client.__home_server_session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_client: client });
     \\  Object.setPrototypeOf(client.__home_server_session, __home_http2_ServerHttp2Session.prototype);
+    \\  client.__home_server_session.__home_remote_custom_settings = Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
     \\  client.__home_server_session.pendingSettingsAck = true;
     \\  client.__home_server_session.__home_pending_settings_ack_count = 1;
     \\  client.__home_server_session.__home_max_outstanding_settings = typeof (server && server.__home_options && server.__home_options.maxOutstandingSettings) === "number" && server.__home_options.maxOutstandingSettings >= 1 ? server.__home_options.maxOutstandingSettings : 10;
@@ -40775,7 +40779,7 @@ const harness_prelude =
     \\      });
     \\      return this;
     \\    }
-    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.localSettings = Object.assign({}, this.localSettings || {}, values); client.remoteSettings = Object.assign({}, client.remoteSettings || __home_http2_default_settings(), values); this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
+    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.localSettings = Object.assign({}, this.localSettings || {}, values); client.remoteSettings = __home_http2_materialize_remote_settings(client.remoteSettings, values, client); this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
     \\    return this;
     \\  };
     \\  client.__home_server_session.ping = function(payload, callback) { return __home_http2_ping(this, client, payload, callback, server && server.__home_options && server.__home_options.maxOutstandingPings); };
@@ -41107,7 +41111,7 @@ const harness_prelude =
     \\    this.localSettings = Object.assign({}, this.localSettings, update);
     \\    this.__home_pending_settings.push(update);
     \\    if (!this.connecting && this.__home_server_session && !this.__home_server_session.closed) {
-    \\      this.__home_server_session.remoteSettings = Object.assign({}, this.__home_server_session.remoteSettings || __home_http2_default_settings(), update);
+    \\      this.__home_server_session.remoteSettings = __home_http2_materialize_remote_settings(this.__home_server_session.remoteSettings, update, this.__home_server_session);
     \\      Promise.resolve().then(() => this.__home_server_session.emit("remoteSettings", this.__home_server_session.remoteSettings));
     \\    }
     \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; this.emit("localSettings", this.localSettings); if (typeof callback === "function") callback(null, this.localSettings, 0); });
@@ -42174,22 +42178,11 @@ const harness_prelude =
     \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
     \\    client.connecting = false;
     \\    client.alpnProtocol = client.encrypted ? String(transportSocket.alpnProtocol || "h2") : "h2c";
-    \\    client.remoteSettings = {
-    \\      headerTableSize: settings.headerTableSize === undefined ? 4096 : Number(settings.headerTableSize),
-    \\      enablePush: settings.enablePush === undefined ? true : !!settings.enablePush,
-    \\      maxConcurrentStreams: settings.maxConcurrentStreams === undefined ? 0xffffffff : Number(settings.maxConcurrentStreams),
-    \\      initialWindowSize: settings.initialWindowSize === undefined ? 65535 : Number(settings.initialWindowSize),
-    \\      maxFrameSize: settings.maxFrameSize === undefined ? 16384 : Number(settings.maxFrameSize),
-    \\      maxHeaderListSize: settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize),
-    \\      maxHeaderSize: settings.maxHeaderSize === undefined ? (settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize)) : Number(settings.maxHeaderSize),
-    \\      enableConnectProtocol: settings.enableConnectProtocol === undefined ? false : !!settings.enableConnectProtocol,
-    \\    };
-    \\    const acceptedServerCustomSettings = Object.create(null);
-    \\    for (const id of Array.isArray(options.remoteCustomSettings) ? options.remoteCustomSettings : []) if (settings.customSettings && settings.customSettings[id] !== undefined) acceptedServerCustomSettings[id] = settings.customSettings[id];
-    \\    client.remoteSettings.customSettings = acceptedServerCustomSettings;
+    \\    client.remoteSettings = __home_http2_materialize_remote_settings(null, settings, client);
     \\    transportSocket.connecting = false;
     \\    for (const id of Object.keys(client.__home_streams)) if (client.__home_streams[id]) client.__home_streams[id].pending = false;
     \\    if (server) {
+    \\      client.__home_server_session.__home_remote_custom_settings = Array.isArray(server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
     \\      if (__home_http2_transport_server(transportSocket) !== server && __home_http2_transport_server(serverTransportSocket) !== server) server.emit("connection", serverTransportSocket);
     \\      const adoptSession = serverTransportSocket && serverTransportSocket.__home_http2_adopt_session || transportSocket && transportSocket.__home_http2_adopt_session;
     \\      if (typeof adoptSession === "function") {
@@ -42225,13 +42218,11 @@ const harness_prelude =
     \\        });
     \\        return;
     \\      }
-    \\      const acceptedCustomSettings = Object.create(null);
-    \\      for (const id of Array.isArray(server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings : []) if (initialSettings.customSettings && initialSettings.customSettings[id] !== undefined) acceptedCustomSettings[id] = initialSettings.customSettings[id];
-    \\      client.__home_server_session.remoteSettings = Object.assign({}, __home_http2_default_settings(), initialSettings, { customSettings: acceptedCustomSettings });
+    \\      client.__home_server_session.remoteSettings = __home_http2_materialize_remote_settings(null, initialSettings, client.__home_server_session);
     \\      client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      if (server.__home_secure && Array.isArray(server.__home_options && server.__home_options.origins) && server.__home_options.origins.length > 0) client.__home_server_session.origin.apply(client.__home_server_session, server.__home_options.origins);
     \\      for (const update of client.__home_pending_settings) {
-    \\        client.__home_server_session.remoteSettings = Object.assign({}, client.__home_server_session.remoteSettings, update);
+    \\        client.__home_server_session.remoteSettings = __home_http2_materialize_remote_settings(client.__home_server_session.remoteSettings, update, client.__home_server_session);
     \\        client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      }
     \\    }
@@ -42312,6 +42303,27 @@ const harness_prelude =
     \\}
     \\function __home_http2_default_settings() {
     \\  return { enableConnectProtocol: false, headerTableSize: 4096, enablePush: true, initialWindowSize: 65535, maxFrameSize: 16384, maxConcurrentStreams: 0xffffffff, maxHeaderListSize: 65535, maxHeaderSize: 65535 };
+    \\}
+    \\function __home_http2_materialize_remote_settings(previous, inbound, receiver) {
+    \\  const defaults = __home_http2_default_settings();
+    \\  const before = previous && typeof previous === "object" ? previous : {};
+    \\  const update = inbound && typeof inbound === "object" ? inbound : {};
+    \\  const result = {};
+    \\  for (const name of ["enableConnectProtocol", "headerTableSize", "enablePush", "initialWindowSize", "maxFrameSize", "maxConcurrentStreams", "maxHeaderListSize", "maxHeaderSize"]) {
+    \\    result[name] = update[name] === undefined ? (before[name] === undefined ? defaults[name] : before[name]) : update[name];
+    \\  }
+    \\  if (update.maxHeaderListSize !== undefined && update.maxHeaderSize === undefined) result.maxHeaderSize = update.maxHeaderListSize;
+    \\  else if (update.maxHeaderSize !== undefined && update.maxHeaderListSize === undefined) result.maxHeaderListSize = update.maxHeaderSize;
+    \\  const allowlist = new Set(Array.isArray(receiver && receiver.__home_remote_custom_settings) ? receiver.__home_remote_custom_settings.map(Number) : []);
+    \\  if (allowlist.size > 0) {
+    \\    const custom = Object.create(null);
+    \\    for (const source of [before.customSettings, update.customSettings]) {
+    \\      if (!source || typeof source !== "object") continue;
+    \\      for (const id of Object.keys(source)) if (allowlist.has(Number(id))) custom[id] = source[id];
+    \\    }
+    \\    if (Object.keys(custom).length > 0) result.customSettings = custom;
+    \\  }
+    \\  return result;
     \\}
     \\function __home_http2_settings_entry_count(values) {
     \\  if (!values || typeof values !== "object") return 0;
@@ -156424,6 +156436,30 @@ test "bootstrap HTTP2 server lifecycle push whitespace and reset logical contrac
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 server lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 remote settings materialization logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const standard = ["enableConnectProtocol", "enablePush", "headerTableSize", "initialWindowSize", "maxConcurrentStreams", "maxFrameSize", "maxHeaderListSize", "maxHeaderSize"].sort();
+        \\const assertStandardOnly = settings => { assert.deepStrictEqual(Object.keys(settings).sort(), standard); assert.strictEqual(Object.prototype.hasOwnProperty.call(settings, "customSettings"), false); };
+        \\test("modeled peers omit unrequested custom settings", async () => { await new Promise((resolve, reject) => { let checkedServer = false; let checkedClient = false; const server = http2.createServer({ settings: { customSettings: { 1244: 456 } } }); server.on("session", session => session.once("remoteSettings", settings => { try { assertStandardOnly(settings); checkedServer = true; } catch (error) { reject(error); } })); server.on("stream", stream => { stream.respond(); stream.end("ok"); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port, { settings: { customSettings: { 55: 12 } } }); client.once("remoteSettings", settings => { try { assertStandardOnly(settings); checkedClient = true; } catch (error) { reject(error); } }); client.on("error", reject); const request = client.request(); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(checkedServer, true); assert.strictEqual(checkedClient, true); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("peer allowlists filter initial and post-connect custom settings", async () => { await new Promise((resolve, reject) => { let initialServer = false; let updatedServer = false; let initialClient = false; let updatedClient = false; const maybeFinish = () => { if (!initialServer || !updatedServer || !initialClient || !updatedClient) return; client.close(); server.close(resolve); }; const server = http2.createServer({ remoteCustomSettings: [55], settings: { customSettings: { 1244: 456, 999: 1 } } }); server.on("session", session => { let events = 0; session.on("remoteSettings", settings => { try { events++; assert.deepStrictEqual(Object.keys(settings.customSettings), ["55"]); assert.strictEqual(settings.customSettings[155], undefined); if (events === 1) { assert.strictEqual(settings.customSettings[55], 12); initialServer = true; session.settings({ customSettings: { 1244: 457, 999: 2 } }); } else { assert.strictEqual(settings.customSettings[55], 13); updatedServer = true; } maybeFinish(); } catch (error) { reject(error); } }); }); server.on("stream", stream => { stream.respond(); stream.end(); }); let client; server.listen(0, () => { client = http2.connect("http://localhost:" + server.address().port, { remoteCustomSettings: [1244], settings: { customSettings: { 55: 12, 155: 144 } } }); let events = 0; client.on("remoteSettings", settings => { try { events++; assert.deepStrictEqual(Object.keys(settings.customSettings), ["1244"]); assert.strictEqual(settings.customSettings[999], undefined); if (events === 1) { assert.strictEqual(settings.customSettings[1244], 456); initialClient = true; client.settings({ customSettings: { 55: 13, 155: 145 } }); } else { assert.strictEqual(settings.customSettings[1244], 457); updatedClient = true; } maybeFinish(); } catch (error) { reject(error); } }); client.on("error", reject); const request = client.request(); request.on("error", reject); request.resume(); request.end(); }); }); });
+        \\test("raw server settings use the same default shape and custom filter", async () => { const server = http2.createServer({ remoteCustomSettings: [77] }); const socket = __home_net_connect_http2_server(server, 1, "localhost"); const session = socket.__home_http2_session; assertStandardOnly(session.remoteSettings); const payload = Buffer.alloc(18); payload.writeUInt16BE(3, 0); payload.writeUInt32BE(7, 2); payload.writeUInt16BE(77, 6); payload.writeUInt32BE(8, 8); payload.writeUInt16BE(88, 12); payload.writeUInt32BE(9, 14); const frame = Buffer.alloc(9 + payload.length); frame.writeUIntBE(payload.length, 0, 3); frame[3] = 4; payload.copy(frame, 9); let events = 0; session.on("remoteSettings", settings => { events++; assert.strictEqual(settings.maxConcurrentStreams, 7); assert.deepStrictEqual(Object.keys(settings.customSettings), ["77"]); assert.strictEqual(settings.customSettings[77], 8); assert.strictEqual(settings.customSettings[88], undefined); }); await new Promise(resolve => socket.once("connect", resolve)); socket.write(Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); socket.write(frame); assert.strictEqual(events, 1); socket.destroy(); server.close(); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-remote-settings-materialization-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 remote settings materialization logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
