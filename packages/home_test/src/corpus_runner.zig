@@ -39796,7 +39796,8 @@ const harness_prelude =
     \\    const outputHeaders = Object.assign(Object.create(null), { ":status": res.statusCode });
     \\    if (res.sendDate && !Object.prototype.hasOwnProperty.call(res.__home_headers, "date")) outputHeaders.date = new Date().toUTCString();
     \\    for (const name of Object.keys(res.__home_headers)) { const stored = res.__home_headers[name]; const value = name === "set-cookie" && Array.isArray(stored) ? stored : (Array.isArray(stored) ? stored.join(", ") : String(stored)); if (clientStream.__home_strict_field_whitespace && /^[ \t]|[ \t]$/.test(String(value))) continue; outputHeaders[name] = value; }
-    \\    clientStream.emit("response", outputHeaders, finalHeaders && !responseHasBody() ? 5 : 4);
+    \\    const responseFlags = finalHeaders && !responseHasBody() ? 5 : 4;
+    \\    Promise.resolve().then(() => { if (!clientStream.aborted) clientStream.emit("response", outputHeaders, responseFlags); });
     \\  }
     \\  function completeHeaderOnlyResponse() {
     \\    if (!clientStream || clientStream.__home_response_ended || clientStream.aborted) return;
@@ -39806,6 +39807,9 @@ const harness_prelude =
     \\  function maybeCloseServerStream() {
     \\    if (!serverStream || serverStream.__home_close_emitted || !res.__home_ended || !req.complete) return;
     \\    serverStream.closed = true;
+    \\    serverStream.destroyed = true;
+    \\    serverStream.readable = false;
+    \\    serverStream.writable = false;
     \\    serverStream.__home_close_emitted = true;
     \\    serverStream.emit("close");
     \\  }
@@ -39843,23 +39847,44 @@ const harness_prelude =
     \\  };
     \\  res.setTrailer = function(name, value) { const normalized = normalizeHeaderName(name); if (normalized.startsWith(":")) { const error = new TypeError("Cannot set HTTP/2 pseudo-headers"); error.code = "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"; throw error; } const normalizedValue = normalizeHeaderValue(normalized, value); this.__home_trailers[normalized] = Array.isArray(normalizedValue) ? normalizedValue.map(String) : String(normalizedValue); return undefined; };
     \\  res.addTrailers = function(values) { for (const name of Object.keys(values || {})) this.setTrailer(name, values[name]); return this; };
+    \\  function prepareInformationHeaders(statusCode, values, allowStatus) {
+    \\    if (values === undefined || values === null) values = {};
+    \\    if (typeof values !== "object" || Array.isArray(values)) { const error = new TypeError('The "headers" argument must be of type object.'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\    const information = Object.create(null);
+    \\    const rawHeaders = [":status", String(statusCode)];
+    \\    for (const rawName of Object.keys(values)) {
+    \\      const normalized = normalizeHeaderName(rawName);
+    \\      if (normalized === ":status" && allowStatus) continue;
+    \\      if (normalized.startsWith(":")) { const error = new TypeError("Cannot set HTTP/2 pseudo-headers"); error.code = "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"; throw error; }
+    \\      if (["connection", "http2-settings", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(normalized) || normalized === "te" && String(values[rawName]).toLowerCase() !== "trailers") { const error = new TypeError('HTTP/1 Connection specific headers are forbidden: "' + normalized + '"'); error.code = "ERR_HTTP2_INVALID_CONNECTION_HEADERS"; throw error; }
+    \\      const normalizedValue = normalizeHeaderValue(normalized, values[rawName]);
+    \\      const rendered = Array.isArray(normalizedValue) ? normalizedValue.map(String).join(", ") : String(normalizedValue);
+    \\      information[normalized] = rendered;
+    \\      rawHeaders.push(normalized, rendered);
+    \\    }
+    \\    information[":status"] = statusCode;
+    \\    return { information, rawHeaders };
+    \\  }
+    \\  function validEarlyHintLink(value) { return typeof value === "string" && !/[\r\n]/.test(value) && /^<[^>\r\n]*>(?:\s*;\s*[^;\s=]+(?:=(?:"[^"\r\n]*"|[^;\s\r\n]+))?)*$/.test(value.trim()); }
     \\  res.writeEarlyHints = function(values, hintsCallback) {
+    \\    void hintsCallback;
     \\    if (!values || typeof values !== "object" || Array.isArray(values)) { const error = new TypeError('The "hints" argument must be of type object.'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
-    \\    if (typeof values.link !== "string" && !(Array.isArray(values.link) && values.link.every(value => typeof value === "string"))) { const error = new TypeError("The argument 'hints.link' is invalid."); error.code = "ERR_INVALID_ARG_VALUE"; throw error; }
-    \\    if (Array.isArray(values.link) && values.link.length === 0) { if (typeof hintsCallback === "function") Promise.resolve().then(hintsCallback); return false; }
-    \\    const hints = { ":status": 103 };
-    \\    for (const name of Object.keys(values)) { const normalized = normalizeHeaderName(name); const value = normalizeHeaderValue(normalized, values[name]); hints[normalized] = Array.isArray(value) ? value.join(", ") : value; }
-    \\    if (clientStream) clientStream.emit("headers", hints, 4);
-    \\    if (typeof hintsCallback === "function") Promise.resolve().then(hintsCallback);
-    \\    return true;
+    \\    const links = Array.isArray(values.link) ? values.link : [values.link];
+    \\    if (!links.every(validEarlyHintLink)) { if (!(Array.isArray(values.link) && values.link.length === 0)) { const error = new TypeError("The argument 'hints.link' is invalid."); error.code = "ERR_INVALID_ARG_VALUE"; throw error; } }
+    \\    const normalized = Object.assign({}, values, { link: links.join(", ") });
+    \\    const prepared = prepareInformationHeaders(103, normalized, false);
+    \\    if (links.length === 0) return false;
+    \\    return sendInformationHeaders(103, prepared);
     \\  };
+    \\  function sendInformationHeaders(statusCode, prepared) {
+    \\    if (res.headersSent || res.finished || !clientStream || serverStream && (serverStream.closed || serverStream.destroyed || serverStream.writable === false)) return false;
+    \\    if (serverStream) { if (!Array.isArray(serverStream.sentInfoHeaders)) serverStream.sentInfoHeaders = []; serverStream.sentInfoHeaders.push(prepared.information); }
+    \\    Promise.resolve().then(() => { if (!clientStream.aborted && !clientStream.closed) clientStream.emit("headers", prepared.information, 4, prepared.rawHeaders); });
+    \\    return true;
+    \\  }
     \\  res.writeInformation = function(statusCode, values) {
     \\    if (typeof statusCode !== "number" || !Number.isInteger(statusCode) || statusCode < 100 || statusCode > 199 || statusCode === 101) { const error = new RangeError("Invalid informational status code: " + String(statusCode)); error.code = "ERR_HTTP2_STATUS_INVALID"; throw error; }
-    \\    if (serverStream && (serverStream.closed || serverStream.destroyed || serverStream.writable === false)) return false;
-    \\    const information = { ":status": statusCode };
-    \\    for (const name of Object.keys(values || {})) { const normalized = normalizeHeaderName(name); const value = normalizeHeaderValue(normalized, values[name]); information[normalized] = Array.isArray(value) ? value.join(", ") : value; }
-    \\    if (clientStream) clientStream.emit("headers", information, 4);
-    \\    return true;
+    \\    return sendInformationHeaders(statusCode, prepareInformationHeaders(statusCode, values, true));
     \\  };
     \\  function flushCorkedWrites() {
     \\    if (res.__home_corked_writes.length === 0) return;
@@ -40925,7 +40950,7 @@ const harness_prelude =
     \\    }
     \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" || requestHeaders.expect !== undefined);
     \\    if (hasCompatHandler) {
-    \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0 });
+    \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0, sentInfoHeaders: [] });
     \\      Object.defineProperty(handlerServerStream, "writableHighWaterMark", { configurable: true, enumerable: true, get() { return Number(this._writableState && this._writableState.highWaterMark || 16384); } });
     \\      stream.__home_server_stream = handlerServerStream;
     \\      handlerServerStream.__home_client_stream = stream;
@@ -40934,7 +40959,7 @@ const harness_prelude =
     \\        if (!this.__home_response_ended || !handlerServerStream.__home_request_ended || this.closed) return;
     \\        this.closed = true; this.destroyed = true;
     \\        this.__home_receive("close");
-    \\        if (!handlerServerStream.__home_close_emitted) { handlerServerStream.closed = true; handlerServerStream.destroyed = true; handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\        if (!handlerServerStream.__home_close_emitted) { handlerServerStream.closed = true; handlerServerStream.destroyed = true; handlerServerStream.readable = false; handlerServerStream.writable = false; handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
     \\        this.__home_release_active();
     \\        __home_http2_maybe_close_client(client);
     \\      };
@@ -40998,7 +41023,7 @@ const harness_prelude =
     \\      handlerServerStream.destroy = function(error) {
     \\        if (this.destroyed) return this;
     \\        const compatResponse = this.__home_compat_res;
-    \\        if (!error && this.__home_socket_destroy && compatResponse && !compatResponse.finished) { this.__home_socket_destroy = false; this.destroyed = true; this.writable = false; compatResponse.end(); return this; }
+    \\        if (!error && this.__home_socket_destroy && compatResponse && !compatResponse.finished) { this.__home_socket_destroy = false; this.__home_socket_destroy_pending = true; compatResponse.end(); return this; }
     \\        this.destroyed = true;
     \\        this.closed = true;
     \\        this.rstCode = error ? __home_http2_constants.NGHTTP2_INTERNAL_ERROR : 0;
@@ -41006,7 +41031,13 @@ const harness_prelude =
     \\        const compatReq = this.__home_compat_req;
     \\        if (compatReq && !compatReq.aborted) { compatReq.aborted = true; compatReq.complete = true; compatReq.emit("aborted"); }
     \\        if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
-    \\        if (!stream.closed) { stream.closed = true; stream.destroyed = true; stream.rstCode = this.rstCode; stream.emit("close"); }
+    \\        if (!stream.closed) {
+    \\          if (!error && !stream.__home_response_ended) { stream.__home_response_ended = true; if (typeof stream.__home_receive === "function") stream.__home_receive("end"); else stream.emit("end"); }
+    \\          stream.closed = true; stream.destroyed = true; stream.rstCode = this.rstCode;
+    \\          if (typeof stream.__home_receive === "function") stream.__home_receive("close"); else stream.emit("close");
+    \\        }
+    \\        stream.__home_release_active();
+    \\        __home_http2_maybe_close_client(client);
     \\        return this;
     \\      };
     \\      this.state.lastProcStreamID = streamId;
@@ -155034,6 +155065,30 @@ test "bootstrap HTTP2 compatibility response lifecycle logical contracts" {
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 compat response lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 compatibility socket and informational response logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net"); const { kTimeout } = require("internal/timers");
+        \\test("compat socket proxy forwards state and destroys gracefully", async () => { await new Promise((resolve, reject) => { let finished = false; const expected = { code: "ERR_HTTP2_NO_SOCKET_MANIPULATION", message: "HTTP/2 sockets should not be directly manipulated (e.g. read and written)" }; const server = http2.createServer((request, response) => { try { assert.strictEqual(request.socket, response.socket); assert.strictEqual(request.socket instanceof net.Socket, true); assert.strictEqual(request.socket.destroyed, false); assert.strictEqual(request.socket.readable, true); assert.strictEqual(request.socket.writable, true); request.socket.setTimeout(987); assert.strictEqual(request.stream.session[kTimeout]._idleTimeout, 987); request.socket.setTimeout(0); for (const method of ["read", "write", "pause", "resume"]) assert.throws(() => request.socket[method](), expected); let custom = 0; request.socket.once("custom", () => custom++); request.socket.emit("custom"); assert.strictEqual(custom, 1); assert.ok(request.socket.address()); assert.ok(request.socket.remotePort); assert.ok(request.socket._server); request.on("end", () => { try { assert.strictEqual(request.socket.readable, false); response.socket.destroy(); } catch (error) { reject(error); } }); response.on("finish", () => { try { finished = true; assert.strictEqual(response.socket, undefined); assert.strictEqual(request.socket.destroyed, true); assert.strictEqual(request.socket.readable, false); assert.strictEqual(request.socket.writable, false); } catch (error) { reject(error); } }); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(finished, true); assert.strictEqual(client.__home_active_streams, 0); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("delayed socket destruction preserves the completed response", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((request, response) => { response.end("hello"); setImmediate(() => request.socket.destroy()); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); let body = ""; let ended = false; let closes = 0; request.setEncoding("utf8"); request.on("error", reject); request.on("data", chunk => body += chunk); request.on("end", () => ended = true); request.on("close", () => { closes++; try { assert.strictEqual(ended, true); assert.strictEqual(body, "hello"); assert.strictEqual(closes, 1); assert.strictEqual(client.__home_active_streams, 0); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.end(); }); }); });
+        \\test("early hints validate atomically and arrive ordered without reentrancy", async () => { await new Promise((resolve, reject) => { let handlerReturned = false; let ignoredCallback = false; const server = http2.createServer((_request, response) => { try { assert.throws(() => response.writeEarlyHints("bad"), { code: "ERR_INVALID_ARG_TYPE" }); assert.throws(() => response.writeEarlyHints({ link: "invalid string" }), { code: "ERR_INVALID_ARG_VALUE" }); assert.throws(() => response.writeEarlyHints({ link: ["</ok>; rel=preload", "<bad>" + String.fromCharCode(13)] }), { code: "ERR_INVALID_ARG_VALUE" }); assert.throws(() => response.writeEarlyHints({ link: "</ok>; rel=preload", ":status": 199 }), { code: "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED" }); const badName = "x" + String.fromCharCode(13) + "bad"; assert.throws(() => response.writeEarlyHints({ link: [], [badName]: "value" }), { code: "ERR_INVALID_HTTP_TOKEN" }); assert.strictEqual(response.writeEarlyHints({ link: "</styles.css>; rel=preload; as=style" }, () => ignoredCallback = true), true); assert.strictEqual(response.writeEarlyHints({ link: ["</a>; rel=preload", "</b>; rel=preload"], "x-count": 2 }), true); assert.strictEqual(response.stream.sentInfoHeaders.length, 2); response.flushHeaders(); assert.strictEqual(response.writeEarlyHints({ link: "</late>; rel=preload" }), false); response.end("done"); handlerReturned = true; } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); const hints = []; let body = ""; request.setEncoding("utf8"); request.on("error", reject); request.on("headers", (headers, flags, raw) => { try { assert.strictEqual(handlerReturned, true); assert.strictEqual(Object.getPrototypeOf(headers), null); assert.strictEqual(headers[":status"], 103); assert.strictEqual(flags, 4); assert.strictEqual(raw[0], ":status"); assert.strictEqual(raw[1], "103"); hints.push(headers); } catch (error) { reject(error); } }); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); assert.strictEqual(hints.length, 2); } catch (error) { reject(error); } }); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "done"); assert.strictEqual(hints[0].link, "</styles.css>; rel=preload; as=style"); assert.strictEqual(hints[1].link, "</a>; rel=preload, </b>; rel=preload"); assert.strictEqual(hints[1]["x-count"], "2"); assert.strictEqual(ignoredCallback, false); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.end(); }); }); });
+        \\test("closed and destroyed compat streams terminalize peers without responses or leaks", async () => { let handlerReturned = false; const server = http2.createServer((request, response) => { if (request.url === "/close") { request.stream.close(); assert.strictEqual(response.writeHead(200), response); assert.strictEqual(response.headersSent, false); } else { request.stream.destroy(); assert.strictEqual(response.writeHead(200), response); assert.strictEqual(response.write("ignored"), false); assert.strictEqual(response.end("ignored"), response); handlerReturned = true; } }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); const run = path => new Promise((resolve, reject) => { const request = client.request({ ":path": path }); let responses = 0; let ends = 0; let closes = 0; request.on("error", reject); request.on("response", () => responses++); request.on("end", () => ends++); request.on("close", () => { closes++; Promise.resolve().then(() => { try { assert.strictEqual(responses, 0); assert.strictEqual(ends, 1); assert.strictEqual(closes, 1); assert.strictEqual(client.__home_active_streams, 0); resolve(); } catch (error) { reject(error); } }); }); request.resume(); request.end(); }); await run("/close"); await run("/destroy"); assert.strictEqual(handlerReturned, true); client.close(); await new Promise(resolve => server.close(resolve)); });
+        \\test("writeInformation validates and preserves ordered informational metadata", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => { try { assert.throws(() => response.writeInformation(101), { code: "ERR_HTTP2_STATUS_INVALID" }); assert.throws(() => response.writeInformation(200), { code: "ERR_HTTP2_STATUS_INVALID" }); assert.throws(() => response.writeInformation("100"), { code: "ERR_HTTP2_STATUS_INVALID" }); assert.throws(() => response.writeInformation(110, []), { code: "ERR_INVALID_ARG_TYPE" }); assert.strictEqual(response.writeInformation(110, { "x-progress": "50%" }), true); assert.strictEqual(response.writeInformation(120, { ":status": 199, "x-count": 2 }), true); response.writeHead(200); assert.strictEqual(response.writeInformation(199, { late: "no" }), false); response.end("done"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); const seen = []; let body = ""; request.setEncoding("utf8"); request.on("error", reject); request.on("headers", headers => seen.push(headers)); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); assert.deepStrictEqual(seen.map(value => value[":status"]), [110, 120]); assert.strictEqual(seen[0]["x-progress"], "50%"); assert.strictEqual(seen[1]["x-count"], "2"); } catch (error) { reject(error); } }); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "done"); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-compat-socket-information-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 compat socket/information logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
