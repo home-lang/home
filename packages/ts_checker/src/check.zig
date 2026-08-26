@@ -29541,7 +29541,7 @@ pub const Checker = struct {
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
                 if (self.callUsesNonArrayReceiverForArrayCallback(c.callee)) return null;
-                const sig = self.contextualSignatureForCall(parent, callee_t, args) orelse return null;
+                const sig = (self.contextualSignatureForCall(parent, callee_t, args) catch null) orelse return null;
                 target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
             },
             else => return null,
@@ -29692,7 +29692,7 @@ pub const Checker = struct {
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
-                const sig = self.contextualSignatureForCall(parent, callee_t, args) orelse return null;
+                const sig = (self.contextualSignatureForCall(parent, callee_t, args) catch null) orelse return null;
                 return self.contextualCallArgumentType(sig, c.callee, args, idx) catch null;
             },
             .object_property => {
@@ -29795,7 +29795,7 @@ pub const Checker = struct {
         call_node: NodeId,
         callee_t: TypeId,
         args: []const NodeId,
-    ) ?TypeId {
+    ) CheckError!?TypeId {
         const call = hir_mod.callOf(self.hir, call_node);
         if (self.hir.kindOf(call_node) == .new_expr) {
             if (self.hir.kindOf(call.callee) == .identifier) {
@@ -29823,6 +29823,16 @@ pub const Checker = struct {
                     selected = sig;
                 }
                 if (selected != types.Primitive.none) return selected;
+            }
+        }
+        if (self.hir.kindOf(call.callee) == .member_access) {
+            const member = hir_mod.memberOf(self.hir, call.callee);
+            const receiver_t = if (try self.staticClassMemberAccess(member.object, member.name)) |static_access|
+                static_access.receiver_t
+            else
+                try self.checkExpression(member.object);
+            if (try self.lookupObjectMember(receiver_t, member.name)) |member_t| {
+                if (self.firstSignatureType(member_t)) |signature| return signature;
             }
         }
         return self.firstSignatureType(callee_t);
@@ -80343,6 +80353,28 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_signature) {
+            // Method-local type parameters shadow same-named parameters from
+            // the containing generic object. Mark them visited before walking
+            // the signature so stale outer binders can be reconciled by name
+            // without capturing `<T>` declared by the method itself.
+            if (self.generic_signature_params.get(t)) |bound_params| {
+                const signature_decl = self.signatureDeclNode(t);
+                const own_param_nodes = if (signature_decl != hir_mod.none_node_id)
+                    self.typeParamNodesOfDecl(signature_decl)
+                else
+                    &[_]NodeId{};
+                for (bound_params) |bound_param| {
+                    const resolved_param = self.resolvedTypeParameterPlaceholder(bound_param);
+                    const param_decl = self.type_parameter_decl_nodes.get(bound_param) orelse
+                        self.type_parameter_decl_nodes.get(resolved_param) orelse continue;
+                    for (own_param_nodes) |own_param_node| {
+                        if (param_decl != own_param_node) continue;
+                        try seen.put(self.gpa, bound_param, {});
+                        try seen.put(self.gpa, resolved_param, {});
+                        break;
+                    }
+                }
+            }
             for (self.interner.signatureParams(t)) |p| try self.extendSubstitutionsByMatchingTypeParamNamesInner(p, type_params, subs, seen);
             if (self.interner.signatureReturn(t)) |r| try self.extendSubstitutionsByMatchingTypeParamNamesInner(r, type_params, subs, seen);
             if (self.signatureThisParam(t)) |this_t| try self.extendSubstitutionsByMatchingTypeParamNamesInner(this_t, type_params, subs, seen);
@@ -89175,6 +89207,16 @@ pub const Checker = struct {
         if (reduced_source_t != source_t) return try self.checkerAssignableTo(reduced_source_t, target_t);
         const reduced_target_t = try self.reduceNeverIntersectionsForAssignability(target_t);
         if (reduced_target_t != target_t) return try self.checkerAssignableTo(source_t, reduced_target_t);
+        if (source_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source_t).is_union)
+        {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(source_t));
+            defer self.gpa.free(members);
+            for (members) |member| {
+                if (!(try self.checkerAssignableTo(member, target_t))) return false;
+            }
+            return members.len > 0;
+        }
         if (self.functionObjectTargetAcceptsArgument(source_t, target_t, 0)) return true;
         if (try self.jsDocGenericUnionAssignableToTypeParameter(source_t, target_t)) return true;
         if (self.typeIsUniversalEmptyObjectNullishUnion(target_t)) return true;
@@ -99955,7 +99997,7 @@ pub const Checker = struct {
         // tsc's `getPropertyOfType` short-circuit on the `any`/error type
         // so callers don't fall through to the TS2339 path.
         if (flags.is_any) return types.Primitive.any;
-        if (flags.is_type_parameter) {
+        if (flags.is_type_parameter and !flags.is_union and !flags.is_intersection) {
             const constraint = self.typeParameterConstraint(obj_t) orelse return null;
             if (constraint == obj_t) return null;
             return try self.lookupObjectMember(constraint, name);
@@ -100356,6 +100398,7 @@ pub const Checker = struct {
         while (i < n) : (i += 1) {
             try subs.put(self.gpa, info.params[i], args[i]);
         }
+        try self.extendSubstitutionsByMatchingTypeParamNames(info.body, info.params, &subs);
         const refreshed = self.substituteType(info.body, &subs) catch return null;
         if (refreshed == obj_t) return null;
         if (try self.lookupObjectMember(refreshed, name)) |t| return t;
@@ -102854,6 +102897,9 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (self.isBareTypeParameter(member) and self.isBareTypeParameter(target)) {
+            return self.predicateTypeParameterDerivesFrom(member, target, 0);
+        }
         if (self.predicateTargetIsBroadObject(target)) return self.typeIsObjectLikePredicateMember(member);
         if (self.predicateTargetIsFunctionObject(target) and self.objectHasCallOrConstructSignature(member)) return true;
         if (self.typeParameterConstraintAssignableTo(member, target)) return true;
@@ -102879,6 +102925,37 @@ pub const Checker = struct {
         if ((target == types.Primitive.number_t or target == types.Primitive.string_t) and
             self.enumTypeofBackingTag(member) == target) return true;
         return self.engine.isAssignableTo(member, target) catch false;
+    }
+
+    fn predicateTypeParameterDerivesFrom(self: *Checker, member: TypeId, target: TypeId, depth: u8) bool {
+        if (member == target) return true;
+        if (depth >= 16 or !self.isBareTypeParameter(member) or !self.isBareTypeParameter(target)) return false;
+        const constraint = self.typeParameterConstraint(member) orelse return false;
+        return self.predicateConstraintContainsTypeParameter(constraint, target, depth + 1);
+    }
+
+    fn predicateConstraintContainsTypeParameter(self: *Checker, constraint: TypeId, target: TypeId, depth: u8) bool {
+        if (constraint == target) return true;
+        if (depth >= 16 or constraint >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(constraint);
+        if (flags.is_type_parameter and !flags.is_union and !flags.is_intersection) {
+            return self.predicateTypeParameterDerivesFrom(constraint, target, depth + 1);
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(constraint)) |member| {
+                if (self.predicateConstraintContainsTypeParameter(member, target, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(constraint);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.predicateConstraintContainsTypeParameter(member, target, depth + 1)) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     fn typeIsObjectLikePredicateMember(self: *Checker, t: TypeId) bool {
@@ -103041,7 +103118,10 @@ pub const Checker = struct {
                     continue;
                 }
                 const member_to_target = self.typeMatchesPredicateTarget(member, target);
-                const target_to_member = target == member or (self.engine.isAssignableTo(target, member) catch false);
+                const target_to_member = if (self.isBareTypeParameter(target) and self.isBareTypeParameter(member))
+                    self.predicateTypeParameterDerivesFrom(target, member, 0)
+                else
+                    target == member or (self.engine.isAssignableTo(target, member) catch false);
                 if (member_to_target) {
                     if (target_to_member and self.predicateTargetShouldReplaceMember(member, target)) {
                         try kept.append(self.gpa, target);
@@ -103091,7 +103171,7 @@ pub const Checker = struct {
                 const remove = self.typeMatchesPredicateTarget(member, target) or
                     (!self.isNullishType(member) and
                         !self.isNullishType(target) and
-                        (self.engine.isComparableTo(member, target) catch false));
+                        self.predicateTypesComparable(member, target));
                 if (!remove) try kept.append(self.gpa, member);
             }
             if (kept.items.len == 0) return types.Primitive.never;
@@ -103099,6 +103179,15 @@ pub const Checker = struct {
             return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
         }
         return if (self.typeMatchesPredicateTarget(current, target)) types.Primitive.never else current;
+    }
+
+    fn predicateTypesComparable(self: *Checker, member: TypeId, target: TypeId) bool {
+        if (self.isBareTypeParameter(member) and self.isBareTypeParameter(target)) {
+            return self.predicateTypeParameterDerivesFrom(member, target, 0);
+        }
+        const comparable_member = self.typeParameterConstraint(member) orelse member;
+        const comparable_target = self.typeParameterConstraint(target) orelse target;
+        return self.engine.isComparableTo(comparable_member, comparable_target) catch false;
     }
 
     fn propertyAllowsDelete(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) bool {
@@ -107183,6 +107272,8 @@ pub const Checker = struct {
                 }
                 if (self.interner.isSignature(effective_callee_t)) {
                     var failed_contextual_generic_return_inference = false;
+                    const receiver_specialized_signature = self.hir.kindOf(c.callee) == .member_access and
+                        effective_callee_t != callee_t;
                     const callee_has_signature_type_params = self.generic_signature_params.get(effective_callee_t) != null;
                     const callee_is_recorded_generic_fn = self.hir.kindOf(c.callee) == .identifier and
                         self.generic_fns.get(hir_mod.identifierOf(self.hir, c.callee).name) != null;
@@ -107346,7 +107437,7 @@ pub const Checker = struct {
                             try self.applyInferredConditionalConstraintsFromCallArgs(param_ts, arg_types.items, &call_subs);
                             try self.applyInferredConditionalConstraintsToSubs(effective_callee_t, &call_subs);
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
-                            if (self.hir.kindOf(c.callee) == .member_access) {
+                            if (self.hir.kindOf(c.callee) == .member_access and !receiver_specialized_signature) {
                                 effective_callee_t = try self.relowerSignatureParametersWithInferences(effective_callee_t, &call_subs);
                             }
                         }
@@ -123446,6 +123537,13 @@ pub const Checker = struct {
             }
         }
         if (!self.interner.isSignature(callee_t)) return base_target;
+        // A nested predicate can capture type parameters from its containing
+        // function without declaring type parameters of its own. Those
+        // captured binders are fixed by the outer invocation; inferring them
+        // again from the predicate argument would replace `First` with the
+        // entire `First | Second` input and erase both branch partitions.
+        const callee_decl = self.signatureDeclNode(callee_t);
+        if (callee_decl != hir_mod.none_node_id and self.typeParamNodesOfDecl(callee_decl).len == 0) return base_target;
         const args = hir_mod.callArgs(self.hir, call_node);
         var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer arg_types.deinit(self.gpa);
@@ -137722,13 +137820,14 @@ pub const Checker = struct {
 
     fn typeParameterBaseConstraint(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(t).is_type_parameter) return null;
+        const initial_flags = self.interner.pool.flagsOf(t);
+        if (!initial_flags.is_type_parameter or initial_flags.is_union or initial_flags.is_intersection) return null;
         var cur = self.typeParameterConstraint(t) orelse return null;
         var depth: usize = 0;
         while (depth < 16) : (depth += 1) {
             if (cur >= self.interner.pool.typeCount()) return cur;
             const flags = self.interner.pool.flagsOf(cur);
-            if (!flags.is_type_parameter) return cur;
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return cur;
             const next = self.typeParameterConstraint(cur) orelse return cur;
             if (next == cur) return cur;
             cur = next;
@@ -162176,6 +162275,7 @@ pub const Checker = struct {
         if (self.indexTypeParameterConstraintIsKeyofObjectSyntax(index_t, object_node)) return;
         if (self.diagnosticExists(access_node, TsCodes.type_cannot_be_used_to_index_type)) return;
         if (self.conditionalTrueBranchProvesIndexedKey(access_node, object_node, index_node)) return;
+        if (try self.conditionalTrueBranchProvesArrayIndex(access_node, object_node, index_t)) return;
         if (try self.reportEcmaPrivateStringIndexedAccess(index_node, object_node, object_t, index_t)) return;
         if (try self.reportPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
         if (try self.reportUnionPrivateOrProtectedIndexedAccessOnTypeParameter(index_node, object_t, index_t)) return;
@@ -162847,6 +162947,28 @@ pub const Checker = struct {
                 if ((self.bareTypeNodeName(conditional.check) orelse return false) != index_name) return false;
                 const key_base = self.typeNodeKeyofBaseName(conditional.extends, 0) orelse return false;
                 return (self.bareTypeNodeName(object_node) orelse return false) == key_base;
+            }
+            child = current;
+        }
+        return false;
+    }
+
+    fn conditionalTrueBranchProvesArrayIndex(
+        self: *Checker,
+        access_node: NodeId,
+        object_node: NodeId,
+        index_t: TypeId,
+    ) CheckError!bool {
+        if (!self.typeMaybeNumberIndexLike(index_t)) return false;
+        var child = access_node;
+        var current = self.hir.parentOf(access_node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) == .conditional_type) {
+                const conditional = hir_mod.conditionalTypeOf(self.hir, current);
+                if (child != conditional.true_branch or
+                    !self.nodeSourceTextEqual(conditional.check, object_node)) return false;
+                const extends_t = try self.lowererLowerWithTypeParams(conditional.extends);
+                return self.everyTypeIsArrayOrTuple(extends_t);
             }
             child = current;
         }
@@ -164353,6 +164475,7 @@ pub const Checker = struct {
         if (try self.overloadedCallSignatureSetAssignable(arg_t, param_t)) return true;
         if (try self.overloadedCallableArgumentAssignableToGenericParam(arg_t, param_t)) return true;
         if (try self.abstractConstructorAssignedToNonAbstract(arg_t, param_t)) return false;
+        if (try self.classStaticAssignableTo(arg_t, param_t)) return true;
         if (try self.constructSignatureArgumentAssignableToParam(arg_t, param_t)) |ok| return ok;
         if (try self.restAnySignatureAssignableToCallback(arg_t, param_t)) return true;
         if (try self.symbolNamedObjectArgumentAssignable(arg_t, param_t)) return true;
@@ -264458,6 +264581,87 @@ test "checker: parity 1001 concrete generic substitutions retain lexical type bi
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: parity batch concrete interface methods refresh nested outer indexed access" {
+    const s = try newSetup(
+        \\interface Chainable<T> {
+        \\  value(): T;
+        \\  mapValues<U>(func: (v: T[keyof T]) => U): Chainable<{ [K in keyof T]: U }>;
+        \\}
+        \\declare function chain<T>(value: T): Chainable<T>;
+        \\const square = (value: number) => value * value;
+        \\chain({ a: 1, b: 2 }).mapValues(square).value();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity batch concrete interface methods refresh nested callback parameters" {
+    const s = try newSetup(
+        \\interface Sequence<T> {
+        \\  each(iterator: (value: T) => void): void;
+        \\  groupBy<K>(keySelector: (value: T) => K): Sequence<{ key: K; items: T[] }>;
+        \\}
+        \\let sequence: Sequence<string>;
+        \\sequence.groupBy(value => value.length).each(group => group.items);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: parity batch subclass static side satisfies generic base constructor parameter" {
+    const s = try newSetup(
+        \\interface Shape { value: number; }
+        \\class Base<T extends Shape> { update(value: Partial<T>) {} }
+        \\class Derived extends Base<Shape> {}
+        \\function accept(value: typeof Base) {}
+        \\accept(Derived);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: parity batch conditional array branch permits numeric indexed access" {
+    const s = try newSetup(
+        \\interface Fields { x: Item; y: Item[]; }
+        \\type FieldName = keyof Fields;
+        \\class Item {
+        \\  value: Item;
+        \\  method<
+        \\    F extends Fields = Fields,
+        \\    N extends FieldName = FieldName,
+        \\    R extends Item = F[N] extends Item[] ? F[N][0] : never
+        \\  >() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: parity batch captured generic predicate partitions constrained union" {
+    const s = try newSetup(
+        \\function narrow<
+        \\  First extends { foo: string },
+        \\  Second extends { bar: string },
+        \\  SubFirst extends First,
+        \\  More extends First & { other: string }
+        \\>(value: First | SubFirst | More | Second) {
+        \\  if (hasFoo(value)) value.foo;
+        \\  else value.bar;
+        \\  function hasFoo(candidate: First | Second): candidate is First {
+        \\    return "foo" in candidate;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: parity 1051 legacy method decorator type comes from the default lib" {
