@@ -75,14 +75,15 @@ coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
 **Frontend performance snapshot** (Apple M3 Pro, 30 interleaved runs after
-five warmups; lower is better):
+three warmups; lower is better):
 
 | Workload | tsc 7.0.2 | tsgo 7.0.0-dev.20260707.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 41.0 ms | 39.4 ms | **3.5 ms** | **11.24× faster** |
-| 256 files | 55.2 ms | 55.0 ms | **33.7 ms** | **1.63× faster** |
-| Deep types | 54.8 ms | 54.5 ms | **46.0 ms** | **1.18× faster** |
-| 128-module import graph | 47.4 ms | 47.7 ms | **27.6 ms** | **1.72× faster** |
+| Startup | 59.4 ms | 56.9 ms | **4.7 ms** | **12.08× faster** |
+| 256 files | 89.3 ms | 88.0 ms | **52.7 ms** | **1.67× faster** |
+| Deep types | 89.0 ms | 78.2 ms | **57.3 ms** | **1.36× faster** |
+| 128-module import graph | 62.6 ms | 63.5 ms | **38.2 ms** | **1.64× faster** |
+| 64-leaf barrel graph | 56.6 ms | 58.8 ms | **48.1 ms** | **1.18× faster** |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
