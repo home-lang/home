@@ -505,11 +505,33 @@ pub const Identifier = struct {
 /// I/O port access, and other hardware-specific operations in kernel code.
 ///
 /// Example: `asm("cli")`, `asm("hlt")`, `asm("outb %al, %dx")`
+/// One operand of an inline-assembly block: `[name] "constraint" (expr)`.
+/// The name is optional — a template may refer to operands positionally.
+pub const AsmOperand = struct {
+    /// Symbolic name used as `%[name]` in the template, if given.
+    name: ?[]const u8,
+    /// Constraint text as written: `{dx}`, `={al}`, `r`, `=r`, `+r`.
+    constraint: []const u8,
+    /// The value for an input, or the destination for an output.
+    expr: *Expr,
+};
+
 pub const InlineAsm = struct {
     /// Base node metadata
     node: Node,
     /// The assembly instruction string (without quotes)
     instruction: []const u8,
+    /// Outputs, inputs, and clobbers from the `: : :` sections. Empty for
+    /// the bare `asm("instr")` form.
+    ///
+    /// These used to be discarded: the parser consumed the operand sections
+    /// as opaque tokens and produced an InlineAsm with an *empty* instruction,
+    /// so codegen emitted nothing at all. Every port read, port write, CPUID,
+    /// and control-register access in a kernel written against this compiler
+    /// silently did nothing.
+    outputs: []const AsmOperand = &.{},
+    inputs: []const AsmOperand = &.{},
+    clobbers: []const []const u8 = &.{},
 
     /// Create a new inline assembly node.
     ///
@@ -518,6 +540,22 @@ pub const InlineAsm = struct {
     ///   - loc: Source location
     ///
     /// Returns: Initialized InlineAsm
+    pub fn initWithOperands(
+        instruction: []const u8,
+        outputs: []const AsmOperand,
+        inputs: []const AsmOperand,
+        clobbers: []const []const u8,
+        loc: SourceLocation,
+    ) InlineAsm {
+        return .{
+            .node = .{ .type = .InlineAsm, .loc = loc },
+            .instruction = instruction,
+            .outputs = outputs,
+            .inputs = inputs,
+            .clobbers = clobbers,
+        };
+    }
+
     pub fn init(instruction: []const u8, loc: SourceLocation) InlineAsm {
         return .{
             .node = .{ .type = .InlineAsm, .loc = loc },

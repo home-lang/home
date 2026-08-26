@@ -83,6 +83,67 @@ fn moduleIdFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 
     return out[0..w];
 }
 
+/// The register a constraint names, or null for an any-register class.
+/// `{dx}` and `={al}` name one; `r`, `=r`, `+r` do not.
+fn registerForConstraint(constraint: []const u8) ?[]const u8 {
+    // `{reg}` may be preceded by modifiers — `N{dx}` is written in this tree —
+    // so find the brace rather than requiring it at the front.
+    if (std.mem.indexOfScalar(u8, constraint, '{')) |open| {
+        if (std.mem.indexOfScalarPos(u8, constraint, open, '}')) |close| {
+            if (close > open + 1) return constraint[open + 1 .. close];
+        }
+    }
+    // Single-letter GCC register classes.
+    var c = constraint;
+    while (c.len > 0 and (c[0] == '=' or c[0] == '+' or c[0] == '&')) c = c[1..];
+    if (c.len == 1) {
+        return switch (c[0]) {
+            'a' => "rax",
+            'b' => "rbx",
+            'c' => "rcx",
+            'd' => "rdx",
+            'S' => "rsi",
+            'D' => "rdi",
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// True for a constraint this backend cannot honour: memory operands and
+/// matching constraints need a register allocator's cooperation, and guessing
+/// would produce an instruction that assembles and does the wrong thing.
+fn unsupportedConstraint(constraint: []const u8) bool {
+    var c = constraint;
+    while (c.len > 0 and (c[0] == '=' or c[0] == '+' or c[0] == '&')) c = c[1..];
+    if (c.len == 0) return true;
+    if (c[0] == 'm') return true;
+    if (std.ascii.isDigit(c[0])) return true;  // matching constraint
+    return false;
+}
+
+/// The 64-bit register containing a named sub-register, so a value can be
+/// moved with one `movq` regardless of the width the template asks for.
+fn fullRegister(reg: []const u8) []const u8 {
+    const map = [_]struct { part: []const u8, full: []const u8 }{
+        .{ .part = "al", .full = "rax" },   .{ .part = "ax", .full = "rax" },
+        .{ .part = "eax", .full = "rax" },  .{ .part = "rax", .full = "rax" },
+        .{ .part = "bl", .full = "rbx" },   .{ .part = "bx", .full = "rbx" },
+        .{ .part = "ebx", .full = "rbx" },  .{ .part = "rbx", .full = "rbx" },
+        .{ .part = "cl", .full = "rcx" },   .{ .part = "cx", .full = "rcx" },
+        .{ .part = "ecx", .full = "rcx" },  .{ .part = "rcx", .full = "rcx" },
+        .{ .part = "dl", .full = "rdx" },   .{ .part = "dx", .full = "rdx" },
+        .{ .part = "edx", .full = "rdx" },  .{ .part = "rdx", .full = "rdx" },
+        .{ .part = "sil", .full = "rsi" },  .{ .part = "esi", .full = "rsi" },
+        .{ .part = "rsi", .full = "rsi" },  .{ .part = "dil", .full = "rdi" },
+        .{ .part = "edi", .full = "rdi" },  .{ .part = "rdi", .full = "rdi" },
+    };
+    for (map) |m| {
+        if (std.mem.eql(u8, m.part, reg)) return m.full;
+    }
+    return reg;
+}
+
 /// Names that must keep an unmangled symbol: they are named by hand-written
 /// assembly or by the linker script, which cannot know a module prefix.
 fn isBootEntryPoint(name: []const u8) bool {
@@ -2213,6 +2274,165 @@ pub const HomeKernelCodegen = struct {
         return true;
     }
 
+    /// Lower an inline-assembly block, marshalling its operands.
+    ///
+    /// Inputs are evaluated and moved into the registers their constraints
+    /// name, the template's `%[name]` placeholders are replaced with those
+    /// registers, and outputs are copied back out afterwards. Without this a
+    /// block like
+    ///
+    ///     asm volatile ("inb %[port], %[result]"
+    ///       : [result] "={al}" (result)
+    ///       : [port] "{dx}" (port))
+    ///
+    /// emitted nothing at all, and every port read in the kernel returned
+    /// whatever was in the stack slot.
+    ///
+    /// Constraints supported: `{reg}` and `={reg}` for a named register,
+    /// `r`, `=r`, `+r` for any register (assigned from a small scratch pool).
+    /// Anything else is refused by name rather than silently ignored.
+    fn emitInlineAsm(self: *HomeKernelCodegen, asm_node: ast.InlineAsm) anyerror!void {
+        if (asm_node.instruction.len == 0) return;
+
+        // No operands: emit the instruction as written, with GCC's `%%`
+        // escape reduced — this backend emits assembly directly, so a doubled
+        // percent is a literal percent.
+        if (asm_node.outputs.len == 0 and asm_node.inputs.len == 0) {
+            const plain = try self.reducePercent(self.import_arena.allocator(), asm_node.instruction);
+            try self.print("    {s}\n", .{plain});
+            return;
+        }
+
+        // Refuse what cannot be honoured, by name. A memory or matching
+        // constraint needs a register allocator; guessing would assemble
+        // cleanly and do the wrong thing.
+        for (asm_node.outputs) |op| {
+            if (unsupportedConstraint(op.constraint)) {
+                try self.print("    # ERROR: unsupported asm output constraint \"{s}\"\n", .{op.constraint});
+                return;
+            }
+        }
+        for (asm_node.inputs) |op| {
+            if (unsupportedConstraint(op.constraint)) {
+                try self.print("    # ERROR: unsupported asm input constraint \"{s}\"\n", .{op.constraint});
+                return;
+            }
+        }
+
+        const arena = self.import_arena.allocator();
+
+        // Registers for `r`-class operands, avoiding those the marshalling
+        // itself uses.
+        const scratch = [_][]const u8{ "r8", "r9", "r10", "r11" };
+        var next_scratch: usize = 0;
+
+        var out_regs = try arena.alloc([]const u8, asm_node.outputs.len);
+        var in_regs = try arena.alloc([]const u8, asm_node.inputs.len);
+
+        // Inputs first: evaluate each and place it in its register.
+        for (asm_node.inputs, 0..) |op, i| {
+            const reg = registerForConstraint(op.constraint) orelse blk: {
+                if (next_scratch >= scratch.len) {
+                    try self.print("    # ERROR: too many register operands in asm\n", .{});
+                    return;
+                }
+                const r = scratch[next_scratch];
+                next_scratch += 1;
+                break :blk r;
+            };
+            in_regs[i] = reg;
+            try self.generateExpr(op.expr);
+            try self.print("    movq %rax, %{s}\n", .{fullRegister(reg)});
+        }
+
+        // Outputs get registers too, but nothing is loaded into them.
+        for (asm_node.outputs, 0..) |op, i| {
+            const reg = registerForConstraint(op.constraint) orelse blk: {
+                if (next_scratch >= scratch.len) {
+                    try self.print("    # ERROR: too many register operands in asm\n", .{});
+                    return;
+                }
+                const r = scratch[next_scratch];
+                next_scratch += 1;
+                break :blk r;
+            };
+            out_regs[i] = reg;
+        }
+
+        // Substitute `%[name]` in the template.
+        var text: []const u8 = try arena.dupe(u8, asm_node.instruction);
+        for (asm_node.inputs, 0..) |op, i| {
+            if (op.name) |n| text = try self.substituteOperand(arena, text, n, in_regs[i]);
+        }
+        for (asm_node.outputs, 0..) |op, i| {
+            if (op.name) |n| text = try self.substituteOperand(arena, text, n, out_regs[i]);
+        }
+        // Positional references: GCC numbers outputs first, then inputs.
+        for (asm_node.outputs, 0..) |_, i| {
+            const pos = try std.fmt.allocPrint(arena, "{d}", .{i});
+            text = try self.substituteOperand(arena, text, pos, out_regs[i]);
+        }
+        for (asm_node.inputs, 0..) |_, i| {
+            const pos = try std.fmt.allocPrint(arena, "{d}", .{asm_node.outputs.len + i});
+            text = try self.substituteOperand(arena, text, pos, in_regs[i]);
+        }
+        text = try self.reducePercent(arena, text);
+        try self.print("    {s}\n", .{text});
+
+        // Copy outputs back into their destinations.
+        for (asm_node.outputs, 0..) |op, i| {
+            if (op.expr.* == .NullLiteral) continue; // `-> T` form names no destination
+            try self.print("    movq %{s}, %rax\n", .{fullRegister(out_regs[i])});
+            if (op.expr.* == .Identifier) {
+                const name = op.expr.Identifier.name;
+                if (self.locals.get(name)) |offset| {
+                    try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                    continue;
+                }
+                if (self.global_vars.get(name)) |g| {
+                    if (storeFor(g.size)) |st| {
+                        try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.symbol });
+                        continue;
+                    }
+                }
+            }
+            try self.print("    # ERROR: asm output has no assignable destination\n", .{});
+        }
+    }
+
+    /// Reduce GCC's doubled-percent escape. In a C compiler's asm template
+    /// `%%` means a literal percent; this backend writes assembly directly, so
+    /// the doubling has to come back out or the assembler sees `%%cr3`.
+    fn reducePercent(self: *HomeKernelCodegen, arena: std.mem.Allocator, text: []const u8) ![]const u8 {
+        _ = self;
+        const count = std.mem.count(u8, text, "%%");
+        if (count == 0) return text;
+        const out = try arena.alloc(u8, text.len - count);
+        _ = std.mem.replace(u8, text, "%%", "%", out);
+        return out;
+    }
+
+    /// Replace every `%[name]` in `text` with `%reg`.
+    fn substituteOperand(
+        self: *HomeKernelCodegen,
+        arena: std.mem.Allocator,
+        text: []const u8,
+        name: []const u8,
+        reg: []const u8,
+    ) ![]const u8 {
+        _ = self;
+        const needle = if (name.len > 0 and std.ascii.isDigit(name[0]))
+            try std.fmt.allocPrint(arena, "%{s}", .{name})
+        else
+            try std.fmt.allocPrint(arena, "%[{s}]", .{name});
+        const replacement = try std.fmt.allocPrint(arena, "%{s}", .{reg});
+        const count = std.mem.count(u8, text, needle);
+        if (count == 0) return text;
+        const out = try arena.alloc(u8, text.len - count * needle.len + count * replacement.len);
+        _ = std.mem.replace(u8, text, needle, replacement, out);
+        return out;
+    }
+
     /// Push one call argument, returning how many machine words it occupies.
     /// Pushes happen in reverse argument order, so within a slice the length
     /// is pushed first and the pointer second — leaving the pointer on top,
@@ -3019,8 +3239,7 @@ pub const HomeKernelCodegen = struct {
                 try self.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
             },
             .InlineAsm => |asm_node| {
-                // Emit inline assembly instruction directly
-                try self.print("    {s}\n", .{asm_node.instruction});
+                try self.emitInlineAsm(asm_node);
             },
             .StringLiteral => |lit| {
                 // Intern by content: labels used to be the literal's pointer
