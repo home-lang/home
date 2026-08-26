@@ -130,7 +130,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # the file passes, the stray teardown error makes the run exit 1. Tracked as a
 # known follow-up in the PR description; quarantined here until the Windows
 # teardown path is reworked.
-[ WINDOWS ] test/js/web/fetch/fetch-http2-client.test.ts [ FAIL ] # pooled-h2 teardown surfaces WSAECONNRESET between tests
 
 # Pre-existing on main (flagged [pre-existing] by ci:errors, e.g. build 61989 on
 # darwin-14-aarch64 and build 62204 on darwin-26-aarch64, both at the
@@ -180,26 +179,11 @@ test/js/node/http2/node-http2.test.js [ FAIL ] # legacy-parser expectations unde
 test/js/node/http2/h2-conformance.test.ts [ FAIL ] # under reconciliation with the rewritten engine (CONTINUATION flood + RST rate-limit cases)
 test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # legacy-parser expectations under reconciliation
 [ ASAN ] test/js/third_party/grpc-js/test-server.test.ts [ SKIP ] # connect-race socket lifetime report under investigation
-[ WINDOWS ] test/js/third_party/grpc-js/test-server.test.ts [ FAIL ] # http2 teardown gap on Windows
 
-# Platform-specific http2 failures pending the socket-layer fixes (connect-race lifetime on
-# Linux/ASan, teardown gaps on Windows). Enumerated from CI so coverage stays on for everything else.
+# Linux diagnostics failures pending the shared HTTP2 lifecycle publisher; native Windows
+# binding and teardown verification continues in home-lang/home#424.
 [ LINUX ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
 [ LINUX ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-error.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-allow-http1.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ WINDOWS ] test/js/node/test/parallel/test-http2-allow-http1.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-byteswritten-server.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ WINDOWS ] test/js/node/test/parallel/test-http2-byteswritten-server.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-client-port-80.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-client-unescaped-path.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-invalidheaderfield.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-invalidheaderfields-client.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-options-max-headers-block-length.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-server-shutdown-options-errors.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ WINDOWS ] test/js/node/test/parallel/test-http2-server-shutdown-options-errors.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-server-unknown-protocol.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ WINDOWS ] test/js/node/test/parallel/test-http2-server-unknown-protocol.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-http2-single-headers-validation.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
 
 # The connect-race socket-lifetime report can surface in any http2 test on the ASan pipeline;
 # skip the family there until the socket-layer fix lands (prefix entries — the runner matches by substring).
@@ -207,9 +191,6 @@ test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # legacy-parser e
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/http2/ [ SKIP ] # socket-layer connect-race lifetime under investigation
 
-# v26.3.0-verbatim platform deviation (test content is byte-identical to node v26.3.0):
-# multi-localhost (127.0.0.2) binding not supported on Windows
-[ WINDOWS ] test/js/node/test/parallel/test-http2-connect-options.js [ FAIL ]
 # localhost dual-stack resolution makes this flap across platforms (passes on retry)
 test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 
