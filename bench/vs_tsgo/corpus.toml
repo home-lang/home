@@ -6,6 +6,8 @@
 many_files_count = 256
 deep_types_repetitions = 240
 import_graph_modules = 128
+reexport_graph_leaves = 64
+reexport_graph_barrel_size = 8
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -18,6 +20,9 @@ description = "One large file stressing conditional, mapped, indexed, and templa
 
 [workloads.import_graph]
 description = "128 modules in a relative-import chain with cross-file generic types and values."
+
+[workloads.reexport_graph]
+description = "64 leaf modules projected through eight export-star barrel modules."
 
 [compilers.tsc]
 version = "7.0.2"

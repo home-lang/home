@@ -198,6 +198,44 @@ def generate_import_graph(directory: Path, modules: int) -> None:
     )
 
 
+def reexport_leaf_source(index: int) -> str:
+    return f"""export interface Item{index}<T> {{
+  readonly id: number;
+  readonly value: T;
+}}
+
+export function create{index}<T>(value: T): Item{index}<T> {{
+  return {{ id: {index}, value }};
+}}
+"""
+
+
+def generate_reexport_graph(directory: Path, leaves: int, barrel_size: int) -> None:
+    if leaves % barrel_size != 0:
+        raise ValueError("reexport graph leaves must be divisible by barrel size")
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    for index in range(leaves):
+        write(directory / f"src/leaf-{index:04d}.ts", reexport_leaf_source(index))
+
+    index_lines: list[str] = []
+    barrel_count = leaves // barrel_size
+    for barrel in range(barrel_count):
+        first = barrel * barrel_size
+        exports = [
+            f'export * from "./leaf-{leaf:04d}";\n'
+            for leaf in range(first, first + barrel_size)
+        ]
+        write(directory / f"src/barrel-{barrel:02d}.ts", "".join(exports))
+        index_lines.append(
+            f'import {{ Item{first}, create{first} }} from "./barrel-{barrel:02d}";\n'
+            f"const value{barrel}: Item{first}<number> = create{first}({first});\n"
+        )
+    values = ", ".join(f"value{barrel}.value" for barrel in range(barrel_count))
+    index_lines.append(f"export const values = [{values}] as const;\n")
+    write(directory / "src/index.ts", "".join(index_lines))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -205,6 +243,11 @@ def cmd_corpus() -> None:
     generate_many_files(CORPUS / "many_files", cfg["many_files_count"])
     generate_deep_types(CORPUS / "deep_types", cfg["deep_types_repetitions"])
     generate_import_graph(CORPUS / "import_graph", cfg["import_graph_modules"])
+    generate_reexport_graph(
+        CORPUS / "reexport_graph",
+        cfg["reexport_graph_leaves"],
+        cfg["reexport_graph_barrel_size"],
+    )
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
