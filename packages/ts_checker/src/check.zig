@@ -365,6 +365,14 @@ pub const ExternalResolver = struct {
             name: []const u8,
             resolution_mode: []const u8,
         ) ?ModuleExport = null,
+        /// Enumerate the non-default names projected by a resolved module.
+        /// Used to diagnose real export-star ambiguity without guessing from
+        /// the number of star declarations in the importing source.
+        moduleExportNames: ?*const fn (
+            self: *anyopaque,
+            specifier: []const u8,
+            containing_file: []const u8,
+        ) ?[]const []const u8 = null,
         // Declaration-emit portability query for inferred exported
         // variables initialized by an imported call expression. Returns
         // the first type reference in the imported function's declared
@@ -416,6 +424,15 @@ pub const ExternalResolver = struct {
     ) ?ModuleExport {
         const f = self.vtable.moduleExportWithMode orelse return null;
         return f(self.ptr, specifier, containing_file, name, resolution_mode);
+    }
+
+    pub fn moduleExportNames(
+        self: ExternalResolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?[]const []const u8 {
+        const f = self.vtable.moduleExportNames orelse return null;
+        return f(self.ptr, specifier, containing_file);
     }
 
     pub fn inferredExportUnsafeReference(
@@ -14694,6 +14711,12 @@ pub const Checker = struct {
             try self.checkExportStarExportAssignmentTargets(stmts);
             return;
         }
+        if (self.external_resolver) |resolver| {
+            if (resolver.vtable.moduleExportNames != null and self.importer_path.len != 0) {
+                try self.checkExternalExportStarConflicts(stmts, resolver);
+                return;
+            }
+        }
         var plain_star_count: usize = 0;
         var conflict_node: NodeId = hir_mod.none_node_id;
         var default_import_from_relative: NodeId = hir_mod.none_node_id;
@@ -14720,6 +14743,63 @@ pub const Checker = struct {
         try self.report(conflict_node, TsCodes.export_star_conflict, "Module has already exported a member with this name. Consider explicitly re-exporting to resolve the ambiguity.");
         if (default_import_from_relative != hir_mod.none_node_id) {
             try self.report(default_import_from_relative, TsCodes.no_default_export, "Module has no default export.");
+        }
+    }
+
+    fn checkExternalExportStarConflicts(
+        self: *Checker,
+        stmts: []const NodeId,
+        resolver: ExternalResolver,
+    ) CheckError!void {
+        var explicit_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer explicit_names.deinit(self.gpa);
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (ex.is_default) continue;
+            if (ex.namespace_alias != string_interner.empty_string_id) {
+                try explicit_names.put(self.gpa, self.string_interner.get(ex.namespace_alias), {});
+            }
+            for (hir_mod.exportNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                try explicit_names.put(self.gpa, self.string_interner.get(spec.local), {});
+            }
+            if (ex.decl != hir_mod.none_node_id) {
+                if (self.declarationName(ex.decl)) |name| {
+                    try explicit_names.put(self.gpa, self.string_interner.get(name), {});
+                }
+            }
+        }
+
+        const ProjectedSource = struct {
+            identity: []const u8,
+            specifier: []const u8,
+        };
+        var projected_by: std.StringHashMapUnmanaged(ProjectedSource) = .empty;
+        defer projected_by.deinit(self.gpa);
+        for (stmts) |stmt| {
+            const spec_id = self.virtualExportStarDeclarationSpecifier(stmt) orelse continue;
+            const specifier = self.string_interner.get(spec_id);
+            const names = resolver.moduleExportNames(specifier, self.importer_path) orelse continue;
+            const identity = if (resolver.resolve(specifier, self.importer_path)) |resolved|
+                resolved.path
+            else
+                specifier;
+            for (names) |name| {
+                if (std.mem.eql(u8, name, "default") or explicit_names.contains(name)) continue;
+                if (projected_by.get(name)) |previous| {
+                    if (std.mem.eql(u8, previous.identity, identity)) continue;
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Module \"{s}\" has already exported a member named '{s}'. Consider explicitly re-exporting to resolve the ambiguity.",
+                        .{ previous.specifier, name },
+                    );
+                    try self.report(stmt, TsCodes.export_star_conflict, msg);
+                    continue;
+                }
+                try projected_by.put(self.gpa, name, .{ .identity = identity, .specifier = specifier });
+            }
         }
     }
 
@@ -188088,6 +188168,90 @@ test "checker: virtual file export stars do not use single-source conflict heuri
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_star_conflict);
     }
+}
+
+const ExportNameSetResolver = struct {
+    overlapping: bool,
+
+    const vtable = ExternalResolver.VTable{
+        .resolve = resolveImpl,
+        .moduleExportNames = moduleExportNamesImpl,
+    };
+
+    fn resolveImpl(_: *anyopaque, specifier: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        const path = if (std.mem.eql(u8, specifier, "./a-alias")) "./a" else specifier;
+        return .{ .path = path, .is_declaration = true };
+    }
+
+    fn moduleExportNamesImpl(
+        ptr: *anyopaque,
+        specifier: []const u8,
+        _: []const u8,
+    ) ?[]const []const u8 {
+        const self: *ExportNameSetResolver = @ptrCast(@alignCast(ptr));
+        if (std.mem.eql(u8, specifier, "./a")) return &.{ "A", "shared" };
+        if (std.mem.eql(u8, specifier, "./a-alias")) return &.{ "A", "shared" };
+        if (std.mem.eql(u8, specifier, "./b")) return &.{"B"};
+        if (std.mem.eql(u8, specifier, "./c")) {
+            return if (self.overlapping) &.{ "C", "shared" } else &.{"C"};
+        }
+        return null;
+    }
+};
+
+test "checker: external export stars compare projected names" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./b";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = false };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: external export stars report real projected name conflicts" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./b";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: explicit export resolves external star ambiguity" {
+    const s = try newSetup(
+        \\export { shared } from "./a";
+        \\export * from "./a";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: export stars resolving to one module are unambiguous" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./a-alias";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
 }
 
 test "checker: virtual js export stars resolve TypeScript source extensions" {

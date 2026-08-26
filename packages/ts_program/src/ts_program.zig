@@ -5275,6 +5275,112 @@ pub fn compileModuleForExportFacts(
     });
 }
 
+/// Return the non-default names projected by a resolved module, including
+/// names reached through `export *` declarations. The caller owns the outer
+/// slice and every name in it.
+pub fn moduleExportNamesFromResolvedModule(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+) ![]const []const u8 {
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    errdefer {
+        var it = names.keyIterator();
+        while (it.next()) |name| gpa.free(name.*);
+        names.deinit(gpa);
+    }
+    var visited: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var it = visited.keyIterator();
+        while (it.next()) |path| gpa.free(path.*);
+        visited.deinit(gpa);
+    }
+    try collectModuleExportNames(gpa, resolver, module_path, &names, &visited, 0);
+
+    const result = try gpa.alloc([]const u8, names.count());
+    var index: usize = 0;
+    var it = names.keyIterator();
+    while (it.next()) |name| {
+        result[index] = name.*;
+        index += 1;
+    }
+    names.deinit(gpa);
+    return result;
+}
+
+fn collectModuleExportNames(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    names: *std.StringHashMapUnmanaged(void),
+    visited: *std.StringHashMapUnmanaged(void),
+    depth: u8,
+) !void {
+    if (depth >= 32 or visited.contains(module_path)) return;
+    const stored_path = try gpa.dupe(u8, module_path);
+    visited.put(gpa, stored_path, {}) catch |err| {
+        gpa.free(stored_path);
+        return err;
+    };
+
+    const source = try resolver.fs.readFile(gpa, module_path);
+    defer gpa.free(source);
+    var compilation = try compileModuleForExportFacts(gpa, module_path, source);
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+
+    var type_it = compilation.module.root.types.iterator();
+    while (type_it.next()) |entry| {
+        if (!entry.value_ptr.*.flags.is_export) continue;
+        try putOwnedExportName(gpa, names, compilation.interner.get(entry.key_ptr.*));
+    }
+    var value_it = compilation.module.root.values.iterator();
+    while (value_it.next()) |entry| {
+        if (!entry.value_ptr.*.flags.is_export) continue;
+        try putOwnedExportName(gpa, names, compilation.interner.get(entry.key_ptr.*));
+    }
+    var namespace_it = compilation.module.root.namespaces.iterator();
+    while (namespace_it.next()) |entry| {
+        if (!entry.value_ptr.*.flags.is_export) continue;
+        try putOwnedExportName(gpa, names, compilation.interner.get(entry.key_ptr.*));
+    }
+
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return;
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
+            if (compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+            const spec = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
+            try putOwnedExportName(gpa, names, compilation.interner.get(spec.local));
+        }
+        if (compilation.interner.get(ex.namespace_alias).len != 0) {
+            try putOwnedExportName(gpa, names, compilation.interner.get(ex.namespace_alias));
+        }
+        if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
+        const specifier = compilation.interner.get(ex.module);
+        if (specifier.len == 0) continue;
+        const target = resolver.resolve(specifier, module_path) catch continue;
+        if (std.mem.eql(u8, target.path, module_path)) continue;
+        try collectModuleExportNames(gpa, resolver, target.path, names, visited, depth + 1);
+    }
+}
+
+fn putOwnedExportName(
+    gpa: std.mem.Allocator,
+    names: *std.StringHashMapUnmanaged(void),
+    name: []const u8,
+) !void {
+    if (name.len == 0 or std.mem.eql(u8, name, "default") or names.contains(name)) return;
+    const stored_name = try gpa.dupe(u8, name);
+    names.put(gpa, stored_name, {}) catch |err| {
+        gpa.free(stored_name);
+        return err;
+    };
+}
+
 fn moduleExportFactsFromResolvedModuleDepth(
     gpa: std.mem.Allocator,
     resolver: *ts_resolver.Resolver,

@@ -2088,6 +2088,7 @@ const CheckerResolverAdapter = struct {
     cache_arena: std.heap.ArenaAllocator,
     module_export_cache: ModuleExportCache = .empty,
     module_compilation_cache: std.StringHashMapUnmanaged(*ts_driver.Compilation) = .empty,
+    module_export_names_cache: std.StringHashMapUnmanaged([]const []const u8) = .empty,
 
     fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) CheckerResolverAdapter {
         return .{
@@ -2105,6 +2106,12 @@ const CheckerResolverAdapter = struct {
             self.resolver.gpa.free(source);
         }
         self.module_compilation_cache.deinit(self.resolver.gpa);
+        var export_names = self.module_export_names_cache.valueIterator();
+        while (export_names.next()) |names| {
+            for (names.*) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names.*);
+        }
+        self.module_export_names_cache.deinit(self.resolver.gpa);
         self.module_export_cache.deinit(self.resolver.gpa);
         self.cache_arena.deinit();
     }
@@ -2201,9 +2208,55 @@ const CheckerResolverAdapter = struct {
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
         .moduleExportWithMode = moduleExportWithModeImpl,
+        .moduleExportNames = moduleExportNamesImpl,
         .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
+
+    fn moduleExportNamesImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?[]const []const u8 {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const resolved = self.resolveModule(specifier, containing_file) orelse return null;
+
+        self.cache_mutex.lock();
+        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+            self.cache_mutex.unlock();
+            return cached;
+        }
+        self.cache_mutex.unlock();
+
+        const names = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportNamesFromResolvedModule(
+                self.resolver.gpa,
+                self.resolver,
+                resolved.path,
+            ) catch return null;
+        };
+
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return cached;
+        }
+        const stored_path = self.cache_arena.allocator().dupe(u8, resolved.path) catch {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return null;
+        };
+        self.module_export_names_cache.put(self.resolver.gpa, stored_path, names) catch {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return null;
+        };
+        return names;
+    }
 
     /// TS2209/TS2210 — read the project-root-ambiguous record the resolver
     /// stashed during the most recent (failed) resolve, so the production
