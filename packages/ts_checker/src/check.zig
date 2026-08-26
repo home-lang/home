@@ -79995,26 +79995,28 @@ pub const Checker = struct {
                 variadic_index = segment_index;
             }
             if (variadic_index) |rest_index| {
-                const fixed_count = layout.len - 1;
-                if (check_len < fixed_count) return false;
-                for (layout[0..rest_index], 0..) |segment, index| {
-                    if (!try self.matchInfer(self.tupleElementType(check, index), segment.type, subs)) return false;
+                if (rest_index + 1 < layout.len) {
+                    const fixed_count = layout.len - 1;
+                    if (check_len < fixed_count) return false;
+                    for (layout[0..rest_index], 0..) |segment, index| {
+                        if (!try self.matchInfer(self.tupleElementType(check, index), segment.type, subs)) return false;
+                    }
+                    const suffix = layout.len - rest_index - 1;
+                    for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
+                        const check_index = check_len - suffix + suffix_index;
+                        if (!try self.matchInfer(self.tupleElementType(check, check_index), segment.type, subs)) return false;
+                    }
+                    var middle: std.ArrayListUnmanaged(TypeId) = .empty;
+                    defer middle.deinit(self.gpa);
+                    for (rest_index..check_len - suffix) |index| {
+                        try middle.append(self.gpa, self.tupleElementType(check, index));
+                    }
+                    const middle_tuple = try self.internTupleFromTypes(
+                        middle.items,
+                        self.typeIsReadonlyArrayLike(check),
+                    );
+                    return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
                 }
-                const suffix = layout.len - rest_index - 1;
-                for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
-                    const check_index = check_len - suffix + suffix_index;
-                    if (!try self.matchInfer(self.tupleElementType(check, check_index), segment.type, subs)) return false;
-                }
-                var middle: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer middle.deinit(self.gpa);
-                for (rest_index..check_len - suffix) |index| {
-                    try middle.append(self.gpa, self.tupleElementType(check, index));
-                }
-                const middle_tuple = try self.internTupleFromTypes(
-                    middle.items,
-                    self.typeIsReadonlyArrayLike(check),
-                );
-                return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
             }
         }
         const ext_prefix = self.tupleFixedPrefixCount(ext);
