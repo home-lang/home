@@ -4656,6 +4656,13 @@ pub fn moduleExportsTypeSpaceName(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportsTypeSpaceNameFromCompilation(compilation, name);
+}
+
+fn moduleExportsTypeSpaceNameFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    name: []const u8,
+) bool {
     // Query the TYPE-space symbol table specifically: a class declares
     // into both value and type space as separate symbols, and the
     // generic `lookupTopLevel` returns the value symbol first (which has
@@ -4685,6 +4692,13 @@ pub fn moduleExportsValueSpaceName(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportsValueSpaceNameFromCompilation(compilation, name);
+}
+
+fn moduleExportsValueSpaceNameFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    name: []const u8,
+) bool {
     const id = compilation.interner.lookup(name) orelse return false;
     if (!moduleRootHasEsmExportSyntax(&compilation.hir, compilation.root)) {
         if (moduleRootCommonJsDefinePropertyReadonlyStatus(
@@ -4969,6 +4983,14 @@ pub fn moduleExportsAmbientConstEnumName(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportsAmbientConstEnumNameFromCompilation(compilation, module_path, name);
+}
+
+fn moduleExportsAmbientConstEnumNameFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    module_path: []const u8,
+    name: []const u8,
+) bool {
     const id = compilation.interner.lookup(name) orelse return false;
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return false;
     const is_declaration_file = declarationFilenameLike(module_path);
@@ -5008,6 +5030,13 @@ pub fn moduleExportsTypeOnlyNamespaceName(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportsTypeOnlyNamespaceNameFromCompilation(compilation, name);
+}
+
+fn moduleExportsTypeOnlyNamespaceNameFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    name: []const u8,
+) bool {
     const id = compilation.interner.lookup(name) orelse return false;
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return false;
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
@@ -5032,6 +5061,7 @@ pub const ModuleExportFacts = struct {
     generic_function: bool = false,
     call_only_function: bool = false,
     module_is_external: bool = false,
+    cannot_be_named: bool = false,
 };
 
 /// Return the class name from a direct JavaScript
@@ -5226,6 +5256,25 @@ pub fn moduleExportFactsFromResolvedModule(
     return moduleExportFactsFromResolvedModuleDepth(gpa, resolver, module_path, name, 0) catch .{};
 }
 
+/// Build the reusable module compilation consumed by export-fact queries.
+/// The caller owns the returned compilation and must deinitialize and destroy
+/// it with the same allocator.
+pub fn compileModuleForExportFacts(
+    gpa: std.mem.Allocator,
+    module_path: []const u8,
+    source: []const u8,
+) !*ts_driver.Compilation {
+    const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or
+        std.mem.endsWith(u8, module_path, ".jsx") or
+        (std.mem.endsWith(u8, module_path, ".js") and Program.sourceHasJsxSyntax(source));
+    return ts_driver.compileSource(gpa, source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+        .bind_only = true,
+    });
+}
+
 fn moduleExportFactsFromResolvedModuleDepth(
     gpa: std.mem.Allocator,
     resolver: *ts_resolver.Resolver,
@@ -5236,25 +5285,43 @@ fn moduleExportFactsFromResolvedModuleDepth(
     if (depth >= 8) return .{};
     const src = try resolver.fs.readFile(gpa, module_path);
     defer gpa.free(src);
-    const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or
-        std.mem.endsWith(u8, module_path, ".jsx") or
-        (std.mem.endsWith(u8, module_path, ".js") and Program.sourceHasJsxSyntax(src));
-    var facts: ModuleExportFacts = .{
-        .exported_type = moduleExportsTypeSpaceName(gpa, src, name, is_tsx) or
-            moduleExportsTypeOnlyNamespaceName(gpa, src, name, is_tsx),
-        .exported_value = moduleExportsValueSpaceName(gpa, src, name, is_tsx),
-        .ambient_const_enum = moduleExportsAmbientConstEnumName(gpa, src, module_path, name, is_tsx),
-    };
-
-    var compilation = try ts_driver.compileSource(gpa, src, .{
-        .is_tsx = is_tsx,
-        .continue_on_error = true,
-        .no_emit = true,
-    });
+    var compilation = try compileModuleForExportFacts(gpa, module_path, src);
     defer {
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth);
+}
+
+/// Query export facts from a module compilation that the caller already owns.
+/// Re-export targets still resolve recursively through the normal resolver.
+pub fn moduleExportFactsFromCompilation(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    compilation: *ts_driver.Compilation,
+    name: []const u8,
+) ModuleExportFacts {
+    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0) catch .{};
+}
+
+fn moduleExportFactsFromCompilationDepth(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    compilation: *ts_driver.Compilation,
+    name: []const u8,
+    depth: u8,
+) !ModuleExportFacts {
+    var facts: ModuleExportFacts = .{
+        .exported_type = moduleExportsTypeSpaceNameFromCompilation(compilation, name) or
+            moduleExportsTypeOnlyNamespaceNameFromCompilation(compilation, name),
+        .exported_value = moduleExportsValueSpaceNameFromCompilation(compilation, name),
+        .ambient_const_enum = moduleExportsAmbientConstEnumNameFromCompilation(compilation, module_path, name),
+        .type_only_pos = moduleExportIsTypeOnlyFromCompilation(compilation, name),
+    };
+    facts.cannot_be_named = !facts.exported_type and
+        moduleExportNestedTypeSpaceNameFromCompilation(compilation, name);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
     facts.module_is_external = moduleRootIsExternalOrCommonJsModule(
         &compilation.hir,
@@ -6265,6 +6332,13 @@ pub fn moduleExportIsTypeOnly(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportIsTypeOnlyFromCompilation(compilation, name);
+}
+
+fn moduleExportIsTypeOnlyFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    name: []const u8,
+) ?u32 {
     const root = compilation.root;
     if (compilation.hir.kindOf(root) != .block_stmt) return null;
     const name_id = compilation.interner.lookup(name);
@@ -6318,6 +6392,13 @@ pub fn moduleExportNestedTypeSpaceName(
         compilation.deinit();
         gpa.destroy(compilation);
     }
+    return moduleExportNestedTypeSpaceNameFromCompilation(compilation, name);
+}
+
+fn moduleExportNestedTypeSpaceNameFromCompilation(
+    compilation: *ts_driver.Compilation,
+    name: []const u8,
+) bool {
     const id = compilation.interner.lookup(name) orelse return false;
     // A direct top-level type-space export is the `from private module`
     // case, NOT `cannot be named`; exclude it here.

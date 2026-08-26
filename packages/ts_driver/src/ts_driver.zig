@@ -284,6 +284,10 @@ pub const CompileOptions = struct {
     /// Type-check only. Used by `--noEmit` and conformance surveys
     /// that are checking diagnostics rather than JS output.
     no_emit: bool = false,
+    /// Stop after lexing, parsing, and binding. Internal module-graph queries
+    /// use this when they need immutable symbol/export metadata but no
+    /// semantic diagnostics or JavaScript output.
+    bind_only: bool = false,
     /// Keep the first source file for each resolver package ID and turn
     /// later physical copies into redirects. tsgo defaults this on.
     deduplicate_packages: bool = true,
@@ -2149,6 +2153,11 @@ pub fn compileSource(
     errdefer c.type_interner.deinit();
     c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
     errdefer c.type_engine.deinit();
+    if (options.bind_only) {
+        c.js = try gpa.dupe(u8, "");
+        sortDiagnosticsBySourceOrder(c.diagnostics.items);
+        return c;
+    }
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
@@ -2184,7 +2193,7 @@ pub fn compileSource(
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setTargetSupportsTopLevelAwait(options.emit.es_target.supportsNativeAsync());
-    checker.setIntlNumberFormatModernOptions(@intFromEnum(options.emit.es_target) >= @intFromEnum(EsTarget.es2023));
+    checker.setIntlNumberFormatModernOptions(@backingInt(options.emit.es_target) >= @backingInt(EsTarget.es2023));
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     checker.setReflectSuperStaticInitializerCollisionEnabled(!options.emit.es_target.supportsNativeClassFields());
     checker.setAllowImportingTsExtensionsEnabled(options.allow_importing_ts_extensions or
@@ -4051,6 +4060,24 @@ test "driver: same-position diagnostics prefer shorter source span" {
 
     try T.expectEqual(@as(u32, 2454), diags[0].code);
     try T.expectEqual(@as(u32, 2365), diags[1].code);
+}
+
+test "driver: bind-only compilation exposes exports without semantic checking" {
+    var compilation = try compileSource(
+        T.allocator,
+        "export const value: string = 1;",
+        .{ .bind_only = true, .no_emit = true },
+    );
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+
+    const value_id = compilation.interner.lookup("value") orelse return error.MissingExport;
+    const symbol = compilation.module.root.values.get(value_id) orelse return error.MissingExport;
+    try T.expect(symbol.flags.is_export);
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), compilation.js.len);
 }
 
 test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
