@@ -556,7 +556,8 @@ namespace uWS
             char *start = data;
             /* This catches the post padded CR and fails */
             while (data[0] > 32) {
-                if (!isValidMethodChar(data[0]) ) {
+                if (!isValidMethodChar(data[0]) ||
+                    (useStrictMethodValidation && data[0] >= 'a' && data[0] <= 'z')) {
                     return ConsumeRequestLineResult::error(HTTP_HEADER_PARSER_ERROR_INVALID_METHOD);
                 }
                 data++;

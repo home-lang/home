@@ -62994,6 +62994,16 @@ const harness_prelude =
     \\  }
     \\  return text + "\r\n" + String(body);
     \\}
+    \\function __home_http_strict_method_error_offset(requestText) {
+    \\  const text = String(requestText || "");
+    \\  let end = text.search(/[ \r\n]/);
+    \\  if (end < 0) end = text.length;
+    \\  for (let index = 0; index < end; index++) {
+    \\    const code = text.charCodeAt(index);
+    \\    if (code >= 97 && code <= 122) return index + 1;
+    \\  }
+    \\  return -1;
+    \\}
     \\function __home_http_raw_request_metadata(requestText) {
     \\  const text = String(requestText || "");
     \\  const headerEnd = text.indexOf("\r\n\r\n");
@@ -63002,7 +63012,9 @@ const harness_prelude =
     \\  if (/\r(?!\n)/.test(head)) return { status: 400 };
     \\  const lines = head.split("\r\n");
     \\  const requestLine = String(lines.shift() || "");
-    \\  const match = requestLine.match(/^([!#$%&'*+\-.^_|~0-9A-Za-z]+) ([^ ]+) HTTP\/(1\.[01])$/);
+    \\  const invalidMethodOffset = __home_http_strict_method_error_offset(requestLine);
+    \\  if (invalidMethodOffset >= 0) return { status: 400, code: "HPE_INVALID_METHOD", reason: "Invalid method encountered", bytesParsed: invalidMethodOffset };
+    \\  const match = requestLine.match(/^([!#$%&'*+\-.^_|~0-9A-Z]+) ([^ ]+) HTTP\/(1\.[01])$/);
     \\  if (!match) return { status: 400 };
     \\  const target = match[2];
     \\  if (!(target.startsWith("/") || /^https?:\/\//i.test(target))) return { status: 400 };
@@ -63455,10 +63467,13 @@ const harness_prelude =
     \\    }
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
     \\    if (headerEnd === -1) {
-    \\      if (requestText === "*") {
+    \\      const invalidMethodOffset = __home_http_strict_method_error_offset(requestText);
+    \\      if (requestText === "*" || invalidMethodOffset >= 0) {
+    \\        if (socket.__home_http_request_rejected) { if (typeof callback === "function") Promise.resolve().then(callback); return false; }
+    \\        socket.__home_http_request_rejected = true;
     \\        socket.__home_h2c_pending = Buffer.alloc(0);
     \\        const rawServer = typeof __home_http_servers === "object" ? __home_http_servers[port] : null;
-    \\        const error = __home_http_parse_error("HPE_INVALID_METHOD", "Invalid method encountered", 0, requestText);
+    \\        const error = __home_http_parse_error("HPE_INVALID_METHOD", "Invalid method encountered", invalidMethodOffset >= 0 ? invalidMethodOffset : 0, requestText);
     \\        Promise.resolve().then(() => {
     \\          if (rawServer && rawServer.listenerCount("clientError") > 0) rawServer.emit("clientError", error, socket.__home_http_server_socket);
     \\          else {
@@ -63509,7 +63524,7 @@ const harness_prelude =
     \\    if (requestMetadata.status !== 200) {
     \\      socket.__home_h2c_pending = Buffer.alloc(0);
     \\      const rawServer = typeof __home_http_servers === "object" ? __home_http_servers[port] : null;
-    \\      const parseError = __home_http_parse_error(requestMetadata.code || "HPE_INVALID_HEADER_TOKEN", requestMetadata.reason || "Invalid HTTP request", 0, requestText);
+    \\      const parseError = __home_http_parse_error(requestMetadata.code || "HPE_INVALID_HEADER_TOKEN", requestMetadata.reason || "Invalid HTTP request", requestMetadata.bytesParsed || 0, requestText);
     \\      Promise.resolve().then(() => {
     \\        if (rawServer && rawServer.listenerCount("clientError") > 0) rawServer.emit("clientError", parseError, socket.__home_http_server_socket);
     \\        else __home_http_reject_raw_request(socket, parseError, false);
@@ -155173,6 +155188,8 @@ test "bootstrap HTTP server parser and options logical contracts" {
 
     const source =
         \\const { test } = require("bun:test"); const assert = require("assert"); const http = require("http"); const net = require("net");
+        \\test("strict request method scanning rejects lowercase before a delimiter", () => { assert.strictEqual(__home_http_strict_method_error_offset("h"), 1); assert.strictEqual(__home_http_strict_method_error_offset("GET"), -1); assert.strictEqual(__home_http_strict_method_error_offset("G"), -1); assert.strictEqual(__home_http_strict_method_error_offset("G-"), -1); assert.deepStrictEqual(__home_http_raw_request_metadata("hello / HTTP/1.1\r\nHost: localhost\r\n\r\n"), { status: 400, code: "HPE_INVALID_METHOD", reason: "Invalid method encountered", bytesParsed: 1 }); assert.strictEqual(__home_http_raw_request_metadata("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").status, 200); });
+        \\test("lowercase raw method rejects immediately while uppercase fragments remain viable", async () => { await new Promise((resolve, reject) => { let requests = 0; const server = http.createServer((request, response) => { requests++; try { assert.strictEqual(request.method, "GET"); } catch (error) { reject(error); return; } response.end("ok"); }); server.listen(0, () => { const bad = net.connect(server.address().port); bad.setEncoding("utf8"); let rejected = ""; bad.on("data", chunk => rejected += chunk); bad.on("error", reject); bad.on("connect", () => bad.write("h")); bad.on("close", () => { try { assert.strictEqual(rejected, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"); assert.strictEqual(requests, 0); } catch (error) { reject(error); return; } const good = net.connect(server.address().port); good.setEncoding("utf8"); let accepted = ""; good.on("data", chunk => accepted += chunk); good.on("error", reject); good.on("connect", () => { good.write("G"); Promise.resolve().then(() => good.write("ET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")); }); good.on("close", () => { try { assert.ok(accepted.includes("HTTP/1.1 200")); assert.ok(accepted.includes("ok")); assert.strictEqual(requests, 1); server.close(resolve); } catch (error) { reject(error); } }); }); }); }); });
         \\test("consumed request timeout fires once on silence", async () => { await new Promise((resolve, reject) => { let fired = 0; const server = http.createServer((request, response) => request.setTimeout(2, () => { fired++; response.end("timeout"); })); server.listen(0, () => { const client = http.request({ port: server.address().port, method: "POST" }, response => { response.resume(); response.on("end", () => { try { assert.strictEqual(fired, 1); client.end(); server.close(resolve); } catch (error) { reject(error); } }); }); client.on("error", reject); client.write("."); }); }); });
         \\test("consumed request timeout resets on body progress", async () => { await new Promise((resolve, reject) => { let fired = false; const server = http.createServer((request, response) => { request.setTimeout(30, () => { fired = true; }); response.flushHeaders(); request.resume(); request.on("end", () => response.end()); }); server.listen(0, () => { const client = http.request({ port: server.address().port, method: "POST" }, response => { client.write("a"); client.write("b"); client.end("c"); response.resume(); response.on("end", () => { try { assert.strictEqual(fired, false); server.close(resolve); } catch (error) { reject(error); } }); }); client.on("error", reject); client.write("."); }); }); });
         \\test("custom message constructors run and public parser deletion is harmless", async () => { let incomingConstructed = 0; let responseConstructed = 0; let callbackRan = false; class Incoming extends http.IncomingMessage { constructor(socket) { super(socket); incomingConstructed++; } marker() { return "incoming"; } } class Response extends http.ServerResponse { constructor(request) { super(request); responseConstructed++; } marker() { return "response"; } } await new Promise((resolve, reject) => { const server = http.createServer({ IncomingMessage: Incoming, ServerResponse: Response }, (request, response) => { try { assert(request instanceof Incoming); assert(response instanceof Response); assert.strictEqual(request.marker(), "incoming"); assert.strictEqual(response.marker(), "response"); assert.ok(response.socket.parser.active); response.write("okay", () => { callbackRan = true; delete response.socket.parser; assert.strictEqual(response.socket.__home_http_parser.active, true); }); response.end(); } catch (error) { reject(error); } }); server.listen(0, () => http.get({ port: server.address().port }, response => { response.resume(); response.on("end", () => setImmediate(() => { try { assert.strictEqual(incomingConstructed, 1); assert.strictEqual(responseConstructed, 1); assert.strictEqual(callbackRan, true); server.close(resolve); } catch (error) { reject(error); } })); }).on("error", reject)); }); });
@@ -155189,7 +155206,7 @@ test "bootstrap HTTP server parser and options logical contracts" {
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP server parser/options logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
