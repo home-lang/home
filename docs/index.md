@@ -277,7 +277,7 @@ fn main() {
       <div class="hl-status-row">
         <span class="hl-status-name">TypeScript checking</span>
         <span class="hl-pill is-ready">Usable today</span>
-        <span class="hl-status-note">Coarse conformance is saturated at 5,907 cases. Byte-for-byte exact mode sits at roughly 88.6% and is still climbing.</span>
+        <span class="hl-status-note">Coarse and byte-for-byte exact conformance are saturated at 5,907 of 5,907 cases against the pinned tsgo baselines.</span>
       </div>
       <div class="hl-status-row">
         <span class="hl-status-name">Native code generation</span>

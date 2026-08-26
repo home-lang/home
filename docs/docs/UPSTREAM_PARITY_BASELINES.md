@@ -8,7 +8,7 @@ how to triage the result.
 | Upstream | Pin (where Home ported from) | Pin location | Reference checkout | Diff computable today? |
 |---|---|---|---|---|
 | **Bun** (engine) | `fd0b6f1a271fca0b8124b69f230b100f4d636af6` | `packages/runtime/UPSTREAM_SHA.txt` (enforced by `scripts/sync-bun-tests.sh`) | `~/Code/bun` | ✅ yes — after `git fetch` |
-| **typescript-go** (canonical TypeScript 7 reference) | `24fabe95acba758c05fcb349bf427a3a0c8ad676` | `_submodules/typescript-go` gitlink | `_submodules/typescript-go` | ✅ yes — pinned submodule tracking `main` |
+| **typescript-go** (canonical TypeScript 7 reference) | `89d5d5b2849a0db0957065889ca58536fa6d2e4a` | `_submodules/typescript-go` gitlink | `_submodules/typescript-go` | ✅ yes — pinned submodule tracking `main` |
 
 ## Bun
 
@@ -47,8 +47,8 @@ self-contained porting targets.
 
 `microsoft/typescript-go` is now Home's repository-owned source of truth for
 TypeScript 7 behavior. The gitlink pins tsgo `main` at
-`24fabe95acba758c05fcb349bf427a3a0c8ad676`; that revision pins its inherited
-TypeScript corpus at `4d4f005c8541e0255a9d8791205fdce326e462bc`.
+`89d5d5b2849a0db0957065889ca58536fa6d2e4a`; the full inherited conformance
+inventory at that revision contains 5,907 expanded cases.
 
 The 2026-08-08 transition moved tsgo forward 64 commits from `b8276f35` while
 leaving the nested TypeScript pin unchanged. The tsgo-native compiler corpus
@@ -79,8 +79,8 @@ git -C _submodules/typescript-go log --oneline HEAD..origin/main
 The TS **diagnostic-code** lane remains diff-driven: regenerate it with
 `node scripts/gen-ts-reachability.mjs` after a tsgo bump, then triage new live
 emission sites separately from API, LSP, build, and CI-only changes. The open
-compiler frontier remains exact diagnostic parity against tsgo's inherited
-conformance baselines.
+compiler frontier is future behavior added to tsgo `main`; the pinned inherited
+conformance baseline is complete at 5,907/5,907 exact cases.
 
 ## Status of the "diff → task list" automation
 

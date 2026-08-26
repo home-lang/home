@@ -40,11 +40,10 @@ reporting, or a case where your build was relying on something surprising.
 tsc --noEmit && home tsc --noEmit
 ```
 
-Coarse conformance against the upstream corpus is saturated at 5,907 cases, so
-disagreements about which diagnostics fire are rare. Byte-for-byte exact
-matching is at roughly 88.6%, so differences in exact wording are still
-possible. See [the TypeScript compiler](/docs/features/typescript) for how both
-numbers are produced.
+Coarse and byte-for-byte exact conformance against the pinned upstream corpus
+are saturated at 5,907 of 5,907 cases. See
+[the TypeScript compiler](/docs/features/typescript) for how both numbers are
+produced.
 
 ## Stage three: move one hot path
 
@@ -85,8 +84,8 @@ See [editor and CLI tooling](/docs/features/tooling).
 
 Be clear about what is not ready before planning around it:
 
-- Exact-mode diagnostic wording is at about 88.6%, so a small number of
-  messages will differ from `tsc` character for character.
+- The verified byte-for-byte diagnostic baseline covers the pinned 5,907-case
+  tsgo corpus; future upstream revisions can introduce new differences.
 - Native JavaScript builds are single-entrypoint today; bundling the imported
   module graph is in progress.
 - The Bun-compatible runtime is maturing. 24 `node:*` modules are callable
