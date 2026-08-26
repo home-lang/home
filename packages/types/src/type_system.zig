@@ -1515,6 +1515,15 @@ pub const TypeChecker = struct {
                 var func_env = TypeEnvironment.init(self.allocator);
                 func_env.parent = saved_env_ptr; // Enable module-level variable lookup
 
+                // The may-be-uninitialized set is keyed by name alone, with no
+                // scope of its own, so it has to be cleared at each function
+                // boundary. Without this a `var value: u64` declared in one
+                // function marked *every* later `value` in the file — including
+                // parameters, which are initialized by definition — as
+                // possibly uninitialized. The warnings appeared in functions
+                // that had nothing to do with the declaration.
+                self.uninitialized_vars.clearRetainingCapacity();
+
                 // Add parameters to function scope
                 for (fn_decl.params) |param| {
                     const param_type = try self.parseTypeName(param.type_name);
