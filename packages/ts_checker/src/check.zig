@@ -75636,6 +75636,18 @@ pub const Checker = struct {
                     ia.index,
                 )) {
                     self.instantiation_defer_events +%= 1;
+                    const object_name = self.bareTypeNodeName(ia.object);
+                    const index_name = self.bareTypeNodeName(ia.index);
+                    if (object_name != null and index_name != null) {
+                        const object_t = self.lookupNarrow(object_name.?) orelse
+                            try self.lowererLowerWithTypeParams(ia.object);
+                        const index_t = self.lookupNarrow(index_name.?) orelse
+                            try self.lowererLowerWithTypeParams(ia.index);
+                        if (try self.resolveObjectIndexedAccessType(object_t, index_t)) |resolved| {
+                            return resolved;
+                        }
+                        return self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+                    }
                     return self.lowerer.lower(type_node);
                 }
                 const obj = blk_obj: {
