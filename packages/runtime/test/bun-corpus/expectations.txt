@@ -192,7 +192,6 @@ test/js/node/test/parallel/test-http2-settings-unsolicited-ack.js [ FAIL ] # not
 test/js/node/test/parallel/test-http2-single-headers-validation-disabled.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-socket-proxy.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-stream-client.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-too-many-settings.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-assert-valid-pseudoheader.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-asserts.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-util-headers-list.js [ FAIL ] # not yet passing

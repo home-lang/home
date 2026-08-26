@@ -40358,6 +40358,8 @@ const harness_prelude =
     \\  client.encrypted = authorityUrl.protocol === "https:";
     \\  client.originSet = client.encrypted ? [secureOrigin] : undefined;
     \\  client.pendingSettingsAck = true;
+    \\  client.__home_pending_settings_ack_count = 1;
+    \\  client.__home_max_outstanding_settings = typeof options.maxOutstandingSettings === "number" && options.maxOutstandingSettings >= 1 ? options.maxOutstandingSettings : 10;
     \\  client.localSettings = Object.assign({}, __home_http2_default_settings(), initialSettings);
     \\  client.remoteSettings = null;
     \\  client.__home_pending_settings = [];
@@ -40368,6 +40370,9 @@ const harness_prelude =
     \\  client[Symbol.for("nodejs.rejection")] = function(error, type) { const target = arguments[2]; if (String(type) === "stream" && target && typeof target.destroy === "function") { target.destroy(error); return; } this.emit("error", error); };
     \\  client.__home_server_session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_client: client });
     \\  Object.setPrototypeOf(client.__home_server_session, __home_http2_ServerHttp2Session.prototype);
+    \\  client.__home_server_session.pendingSettingsAck = true;
+    \\  client.__home_server_session.__home_pending_settings_ack_count = 1;
+    \\  client.__home_server_session.__home_max_outstanding_settings = typeof (server && server.__home_options && server.__home_options.maxOutstandingSettings) === "number" && server.__home_options.maxOutstandingSettings >= 1 ? server.__home_options.maxOutstandingSettings : 10;
     \\  client.__home_server_session.localSettings = Object.assign({}, __home_http2_default_settings(), server && server.__home_settings || {});
     \\  client.__home_server_session.state = { effectiveLocalWindowSize: 65535, effectiveRecvDataLength: 0, nextStreamID: 2, localWindowSize: 65535, lastProcStreamID: 0, remoteWindowSize: 65535, outboundQueueSize: 0, deflateDynamicTableSize: 0, inflateDynamicTableSize: 0 };
     \\  function unregisterServerSession(target) { if (!server || !server.__home_sessions) return; target.__home_server_registered = false; server.__home_sessions.delete(target); server.__home_finish_close(); }
@@ -40376,6 +40381,18 @@ const harness_prelude =
     \\  client.__home_server_session.setTimeout = function(milliseconds, timeoutListener) { this[__home_internal_timers_k_timeout] = { _idleTimeout: Number(milliseconds) || 0 }; if (typeof timeoutListener === "function") this.once("timeout", timeoutListener); return this; };
     \\  client.__home_server_session.settings = function(update, settingsCallback) {
     \\    const values = update || {};
+    \\    this.__home_pending_settings_ack_count++;
+    \\    this.pendingSettingsAck = true;
+    \\    if (this.__home_pending_settings_ack_count > this.__home_max_outstanding_settings) {
+    \\      const localError = __home_http2_error_with_code("ERR_HTTP2_MAX_PENDING_SETTINGS_ACK", "Maximum number of pending settings acknowledgements reached");
+    \\      const peerError = __home_http2_error_with_code("ERR_HTTP2_SESSION_ERROR", "Session closed with error code 2");
+    \\      this.destroyed = true;
+    \\      Promise.resolve().then(() => {
+    \\        this.emit("error", localError);
+    \\        client.__home_terminate("destroy", peerError, false);
+    \\      });
+    \\      return this;
+    \\    }
     \\    if (this.localSettings && this.localSettings.enableConnectProtocol === true && values.enableConnectProtocol === false) {
     \\      if (this.__home_fatal_settings_scheduled || this.__home_fatal_settings_done) return this;
     \\      this.__home_fatal_settings_scheduled = true;
@@ -40410,7 +40427,7 @@ const harness_prelude =
     \\    }
     \\    this.localSettings = Object.assign({}, this.localSettings || {}, values);
     \\    client.remoteSettings = Object.assign({}, client.remoteSettings || __home_http2_default_settings(), values);
-    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; client.emit("remoteSettings", client.remoteSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
+    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
     \\    return this;
     \\  };
     \\  client.__home_server_session.ping = function(payload, callback) { return __home_http2_ping(this, client, payload, callback, server && server.__home_options && server.__home_options.maxOutstandingPings); };
@@ -40731,14 +40748,19 @@ const harness_prelude =
     \\      }
     \\    }
     \\    const update = Object.assign({}, values);
+    \\    this.__home_pending_settings_ack_count++;
     \\    this.pendingSettingsAck = true;
+    \\    if (this.__home_pending_settings_ack_count > this.__home_max_outstanding_settings) {
+    \\      this.destroy(__home_http2_error_with_code("ERR_HTTP2_MAX_PENDING_SETTINGS_ACK", "Maximum number of pending settings acknowledgements reached"));
+    \\      return this;
+    \\    }
     \\    this.localSettings = Object.assign({}, this.localSettings, update);
     \\    this.__home_pending_settings.push(update);
     \\    if (!this.connecting && this.__home_server_session && !this.__home_server_session.closed) {
     \\      this.__home_server_session.remoteSettings = Object.assign({}, this.__home_server_session.remoteSettings || __home_http2_default_settings(), update);
     \\      Promise.resolve().then(() => this.__home_server_session.emit("remoteSettings", this.__home_server_session.remoteSettings));
     \\    }
-    \\    Promise.resolve().then(() => { this.pendingSettingsAck = false; this.emit("localSettings", this.localSettings); if (typeof callback === "function") callback(null, this.localSettings, 0); });
+    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; this.emit("localSettings", this.localSettings); if (typeof callback === "function") callback(null, this.localSettings, 0); });
     \\    return this;
     \\  };
     \\  client.goaway = function() { this.__home_assert_active(); this.closed = true; return undefined; };
@@ -41757,7 +41779,6 @@ const harness_prelude =
     \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
     \\    client.connecting = false;
     \\    client.alpnProtocol = client.encrypted ? String(transportSocket.alpnProtocol || "h2") : "h2c";
-    \\    client.pendingSettingsAck = false;
     \\    client.remoteSettings = {
     \\      headerTableSize: settings.headerTableSize === undefined ? 4096 : Number(settings.headerTableSize),
     \\      enablePush: settings.enablePush === undefined ? true : !!settings.enablePush,
@@ -41783,6 +41804,7 @@ const harness_prelude =
     \\        if (!client.__home_server_session.__home_server_registered) {
     \\          client.__home_server_session.__home_server_registered = true;
     \\          server.__home_sessions.add(client.__home_server_session);
+    \\          Promise.resolve().then(() => { const session = client.__home_server_session; if (session.destroyed || session.closed) return; session.__home_pending_settings_ack_count = Math.max(0, session.__home_pending_settings_ack_count - 1); session.pendingSettingsAck = session.__home_pending_settings_ack_count > 0; session.emit("localSettings", session.localSettings); });
     \\          server.emit("session", client.__home_server_session);
     \\        }
     \\      }
@@ -41820,8 +41842,9 @@ const harness_prelude =
     \\    client.emit("connect", client, transportSocket);
     \\    if (client.destroyed || client.__home_close_emitted || client.__home_termination_scheduled) return;
     \\    client.emit("remoteSettings", client.remoteSettings);
-    \\    client.pendingSettingsAck = true;
     \\    for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (pending && !pending.destroyed) { pending.pending = false; pending.emit("ready"); } }
+    \\    client.__home_pending_settings_ack_count = Math.max(0, client.__home_pending_settings_ack_count - 1);
+    \\    client.pendingSettingsAck = client.__home_pending_settings_ack_count > 0;
     \\    client.emit("localSettings", client.localSettings);
     \\  }
     \\  const connectSignal = options && options.signal;
@@ -155635,6 +155658,7 @@ test "bootstrap HTTP2 session settings shutdown and socket corpus tranche contra
         "js/node/test/parallel/test-http2-single-headers-validation.js",
         "js/node/test/parallel/test-http2-socket-close.js",
         "js/node/test/parallel/test-http2-socket-proxy-handler-for-has.js",
+        "js/node/test/parallel/test-http2-too-many-settings.js",
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -155837,6 +155861,7 @@ test "bootstrap HTTP2 settings graceful shutdown and socket logical contracts" {
     const source =
         \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const net = require("net");
         \\test("settings state filters custom identifiers and acknowledges updates", async () => { await new Promise((resolve, reject) => { let serverSession; const server = http2.createServer({ remoteCustomSettings: [55], settings: { customSettings: { 1244: 456 } } }); server.on("session", session => { serverSession = session; session.settings({ maxConcurrentStreams: 2 }); }); server.on("stream", stream => { try { assert.strictEqual(stream.session.localSettings.customSettings[1244], 456); assert.strictEqual(stream.session.remoteSettings.customSettings[55], 12); assert.strictEqual(stream.session.remoteSettings.customSettings[155], undefined); stream.respond(); stream.end("ok"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`, { settings: { enablePush: false, customSettings: { 55: 12, 155: 144 } }, remoteCustomSettings: [1244] }); let ready = false; const request = client.request(); request.on("ready", () => { try { ready = true; assert.strictEqual(client.pendingSettingsAck, true); client.settings({ maxHeaderListSize: 1 }, error => { if (error) reject(error); }); } catch (error) { reject(error); } }); request.on("response", () => { try { assert.strictEqual(client.remoteSettings.customSettings[1244], 456); } catch (error) { reject(error); } }); request.on("end", () => { try { assert.strictEqual(ready, true); assert.strictEqual(serverSession.localSettings.maxConcurrentStreams, 2); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("outstanding SETTINGS limits count the initial frame and terminate both sides exactly once", async () => { const exercise = session => { session.settings({ enablePush: false }); assert.strictEqual(session.pendingSettingsAck, true); session.settings({ enablePush: false }); assert.strictEqual(session.pendingSettingsAck, true); }; await Promise.all([new Promise((resolve, reject) => { const server = http2.createServer({ maxOutstandingSettings: 2 }); server.on("stream", () => reject(new Error("server SETTINGS overflow created a stream"))); server.on("session", session => { let errors = 0; session.on("error", error => { try { errors++; assert.strictEqual(error.name, "Error"); assert.strictEqual(error.code, "ERR_HTTP2_MAX_PENDING_SETTINGS_ACK"); } catch (cause) { reject(cause); } }); session.on("close", () => { try { assert.strictEqual(errors, 1); } catch (error) { reject(error); } }); exercise(session); }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`); let errors = 0; client.on("error", error => { try { errors++; assert.strictEqual(error.code, "ERR_HTTP2_SESSION_ERROR"); assert.strictEqual(error.message, "Session closed with error code 2"); } catch (cause) { reject(cause); } }); client.on("close", () => { try { assert.strictEqual(errors, 1); server.close(resolve); } catch (error) { reject(error); } }); }); }), new Promise((resolve, reject) => { const server = http2.createServer(); server.on("stream", () => reject(new Error("client SETTINGS overflow created a stream"))); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`, { maxOutstandingSettings: 2 }); let errors = 0; client.on("error", error => { try { errors++; assert.strictEqual(error.name, "Error"); assert.strictEqual(error.code, "ERR_HTTP2_MAX_PENDING_SETTINGS_ACK"); } catch (cause) { reject(cause); } }); client.on("connect", () => exercise(client)); client.on("close", () => { try { assert.strictEqual(errors, 1); server.close(resolve); } catch (error) { reject(error); } }); }); })]); });
         \\test("raw SETTINGS emits remote state while surplus acknowledgements are ignored", async () => { const frame = (flags, payload) => { const body = payload || Buffer.alloc(0); const out = Buffer.alloc(9 + body.length); out.writeUIntBE(body.length, 0, 3); out[3] = 4; out[4] = flags; body.copy(out, 9); return out; }; const server = http2.createServer(); const socket = __home_net_connect_http2_server(server, 1, "localhost"); const session = socket.__home_http2_session; let events = 0; session.on("remoteSettings", settings => { events++; assert.strictEqual(settings.maxFrameSize, 16384); }); socket.write(Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); socket.write(frame(1)); socket.write(frame(1)); socket.write(frame(0)); await Promise.resolve(); assert.strictEqual(events, 1); socket.destroy(); server.close(); });
         \\test("paused short responses deliver data and end before close", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); server.on("stream", stream => { stream.respond(); stream.end("test"); }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`); const request = client.request(); let earlyClose = false; const early = () => earlyClose = true; request.on("close", early); setTimeout(() => { request.removeListener("close", early); let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "test"); assert.strictEqual(earlyClose, false); } catch (error) { reject(error); } }); request.on("close", () => { client.close(); server.close(resolve); }); }, 10); request.end(); }); }); });
         \\test("single-value strictness is opt-out and remains strict by default", async () => { const strictServer = http2.createServer(); await new Promise(resolve => strictServer.listen(0, resolve)); const strictClient = http2.connect(`http://localhost:${strictServer.address().port}`); assert.throws(() => strictClient.request({ "user-agent": ["a", "b"] }), { code: "ERR_HTTP2_HEADER_SINGLE_VALUE" }); strictClient.close(); strictServer.close(); await new Promise((resolve, reject) => { const server = http2.createServer({ strictSingleValueFields: false }); server.on("stream", (stream, _headers, _flags, rawHeaders) => { try { assert.deepStrictEqual(rawHeaders.slice(-4), ["user-agent", "a", "user-agent", "b"]); stream.respond(); stream.end(); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect(`http://localhost:${server.address().port}`, { strictSingleValueFields: false }); const request = client.request({ "user-agent": ["a", "b"] }); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.end(); }); }); });
@@ -155851,7 +155876,7 @@ test "bootstrap HTTP2 settings graceful shutdown and socket logical contracts" {
     defer file_run.deinit(std.testing.allocator);
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 settings/shutdown/socket logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
