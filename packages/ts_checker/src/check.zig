@@ -80366,25 +80366,14 @@ pub const Checker = struct {
         }
         if (flags.is_signature) {
             // Method-local type parameters shadow same-named parameters from
-            // the containing generic object. Mark them visited before walking
-            // the signature so stale outer binders can be reconciled by name
-            // without capturing `<T>` declared by the method itself.
+            // the containing generic object. A reconstructed signature may no
+            // longer retain the original declaration node, but its explicit
+            // binder set remains authoritative.
             if (self.generic_signature_params.get(t)) |bound_params| {
-                const signature_decl = self.signatureDeclNode(t);
-                const own_param_nodes = if (signature_decl != hir_mod.none_node_id)
-                    self.typeParamNodesOfDecl(signature_decl)
-                else
-                    &[_]NodeId{};
                 for (bound_params) |bound_param| {
                     const resolved_param = self.resolvedTypeParameterPlaceholder(bound_param);
-                    const param_decl = self.type_parameter_decl_nodes.get(bound_param) orelse
-                        self.type_parameter_decl_nodes.get(resolved_param) orelse continue;
-                    for (own_param_nodes) |own_param_node| {
-                        if (param_decl != own_param_node) continue;
-                        try seen.put(self.gpa, bound_param, {});
-                        try seen.put(self.gpa, resolved_param, {});
-                        break;
-                    }
+                    try seen.put(self.gpa, bound_param, {});
+                    try seen.put(self.gpa, resolved_param, {});
                 }
             }
             for (self.interner.signatureParams(t)) |p| try self.extendSubstitutionsByMatchingTypeParamNamesInner(p, type_params, subs, seen);
@@ -91669,8 +91658,12 @@ pub const Checker = struct {
         if (!rhs_reachable) {
             return try self.expressionNodeAssignableToTarget(l.lhs, short_circuit_t, target_t);
         }
+        const unknown_truthy_requires_structure = l.op == .@"or" and
+            literal_lhs_t == types.Primitive.unknown and
+            self.typeRequiresKnownStructuralMembers(target_t, 0);
         if (short_circuit_t != types.Primitive.never and
-            !try self.checkerAssignableTo(short_circuit_t, target_t))
+            (unknown_truthy_requires_structure or
+                !try self.checkerAssignableTo(short_circuit_t, target_t)))
         {
             return false;
         }
@@ -91684,6 +91677,41 @@ pub const Checker = struct {
             try self.functionExpressionAssignableToTarget(l.rhs, target_t))
         {
             return true;
+        }
+        return false;
+    }
+
+    fn typeRequiresKnownStructuralMembers(self: *Checker, t: TypeId, depth: u8) bool {
+        if (t >= self.interner.pool.typeCount() or depth >= 16) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.typeRequiresKnownStructuralMembers(constraint, depth + 1);
+        }
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |member| {
+                if (!self.typeRequiresKnownStructuralMembers(member, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeRequiresKnownStructuralMembers(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        if (self.interner.objectStringIndex(t) != types.Primitive.none or
+            self.interner.objectNumberIndex(t) != types.Primitive.none or
+            self.interner.objectSymbolIndex(t) != types.Primitive.none)
+        {
+            return true;
+        }
+        for (self.interner.objectMembers(t)) |member| {
+            if (!member.is_optional) return true;
         }
         return false;
     }
@@ -164407,6 +164435,9 @@ pub const Checker = struct {
         }
         if (self.callableArgumentCannotSatisfyCustomRestTuple(arg_t, param_t)) return false;
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
+        if (self.hir.kindOf(arg_node) == .logical_op) {
+            return try self.logicalExpressionAssignableToTarget(arg_node, param_t);
+        }
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
         if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
@@ -164483,12 +164514,14 @@ pub const Checker = struct {
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
         if (try self.argumentAssignableToReducedConditionalTarget(arg_t, param_t)) return true;
         if (try self.promisePayloadArgumentAssignable(arg_t, param_t)) return true;
+        if (try self.abstractConstructorAssignedToNonAbstract(arg_t, param_t)) return false;
+        if (self.class_name_by_static.contains(arg_t) and
+            try self.classStaticAssignableTo(arg_t, param_t)) return true;
+        if (try self.constructSignatureArgumentAssignableToParam(arg_t, param_t)) |ok| return ok;
+        if (try self.classStaticAssignableTo(arg_t, param_t)) return true;
         if (try self.callableArgumentAssignableToGenericVariadicRestParam(arg_t, param_t)) return true;
         if (try self.overloadedCallSignatureSetAssignable(arg_t, param_t)) return true;
         if (try self.overloadedCallableArgumentAssignableToGenericParam(arg_t, param_t)) return true;
-        if (try self.abstractConstructorAssignedToNonAbstract(arg_t, param_t)) return false;
-        if (try self.classStaticAssignableTo(arg_t, param_t)) return true;
-        if (try self.constructSignatureArgumentAssignableToParam(arg_t, param_t)) |ok| return ok;
         if (try self.restAnySignatureAssignableToCallback(arg_t, param_t)) return true;
         if (try self.symbolNamedObjectArgumentAssignable(arg_t, param_t)) return true;
         if (try self.sameRecursiveDisplayTypeAssignable(arg_t, param_t)) return true;
@@ -164664,7 +164697,6 @@ pub const Checker = struct {
         defer source_sigs.deinit(self.gpa);
         try self.collectConstructSignatures(arg_t, &source_sigs);
         if (source_sigs.items.len == 0) return null;
-
         for (target_sigs.items) |target_sig| {
             var target_matched = false;
             for (source_sigs.items) |source_sig| {
@@ -183904,7 +183936,7 @@ pub const Checker = struct {
         // type `{}`. In `unknown || rhs`, only the falsy part reaches `rhs`,
         // so this lets `{}` absorb another empty-object branch.
         if (t == types.Primitive.unknown) {
-            return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+            return try self.unknownEmptyObjectType();
         }
         if (t == types.Primitive.any) return t;
         if (t >= self.interner.pool.typeCount()) return t;
@@ -217314,6 +217346,7 @@ test "checker: ArrayBuffer.isView narrows to the ArrayBufferView lib type" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
