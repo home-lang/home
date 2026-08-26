@@ -3,7 +3,6 @@
 
 # Tests that are broken
 test/cli/create/create-jsx.test.ts [ FAIL ] # false > react spa (no tailwind) > build
-test/cli/install/bunx.test.ts [ FAIL ] # should handle package that requires node 24: @angular/cli@latest needs a newer Node.js than Bun reports (24.3.0), unskip after the Node.js version bump
 [ WINDOWS-AARCH64 ] test/js/node/test/parallel/test-repl-close.js [ FAIL ] # EPIPE on stdin.write to closed child process
 
 # Exposed by the bun -e/--eval fix that stopped swallowing uncaught exceptions (see PR #31826):
@@ -38,7 +37,6 @@ test/js/node/test/parallel/test-stream-wrap-encoding.js [ FAIL ] # needs interna
 # unmodified main once the error actually surfaces. Needs a PathWatcher
 # investigation; the #29854 resolved_path fix covers only the ~path-length
 # portion.
-[ DARWIN ] test/js/node/watch/fs.watch.test.ts [ FAIL ] # pre-existing leak, false-positive pass before the eval exception fix
 
 # Tests that are flaky
 test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
@@ -120,7 +118,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # SO_REUSEPORT load-balances across the workers' own listeners instead of the
 # primary distributing accepted connections; the upstream test's expectations
 # only hold on the distributing model. Passes on macOS, Windows and FreeBSD.
-[ LINUX ] test/js/node/test/sequential/test-net-listen-shared-ports.js [ FAIL ] # SO_REUSEPORT shared-listener semantics on Linux
 
 # The fetch/h2 client teardown on Windows surfaces read ECONNRESET (WSAECONNRESET)
 # between tests when the pooled connection is dropped without a FIN; every test in
