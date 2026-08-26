@@ -38818,6 +38818,10 @@ const harness_prelude =
     \\  const result = Number(__home_http2_Http2Session.prototype.request.call(stream.session, stream.sentHeaders || {})) || 0;
     \\  if (result >= 0) return result;
     \\  const client = stream.session;
+    \\  stream.__home_suppress_dispatch = true;
+    \\  stream.pending = false;
+    \\  if (typeof stream.__home_cleanup_abort === "function") stream.__home_cleanup_abort();
+    \\  if (typeof stream.__home_release_active === "function") stream.__home_release_active();
     \\  Promise.resolve().then(() => {
     \\    if (stream.closed) return;
     \\    stream.closed = true;
@@ -41059,18 +41063,21 @@ const harness_prelude =
     \\    };
     \\    const abort = () => {
     \\      if (stream.destroyed) return;
+    \\      const pendingAbort = stream.pending || client.connecting;
     \\      stream.destroyed = true;
-    \\      stream.rstCode = 8;
+    \\      stream.rstCode = __home_http2_constants.NGHTTP2_CANCEL;
     \\      stream.__home_suppress_dispatch = true;
     \\      stream.__home_cleanup_abort();
     \\      stream.__home_release_active();
+    \\      const error = new Error("The operation was aborted");
+    \\      error.name = "AbortError";
+    \\      error.code = "ABORT_ERR";
     \\      Promise.resolve().then(() => {
-    \\        const error = new Error("The operation was aborted");
-    \\        error.name = "AbortError";
-    \\        error.code = "ABORT_ERR";
     \\        stream.emit("error", error);
     \\        if (!stream.closed) { stream.closed = true; stream.emit("close"); }
     \\      });
+    \\      if (pendingAbort) client.__home_terminate("destroy", error, false);
+    \\      else __home_http2_terminalize_peer(stream.__home_server_stream, __home_http2_constants.NGHTTP2_CANCEL);
     \\    };
     \\    if (signal && signal.aborted) abort();
     \\    else if (signal && typeof signal.addEventListener === "function") { abortListener = abort; signal.addEventListener("abort", abortListener, { once: true }); }
@@ -41316,6 +41323,7 @@ const harness_prelude =
     \\      };
     \\      stream.end = function(chunk, encoding, callback) {
     \\        const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
+    \\        if (__home_http2_submit_stream(this) < 0) { if (typeof cb === "function") Promise.resolve().then(cb); return this; }
     \\        if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
     \\        this.writableFinished = true;
     \\        if (!handlerServerStream.__home_request_ended) {
