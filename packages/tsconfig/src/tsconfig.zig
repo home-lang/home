@@ -226,6 +226,7 @@ pub const CompilerOptions = struct {
     root_dirs: ?[][]const u8 = null,
     type_roots: ?[][]const u8 = null,
     types: ?[][]const u8 = null,
+    module_suffixes: ?[][]const u8 = null,
     resolve_json_module: ?bool = null,
     resolve_package_json_exports: ?bool = null,
     resolve_package_json_imports: ?bool = null,
@@ -2109,6 +2110,7 @@ fn fillCompilerOptions(
             .{ .name = "typeRoots", .field = "type_roots" },
             .{ .name = "types", .field = "types" },
             .{ .name = "customConditions", .field = "custom_conditions" },
+            .{ .name = "moduleSuffixes", .field = "module_suffixes" },
         };
         inline for (list_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
@@ -3765,6 +3767,19 @@ test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5023));
     try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.parse: moduleSuffixes preserves order and blank fallback" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "moduleSuffixes": [".ios", ".native", ""] } }
+    );
+    const suffixes = cfg.compiler_options.module_suffixes.?;
+    try t.expectEqual(@as(usize, 3), suffixes.len);
+    try t.expectEqualStrings(".ios", suffixes[0]);
+    try t.expectEqualStrings(".native", suffixes[1]);
+    try t.expectEqualStrings("", suffixes[2]);
 }
 
 test "tsconfig.validate: command-line-only compiler options report TS6266" {

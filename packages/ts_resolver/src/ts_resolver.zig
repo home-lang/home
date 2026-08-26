@@ -75,6 +75,9 @@ pub const Config = struct {
     base_url: []const u8 = "",
     /// `compilerOptions.paths` — list of `(pattern, [target...])`.
     paths: []const PathEntry = &.{},
+    /// `compilerOptions.moduleSuffixes`, probed before each extension.
+    /// An explicit empty string preserves the ordinary unsuffixed lookup.
+    module_suffixes: []const []const u8 = &.{},
     /// Active conditions for `package.json` `exports`. The order
     /// matters: tsc inserts these *after* `node` and `default` is
     /// always tried last.
@@ -1227,19 +1230,18 @@ pub const Resolver = struct {
         // `resolveJsonModule` per tsc — otherwise even
         // `import "./data.json"` is left unresolved.
         const explicit_json = hasExtension(base, ".json");
-        const explicit_known = hasKnownExtension(base) or (explicit_json and self.config.resolve_json);
+        const explicit_ext: ?[]const u8 = knownExtension(base) orelse
+            if (explicit_json and self.config.resolve_json) ".json" else null;
+        const explicit_known = explicit_ext != null;
         if (explicit_known) {
             if (self.config.strategy == .bundler and isImplementationOutputPath(base)) {
                 if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
                     return resolution;
                 }
             }
-            if (self.fileExistsTraced(base)) {
-                return .{
-                    .path = try self.ar().dupe(u8, base),
-                    .source = .relative,
-                    .is_declaration = isDeclarationPath(base),
-                };
+            const ext = explicit_ext.?;
+            if (try self.tryModuleSuffixedFile(base[0 .. base.len - ext.len], ext, .relative)) |resolution| {
+                return resolution;
             }
             if (self.config.strategy != .bundler or !isImplementationOutputPath(base)) {
                 if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
@@ -1255,24 +1257,32 @@ pub const Resolver = struct {
                 return resolution;
             }
         }
-        // Probe each extension in order.
         for (self.config.extensions) |ext| {
-            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ base, ext }) catch return error.OutOfMemory;
-            if (self.fileExistsTraced(candidate)) {
-                return .{
-                    .path = candidate,
-                    .source = .relative,
-                    .is_declaration = isDeclarationPath(ext),
-                };
-            }
+            if (try self.tryModuleSuffixedFile(base, ext, .relative)) |resolution| return resolution;
         }
         if (self.config.resolve_json) {
-            const candidate = std.fmt.allocPrint(self.ar(), "{s}.json", .{base}) catch return error.OutOfMemory;
+            if (try self.tryModuleSuffixedFile(base, ".json", .relative)) |resolution| return resolution;
+        }
+        return null;
+    }
+
+    fn tryModuleSuffixedFile(
+        self: *Resolver,
+        stem: []const u8,
+        ext: []const u8,
+        source: Resolution.Source,
+    ) ResolveError!?Resolution {
+        const suffixes: []const []const u8 = if (self.config.module_suffixes.len > 0)
+            self.config.module_suffixes
+        else
+            &.{""};
+        for (suffixes) |suffix| {
+            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}{s}", .{ stem, suffix, ext }) catch return error.OutOfMemory;
             if (self.fileExistsTraced(candidate)) {
                 return .{
                     .path = candidate,
-                    .source = .relative,
-                    .is_declaration = false,
+                    .source = source,
+                    .is_declaration = isDeclarationPath(candidate),
                 };
             }
         }
@@ -1302,15 +1312,7 @@ pub const Resolver = struct {
             return null;
         };
         for (substitution.candidates) |ext| {
-            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ substitution.stem, ext }) catch return error.OutOfMemory;
-            if (std.mem.eql(u8, candidate, path)) continue;
-            if (self.fileExistsTraced(candidate)) {
-                return .{
-                    .path = candidate,
-                    .source = .relative,
-                    .is_declaration = isDeclarationPath(candidate),
-                };
-            }
+            if (try self.tryModuleSuffixedFile(substitution.stem, ext, .relative)) |resolution| return resolution;
         }
         return null;
     }
@@ -1326,15 +1328,7 @@ pub const Resolver = struct {
             .{ path, stripped_ext },
         );
         for (source_exts) |ext| {
-            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ source_base, ext }) catch return error.OutOfMemory;
-            if (std.mem.eql(u8, candidate, path)) continue;
-            if (self.fileExistsTraced(candidate)) {
-                return .{
-                    .path = candidate,
-                    .source = .relative,
-                    .is_declaration = isDeclarationPath(candidate),
-                };
-            }
+            if (try self.tryModuleSuffixedFile(source_base, ext, .relative)) |resolution| return resolution;
         }
         return null;
     }
@@ -1376,15 +1370,9 @@ pub const Resolver = struct {
     /// living inside the directory it names must NOT redirect again.
     fn tryDirectoryIndexNoPkg(self: *Resolver, dir: []const u8) ResolveError!?Resolution {
         if (!self.fs.directoryExists(dir)) return null;
+        const stem = std.fmt.allocPrint(self.ar(), "{s}/index", .{dir}) catch return error.OutOfMemory;
         for (self.config.extensions) |ext| {
-            const candidate = std.fmt.allocPrint(self.ar(), "{s}/index{s}", .{ dir, ext }) catch return error.OutOfMemory;
-            if (self.fs.fileExists(candidate)) {
-                return .{
-                    .path = candidate,
-                    .source = .index_file,
-                    .is_declaration = isDeclarationPath(ext),
-                };
-            }
+            if (try self.tryModuleSuffixedFile(stem, ext, .index_file)) |resolution| return resolution;
         }
         return null;
     }
@@ -2760,10 +2748,14 @@ fn compareMajorMinor(lhs_major: u32, lhs_minor: u32, rhs_major: u32, rhs_minor: 
     return 0;
 }
 
-fn hasKnownExtension(s: []const u8) bool {
-    const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" };
-    for (exts) |e| if (std.mem.endsWith(u8, s, e)) return true;
-    return false;
+fn knownExtension(s: []const u8) ?[]const u8 {
+    const exts = [_][]const u8{
+        ".d.home", ".d.mts", ".d.cts", ".d.ts", ".d.hm",
+        ".home",   ".tsx",   ".mts",   ".cts",  ".jsx",
+        ".mjs",    ".cjs",   ".ts",    ".hm",   ".js",
+    };
+    for (exts) |ext| if (std.mem.endsWith(u8, s, ext)) return ext;
+    return null;
 }
 
 fn isDeclarationPath(s: []const u8) bool {
@@ -4198,6 +4190,86 @@ test "Resolver: packageJsonMain — `main` field with no extension probes for .j
     defer r.deinit();
     const res = try r.resolve("foo", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/oof.js", res.path);
+}
+
+test "Resolver: moduleSuffixes selects package index and subpath declarations" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/index.ts", "");
+    try vfs.addFile("/node_modules/some-library/index.ios.d.ts", "export declare const ios: true;");
+    try vfs.addFile("/node_modules/some-library/index.d.ts", "export declare const base: true;");
+    try vfs.addFile("/node_modules/some-library/foo.ios.d.ts", "export declare const iosfoo: true;");
+    try vfs.addFile("/node_modules/some-library/foo.d.ts", "export declare const basefoo: true;");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node10,
+        .module_suffixes = &.{".ios"},
+    });
+    defer r.deinit();
+
+    const root = try r.resolve("some-library", "/index.ts");
+    try T.expectEqualStrings("/node_modules/some-library/index.ios.d.ts", root.path);
+    const subpath = try r.resolve("some-library/foo", "/index.ts");
+    try T.expectEqualStrings("/node_modules/some-library/foo.ios.d.ts", subpath.path);
+}
+
+test "Resolver: moduleSuffixes honors order and explicit blank fallback" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/index.ts", "");
+    try vfs.addFile("/foo.native.ts", "");
+    try vfs.addFile("/foo.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node10,
+        .module_suffixes = &.{ ".ios", ".native", "" },
+    });
+    defer r.deinit();
+    const native = try r.resolve("./foo", "/index.ts");
+    try T.expectEqualStrings("/foo.native.ts", native.path);
+
+    var fallback = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node10,
+        .module_suffixes = &.{ ".ios", "" },
+    });
+    defer fallback.deinit();
+    const base = try fallback.resolve("./foo", "/index.ts");
+    try T.expectEqualStrings("/foo.ts", base.path);
+}
+
+test "Resolver: moduleSuffixes without a blank entry suppresses unsuffixed files" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/index.ts", "");
+    try vfs.addFile("/foo.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node10,
+        .module_suffixes = &.{".ios"},
+    });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("./foo", "/index.ts"));
+}
+
+test "Resolver: moduleSuffixes applies to explicit JavaScript and JSON imports" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/index.ts", "");
+    try vfs.addFile("/foo.ios.js", "");
+    try vfs.addFile("/foo.js", "");
+    try vfs.addFile("/data.ios.json", "{}");
+    try vfs.addFile("/data.json", "{}");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node10,
+        .resolve_json = true,
+        .module_suffixes = &.{".ios"},
+    });
+    defer r.deinit();
+    const js = try r.resolve("./foo.js", "/index.ts");
+    try T.expectEqualStrings("/foo.ios.js", js.path);
+    const json = try r.resolve("./data.json", "/index.ts");
+    try T.expectEqualStrings("/data.ios.json", json.path);
 }
 
 test "Resolver: packageJsonMain — main pointing to a directory falls through to its index" {

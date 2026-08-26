@@ -2334,6 +2334,7 @@ const TsconfigResolverOptions = struct {
     config_file_path: []const u8 = "",
     module: []const u8 = "",
     module_resolution: []const u8 = "",
+    module_suffixes: []const []const u8 = &.{},
     import_helpers: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
@@ -2347,6 +2348,7 @@ const TsconfigResolverOptions = struct {
         if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
         if (self.module.len != 0) gpa.free(self.module);
         if (self.module_resolution.len != 0) gpa.free(self.module_resolution);
+        freeStringList(gpa, self.module_suffixes);
         freeStringList(gpa, self.type_roots);
         freeStringList(gpa, self.types);
     }
@@ -2374,6 +2376,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
         if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
         if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
+        result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
         result.import_helpers = options.import_helpers;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
@@ -2524,6 +2527,7 @@ test "conformance: resolver config resolves package self-name through declaratio
         .root_dir = opts.root_dir,
         .root_dirs = opts.root_dirs,
         .config_file_path = opts.config_file_path,
+        .module_suffixes = opts.module_suffixes,
         .type_roots = opts.type_roots,
     });
     defer resolver.deinit();
@@ -3573,6 +3577,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .root_dir = tsconfig_options.root_dir,
         .root_dirs = tsconfig_options.root_dirs,
         .config_file_path = tsconfig_options.config_file_path,
+        .module_suffixes = tsconfig_options.module_suffixes,
         .type_roots = tsconfig_options.type_roots,
     });
     defer resolver.deinit();
