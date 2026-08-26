@@ -111872,6 +111872,13 @@ pub const Checker = struct {
         if (props_t) |target| {
             if (!has_any_spread and !self.jsxPropsTargetIsAnyLike(target) and !per_attr_assignability_fired) {
                 {
+                    if (attrs.len == 1 and self.hir.kindOf(attrs[0]) == .jsx_spread_attribute) {
+                        const spread = hir_mod.jsxSpreadAttributeOf(self.hir, attrs[0]);
+                        const spread_t = try self.checkedExpressionType(spread.expression);
+                        if (self.engine.isAssignableTo(spread_t, target) catch false) {
+                            return (try self.jsxElementConstraint(node)) orelse types.Primitive.any;
+                        }
+                    }
                     const attrs_t = self.interner.internObjectType(attr_members.items) catch return error.OutOfMemory;
                     // Display bag (includes `data-*`, contextual
                     // widening applied) — used only for *rendering* the
@@ -194609,6 +194616,23 @@ test "checker: JSX spread preserves const discriminated union initializer" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_missing_required));
+}
+
+test "checker: JSX single spread preserves annotated discriminated union" {
+    const s = try newTsxSetup(
+        \\namespace JSX { export interface Element {} }
+        \\type Cat = { type: "Cat"; subType: string };
+        \\type Dog = { type: "Dog" };
+        \\type Animal = Cat | Dog;
+        \\function AnimalComponent(info: Animal): JSX.Element { return undefined as any; }
+        \\declare const inferred: Animal;
+        \\const explicit: Animal = { type: "Cat", subType: "Large" };
+        \\const a = <AnimalComponent {...inferred} />;
+        \\const b = <AnimalComponent {...explicit} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: empty JSX attributes infer empty generic props before defaults" {
