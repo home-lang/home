@@ -39393,7 +39393,7 @@ const harness_prelude =
     \\    if (seen[lower] && (lower.startsWith(":") || strictSingleValueFields !== false && singleValue.has(lower))) throw Object.assign(new TypeError('Header field "' + lower + '" must only have a single value'), { code: "ERR_HTTP2_HEADER_SINGLE_VALUE" });
     \\    const value = entry[1];
     \\    seen[lower] = true;
-    \\    const rendered = value;
+    \\    const rendered = String(value);
     \\    if (Object.prototype.hasOwnProperty.call(output, lower)) output[lower] = String(output[lower]) + (lower === "cookie" ? "; " : ", ") + String(rendered);
     \\    else Object.defineProperty(output, lower, { configurable: true, enumerable: true, writable: true, value: rendered });
     \\    rawOccurrences.push([lower, rendered]);
@@ -39427,9 +39427,12 @@ const harness_prelude =
     \\    const name = String(rawName).toLowerCase();
     \\    if (name.startsWith(":") && !((context === "response") && name === ":status")) throw __home_http2_error_with_code("ERR_HTTP2_INVALID_PSEUDOHEADER", '"' + rawName + '" is an invalid pseudoheader or is used incorrectly');
     \\    if (!name.startsWith(":") && (!name || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name))) throw __home_http2_invalid_header_token(rawName);
-    \\    const rendered = entry[1];
+    \\    const rendered = String(entry[1]);
     \\    if (context === "response" && Array.from(String(rendered)).some(character => { const code = character.charCodeAt(0) & 0xff; return code === 10 || code === 13; })) continue;
-    \\    if (Object.prototype.hasOwnProperty.call(output, name)) output[name] = String(output[name]) + (name === "cookie" ? "; " : ", ") + String(rendered);
+    \\    if (name === "set-cookie") {
+    \\      if (Object.prototype.hasOwnProperty.call(output, name)) output[name].push(rendered);
+    \\      else Object.defineProperty(output, name, { configurable: true, enumerable: true, writable: true, value: [rendered] });
+    \\    } else if (Object.prototype.hasOwnProperty.call(output, name)) output[name] = String(output[name]) + (name === "cookie" ? "; " : ", ") + String(rendered);
     \\    else Object.defineProperty(output, name, { configurable: true, enumerable: true, writable: true, value: rendered });
     \\    rawOccurrences.push([name, rendered]);
     \\  }
@@ -40149,6 +40152,12 @@ const harness_prelude =
     \\  if (active) return;
     \\  client.destroyed = true;
     \\  client.__home_close_emitted = true;
+    \\  const socket = client[__home_http2_k_socket];
+    \\  if (socket && !client.__home_graceful_socket_cleanup) {
+    \\    client.__home_graceful_socket_cleanup = true;
+    \\    if (!socket.destroyed && typeof socket.end === "function") socket.end();
+    \\    if (!socket.destroyed && typeof socket.destroy === "function") socket.destroy();
+    \\  }
     \\  client.emit("close");
     \\  if (client.__home_server_session && typeof client.__home_server_session.close === "function") client.__home_server_session.close();
     \\}
@@ -41307,6 +41316,7 @@ const harness_prelude =
     \\        return undefined;
     \\      }
     \\      const normalized = __home_http2_normalize_headers(headers, {});
+    \\      normalized[":status"] = status;
     \\      stream.sentInfoHeaders.push(normalized);
     \\      this.sentInfoHeaders.push(normalized);
     \\      if (!stream.aborted) stream.emit("headers", normalized, 4);
@@ -41734,9 +41744,14 @@ const harness_prelude =
     \\        client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      }
     \\    }
-    \\    transportSocket.emit("connect");
-    \\    client.emit("connect");
-    \\    if (typeof connectListener === "function") connectListener(client, client.socket);
+    \\    if (client.encrypted && !client.__home_secure_connect_emitted) { client.__home_secure_connect_emitted = true; client.socket.emit("secureConnect"); }
+    \\    if (client.destroyed || client.__home_close_emitted || client.__home_termination_scheduled) return;
+    \\    if (typeof connectListener === "function") {
+    \\      try { connectListener.call(client, client); } catch (error) { client.destroy(error); return; }
+    \\    }
+    \\    if (client.destroyed || client.__home_close_emitted || client.__home_termination_scheduled) return;
+    \\    client.emit("connect", client, transportSocket);
+    \\    if (client.destroyed || client.__home_close_emitted || client.__home_termination_scheduled) return;
     \\    client.emit("remoteSettings", client.remoteSettings);
     \\    client.pendingSettingsAck = true;
     \\    for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (pending && !pending.destroyed) { pending.pending = false; pending.emit("ready"); } }
@@ -155128,6 +155143,46 @@ test "bootstrap HTTP2 CONNECT method lifecycle logical contracts" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
+test "bootstrap HTTP2 cookie wire normalization logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("request values stringify and response set-cookie arrays remain distinct", async () => { await new Promise((resolve, reject) => { const responseCookies = ["a=1; Expires=Wed, 21 Oct 2015 07:28:00 GMT", "b=2; Path=/"]; const expectedCookies = responseCookies.slice(); const server = http2.createServer(); server.on("stream", (stream, headers) => { try { assert.strictEqual(Object.getPrototypeOf(headers), null); assert.strictEqual(headers.abc, "1"); assert.strictEqual(typeof headers.abc, "string"); assert.strictEqual(headers.cookie, "a=b; c=d"); stream.respond({ ":status": 200, "set-cookie": responseCookies }); responseCookies[0] = "mutated=1"; stream.end("ok"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const singleton = [1]; const request = client.request({ abc: singleton, cookie: ["a=b", "c=d"] }); singleton[0] = 9; request.on("error", reject); request.on("response", headers => { try { assert.strictEqual(Object.getPrototypeOf(headers), null); assert.strictEqual(headers[":status"], 200); assert.ok(Array.isArray(headers["set-cookie"])); assert.notStrictEqual(headers["set-cookie"], responseCookies); assert.deepStrictEqual(headers["set-cookie"], expectedCookies); } catch (error) { reject(error); } }); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-cookie-wire-normalization-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 cookie wire normalization logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 secure client notification and cleanup logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const { kSocket } = require("internal/http2/util");
+        \\test("secure callbacks precede events and terminalize transports exactly once", async () => { const server = http2.createSecureServer(); let serverSessions = 0; let serverSessionCloses = 0; server.on("stream", () => {}); server.on("session", session => { serverSessions++; session.once("close", () => serverSessionCloses++); }); await new Promise(resolve => server.listen(0, resolve)); const run = terminalPoint => new Promise((resolve, reject) => { const order = []; let secureEvents = 0; let connectEvents = 0; let remoteSettings = 0; let localSettings = 0; let clientCloses = 0; let closeCallbacks = 0; let socketCloses = 0; let client; const finish = () => Promise.resolve().then(() => { try { assert.strictEqual(secureEvents, 1); assert.strictEqual(clientCloses, 1); assert.strictEqual(closeCallbacks, 1); assert.strictEqual(socketCloses, 1); assert.strictEqual(remoteSettings, 0); assert.strictEqual(localSettings, 0); assert.strictEqual(client[kSocket].destroyed, true); assert.strictEqual(client.socket.listenerCount("secureConnect"), 0); if (terminalPoint === "callback") assert.strictEqual(connectEvents, 0); else assert.strictEqual(connectEvents, 1); resolve(); } catch (error) { reject(error); } }); client = http2.connect("https://localhost:" + server.address().port, { rejectUnauthorized: false }, function(session) { try { order.push("callback"); assert.strictEqual(this, client); assert.strictEqual(session, client); assert.strictEqual(arguments.length, 1); assert.deepStrictEqual(order, ["secure", "callback"]); if (terminalPoint === "callback") { session.close(() => closeCallbacks++); order.push("close-return"); } } catch (error) { reject(error); } }); const transport = client[kSocket]; assert.strictEqual(client.socket.listenerCount("secureConnect"), 1); client.socket.once("secureConnect", () => { secureEvents++; order.push("secure"); }); transport.once("close", () => socketCloses++); client.on("remoteSettings", () => remoteSettings++); client.on("localSettings", () => localSettings++); client.on("error", reject); client.on("connect", (session, socket) => { connectEvents++; try { order.push("connect"); assert.strictEqual(session, client); assert.strictEqual(socket, transport); assert.deepStrictEqual(order, ["secure", "callback", "connect"]); if (terminalPoint === "event") { client.close(() => closeCallbacks++); order.push("close-return"); } } catch (error) { reject(error); } }); client.on("close", () => { clientCloses++; finish(); }); }); await run("callback"); await run("event"); await new Promise(resolve => server.close(resolve)); assert.strictEqual(serverSessions, 2); assert.strictEqual(serverSessionCloses, 2); assert.strictEqual(server.__home_sessions.size, 0); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-secure-client-notification-cleanup-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 secure client notification/cleanup logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
 test "bootstrap HTTP2 CONNECT session and diagnostics corpus tranche contracts" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -155583,7 +155638,7 @@ test "bootstrap HTTP2 sendfile metadata sensitivity and reset logical contracts"
         \\    server.listen(0, () => {
         \\      const client = http2.connect(`http://localhost:${server.address().port}`);
         \\      const request = path => new Promise((done, fail) => { const chunks = []; const req = client.request({ ":path": path }); let response; req.on("response", headers => response = headers); req.on("data", chunk => chunks.push(String(chunk))); req.on("error", fail); req.on("end", () => done({ response, body: chunks.join("") })); req.end(); });
-        \\      Promise.all([request("/path"), request("/fd")]).then(results => { try { assert.strictEqual(results[0].body, "2345"); assert.strictEqual(results[0].response["content-length"], 4); assert.strictEqual(results[0].response["x-stat"], "checked"); assert.strictEqual(results[1].body, "678"); assert.strictEqual(results[1].response["content-length"], 3); fs.fstatSync(fd); fs.closeSync(fd); client.close(); server.close(resolve); } catch (error) { reject(error); } }, reject);
+        \\      Promise.all([request("/path"), request("/fd")]).then(results => { try { assert.strictEqual(results[0].body, "2345"); assert.strictEqual(results[0].response["content-length"], "4"); assert.strictEqual(results[0].response["x-stat"], "checked"); assert.strictEqual(results[1].body, "678"); assert.strictEqual(results[1].response["content-length"], "3"); fs.fstatSync(fd); fs.closeSync(fd); client.close(); server.close(resolve); } catch (error) { reject(error); } }, reject);
         \\    });
         \\  });
         \\});
