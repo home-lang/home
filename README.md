@@ -79,13 +79,15 @@ five warmups; lower is better):
 
 | Workload | tsc 7.0.2 | tsgo 7.0.0-dev.20260707.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 47.9 ms | 44.9 ms | **4.1 ms** | **11.02× faster** |
-| 256 files | 62.0 ms | 62.1 ms | **38.2 ms** | **1.62× faster** |
-| Deep types | 67.5 ms | 69.7 ms | **55.8 ms** | **1.21× faster** |
+| Startup | 41.0 ms | 39.4 ms | **3.5 ms** | **11.24× faster** |
+| 256 files | 55.2 ms | 55.0 ms | **33.7 ms** | **1.63× faster** |
+| Deep types | 54.8 ms | 54.5 ms | **46.0 ms** | **1.18× faster** |
+| 128-module import graph | 47.4 ms | 47.7 ms | **27.6 ms** | **1.72× faster** |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
-reproduction commands.
+reproduction commands. Expansion and optimization work is tracked in
+[GitHub issue #416](https://github.com/home-lang/home/issues/416).
 
 | Measurement | Pass rate | Notes |
 |---|---|---|
