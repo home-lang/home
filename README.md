@@ -77,14 +77,15 @@ the same *families* of diagnostics.
 **Frontend performance snapshot** (Apple M3 Pro, 30 interleaved runs after
 three warmups; lower is better):
 
-| Workload | tsc 7.0.2 | tsgo 7.0.0-dev.20260707.2 | Home 0.1.0 | Home vs fastest competitor |
+| Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 49.7 ms | 49.1 ms | **4.7 ms** | **10.35× faster** |
-| 256 files | 74.4 ms | 73.5 ms | **46.1 ms** | **1.59× faster** |
-| Deep types | 66.7 ms | 68.3 ms | **51.5 ms** | **1.29× faster** |
-| 128-module import graph | 57.5 ms | 58.3 ms | **35.9 ms** | **1.60× faster** |
-| 64-leaf barrel graph | 58.8 ms | 59.5 ms | **45.5 ms** | **1.29× faster** |
-| 256 typed TSX components | 55.9 ms | 58.8 ms | **53.5 ms** | **1.04× faster** |
+| Startup | 75.2 ms | 45.9 ms | **4.0 ms** | **11.42× faster** |
+| 256 files | 252.6 ms | 64.3 ms | **38.4 ms** | **1.67× faster** |
+| Deep types | 160.1 ms | 61.8 ms | **49.6 ms** | **1.25× faster** |
+| 128-module import graph | 163.7 ms | 55.7 ms | **33.5 ms** | **1.67× faster** |
+| 64-leaf barrel graph | 123.5 ms | 53.4 ms | **40.4 ms** | **1.32× faster** |
+| 256 typed TSX components | 211.8 ms | 59.0 ms | **53.6 ms** | **1.10× faster** |
+| 256 generic call groups | 250.4 ms | 71.4 ms | **68.6 ms** | **1.04× faster** |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
