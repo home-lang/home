@@ -124057,9 +124057,23 @@ pub const Checker = struct {
         if (f.type_params_len != 0) {
             if (contextual_target) |target| {
                 if (self.interner.isSignature(target)) {
+                    const source_params = self.interner.signatureParams(fallback);
+                    var has_direct_private_param = false;
+                    for (self.hir.childSlice(f.type_params_start, f.type_params_len)) |type_param_node| {
+                        const type_param = self.hir.typeOf(type_param_node);
+                        for (source_params) |source_param| {
+                            if (source_param == type_param) {
+                                has_direct_private_param = true;
+                                break;
+                            }
+                        }
+                        if (has_direct_private_param) break;
+                    }
+                    if (!has_direct_private_param) {
+                        return self.functionExpressionInferenceSignature(arg_node, fallback, false);
+                    }
                     var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                     defer source_subs.deinit(self.gpa);
-                    const source_params = self.interner.signatureParams(fallback);
                     const target_params = self.interner.signatureParams(target);
                     const count = @min(source_params.len, target_params.len);
                     for (0..count) |i| {
