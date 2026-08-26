@@ -3212,6 +3212,12 @@ const VisibleNamedTypeKey = struct {
     virtual_section_start: usize,
 };
 
+const VisibleAnnotatedValueKey = struct {
+    container: NodeId,
+    name: hir_mod.StringId,
+    virtual_section_start: usize,
+};
+
 const JsDocGlobalDeclEntry = struct {
     name: hir_mod.StringId,
     node: NodeId,
@@ -4700,6 +4706,11 @@ pub const Checker = struct {
     source_may_have_class_or_enum_declaration: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    /// First simple variable declaration per lexical statement container.
+    /// Annotation lookup uses source order, so indexing that first binding
+    /// avoids rescanning large blocks for every later identifier read.
+    visible_annotated_value_decls: std.AutoHashMapUnmanaged(VisibleAnnotatedValueKey, NodeId) = .empty,
+    indexed_annotated_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -5085,6 +5096,8 @@ pub const Checker = struct {
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
+        self.visible_annotated_value_decls.clearRetainingCapacity();
+        self.indexed_annotated_value_containers.clearRetainingCapacity();
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5512,6 +5525,8 @@ pub const Checker = struct {
         self.virtual_section_start_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
+        self.visible_annotated_value_decls.deinit(self.gpa);
+        self.indexed_annotated_value_containers.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
         self.jsx_local_factory_namespace_type_cache.deinit(self.gpa);
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
@@ -62600,6 +62615,7 @@ pub const Checker = struct {
     }
 
     fn typeOnlyImportLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -62627,6 +62643,7 @@ pub const Checker = struct {
     /// a named type-only import, or the default/namespace binding node.
     /// Returns null when `local_name` is not a local type-only import.
     fn typeOnlyImportLocalDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -78106,6 +78123,7 @@ pub const Checker = struct {
     }
 
     fn resolveUnqualifiedImportEqualsTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_equals) return null;
         var cur = type_node;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -107549,6 +107567,7 @@ pub const Checker = struct {
                                     !self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
                                 if (overload_type_arg_nodes.len > 0 and
                                     !try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, overload_type_arg_nodes)) continue;
+                                if (try self.signatureDefinitelyRejectsLiteralArguments(sig, args, arg_types.items)) continue;
                                 const effective_sig = if (overload_type_arg_nodes.len > 0) blk_eff: {
                                     var used_explicit_type_args = false;
                                     break :blk_eff try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, sig, overload_type_arg_nodes, &used_explicit_type_args);
@@ -119372,6 +119391,26 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            const cached_t = self.hir.typeOf(variable.name);
+                            if (cached_t != types.Primitive.none) return cached_t;
+                            const active_t = (self.lowerActiveValueTypeAnnotation(id.name, variable.type_annotation) catch types.Primitive.any) orelse return null;
+                            return self.adjustAmbientUnresolvedBareTypeAnnotation(variable.is_ambient, variable.type_annotation, active_t) catch types.Primitive.any;
+                        }
+                    }
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -119910,6 +119949,24 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            return variable.type_annotation;
+                        }
+                    }
+                    continue;
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -119937,6 +119994,33 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn indexVisibleAnnotatedValueDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+    ) void {
+        if (self.indexed_annotated_value_containers.contains(container)) return;
+        for (stmts) |statement| {
+            const declaration = self.unwrapExportDecl(statement);
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, declaration);
+            if (variable.name == hir_mod.none_node_id or
+                self.hir.kindOf(variable.name) != .identifier) continue;
+            const key: VisibleAnnotatedValueKey = .{
+                .container = container,
+                .name = hir_mod.identifierOf(self.hir, variable.name).name,
+                .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                    self.virtualSectionStartForNode(declaration)
+                else
+                    0,
+            };
+            const entry = self.visible_annotated_value_decls.getOrPut(self.gpa, key) catch return;
+            if (!entry.found_existing) entry.value_ptr.* = declaration;
+        }
+        self.indexed_annotated_value_containers.put(self.gpa, container, {}) catch {};
     }
 
     /// Signature and declaration checking store the resolved static type on a
@@ -120627,6 +120711,37 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    /// Reject an overload before generic inference when a fixed, non-generic
+    /// literal parameter cannot accept the corresponding literal expression.
+    /// All composite and contextual cases stay on the full resolution path.
+    fn signatureDefinitelyRejectsLiteralArguments(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!bool {
+        const params = self.interner.signatureParams(sig);
+        const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
+        const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
+        for (args, 0..) |arg, arg_i| {
+            if (self.hir.kindOf(arg) == .spread) continue;
+            const fixed_pos = self.fixedParamPositionBeforeArg(args, arg_types, arg_i);
+            if (fixed_pos >= fixed_count) break;
+            const param_t = params[fixed_pos];
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (!param_flags.is_literal or param_flags.is_enum_literal) continue;
+            const param_literal = self.interner.literalOfOrNull(param_t) orelse continue;
+            switch (param_literal) {
+                .string_lit, .number_lit, .boolean_lit => {},
+                else => continue,
+            }
+            const arg_literal_t = (try self.expressionNarrowLiteralType(arg)) orelse continue;
+            if (!self.switchLiteralUnitsAreEqual(arg_literal_t, param_t)) return true;
+        }
+        return false;
     }
 
     fn reportNoOverloadMatchesWithLastOverload(
@@ -122192,6 +122307,7 @@ pub const Checker = struct {
         }
         var selected_applicable: TypeId = types.Primitive.none;
         for (sigs.items) |sig| {
+            if (try self.signatureDefinitelyRejectsLiteralArguments(sig, args, arg_types)) continue;
             const effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             if (!try self.signatureAccepts(call_node, effective_sig, args, arg_types)) continue;
             if (preserve_intersection_order) {
@@ -127750,6 +127866,13 @@ pub const Checker = struct {
                         }
                     }
                     const t = self.hir.typeOf(decl);
+                    if (!self.declared_identifier_lookup and
+                        v.type_annotation != hir_mod.none_node_id and
+                        t != types.Primitive.none and
+                        self.hir.typeOf(v.name) == t)
+                    {
+                        return t;
+                    }
                     if (v.type_annotation != hir_mod.none_node_id and
                         (self.declared_identifier_lookup or t == types.Primitive.none))
                     {
@@ -128716,6 +128839,19 @@ pub const Checker = struct {
                 // Look for a sibling var_decl/let_decl/const_decl
                 // before this node.
                 const stmts = hir_mod.blockStmts(self.hir, cur);
+                self.indexVisibleAnnotatedValueDecls(cur, stmts);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |declaration| {
+                        if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
+                    }
+                }
                 for (stmts) |s| {
                     if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
                 }
