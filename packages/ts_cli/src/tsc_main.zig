@@ -28,7 +28,10 @@ const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
         var threaded = std.Io.Threaded.init(gpa, .{});
         defer threaded.deinit();
-        const io = threaded.io();
+        return readWithIo(gpa, threaded.io(), path);
+    }
+
+    fn readWithIo(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
         const cwd = std.Io.Dir.cwd();
         var file = try cwd.openFile(io, path, .{});
         defer file.close(io);
@@ -2206,14 +2209,14 @@ pub fn main(init: std.process.Init) !void {
         // compile flow (full topological/incremental orchestration is a
         // follow-up). Non-dry `--clean` is not yet implemented.
         var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
         defer bp.deinit(gpa);
         var had_build_err = false;
         for (bp.diagnostics) |d| {
             std.debug.print("{s}\n", .{d});
             had_build_err = true;
         }
-        if (had_build_err) std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        if (had_build_err) std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         if (bp.options.clean and !bp.options.dry) {
             std.debug.print("home tsc --build: '--clean' is not yet implemented.\n", .{});
             return;
@@ -2225,21 +2228,21 @@ pub fn main(init: std.process.Init) !void {
         const root_cfg = resolveConfigPath(args_arena.allocator(), ".", root_ref) catch root_ref;
         const graph = loadBuildGraph(gpa, args_arena.allocator(), root_cfg) catch {
             std.debug.print("error: cannot load project '{s}'\n", .{root_cfg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         if (graph.diagnostics.len > 0) {
             for (graph.diagnostics) |d| std.debug.print("{s}\n", .{d});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
             ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
         defer ord.deinit(gpa);
         if (ord.cycle) |cyc| {
             const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
             defer gpa.free(msg);
             std.debug.print("{s}\n", .{msg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         if (bp.options.verbose and graph.paths.len > 1) {
             // TS6355 — `Projects in this build: {0}` (the project list).
@@ -2326,7 +2329,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
-        if (build_had_errors) std.process.exit(@intFromEnum(ts_cli.ExitCode.type_errors));
+        if (build_had_errors) std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
         return;
     } else {
         var parse_ctx: ts_cli.ParseContext = .{};
@@ -2337,7 +2340,7 @@ pub fn main(init: std.process.Init) !void {
                 error.MissingValue => {
                     if (parse_ctx.missing_value_option.len > 0) {
                         const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2348,7 +2351,7 @@ pub fn main(init: std.process.Init) !void {
                 error.ConfigOnlyOption => {
                     if (parse_ctx.config_only_option.len > 0) {
                         const msg = ts_cli.optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(gpa, parse_ctx.config_only_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2359,7 +2362,7 @@ pub fn main(init: std.process.Init) !void {
                 error.ConfigOnlyBooleanOption => {
                     if (parse_ctx.config_only_option.len > 0) {
                         const msg = ts_cli.optionCanOnlyBeSpecifiedInTsconfigOrFalseOrNullDiagnostic(gpa, parse_ctx.config_only_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2370,7 +2373,7 @@ pub fn main(init: std.process.Init) !void {
                 error.InvalidEnumOption => {
                     if (parse_ctx.enum_option.len > 0 and parse_ctx.enum_allowed_values.len > 0) {
                         const msg = ts_cli.argumentForOptionMustBeDiagnostic(gpa, parse_ctx.enum_option, parse_ctx.enum_allowed_values) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2381,7 +2384,7 @@ pub fn main(init: std.process.Init) !void {
                 error.WatchOptionTypeMismatch => {
                     if (parse_ctx.watch_option.len > 0 and parse_ctx.watch_option_type.len > 0) {
                         const msg = ts_cli.watchOptionRequiresValueDiagnostic(gpa, parse_ctx.watch_option, parse_ctx.watch_option_type) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2391,7 +2394,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         opts_files_owned = true;
 
@@ -2401,15 +2404,15 @@ pub fn main(init: std.process.Init) !void {
             if (ts_cli.buildOnlyOptionInNormalMode(a)) |bn| {
                 const code: u32 = 5093;
                 const msg = std.fmt.allocPrint(gpa, "error TS{d}: Compiler option '--{s}' may only be used with '--build'.", .{ code, bn }) catch
-                    std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                    std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                 defer gpa.free(msg);
                 std.debug.print("{s}\n", .{msg});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
             if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
                 const code: u32 = 6369;
                 std.debug.print("error TS{d}: Option '--build' must be the first command line argument.\n", .{code});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         }
     }
@@ -2419,11 +2422,11 @@ pub fn main(init: std.process.Init) !void {
     // source files. Mirrors upstream `internal/execute/tsc.go`.
     if (opts.project != null and opts.files.len > 0) {
         const msg = projectMixedWithSourceFilesDiagnostic(gpa) catch {
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         defer gpa.free(msg);
         std.debug.print("{s}\n", .{msg});
-        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
     }
 
     // Resolve tsconfig BEFORE dispatch so a discovered tsconfig
@@ -2451,13 +2454,13 @@ pub fn main(init: std.process.Init) !void {
                 const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa, candidate);
                 defer gpa.free(msg);
                 std.debug.print("{s}\n", .{msg});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         } else if (!fileExistsOnDisk(gpa, proj)) {
             const msg = try specifiedPathDoesNotExistDiagnostic(gpa, proj);
             defer gpa.free(msg);
             std.debug.print("{s}\n", .{msg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
     }
 
@@ -2506,7 +2509,7 @@ pub fn main(init: std.process.Init) !void {
     if (dec.stderr_text.len > 0) {
         std.debug.print("{s}\n", .{dec.stderr_text});
     }
-    if (dec.code != .success) std.process.exit(@intFromEnum(dec.code));
+    if (dec.code != .success) std.process.exit(@backingInt(dec.code));
 
     if (opts.show_version or opts.show_help) return;
 
@@ -2532,7 +2535,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (loaded_cfg) |c| {
         if (try printConfigValidationDiagnostics(gpa, c)) {
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
     }
 
@@ -2726,8 +2729,11 @@ pub fn main(init: std.process.Init) !void {
     }
     if (extension_errors) std.process.exit(1);
 
+    var source_io_threaded = std.Io.Threaded.init(gpa, .{});
+    defer source_io_threaded.deinit();
+    const source_io = source_io_threaded.io();
     for (input_files.items) |path| {
-        const src = RealFs.read(gpa, path) catch |err| {
+        const src = RealFs.readWithIo(gpa, source_io, path) catch |err| {
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
             std.process.exit(1);
         };
