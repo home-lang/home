@@ -2232,7 +2232,13 @@ pub const Engine = struct {
     ///   "fresh"-type checks happen at the call-site, not here).
     ///   Method-vs-property mismatch is not yet enforced (Phase 6).
     fn computeObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
-        const target_members = self.interner.objectMembers(target);
+        // Recursive relation checks may intern optional unions and grow the
+        // type pool. Own both member lists before that can invalidate the
+        // interner-backed slices used throughout this function.
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target));
+        defer self.gpa.free(target_members);
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(source_members);
         const target_str_idx = self.interner.objectStringIndex(target);
         const target_num_idx = self.interner.objectNumberIndex(target);
         const target_sym_idx = self.interner.objectSymbolIndex(target);
@@ -2250,8 +2256,6 @@ pub const Engine = struct {
             var target_has_required = false;
             var source_has_named_member = false;
             var has_common_member = false;
-            const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
-            defer self.gpa.free(source_members);
             for (target_members) |tm| {
                 if (!tm.is_optional) target_has_required = true;
                 for (source_members) |sm| {
@@ -2283,7 +2287,7 @@ pub const Engine = struct {
             }
         }
         if (self.strict_null_checks) {
-            const source_members_for_index = self.interner.objectMembers(source);
+            const source_members_for_index = source_members;
             const target_has_any_string_index = target_str_idx == Primitive.any;
             if (target_str_idx != Primitive.none and !target_has_any_string_index) {
                 // Prefer a structural indexer; otherwise — but only
@@ -2373,15 +2377,11 @@ pub const Engine = struct {
                 }
             }
         }
-        const stable_target_members = try self.gpa.dupe(types.ObjectMember, target_members);
-        defer self.gpa.free(stable_target_members);
-        const stable_source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
-        defer self.gpa.free(stable_source_members);
-        for (stable_target_members) |tm| {
-            if (try self.someSourceMemberAssignableToTargetFromMembers(stable_source_members, tm)) {
+        for (target_members) |tm| {
+            if (try self.someSourceMemberAssignableToTargetFromMembers(source_members, tm)) {
                 continue;
             }
-            if (sourceObjectMembersHaveName(stable_source_members, tm.name)) return false;
+            if (sourceObjectMembersHaveName(source_members, tm.name)) return false;
             // No same-named member on source. For purely numeric
             // property names ("0", "1", …) fall back to source's
             // number-key indexer when wired. This is what makes
