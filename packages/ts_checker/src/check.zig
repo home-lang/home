@@ -188303,7 +188303,7 @@ test "checker: dynamic import exposes named export-equals target through default
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expression_not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
 }
 
 test "checker: re-export default alias from CommonJS module.exports target is allowed" {
