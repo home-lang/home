@@ -1321,8 +1321,36 @@ pub const HomeKernelCodegen = struct {
     }
 
     /// The declared type of an lvalue expression, or null if unknown.
+    /// The width a dereference of `operand` should load, from the pointee
+    /// type. Falls back to a machine word when the type is unknown or is an
+    /// aggregate, which is what the aggregate paths already assume.
+    fn derefLoadSize(self: *HomeKernelCodegen, operand: *ast.Expr) usize {
+        const ptr_type = self.typeOfLValue(operand) orelse return 8;
+        const pointee = pointeeType(ptr_type) orelse return 8;
+        return sizeOfPrimitive(pointee) orelse 8;
+    }
+
+    /// Whether a dereference of `operand` yields a signed value, so a narrow
+    /// load sign-extends rather than zero-extends.
+    fn derefIsSigned(self: *HomeKernelCodegen, operand: *ast.Expr) bool {
+        const ptr_type = self.typeOfLValue(operand) orelse return false;
+        const pointee = pointeeType(ptr_type) orelse return false;
+        return std.mem.eql(u8, pointee, "i8") or std.mem.eql(u8, pointee, "i16") or
+            std.mem.eql(u8, pointee, "i32") or std.mem.eql(u8, pointee, "isize");
+    }
+
     fn typeOfLValue(self: *HomeKernelCodegen, expr: *const ast.Expr) ?[]const u8 {
         switch (expr.*) {
+            // A cast states the type outright, and it is the only thing that
+            // does for `@as(*u32, @ptrFromInt(addr)).*` — the form used to
+            // read a hardware or bootloader structure. Without this the
+            // dereference falls back to a machine word and reads past the
+            // field.
+            .TypeCastExpr => |cast| return cast.target_type,
+            .ReflectExpr => |r| return switch (r.kind) {
+                .As, .PtrCast, .BitCast, .IntCast => r.target_type,
+                else => null,
+            },
             .Identifier => |id| {
                 if (self.local_types.get(id.name)) |t| return t;
                 if (self.global_vars.get(id.name)) |g| return g.type_name;
@@ -3618,7 +3646,28 @@ pub const HomeKernelCodegen = struct {
                         try self.writeAll("    sete %al\n");
                         try self.writeAll("    movzbq %al, %rax\n");
                     },
-                    .Deref => try self.writeAll("    movq (%rax), %rax\n"),
+                    .Deref => {
+                        // Load the pointee's width, not a machine word.
+                        // Reading eight bytes through a *u32 pulls in whatever
+                        // follows it: parse_boot_info_mb1 read Multiboot's
+                        // flags and mem_lower as a single value, and the
+                        // memory size printed empty.
+                        const size = self.derefLoadSize(unary.operand);
+                        const signed = self.derefIsSigned(unary.operand);
+                        if (signed and size < 8) {
+                            const insn = switch (size) {
+                                1 => "movsbq",
+                                2 => "movswq",
+                                4 => "movslq",
+                                else => unreachable,
+                            };
+                            try self.print("    {s} (%rax), %rax\n", .{insn});
+                        } else if (loadFor(size)) |ld| {
+                            try self.print("    {s} (%rax), %{s}\n", .{ ld.insn, ld.reg });
+                        } else {
+                            try self.writeAll("    movq (%rax), %rax\n");
+                        }
+                    },
                     else => {
                         try self.print("    # unsupported unary operator: {s}\n", .{@tagName(unary.op)});
                     },
