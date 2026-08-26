@@ -441,6 +441,56 @@ def generate_class_hierarchy(directory: Path, families: int) -> None:
     write(directory / "src/class-hierarchy.ts", "".join(blocks))
 
 
+def generate_structural_objects(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Target{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "  readonly nested: {\n"
+            "    readonly label: string;\n"
+            "    readonly optional?: { readonly active: boolean };\n"
+            "  };\n"
+            "  readonly pair: readonly [string, number];\n"
+            "  readonly flags: { readonly enabled: boolean } & { readonly visible: boolean };\n"
+            "  transform: <T extends { readonly value: number }>(input: T) => { readonly id: N; readonly input: T };\n"
+            "}\n\n"
+            f"type Source{index} = {{\n"
+            f"  readonly id: {index};\n"
+            "  readonly nested: {\n"
+            "    readonly label: string;\n"
+            "    readonly optional: { readonly active: boolean };\n"
+            "    readonly extra: number;\n"
+            "  };\n"
+            "  readonly pair: readonly [string, number];\n"
+            "  readonly flags: { readonly enabled: boolean; readonly visible: boolean; readonly extra: string };\n"
+            f"  transform: <T extends {{ readonly value: number }}>(input: T) => {{ readonly id: {index}; readonly input: T; readonly extra: boolean }};\n"
+            "  readonly extra: string;\n"
+            "};\n\n"
+            f"function transform{index}<T extends {{ readonly value: number }}>(input: T): {{ readonly id: {index}; readonly input: T; readonly extra: boolean }} {{\n"
+            f"  return {{ id: {index}, input, extra: true }};\n"
+            "}\n\n"
+            f"const source{index}: Source{index} = {{\n"
+            f"  id: {index},\n"
+            f'  nested: {{ label: "item-{index}", optional: {{ active: {active} }}, extra: {index} }},\n'
+            f'  pair: ["item-{index}", {index}],\n'
+            f'  flags: {{ enabled: {active}, visible: true, extra: "flag-{index}" }},\n'
+            f"  transform: transform{index},\n"
+            f'  extra: "source-{index}",\n'
+            "};\n\n"
+            f"const target{index}: Target{index}<{index}> = source{index};\n"
+            f"function consume{index}(value: Target{index}<{index}>): readonly [{index}, string, number, boolean, number] {{\n"
+            f"  const transformed = value.transform({{ value: {index}, label: \"value-{index}\" }});\n"
+            "  return [value.id, value.nested.label, value.pair[1], value.flags.visible, transformed.input.value];\n"
+            "}\n"
+            f"export const structuralResult{index}: readonly [{index}, string, number, boolean, number] = consume{index}(source{index});\n\n"
+        )
+    write(directory / "src/structural-objects.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -458,6 +508,7 @@ def cmd_corpus() -> None:
     generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
+    generate_structural_objects(CORPUS / "structural_objects", cfg["structural_object_families"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
