@@ -11,6 +11,7 @@
 //! the bulk of the logic remains testable.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ts_cli = @import("ts_cli");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
@@ -2176,8 +2177,10 @@ const CheckerResolverAdapter = struct {
 
 pub fn main(init: std.process.Init) !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
+    defer {
+        if (builtin.mode == .Debug) _ = gpa_state.deinit();
+    }
+    const gpa = if (builtin.mode == .Debug) gpa_state.allocator() else std.heap.smp_allocator;
 
     var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer args_arena.deinit();
