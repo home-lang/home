@@ -39100,6 +39100,7 @@ const harness_prelude =
     \\  let closeEmitted = false;
     \\  let closing = false;
     \\  let invalidFrames = 0;
+    \\  const inboundState = { role: "server", streams: session.__home_streams, expectingContinuation: 0, maxFrameSize: 16384, isIdleStream(streamId) { return !this.streams[streamId]; } };
     \\  socket._handle = { fd: __home_alloc_virtual_fd("http2-raw-client:" + String(port), "r") };
     \\  socket.destroyed = false;
     \\  socket.connecting = true;
@@ -39197,9 +39198,12 @@ const harness_prelude =
     \\      const streamId = input.readUInt32BE(5) & 0x7fffffff;
     \\      const payload = Buffer.from(input.subarray(9, 9 + length));
     \\      input = input.subarray(9 + length);
-    \\      if (type === 4 && streamId !== 0) { sendGoaway(1); return; }
+    \\      const frame = { length, type, flags, streamId, payload };
+    \\      let validation = __home_http2_validate_inbound_frame(frame, inboundState, "header");
+    \\      if (!validation) validation = __home_http2_validate_inbound_frame(frame, inboundState, "payload");
+    \\      if (validation && validation.connectionError) { sendGoaway(__home_http2_error_code(validation.connectionError)); return; }
+    \\      if (validation && validation.streamError) { sendRst(streamId, validation.streamError); continue; }
     \\      if (type === 4 && !(flags & 1)) {
-    \\        if (length % 6 !== 0) { sendGoaway(6); return; }
     \\        const update = {};
     \\        const custom = Object.assign(Object.create(null), session.remoteSettings.customSettings || {});
     \\        const knownSettings = { 1: "headerTableSize", 2: "enablePush", 3: "maxConcurrentStreams", 4: "initialWindowSize", 5: "maxFrameSize", 6: "maxHeaderListSize", 8: "enableConnectProtocol" };
@@ -40228,64 +40232,156 @@ const harness_prelude =
     \\  body.copy(frame, 9);
     \\  return frame;
     \\}
-    \\function __home_http2_goaway_frame(code) {
-    \\  const payload = Buffer.alloc(8);
-    \\  payload.writeUInt32BE(0, 0);
-    \\  payload.writeUInt32BE(Number(code) || 0, 4);
-    \\  return __home_http2_frame(7, 0, 0, payload);
-    \\}
-    \\function __home_http2_conformance_server_write(socket, bytes, callback) {
-    \\  const preface = Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-    \\  socket.__home_h2_conformance_buffer = Buffer.concat([socket.__home_h2_conformance_buffer || Buffer.alloc(0), Buffer.from(bytes)]);
-    \\  if (!socket.__home_h2_conformance_preface) {
-    \\    if (socket.__home_h2_conformance_buffer.length < preface.length) return true;
-    \\    if (!socket.__home_h2_conformance_buffer.subarray(0, preface.length).equals(preface)) return true;
-    \\    socket.__home_h2_conformance_buffer = socket.__home_h2_conformance_buffer.subarray(preface.length);
-    \\    socket.__home_h2_conformance_preface = true;
-    \\    socket.emit("data", __home_http2_frame(4, 0, 0, Buffer.alloc(0)));
-    \\  }
-    \\  while (socket.__home_h2_conformance_buffer.length >= 9) {
-    \\    const buffer = socket.__home_h2_conformance_buffer;
-    \\    const length = buffer.readUIntBE(0, 3);
-    \\    if (buffer.length < 9 + length) break;
-    \\    const type = buffer[3];
-    \\    const flags = buffer[4];
-    \\    const streamId = buffer.readUInt32BE(5) & 0x7fffffff;
-    \\    const payload = buffer.subarray(9, 9 + length);
-    \\    socket.__home_h2_conformance_buffer = buffer.subarray(9 + length);
-    \\    let errorCode = null;
-    \\    if (length > 16384) errorCode = 6;
-    \\    else if (type === 4) {
-    \\      if (streamId !== 0) errorCode = 1;
-    \\      else if ((flags & 1) && length !== 0) errorCode = 6;
-    \\      else if (!(flags & 1) && length % 6 !== 0) errorCode = 6;
-    \\      else if (!(flags & 1)) {
-    \\        for (let offset = 0; offset + 6 <= payload.length; offset += 6) {
-    \\          const id = payload.readUInt16BE(offset);
-    \\          const value = payload.readUInt32BE(offset + 2);
-    \\          if (id === 2 && value > 1) errorCode = 1;
-    \\          if (id === 4 && value > 0x7fffffff) errorCode = 3;
-    \\          if (id === 5 && (value < 16384 || value > 0xffffff)) errorCode = 1;
-    \\        }
-    \\        if (errorCode === null) socket.emit("data", __home_http2_frame(4, 1, 0, Buffer.alloc(0)));
-    \\      }
+    \\function __home_http2_validate_inbound_frame(frame, state, phase) {
+    \\  const type = Number(frame && frame.type);
+    \\  const flags = Number(frame && frame.flags);
+    \\  const streamId = Number(frame && frame.streamId);
+    \\  const length = Number(frame && frame.length);
+    \\  const expectedContinuation = Number(state && state.expectingContinuation) || 0;
+    \\  const connection = name => ({ connectionError: name });
+    \\  if (phase === "header") {
+    \\    if (length > Number(state && state.maxFrameSize || 16384)) return connection("NGHTTP2_FRAME_SIZE_ERROR");
+    \\    if (expectedContinuation && (type !== 9 || streamId !== expectedContinuation)) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    if (type === 4) {
+    \\      if (streamId !== 0) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\      if ((flags & 1) ? length !== 0 : length % 6 !== 0) return connection("NGHTTP2_FRAME_SIZE_ERROR");
     \\    } else if (type === 6) {
-    \\      if (length !== 8) errorCode = 6;
-    \\      else if (streamId !== 0) errorCode = 1;
-    \\      else if (!(flags & 1)) socket.emit("data", __home_http2_frame(6, 1, 0, payload));
+    \\      if (length !== 8) return connection("NGHTTP2_FRAME_SIZE_ERROR");
+    \\      if (streamId !== 0) return connection("NGHTTP2_PROTOCOL_ERROR");
     \\    } else if (type === 8) {
-    \\      if (length !== 4) errorCode = 6;
-    \\      else if ((payload.readUInt32BE(0) & 0x7fffffff) === 0) errorCode = 1;
-    \\    } else if (type === 1 && streamId === 0) errorCode = 1;
-    \\    else if (type === 0 && streamId === 0) errorCode = 1;
-    \\    else if (type === 2 && length !== 5) errorCode = 6;
-    \\    else if (type === 3 && length !== 4) errorCode = 6;
-    \\    else if (type === 3) errorCode = 1;
-    \\    else if (type === 9) errorCode = 1;
-    \\    if (errorCode !== null) socket.emit("data", __home_http2_goaway_frame(errorCode));
+    \\      if (length !== 4) return connection("NGHTTP2_FRAME_SIZE_ERROR");
+    \\    } else if (type === 1 || type === 0) {
+    \\      if (streamId === 0) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    } else if (type === 2) {
+    \\      if (length !== 5) return connection("NGHTTP2_FRAME_SIZE_ERROR");
+    \\      if (streamId === 0) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    } else if (type === 3) {
+    \\      if (length !== 4) return connection("NGHTTP2_FRAME_SIZE_ERROR");
+    \\      if (streamId === 0 || state && typeof state.isIdleStream === "function" && state.isIdleStream(streamId)) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    } else if (type === 9) {
+    \\      if (!expectedContinuation || streamId !== expectedContinuation) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    }
+    \\    if (type === 0 && state && state.role === "client") {
+    \\      const promised = state.promised && state.promised[streamId];
+    \\      if (promised && !promised.headersSeen) return { streamError: 5 };
+    \\      const stream = promised ? promised.stream : state.streams && state.streams[streamId];
+    \\      if (stream && Number.isFinite(stream.__home_receive_window)) {
+    \\        if (length > stream.__home_receive_window) return { streamError: 3 };
+    \\        stream.__home_receive_window -= length;
+    \\      }
+    \\      if (Number.isFinite(state.connectionReceiveWindow)) {
+    \\        if (length > state.connectionReceiveWindow) return connection("NGHTTP2_FLOW_CONTROL_ERROR");
+    \\        state.connectionReceiveWindow -= length;
+    \\      }
+    \\    }
+    \\    return null;
     \\  }
-    \\  if (typeof callback === "function") callback();
-    \\  return true;
+    \\  const payload = frame && frame.payload || Buffer.alloc(0);
+    \\  if (type === 4 && !(flags & 1)) {
+    \\    for (let offset = 0; offset + 6 <= payload.length; offset += 6) {
+    \\      const id = payload.readUInt16BE(offset);
+    \\      const value = payload.readUInt32BE(offset + 2);
+    \\      if (id === 2 && value > 1) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\      if (id === 4 && value > 0x7fffffff) return connection("NGHTTP2_FLOW_CONTROL_ERROR");
+    \\      if (id === 5 && (value < 16384 || value > 0xffffff)) return connection("NGHTTP2_PROTOCOL_ERROR");
+    \\    }
+    \\  } else if (type === 8) {
+    \\    const increment = payload.readUInt32BE(0) & 0x7fffffff;
+    \\    if (increment === 0) return streamId === 0 ? connection("NGHTTP2_PROTOCOL_ERROR") : { streamError: 1 };
+    \\  }
+    \\  if (state) {
+    \\    if ((type === 1 || type === 5) && !(flags & 4)) state.expectingContinuation = streamId;
+    \\    else if (type === 9 && (flags & 4)) state.expectingContinuation = 0;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_http2_error_code(name) {
+    \\  return ({ NGHTTP2_PROTOCOL_ERROR: 1, NGHTTP2_FLOW_CONTROL_ERROR: 3, NGHTTP2_STREAM_CLOSED: 5, NGHTTP2_FRAME_SIZE_ERROR: 6 })[String(name)] || 1;
+    \\}
+    \\function __home_http2_incremental_frame_parser(handlers) {
+    \\  let input = Buffer.alloc(0);
+    \\  let frame = null;
+    \\  let failed = false;
+    \\  function fail(name) { if (failed) return; failed = true; if (handlers && typeof handlers.onError === "function") handlers.onError(name); }
+    \\  function finishFrame() { const completed = frame; frame = null; if (handlers && typeof handlers.onFrame === "function") handlers.onFrame(completed); }
+    \\  return { push(chunk) {
+    \\    if (failed) return;
+    \\    input = Buffer.concat([input, Buffer.from(chunk)]);
+    \\    while (!failed) {
+    \\      if (!frame) {
+    \\        if (input.length < 9) return;
+    \\        const length = input.readUIntBE(0, 3);
+    \\        frame = { length, type: input[3], flags: input[4], streamId: input.readUInt32BE(5) & 0x7fffffff, payload: Buffer.alloc(0), dataLength: 0, remaining: length, padLength: 0, paddingRemaining: 0, paddingRead: false };
+    \\        input = input.subarray(9);
+    \\        if (length > 16384) { fail("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\        if (handlers && typeof handlers.onHeader === "function") { const validation = handlers.onHeader(frame); if (validation && validation.connectionError) { fail(validation.connectionError); return; } }
+    \\        if (frame.type === 0 && (frame.flags & 8) && length === 0) { fail("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\      }
+    \\      if (frame.type === 0) {
+    \\        if ((frame.flags & 8) && !frame.paddingRead) {
+    \\          if (input.length === 0) return;
+    \\          frame.padLength = input[0];
+    \\          frame.paddingRead = true;
+    \\          frame.remaining--;
+    \\          input = input.subarray(1);
+    \\          if (frame.padLength > frame.remaining) { fail("NGHTTP2_PROTOCOL_ERROR"); return; }
+    \\          frame.paddingRemaining = frame.padLength;
+    \\        }
+    \\        const dataRemaining = frame.remaining - frame.paddingRemaining;
+    \\        if (dataRemaining > 0 && input.length > 0) {
+    \\          const size = Math.min(dataRemaining, input.length);
+    \\          const data = input.subarray(0, size);
+    \\          input = input.subarray(size);
+    \\          frame.remaining -= size;
+    \\          frame.dataLength += size;
+    \\          if (handlers && typeof handlers.onData === "function") handlers.onData(frame, data);
+    \\          if (failed) return;
+    \\          continue;
+    \\        }
+    \\        if (frame.paddingRemaining > 0 && input.length > 0) {
+    \\          const size = Math.min(frame.paddingRemaining, input.length);
+    \\          input = input.subarray(size);
+    \\          frame.remaining -= size;
+    \\          frame.paddingRemaining -= size;
+    \\          continue;
+    \\        }
+    \\        if (frame.remaining !== 0) return;
+    \\        finishFrame();
+    \\        continue;
+    \\      }
+    \\      if (input.length < frame.remaining) return;
+    \\      let payload = input.subarray(0, frame.remaining);
+    \\      input = input.subarray(frame.remaining);
+    \\      frame.remaining = 0;
+    \\      if ((frame.type === 1 || frame.type === 5) && (frame.flags & 8)) {
+    \\        if (payload.length === 0) { fail("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\        frame.padLength = payload[0];
+    \\        if (frame.padLength >= payload.length) { fail("NGHTTP2_PROTOCOL_ERROR"); return; }
+    \\        payload = payload.subarray(1, payload.length - frame.padLength);
+    \\      }
+    \\      if (frame.type === 1 && (frame.flags & 32)) {
+    \\        if (payload.length < 5) { fail("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\        payload = payload.subarray(5);
+    \\      }
+    \\      frame.payload = payload;
+    \\      finishFrame();
+    \\    }
+    \\  } };
+    \\}
+    \\function __home_http2_data_frames(streamId, value, flags, paddingStrategy, encoding) {
+    \\  const data = value === undefined || value === null ? Buffer.alloc(0) : (typeof value === "string" ? Buffer.from(value, encoding || "utf8") : Buffer.from(value));
+    \\  if (data.length === 0) return [__home_http2_frame(0, flags, streamId, Buffer.alloc(0))];
+    \\  const maximumPadding = Number(paddingStrategy) === __home_http2_constants.PADDING_STRATEGY_MAX;
+    \\  const padLength = maximumPadding ? 255 : 0;
+    \\  const capacity = 16384 - (padLength > 0 ? padLength + 1 : 0);
+    \\  const frames = [];
+    \\  for (let offset = 0; offset < data.length; offset += capacity) {
+    \\    const part = data.subarray(offset, Math.min(data.length, offset + capacity));
+    \\    const final = offset + part.length === data.length;
+    \\    if (padLength > 0) frames.push(__home_http2_frame(0, 8 | (final ? flags : 0), streamId, Buffer.concat([Buffer.from([padLength]), part, Buffer.alloc(padLength)])));
+    \\    else frames.push(__home_http2_frame(0, final ? flags : 0, streamId, part));
+    \\  }
+    \\  return frames;
     \\}
     \\function __home_http2_response_frames(response) {
     \\  const status = Number(response && response.statusCode) || 200;
@@ -40399,10 +40495,24 @@ const harness_prelude =
     \\  Promise.resolve().then(() => __home_http2_unbind_session_socket(client));
     \\  if (client.__home_server_session && typeof client.__home_server_session.close === "function") client.__home_server_session.close();
     \\}
-    \\function __home_http2_conformance_connect(authority, options) {
+    \\function __home_http2_acknowledge_local_settings(client) {
+    \\  const acknowledged = client.__home_pending_local_settings.shift();
+    \\  if (!acknowledged) return null;
+    \\  const previousWindow = Number(client.__home_effective_local_settings.initialWindowSize);
+    \\  const nextWindow = acknowledged.initialWindowSize === undefined ? previousWindow : Number(acknowledged.initialWindowSize);
+    \\  client.__home_effective_local_settings = Object.assign({}, client.__home_effective_local_settings, acknowledged);
+    \\  client.localSettings = Object.assign({}, client.__home_effective_local_settings);
+    \\  const delta = nextWindow - previousWindow;
+    \\  if (delta !== 0) {
+    \\    for (const stream of Object.values(client.__home_streams || {})) if (stream && Number.isFinite(stream.__home_receive_window)) stream.__home_receive_window += delta;
+    \\    for (const entry of Object.values(client.__home_promised || {})) if (entry && entry.stream && Number.isFinite(entry.stream.__home_receive_window)) entry.stream.__home_receive_window += delta;
+    \\  }
+    \\  return acknowledged;
+    \\}
+    \\function __home_http2_raw_connect(authority, options, suppliedSocket) {
     \\  const port = __home_http2_port(authority);
-    \\  const socket = __home_net_connect({ port, host: "127.0.0.1" });
-    \\  const client = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null), __home_promised: Object.create(null), __home_buffer: Buffer.alloc(0), __home_next_stream_id: 1, __home_header_block: null, __home_failed: false });
+    \\  const socket = suppliedSocket || __home_net_connect({ port, host: "127.0.0.1" });
+    \\  const client = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null), __home_promised: Object.create(null), __home_next_stream_id: 1, __home_header_block: null, __home_failed: false, __home_pending_local_settings: [], __home_effective_local_settings: { initialWindowSize: 65535 }, localSettings: { initialWindowSize: 65535 } });
     \\  client.__home_invalid_frames = 0;
     \\  function writeFrame(type, flags, streamId, payload) { socket.write(__home_http2_frame(type, flags, streamId, payload || Buffer.alloc(0))); }
     \\  function failSession(errorName) {
@@ -40426,30 +40536,35 @@ const harness_prelude =
     \\    client.emit("error", error);
     \\  }
     \\  const initialWindow = Number(options && options.settings && options.settings.initialWindowSize) || 65535;
+    \\  client.__home_pending_local_settings.push({ initialWindowSize: initialWindow });
     \\  const settingsPayload = Buffer.alloc(6);
     \\  settingsPayload.writeUInt16BE(4, 0);
     \\  settingsPayload.writeUInt32BE(initialWindow, 2);
     \\  socket.write(Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), __home_http2_frame(4, 0, 0, settingsPayload)]));
     \\  client.settings = function(values) {
+    \\    const submitted = Object.assign({}, values || {});
+    \\    submitted.initialWindowSize = Number(submitted.initialWindowSize) || 65535;
     \\    const payload = Buffer.alloc(6);
     \\    payload.writeUInt16BE(4, 0);
-    \\    payload.writeUInt32BE(Number(values && values.initialWindowSize) || 65535, 2);
+    \\    payload.writeUInt32BE(submitted.initialWindowSize, 2);
+    \\    this.__home_pending_local_settings.push(submitted);
     \\    writeFrame(4, 0, 0, payload);
     \\    return this;
     \\  };
-    \\  client.request = function(headers) {
+    \\  client.request = function(headers, requestOptions) {
     \\    const id = this.__home_next_stream_id;
     \\    this.__home_next_stream_id += 2;
-    \\    const stream = Object.assign(__home_http_event_target(), { id, closed: false, destroyed: false });
+    \\    const stream = Object.assign(__home_http_event_target(), { id, session: this, closed: false, destroyed: false, rstCode: 0, __home_receive_window: Number(this.__home_effective_local_settings.initialWindowSize) });
+    \\    Object.setPrototypeOf(stream, __home_http2_ClientHttp2Stream.prototype);
     \\    stream.setEncoding = function(value) { this.__home_encoding = String(value || ""); return this; };
     \\    stream.resume = function() { this.__home_resumed = true; return this; };
     \\    stream.pause = function() { this.__home_resumed = false; return this; };
-    \\    stream.write = function() { return true; };
-    \\    stream.end = function() { return this; };
+    \\    stream.write = function(chunk, encoding, callback) { const cb = typeof encoding === "function" ? encoding : callback; const codec = typeof encoding === "string" ? encoding : undefined; for (const frame of __home_http2_data_frames(id, chunk, 0, requestOptions && requestOptions.paddingStrategy, codec)) socket.write(frame); if (typeof cb === "function") Promise.resolve().then(() => cb()); return true; };
+    \\    stream.end = function(chunk, encoding, callback) { if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; } const cb = typeof encoding === "function" ? encoding : callback; const codec = typeof encoding === "string" ? encoding : undefined; for (const frame of __home_http2_data_frames(id, chunk, 1, requestOptions && requestOptions.paddingStrategy, codec)) socket.write(frame); if (typeof cb === "function") Promise.resolve().then(() => cb()); return this; };
     \\    stream.close = function(code) { writeFrame(3, 0, id, Buffer.from([0, 0, 0, Number(code) || 0])); this.closed = true; this.emit("close"); return this; };
     \\    stream.destroy = stream.close;
     \\    this.__home_streams[id] = stream;
-    \\    writeFrame(1, 5, id, Buffer.from([0x82]));
+    \\    writeFrame(1, 4, id, Buffer.from([0x82]));
     \\    void headers;
     \\    return stream;
     \\  };
@@ -40457,51 +40572,64 @@ const harness_prelude =
     \\  client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); socket.destroy(); return this.close(); };
     \\  socket.on("connect", () => client.emit("connect"));
     \\  socket.on("error", error => client.emit("error", error));
-    \\  socket.on("data", chunk => {
-    \\    client.__home_buffer = Buffer.concat([client.__home_buffer, Buffer.from(chunk)]);
-    \\    while (client.__home_buffer.length >= 9) {
-    \\      const length = client.__home_buffer.readUIntBE(0, 3);
-    \\      if (client.__home_buffer.length < 9 + length) break;
-    \\      const type = client.__home_buffer[3];
-    \\      const flags = client.__home_buffer[4];
-    \\      const streamId = client.__home_buffer.readUInt32BE(5) & 0x7fffffff;
-    \\      const payload = client.__home_buffer.subarray(9, 9 + length);
-    \\      client.__home_buffer = client.__home_buffer.subarray(9 + length);
-    \\      if (client.__home_failed) continue;
-    \\      if (length > 16384) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); continue; }
-    \\      if (client.__home_header_block && type !== 9) { failSession("NGHTTP2_PROTOCOL_ERROR"); continue; }
-    \\      if (type === 7 && length < 8) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); continue; }
-    \\      if (type === 3 && streamId === 0) { failSession("NGHTTP2_PROTOCOL_ERROR"); continue; }
-    \\      if (type === 3 && length !== 4) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); continue; }
-    \\      if (type === 2 && length !== 5) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); continue; }
-    \\      if (type === 4 && !(flags & 1)) writeFrame(4, 1, 0, Buffer.alloc(0));
+    \\  const inboundState = { role: "client", streams: client.__home_streams, promised: client.__home_promised, expectingContinuation: 0, maxFrameSize: 16384, connectionReceiveWindow: 65535, isIdleStream(streamId) { return !this.streams[streamId] && !this.promised[streamId] && (streamId % 2 === 0 || streamId >= client.__home_next_stream_id); } };
+    \\  function validateHeader(frame) {
+    \\    const validation = __home_http2_validate_inbound_frame(frame, inboundState, "header");
+    \\    if (validation && validation.streamError) { frame.__home_rejected = true; writeFrame(3, 0, frame.streamId, Buffer.from([0, 0, 0, validation.streamError])); return null; }
+    \\    return validation;
+    \\  }
+    \\  function handleData(frame, payload) {
+    \\    if (client.__home_failed) return;
+    \\    if (frame.__home_rejected) return;
+    \\    const promised = client.__home_promised[frame.streamId];
+    \\    if (promised && !promised.headersSeen) { if (!frame.__home_rejected) { frame.__home_rejected = true; writeFrame(3, 0, frame.streamId, Buffer.from([0, 0, 0, 5])); } return; }
+    \\    const stream = promised ? promised.stream : client.__home_streams[frame.streamId];
+    \\    if (stream && payload.length > 0) stream.emit("data", stream.__home_encoding ? payload.toString(stream.__home_encoding) : payload);
+    \\  }
+    \\  function handleFrame(frame) {
+    \\      const length = frame.length;
+    \\      const type = frame.type;
+    \\      const flags = frame.flags;
+    \\      const streamId = frame.streamId;
+    \\      const payload = frame.payload;
+    \\      if (client.__home_failed) return;
+    \\      const payloadValidation = __home_http2_validate_inbound_frame(frame, inboundState, "payload");
+    \\      if (payloadValidation && payloadValidation.connectionError) { failSession(payloadValidation.connectionError); return; }
+    \\      if (payloadValidation && payloadValidation.streamError) { if (!frame.__home_rejected) writeFrame(3, 0, streamId, Buffer.from([0, 0, 0, payloadValidation.streamError])); return; }
+    \\      if (client.__home_header_block && type !== 9) { failSession("NGHTTP2_PROTOCOL_ERROR"); return; }
+    \\      if (type === 7 && length < 8) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\      if (type === 3 && streamId === 0) { failSession("NGHTTP2_PROTOCOL_ERROR"); return; }
+    \\      if (type === 3 && length !== 4) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\      if (type === 2 && length !== 5) { failSession("NGHTTP2_FRAME_SIZE_ERROR"); return; }
+    \\      if (type === 4 && (flags & 1)) __home_http2_acknowledge_local_settings(client);
+    \\      else if (type === 4) writeFrame(4, 1, 0, Buffer.alloc(0));
     \\      else if (type === 6 && !(flags & 1) && streamId === 0 && length === 8) writeFrame(6, 1, 0, payload);
     \\      else if (type === 5 && payload.length >= 4) {
     \\        const promisedId = payload.readUInt32BE(0) & 0x7fffffff;
-    \\        const pushed = Object.assign(__home_http_event_target(), { id: promisedId, closed: false, destroyed: false, aborted: false });
+    \\        const pushed = Object.assign(__home_http_event_target(), { id: promisedId, closed: false, destroyed: false, aborted: false, __home_receive_window: Number(client.__home_effective_local_settings.initialWindowSize) });
     \\        Object.setPrototypeOf(pushed, __home_http2_Http2Stream.prototype);
     \\        client.__home_promised[promisedId] = { stream: pushed, headersSeen: false };
     \\        client.emit("stream", pushed, {}, flags);
     \\      } else if (type === 1) {
     \\        if (!(flags & 4)) {
     \\          client.__home_header_block = { streamId, chunks: [Buffer.from(payload)], length: payload.length };
-    \\          continue;
+    \\          return;
     \\        }
-    \\        if (payload.length > 0 && payload[0] === 0x48 && payload.length < 70) { failSession("NGHTTP2_COMPRESSION_ERROR"); continue; }
+    \\        if (payload.length > 0 && payload[0] === 0x48 && payload.length < 70) { failSession("NGHTTP2_COMPRESSION_ERROR"); return; }
     \\        const promised = client.__home_promised[streamId];
     \\        if (promised) promised.headersSeen = true;
     \\        const stream = client.__home_streams[streamId];
     \\        if (stream) stream.emit("response", { ":status": 200 }, flags);
     \\      } else if (type === 9) {
     \\        const block = client.__home_header_block;
-    \\        if (!block || block.streamId !== streamId) { failSession("NGHTTP2_PROTOCOL_ERROR"); continue; }
+    \\        if (!block || block.streamId !== streamId) { failSession("NGHTTP2_PROTOCOL_ERROR"); return; }
     \\        block.chunks.push(Buffer.from(payload));
     \\        block.length += payload.length;
-    \\        if (block.length > 65535) { client.__home_header_block = null; failSession("NGHTTP2_ENHANCE_YOUR_CALM"); continue; }
+    \\        if (block.length > 65535) { client.__home_header_block = null; failSession("NGHTTP2_ENHANCE_YOUR_CALM"); return; }
     \\        if (flags & 4) {
     \\          const joined = Buffer.concat(block.chunks);
     \\          client.__home_header_block = null;
-    \\          if (joined.length > 0 && joined[0] === 0x48 && joined.length < 70) { failSession("NGHTTP2_COMPRESSION_ERROR"); continue; }
+    \\          if (joined.length > 0 && joined[0] === 0x48 && joined.length < 70) { failSession("NGHTTP2_COMPRESSION_ERROR"); return; }
     \\          if (joined.length === 70 && joined[0] === 0x48) emitKnownResponse(streamId, flags);
     \\          else {
     \\            const stream = client.__home_streams[streamId];
@@ -40509,15 +40637,15 @@ const harness_prelude =
     \\          }
     \\        }
     \\      } else if (type === 0) {
-    \\        if (payload.length === 0 && !(flags & 1)) { client.__home_invalid_frames++; if (client.__home_invalid_frames > Number(options && options.maxSessionInvalidFrames || 0)) { failInvalidFrame(); continue; } }
+    \\        if (frame.dataLength === 0 && !(flags & 1)) { client.__home_invalid_frames++; if (client.__home_invalid_frames > Number(options && options.maxSessionInvalidFrames || 0)) { failInvalidFrame(); return; } }
     \\        const promised = client.__home_promised[streamId];
-    \\        if (promised && !promised.headersSeen) { writeFrame(3, 0, streamId, Buffer.from([0, 0, 0, 5])); continue; }
+    \\        if (promised && !promised.headersSeen) { if (!frame.__home_rejected) writeFrame(3, 0, streamId, Buffer.from([0, 0, 0, 5])); return; }
     \\        const stream = promised ? promised.stream : client.__home_streams[streamId];
-    \\        if (stream && payload.length > 0) stream.emit("data", stream.__home_encoding ? payload.toString(stream.__home_encoding) : payload);
     \\        if (stream && (flags & 1)) { stream.closed = true; stream.emit("end"); stream.emit("close"); }
     \\      }
-    \\    }
-    \\  });
+    \\  }
+    \\  const parser = __home_http2_incremental_frame_parser({ onHeader: validateHeader, onData: handleData, onFrame: handleFrame, onError: failSession });
+    \\  socket.on("data", chunk => parser.push(chunk));
     \\  return client;
     \\}
     \\function __home_http2_connect(authority, options, connectListener) {
@@ -40525,7 +40653,18 @@ const harness_prelude =
     \\  options = options || {};
     \\  const rawAuthorityPort = __home_http2_port(authority);
     \\  const rawNetServer = typeof __home_net_servers === "object" ? __home_net_servers[rawAuthorityPort] : null;
-    \\  if (rawNetServer && /(?:js\/node\/http2\/(?:h2-conformance\.test\.ts|node-http2\.test\.js)|js\/node\/test\/parallel\/test-http2-empty-frame-without-eof\.js)$/.test(String(globalThis.__home_current_filename || ""))) return __home_http2_conformance_connect(authority, options);
+    \\  const rawAuthorityIsSecure = /^https:/i.test(String(authority)) || String(options.protocol || "").toLowerCase() === "https:";
+    \\  let probedRawTransport = null;
+    \\  if (rawNetServer && !rawAuthorityIsSecure && typeof options.createConnection !== "function") {
+    \\    probedRawTransport = __home_net_connect({ port: rawAuthorityPort, host: "127.0.0.1", __home_sync_accept: true });
+    \\    const probedPeer = probedRawTransport && probedRawTransport.__home_peer;
+    \\    const usesModeledTransport = probedPeer && (probedPeer.__home_first_io === "read" || probedPeer.__home_http2_server);
+    \\    if (!usesModeledTransport) {
+    \\      const rawClient = __home_http2_raw_connect(authority, options, probedRawTransport);
+    \\      if (typeof connectListener === "function") rawClient.once("connect", connectListener);
+    \\      return rawClient;
+    \\    }
+    \\  }
     \\  const authorityUrl = __home_http2_authority_url(authority, options);
     \\  const authorityTextMatch = typeof authority === "string" ? String(authority).match(/^[a-z][a-z0-9+.-]*:\/\/([^\/?#]+)/i) : null;
     \\  const authorityHostHeader = authorityTextMatch ? authorityTextMatch[1] : authorityUrl.host;
@@ -40673,7 +40812,7 @@ const harness_prelude =
     \\    Promise.resolve().then(() => { if (!client.destroyed && !client.closed) client.emit("altsvc", alt, normalizedOrigin, 0); });
     \\    return undefined;
     \\  };
-    \\  let suppliedTransport = typeof options.createConnection === "function" ? options.createConnection(authorityUrl, options) : null;
+    \\  let suppliedTransport = typeof options.createConnection === "function" ? options.createConnection(authorityUrl, options) : probedRawTransport;
     \\  if (!server) server = __home_http2_transport_server(suppliedTransport);
     \\  if (!suppliedTransport && rawNetServer && globalThis.__home_modules["net"] && typeof globalThis.__home_modules["net"].connect === "function") suppliedTransport = globalThis.__home_modules["net"].connect({ port: authorityPort, host: connectHost, localAddress: options.localAddress, family: options.family, __home_sync_accept: true });
     \\  if (!server) server = __home_http2_transport_server(suppliedTransport);
@@ -63119,7 +63258,7 @@ const harness_prelude =
     \\    peer.__home_hostname = hostname;
     \\    function installReadableQueue(endpoint) {
     \\      endpoint.__home_read_buffer = Buffer.alloc(0);
-    \\      endpoint.read = function(size) { const requested = size === undefined ? this.__home_read_buffer.length : Math.max(0, Math.trunc(Number(size) || 0)); if (this.__home_read_buffer.length === 0 || requested > this.__home_read_buffer.length) return null; const output = this.__home_read_buffer.subarray(0, requested); this.__home_read_buffer = this.__home_read_buffer.subarray(requested); return output; };
+    \\      endpoint.read = function(size) { if (!this.__home_first_io) this.__home_first_io = "read"; const requested = size === undefined ? this.__home_read_buffer.length : Math.max(0, Math.trunc(Number(size) || 0)); if (this.__home_read_buffer.length === 0 || requested > this.__home_read_buffer.length) return null; const output = this.__home_read_buffer.subarray(0, requested); this.__home_read_buffer = this.__home_read_buffer.subarray(requested); return output; };
     \\      endpoint.unshift = function(chunk) { const payload = Buffer.from(__home_net_bytes(chunk)); this.__home_read_buffer = Buffer.concat([payload, this.__home_read_buffer]); return this.__home_read_buffer.length; };
     \\      endpoint.__home_receive_bytes = function(payload) { this.__home_read_buffer = Buffer.concat([this.__home_read_buffer, payload]); this.emit("readable"); const readable = this.__home_read_buffer; this.__home_read_buffer = Buffer.alloc(0); if (readable.length > 0 && !this.__home_paused) this.emit("data", this.__home_encoding ? readable.toString(this.__home_encoding) : readable); };
     \\    }
@@ -63133,9 +63272,12 @@ const harness_prelude =
     \\    peer.pause = function() { this.__home_paused = true; return this; };
     \\    peer.resume = function() { this.__home_paused = false; return this; };
     \\    peer.setEncoding = function(value) { this.__home_encoding = String(value || "utf8"); return this; };
+    \\    client.setNoDelay = peer.setNoDelay = function(enabled) { this.__home_no_delay = enabled === undefined ? true : !!enabled; return this; };
+    \\    client.setKeepAlive = peer.setKeepAlive = function(enabled, delay) { this.keepAlive = !!enabled; this.keepAliveInitialDelay = Number(delay) || 0; return this; };
     \\    client.setTimeout = function(timeout, callback) { return __home_net_set_idle_timeout(this, timeout, callback); };
     \\    peer.setTimeout = function(timeout, callback) { return __home_net_set_idle_timeout(this, timeout, callback); };
     \\    client.write = function(chunk, callback) {
+    \\      if (!this.__home_first_io) this.__home_first_io = "write";
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
     \\        peer.__home_receive_bytes(payload);
@@ -63144,6 +63286,7 @@ const harness_prelude =
     \\      return true;
     \\    };
     \\    peer.write = function(chunk, callback) {
+    \\      if (!this.__home_first_io) this.__home_first_io = "write";
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
     \\        __home_net_refresh_idle_timeout(client);
@@ -63265,10 +63408,6 @@ const harness_prelude =
     \\        if (typeof callback === "function") callback();
     \\      });
     \\      return true;
-    \\    }
-    \\    const conformanceH2Server = typeof __home_http2_servers === "object" ? __home_http2_servers[port] : null;
-    \\    if (conformanceH2Server && String(globalThis.__home_current_filename || "").endsWith("js/node/http2/h2-conformance.test.ts")) {
-    \\      return __home_http2_conformance_server_write(socket, bytes, callback);
     \\    }
     \\    const h2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     \\    socket.__home_h2c_pending = Buffer.concat([socket.__home_h2c_pending || Buffer.alloc(0), Buffer.from(bytes)]);
@@ -127951,9 +128090,13 @@ test "bootstrap runner mirrors complete node HTTP/2 protocol conformance" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "server sends a SETTINGS frame first") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "DATA on a promised stream before its response HEADERS is refused") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "an ACK applies to the oldest outstanding SETTINGS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_conformance_server_write(socket, bytes, callback)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_conformance_connect(authority, options)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "else inMemoryServer.emit(\"connection\", peer)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_validate_inbound_frame(frame, state, phase)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_raw_connect(authority, options, suppliedSocket)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http2_acknowledge_local_settings(client)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http2_conformance_server_write") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "h2-conformance.test.ts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const usesModeledTransport = probedPeer && (probedPeer.__home_first_io === \"read\" || probedPeer.__home_http2_server)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (rawNetServer && /") == null);
 
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
     defer summary.deinit(std.testing.allocator);
@@ -127965,6 +128108,51 @@ test "bootstrap runner mirrors complete node HTTP/2 protocol conformance" {
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 23), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner enforces shared HTTP/2 inbound validation and SETTINGS ACK order" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert");
+        \\const frame = (type, flags, streamId, payload) => ({ type, flags, streamId, length: payload.length, payload });
+        \\const connectionError = (value, name) => assert.strictEqual(value && value.connectionError, name);
+        \\test("shared validator rejects malformed connection frames before DATA delivery", () => { const server = { role: "server", streams: Object.create(null), expectingContinuation: 0, maxFrameSize: 16384, isIdleStream(id) { return !this.streams[id]; } }; connectionError(__home_http2_validate_inbound_frame(frame(4, 1, 0, Buffer.alloc(6)), server, "header"), "NGHTTP2_FRAME_SIZE_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(8, 0, 0, Buffer.alloc(3)), server, "header"), "NGHTTP2_FRAME_SIZE_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(8, 0, 0, Buffer.alloc(4)), server, "payload"), "NGHTTP2_PROTOCOL_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(3, 0, 1, Buffer.alloc(4)), server, "header"), "NGHTTP2_PROTOCOL_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(1, 4, 0, Buffer.from([0x82])), server, "header"), "NGHTTP2_PROTOCOL_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(0, 0, 0, Buffer.from("x")), server, "header"), "NGHTTP2_PROTOCOL_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(2, 0, 1, Buffer.alloc(4)), server, "header"), "NGHTTP2_FRAME_SIZE_ERROR"); connectionError(__home_http2_validate_inbound_frame(frame(9, 4, 1, Buffer.from([0x82])), server, "header"), "NGHTTP2_PROTOCOL_ERROR"); const setting = (id, value) => { const payload = Buffer.alloc(6); payload.writeUInt16BE(id, 0); payload.writeUInt32BE(value, 2); return frame(4, 0, 0, payload); }; connectionError(__home_http2_validate_inbound_frame(setting(2, 2), server, "payload"), "NGHTTP2_PROTOCOL_ERROR"); connectionError(__home_http2_validate_inbound_frame(setting(4, 0x80000000), server, "payload"), "NGHTTP2_FLOW_CONTROL_ERROR"); connectionError(__home_http2_validate_inbound_frame(setting(5, 1000), server, "payload"), "NGHTTP2_PROTOCOL_ERROR"); assert.strictEqual(__home_http2_validate_inbound_frame(frame(0xef, 8, 0, Buffer.from([9, 9, 9])), server, "header"), null); let delivered = 0; const failures = []; const parser = __home_http2_incremental_frame_parser({ onHeader(candidate) { return __home_http2_validate_inbound_frame(candidate, server, "header"); }, onData() { delivered++; }, onError(error) { failures.push(error); } }); parser.push(__home_http2_frame(0, 0, 0, Buffer.from("x"))); assert.strictEqual(delivered, 0); assert.deepStrictEqual(failures, ["NGHTTP2_PROTOCOL_ERROR"]); });
+        \\test("oldest SETTINGS ACK becomes effective before the next submission", () => { const stream = { __home_receive_window: 65535 }; const client = { __home_pending_local_settings: [{ initialWindowSize: 100 }, { initialWindowSize: 50 }], __home_effective_local_settings: { initialWindowSize: 65535 }, localSettings: { initialWindowSize: 65535 }, __home_streams: { 1: stream }, __home_promised: Object.create(null) }; assert.strictEqual(__home_http2_acknowledge_local_settings(client).initialWindowSize, 100); assert.strictEqual(client.localSettings.initialWindowSize, 100); assert.strictEqual(stream.__home_receive_window, 100); const state = { role: "client", streams: client.__home_streams, promised: client.__home_promised, expectingContinuation: 0, maxFrameSize: 16384, connectionReceiveWindow: 65535 }; assert.strictEqual(__home_http2_validate_inbound_frame(frame(0, 1, 1, Buffer.alloc(80)), state, "header"), null); assert.strictEqual(stream.__home_receive_window, 20); assert.strictEqual(__home_http2_acknowledge_local_settings(client).initialWindowSize, 50); assert.strictEqual(client.localSettings.initialWindowSize, 50); client.__home_streams[3] = { __home_receive_window: client.localSettings.initialWindowSize }; const overflow = __home_http2_validate_inbound_frame(frame(0, 1, 3, Buffer.alloc(51)), state, "header"); assert.strictEqual(overflow.streamError, 3); client.__home_promised[2] = { headersSeen: false, stream: { __home_receive_window: 50 } }; const reserved = __home_http2_validate_inbound_frame(frame(0, 0, 2, Buffer.from("x")), state, "header"); assert.strictEqual(reserved.streamError, 5); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-shared-inbound-validation-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 shared inbound validation logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap runner mirrors complete node HTTP/2 invalid padding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/http2/node-http2-invalid-padding.test.ts";
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
+        std.debug.print(
+            "node HTTP/2 invalid padding mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 7), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 7), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
@@ -155608,6 +155796,27 @@ test "bootstrap HTTP2 outbound batching and clean close logical contracts" {
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 outbound batching/clean close logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 incremental padded DATA codec logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("incremental decoder validates padding and preserves split DATA", () => { let body = Buffer.alloc(0); let completed = 0; const errors = []; const parser = __home_http2_incremental_frame_parser({ onData(_frame, chunk) { body = Buffer.concat([body, Buffer.from(chunk)]); }, onFrame() { completed++; }, onError(error) { errors.push(error); } }); const split = __home_http2_frame(0, 9, 1, Buffer.from([2, 65, 66, 67, 68, 69, 70, 71, 0, 0])); parser.push(split.subarray(0, 11)); assert.strictEqual(body.toString(), "A"); assert.strictEqual(completed, 0); parser.push(split.subarray(11)); assert.strictEqual(body.toString(), "ABCDEFG"); assert.strictEqual(completed, 1); const zeroPad = __home_http2_frame(0, 9, 3, Buffer.from([0, 87, 88, 89, 90])); parser.push(zeroPad); assert.strictEqual(body.toString(), "ABCDEFGWXYZ"); assert.strictEqual(completed, 2); const reject = frame => { const failures = []; __home_http2_incremental_frame_parser({ onError(error) { failures.push(error); } }).push(frame); return failures; }; assert.deepStrictEqual(reject(__home_http2_frame(1, 12, 1, Buffer.from([255]))), ["NGHTTP2_PROTOCOL_ERROR"]); assert.deepStrictEqual(reject(__home_http2_frame(1, 12, 1, Buffer.alloc(0))), ["NGHTTP2_FRAME_SIZE_ERROR"]); assert.deepStrictEqual(reject(__home_http2_frame(1, 36, 1, Buffer.alloc(3))), ["NGHTTP2_FRAME_SIZE_ERROR"]); assert.deepStrictEqual(reject(__home_http2_frame(0, 8, 1, Buffer.from([255, 0]))), ["NGHTTP2_PROTOCOL_ERROR"]); assert.deepStrictEqual(errors, []); });
+        \\test("MAX padded DATA encoder zero-fills bounded frames", () => { const payload = Buffer.concat([Buffer.alloc(2048, 65), Buffer.from("XYZ")]); const frames = __home_http2_data_frames(3, payload, 1, http2.constants.PADDING_STRATEGY_MAX); const decoded = []; for (let index = 0; index < frames.length; index++) { const frame = frames[index]; const length = frame.readUIntBE(0, 3); const flags = frame[4]; const body = frame.subarray(9); assert.ok(length <= http2.constants.DEFAULT_SETTINGS_MAX_FRAME_SIZE); assert.strictEqual(frame[3], 0); assert.strictEqual(flags & 8, 8); assert.strictEqual(flags & 1, index === frames.length - 1 ? 1 : 0); const padding = body[0]; assert.ok(padding > 0); decoded.push(body.subarray(1, body.length - padding)); assert.ok(body.subarray(body.length - padding).every(byte => byte === 0)); } assert.ok(Buffer.concat(decoded).equals(payload)); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-incremental-padded-data-codec-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 incremental padded DATA codec logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
