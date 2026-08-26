@@ -2984,6 +2984,11 @@ const ConstructorVisibility = enum {
     private_,
 };
 
+const StructuralRelationPair = struct {
+    source: TypeId,
+    target: TypeId,
+};
+
 /// Predicate metadata attached to a specific object member. Unlike
 /// `signature_predicates`, this key distinguishes same-shaped methods
 /// such as `isLeader(): this is LeadGuard` and
@@ -40308,13 +40313,9 @@ pub const Checker = struct {
                 static_symbol_idx,
             ) catch return error.OutOfMemory;
             try self.class_name_by_instance.put(self.gpa, partial_instance_t, cid.name);
-            if (!self.class_instance_types.contains(cid.name)) {
-                try self.class_instance_types.put(self.gpa, cid.name, partial_instance_t);
-            }
+            try self.class_instance_types.put(self.gpa, cid.name, partial_instance_t);
             try self.class_name_by_static.put(self.gpa, partial_static_t, cid.name);
-            if (!self.class_static_types.contains(cid.name)) {
-                try self.class_static_types.put(self.gpa, cid.name, partial_static_t);
-            }
+            try self.class_static_types.put(self.gpa, cid.name, partial_static_t);
             if (class_param_ids.items.len > 0 and !self.generic_aliases.contains(cid.name)) {
                 const partial_params = try self.gpa.dupe(TypeId, class_param_ids.items);
                 try self.generic_aliases.put(self.gpa, cid.name, .{
@@ -42199,16 +42200,13 @@ pub const Checker = struct {
             const can_merge_interface = merged_iface != hir_mod.none_node_id and
                 self.declarationsShareNamespacePath(node, merged_iface) and
                 self.nearestDeclarationScope(node) == self.nearestDeclarationScope(merged_iface);
-            const final_instance_t = blk: {
-                if (self.type_names.get(cid.name)) |existing_t| {
-                    const merged = if (can_merge_interface)
-                        self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, instance_t) catch instance_t
-                    else
-                        self.mergeInterfaceDeclarationType(existing_t, instance_t) catch instance_t;
-                    break :blk merged;
-                }
-                break :blk instance_t;
-            };
+            const final_instance_t = if (can_merge_interface)
+                if (self.type_names.get(cid.name)) |existing_t|
+                    self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, instance_t) catch instance_t
+                else
+                    instance_t
+            else
+                instance_t;
             if (can_merge_interface and final_instance_t != instance_t) {
                 try self.merged_class_instance_types.put(self.gpa, instance_t, final_instance_t);
             }
@@ -49943,7 +49941,8 @@ pub const Checker = struct {
                     continue;
                 }
                 const parent_getter_read_t = self.getterReadTypeForHeritageMember(pm);
-                const parent_compare_t = parent_getter_read_t orelse pm.type;
+                const mixin_base_getter_t = try self.mixinCallBaseGetterReadType(extends_expr, pm.name);
+                const parent_compare_t = mixin_base_getter_t orelse parent_getter_read_t orelse pm.type;
                 // Methods declared with method shorthand (`foo()` rather
                 // than `foo: () => void`) compare bivariantly in tsc ÃÂ¢ÃÂÃÂ
                 // an override is permitted if EITHER direction assigns,
@@ -49989,6 +49988,34 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn mixinCallBaseGetterReadType(self: *Checker, extends_expr: NodeId, member_name: hir_mod.StringId) CheckError!?TypeId {
+        if (extends_expr == hir_mod.none_node_id or self.hir.kindOf(extends_expr) != .call_expr) return null;
+        const args = hir_mod.callArgs(self.hir, extends_expr);
+        if (args.len == 0) return null;
+        const base_name: ?hir_mod.StringId = if (self.hir.kindOf(args[0]) == .identifier)
+            hir_mod.identifierOf(self.hir, args[0]).name
+        else
+            null;
+        const base_static_t = if (base_name) |name|
+            self.class_static_types.get(name) orelse
+                try self.checkExpression(args[0])
+        else
+            try self.checkExpression(args[0]);
+        const base_instance_t = (try self.constructReturnType(base_static_t)) orelse return null;
+        const base_member = self.interner.objectMemberInfo(base_instance_t, member_name) orelse return null;
+        if (self.getterReadTypeForHeritageMember(base_member)) |read_t| return read_t;
+        if (base_name) |name| {
+            if (self.class_getter_members.getPtr(name)) |getters| {
+                if (getters.contains(member_name)) return base_member.type;
+            }
+        }
+        if (base_member.decl_node == hir_mod.none_node_id) return null;
+        const decl_kind = self.hir.kindOf(base_member.decl_node);
+        if (decl_kind != .fn_decl and decl_kind != .fn_expr and decl_kind != .arrow_fn) return null;
+        if (!hir_mod.fnDeclOf(self.hir, base_member.decl_node).flags.is_getter) return null;
+        return base_member.type;
     }
 
     fn methodOverrideHasExtraRequiredParams(self: *Checker, child_t: TypeId, parent_t: TypeId) bool {
@@ -50329,7 +50356,17 @@ pub const Checker = struct {
             var merged = false;
             for (out.items) |*existing| {
                 if (existing.name != member.name) continue;
-                existing.type = self.interner.internIntersection(&.{ existing.type, member.type }) catch return error.OutOfMemory;
+                // Accessors participate in an instance intersection as their
+                // readable property type, not as the internal getter call
+                // signature. Otherwise a mixin base produces
+                // `(() => T) & T` for the same property and rejects a valid
+                // derived accessor override.
+                const existing_t = self.getterReadTypeForHeritageMember(existing.*) orelse existing.type;
+                const member_t = self.getterReadTypeForHeritageMember(member) orelse member.type;
+                existing.type = if (existing_t == member_t)
+                    existing_t
+                else
+                    self.interner.internIntersection(&.{ existing_t, member_t }) catch return error.OutOfMemory;
                 existing.is_optional = existing.is_optional and member.is_optional;
                 existing.is_readonly = existing.is_readonly and member.is_readonly;
                 existing.is_method = existing.is_method and member.is_method;
@@ -51864,6 +51901,17 @@ pub const Checker = struct {
         if (self.mappedSourceAssignableToOpenAnyIndexTarget(source, target)) return true;
         if (self.numberLikeAssignableToNumericEnum(source, target)) return true;
         if (depth >= 16) return self.engine.isAssignableTo(source, target);
+        if (self.classNameForInstanceType(source)) |source_class| {
+            if (self.classNameForInstanceType(target)) |target_class| {
+                if (self.classExtendsClass(source_class, target_class)) return true;
+            }
+        }
+        if (self.typeIsArrayLikeObject(source) and self.typeIsArrayLikeObject(target)) {
+            if (self.readonlyArrayLikeAssignedToMutable(source, target)) return false;
+            const source_element = self.interner.objectNumberIndex(source);
+            const target_element = self.interner.objectNumberIndex(target);
+            return self.heritageAssignableDepth(source_element, target_element, depth + 1);
+        }
         if (target < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target).is_type_parameter and
             !self.isThisTypeParameter(target))
@@ -89312,7 +89360,87 @@ pub const Checker = struct {
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
+        if (try self.coinductiveObjectMembersAssignable(source_t, target_t)) return true;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn coinductiveObjectMembersAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        var seen: std.AutoHashMapUnmanaged(StructuralRelationPair, void) = .empty;
+        defer seen.deinit(self.gpa);
+        return self.coinductiveObjectMembersAssignableInner(source_t, target_t, &seen, 0);
+    }
+
+    fn coinductiveObjectMembersAssignableInner(
+        self: *Checker,
+        source_t: TypeId,
+        target_t: TypeId,
+        seen: *std.AutoHashMapUnmanaged(StructuralRelationPair, void),
+        depth: u8,
+    ) CheckError!bool {
+        const resolved_source_t = self.resolvedRecursiveInterfaceType(source_t);
+        const resolved_target_t = self.resolvedRecursiveInterfaceType(target_t);
+        if (resolved_source_t != source_t or resolved_target_t != target_t) {
+            return self.coinductiveObjectMembersAssignableInner(
+                resolved_source_t,
+                resolved_target_t,
+                seen,
+                depth,
+            );
+        }
+        if (source_t == target_t) return true;
+        if (depth >= 32 or source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or !target_flags.is_object_type or
+            source_flags.is_union or source_flags.is_intersection or source_flags.is_signature or
+            target_flags.is_union or target_flags.is_intersection or target_flags.is_signature)
+        {
+            return false;
+        }
+        if (self.classPrivateStructuralMismatch(target_t, source_t) or
+            self.classProtectedStructuralMismatch(target_t, source_t))
+        {
+            return false;
+        }
+
+        const pair: StructuralRelationPair = .{ .source = source_t, .target = target_t };
+        if (seen.contains(pair)) return true;
+        try seen.put(self.gpa, pair, {});
+
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target_t));
+        defer self.gpa.free(target_members);
+        if (target_members.len == 0) return false;
+        var saw_common_member = false;
+        for (target_members) |target_member| {
+            const source_member = self.interner.objectMemberInfo(source_t, target_member.name) orelse {
+                if (target_member.is_optional) continue;
+                return false;
+            };
+            saw_common_member = true;
+            if (!target_member.is_optional and source_member.is_optional) return false;
+            if (source_member.visibility != target_member.visibility) return false;
+            if (self.engine.isAssignableTo(source_member.type, target_member.type) catch false) continue;
+            if (!try self.coinductiveObjectMembersAssignableInner(
+                source_member.type,
+                target_member.type,
+                seen,
+                depth + 1,
+            )) return false;
+        }
+
+        const index_pairs = [_]struct { source: TypeId, target: TypeId }{
+            .{ .source = self.interner.objectStringIndex(source_t), .target = self.interner.objectStringIndex(target_t) },
+            .{ .source = self.interner.objectNumberIndex(source_t), .target = self.interner.objectNumberIndex(target_t) },
+            .{ .source = self.interner.objectSymbolIndex(source_t), .target = self.interner.objectSymbolIndex(target_t) },
+        };
+        for (index_pairs) |indexes| {
+            if (indexes.target == types.Primitive.none) continue;
+            if (indexes.source == types.Primitive.none) return false;
+            saw_common_member = true;
+            if (self.engine.isAssignableTo(indexes.source, indexes.target) catch false) continue;
+            if (!try self.coinductiveObjectMembersAssignableInner(indexes.source, indexes.target, seen, depth + 1)) return false;
+        }
+        return saw_common_member;
     }
 
     fn jsDocGenericUnionAssignableToTypeParameter(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -100772,7 +100900,7 @@ pub const Checker = struct {
             if (!accepts and !arity_ok) continue;
             const raw_ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
             const param_ts = self.interner.signatureParams(sig);
-            const instantiated = self.instantiateReturn(param_ts, arg_types, raw_ret) catch raw_ret;
+            const instantiated = self.instantiateReturn(sig, hir_mod.none_node_id, param_ts, arg_types, raw_ret) catch raw_ret;
             try returns.append(self.gpa, instantiated);
         }
         if (returns.items.len == 0) return null;
@@ -107502,7 +107630,7 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
                         }
                         const param_ts = self.interner.signatureParams(effective_callee_t);
-                        var instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
+                        var instantiated = self.instantiateReturn(effective_callee_t, c.callee, param_ts, arg_types.items, ret) catch ret;
                         instantiated = try self.instantiateMemberThisReturn(c.callee, instantiated);
                         break :blk try self.optionalChainResult(instantiated, call_is_optional_chain);
                     }
@@ -121450,7 +121578,7 @@ pub const Checker = struct {
             try self.checkArgsAgainstSignature(call_node, args, arg_types, selected_applicable);
             const ret = self.interner.signatureReturn(selected_applicable) orelse types.Primitive.any;
             const param_ts = self.interner.signatureParams(selected_applicable);
-            var instantiated = self.instantiateReturn(param_ts, arg_types, ret) catch ret;
+            var instantiated = self.instantiateReturn(selected_applicable, callee, param_ts, arg_types, ret) catch ret;
             instantiated = try self.instantiateMemberThisReturn(callee, instantiated);
             return try self.optionalChainResult(instantiated, call_is_optional_chain);
         }
@@ -149925,6 +150053,8 @@ pub const Checker = struct {
     /// can't determine a single type.
     fn instantiateReturn(
         self: *Checker,
+        sig: TypeId,
+        callee: NodeId,
         raw_param_ts: []const TypeId,
         raw_arg_ts: []const TypeId,
         ret_type: TypeId,
@@ -149953,12 +150083,61 @@ pub const Checker = struct {
         for (param_ts) |p| try self.collectFreeTypeParamDefaults(p, &subs, &visited_defaults);
         try self.collectFreeTypeParamDefaults(ret_type, &subs, &visited_defaults);
         if (ret_type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(ret_type).is_type_parameter) {
+            if (!subs.contains(ret_type)) {
+                if (try self.signatureTypeParameterInferenceFallback(sig, callee, ret_type)) |fallback| {
+                    try subs.put(self.gpa, ret_type, fallback);
+                }
+            }
             var visited_fallbacks: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
             defer visited_fallbacks.deinit(self.gpa);
             try self.collectFreeTypeParamFallbacks(ret_type, &subs, &visited_fallbacks);
         }
         if (subs.count() == 0) return ret_type;
         return self.substituteType(ret_type, &subs);
+    }
+
+    fn signatureTypeParameterInferenceFallback(
+        self: *Checker,
+        sig: TypeId,
+        callee: NodeId,
+        type_param: TypeId,
+    ) CheckError!?TypeId {
+        const signature_params = self.generic_signature_params.get(sig) orelse return null;
+        var type_param_index: ?usize = null;
+        for (signature_params, 0..) |candidate, index| {
+            if (candidate == type_param or self.resolvedTypeParameterPlaceholder(candidate) == type_param) {
+                type_param_index = index;
+                break;
+            }
+        }
+        const index = type_param_index orelse return null;
+        const decl = self.callMemberSignatureDeclNode(callee) orelse self.signatureDeclNode(sig);
+        if (decl == hir_mod.none_node_id or
+            (self.hir.kindOf(decl) != .fn_decl and self.hir.kindOf(decl) != .fn_expr and self.hir.kindOf(decl) != .arrow_fn))
+        {
+            return null;
+        }
+        const declaration_params = hir_mod.fnTypeParams(self.hir, decl);
+        if (index >= declaration_params.len or self.hir.kindOf(declaration_params[index]) != .type_parameter) return null;
+        const declaration_param = hir_mod.typeParameterOf(self.hir, declaration_params[index]);
+        if (declaration_param.constraint == hir_mod.none_node_id) return null;
+        if (self.bareTypeNodeName(declaration_param.constraint)) |constraint_name| {
+            if (self.type_names.get(constraint_name)) |named_t| {
+                return self.merged_class_instance_types.get(named_t) orelse
+                    self.resolvedRecursiveInterfaceType(named_t);
+            }
+        }
+        return try self.lowererLowerWithTypeParams(declaration_param.constraint);
+    }
+
+    fn callMemberSignatureDeclNode(self: *Checker, callee: NodeId) ?NodeId {
+        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, callee);
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t == types.Primitive.none or receiver_t >= self.interner.pool.typeCount()) return null;
+        const member_info = self.interner.objectMemberInfo(receiver_t, member.name) orelse return null;
+        if (member_info.decl_node == hir_mod.none_node_id) return null;
+        return member_info.decl_node;
     }
 
     fn applyInferredConditionalConstraintsToSubs(
@@ -202700,7 +202879,60 @@ test "checker: nested self-referential typeof annotation does not emit TS2589" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_instantiation_excessively_deep);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: recursive class and interface members are coinductively assignable" {
+    const s = try newSetup(
+        \\namespace SimpleTypes {
+        \\  class S { foo: string; }
+        \\  class T { foo: string; }
+        \\  interface S2 { foo: string; }
+        \\  interface T2 { foo: string; }
+        \\}
+        \\namespace ObjectTypes {
+        \\  class S { foo: S; }
+        \\  class T { foo: T; }
+        \\  interface S2 { foo: S2; }
+        \\  interface T2 { foo: T2; }
+        \\  var s: S;
+        \\  var t: T;
+        \\  var s2: S2;
+        \\  var t2: T2;
+        \\  s = t;
+        \\  s = s2;
+        \\  s2 = t;
+        \\  s2 = t2;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: parameterless generic class methods fall back to local constraints" {
+    const s = try newSetup(
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\class Derived2 extends Derived { baz: string; }
+        \\class C<T extends Base, U extends Derived> {
+        \\  constructor(public t: T, public u: U) {}
+        \\  foo6<T extends Derived, U extends Derived2>() { var x: T; return x; }
+        \\}
+        \\interface I<T extends Base, U extends Derived> {
+        \\  foo6<T extends Derived, U extends Derived2>(): T;
+        \\}
+        \\var b: Base;
+        \\var d: Derived;
+        \\var c = new C(b, d);
+        \\var r9 = c.foo6();
+        \\var i: I<Base, Derived>;
+        \\var r9 = i.foo6();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: override base type from construct-sig intersection omits apparent duplicates" {
@@ -204511,15 +204743,15 @@ test "checker: generic constrained calls across class and interface surfaces" {
         \\  foo8<T extends Base, U extends Derived>(): T;
         \\}
         \\var i: I<Base, Derived>;
-        \\var ir4 = i.foo(d1, d2);
-        \\var ir5 = i.foo2(b, d2);
-        \\var ir6 = i.foo3(d1, d1);
-        \\var ir7 = i.foo4(d1, d2);
-        \\var ir8 = i.foo5(d1, d2);
-        \\var ir8b = i.foo5(d2, d2);
-        \\var ir9 = i.foo6();
-        \\var ir10 = i.foo7(d1);
-        \\var ir11 = i.foo8();
+        \\var r4 = i.foo(d1, d2);
+        \\var r5 = i.foo2(b, d2);
+        \\var r6 = i.foo3(d1, d1);
+        \\var r7 = i.foo4(d1, d2);
+        \\var r8 = i.foo5(d1, d2);
+        \\var r8b = i.foo5(d2, d2);
+        \\var r9 = i.foo6();
+        \\var r10 = i.foo7(d1);
+        \\var r11 = i.foo8();
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = false });
@@ -204534,6 +204766,7 @@ test "checker: generic constrained calls across class and interface surfaces" {
         }
     }
     try T.expect(!found_target_diag);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
 test "checker: explicit this parameter is not a call argument" {
@@ -261515,11 +261748,19 @@ test "checker: mixin accessor override uses the effective parent member" {
         \\class ApiItem {
         \\  get members(): ReadonlyArray<ApiItem> { return []; }
         \\}
-        \\function mixin<TBaseClass extends IApiItemConstructor>(baseClass: TBaseClass) {
-        \\  abstract class MixedClass extends baseClass {
+        \\class ApiEnumMember extends ApiItem {}
+        \\interface ApiItemContainerMixin extends ApiItem {
+        \\  readonly members: ReadonlyArray<ApiItem>;
+        \\}
+        \\function ApiItemContainerMixin<TBaseClass extends IApiItemConstructor>(baseClass: TBaseClass):
+        \\  TBaseClass & (new (...args: any[]) => ApiItemContainerMixin) {
+        \\  abstract class MixedClass extends baseClass implements ApiItemContainerMixin {
         \\    get members(): ReadonlyArray<ApiItem> { return []; }
         \\  }
         \\  return MixedClass;
+        \\}
+        \\class ApiEnum extends ApiItemContainerMixin(ApiItem) {
+        \\  get members(): ReadonlyArray<ApiEnumMember> { return []; }
         \\}
     );
     defer destroySetup(s);
