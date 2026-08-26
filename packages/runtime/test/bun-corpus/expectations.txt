@@ -169,7 +169,6 @@ test/js/node/test/parallel/test-http2-misbehaving-multiplex.js [ FAIL ] # not ye
 test/js/node/test/parallel/test-http2-padding-aligned.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-perf_hooks.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-perform-server-handshake.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-ping-settings-heapdump.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-reset-flood.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-respond-file-fd-leak.js [ FAIL ] # not yet passing
 test/js/node/test/parallel/test-http2-autoselect-protocol.js [ SKIP ] # hangs; skip until the underlying feature lands

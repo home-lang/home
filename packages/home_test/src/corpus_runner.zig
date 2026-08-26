@@ -41973,7 +41973,14 @@ const harness_prelude =
     \\          server.emit("session", client.__home_server_session);
     \\        }
     \\      }
-    \\      if (client.closed || client.destroyed || client.__home_server_session.closed || client.__home_server_session.destroyed) return;
+    \\      if (client.__home_server_session.closed || client.__home_server_session.destroyed) {
+    \\        if (!client.closed && !client.destroyed && !client.__home_close_emitted && !client.__home_termination_scheduled) {
+    \\          if (typeof connectListener === "function") { try { connectListener.call(client, client); } catch (error) { client.destroy(error); return; } }
+    \\          if (!client.destroyed && !client.__home_close_emitted && !client.__home_termination_scheduled) client.emit("connect", client, transportSocket);
+    \\        }
+    \\        return;
+    \\      }
+    \\      if (client.closed || client.destroyed) return;
     \\      const serverTimeout = Number(server.timeout) || 0;
     \\      if (serverTimeout > 0) setTimeout(() => { const session = client.__home_server_session; if (session.closed || session.destroyed) return; if (server.listenerCount("timeout") > 0) server.emit("timeout", session); else session.close(); }, serverTimeout);
     \\      const maxSettings = Number(server.__home_options && server.__home_options.maxSettings);
