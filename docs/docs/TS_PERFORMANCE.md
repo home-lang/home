@@ -10,21 +10,22 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `9c6c03f11` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `9c6a93b3f` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260826T221047Z`.
+The local raw-result identifier is `20260826T231722Z`.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 65.5 ± 14.4 ms | 38.5 ± 4.5 ms | **3.3 ± 0.2 ms** | **11.85× faster** |
-| `many_files` | 205.5 ± 2.3 ms | 52.6 ± 1.2 ms | **30.7 ± 0.5 ms** | **1.71× faster** |
-| `deep_types` | 133.1 ± 19.2 ms | 52.2 ± 2.3 ms | **19.7 ± 0.4 ms** | **2.65× faster** |
-| `import_graph` | 130.0 ± 5.8 ms | 45.2 ± 1.1 ms | **25.6 ± 1.7 ms** | **1.76× faster** |
-| `reexport_graph` | 95.4 ± 2.9 ms | 40.9 ± 1.2 ms | **30.9 ± 1.6 ms** | **1.33× faster** |
-| `tsx_components` | 158.9 ± 1.2 ms | 46.2 ± 0.8 ms | **28.2 ± 0.4 ms** | **1.64× faster** |
-| `generic_calls` | 181.3 ± 4.6 ms | 56.0 ± 3.4 ms | **45.2 ± 2.7 ms** | **1.24× faster** |
-| `control_flow` | 203.8 ± 73.2 ms | 62.7 ± 16.1 ms | **55.5 ± 11.3 ms** | **1.13× faster** |
+| `startup` | 74.8 ± 13.6 ms | 42.2 ± 3.9 ms | **3.7 ± 0.4 ms** | **11.26× faster** |
+| `many_files` | 229.6 ± 13.9 ms | 58.9 ± 1.9 ms | **33.7 ± 1.1 ms** | **1.75× faster** |
+| `deep_types` | 194.4 ± 111.2 ms | 65.5 ± 30.1 ms | **24.7 ± 12.0 ms** | **2.65× faster** |
+| `import_graph` | 146.0 ± 5.7 ms | 51.7 ± 1.8 ms | **29.5 ± 2.3 ms** | **1.75× faster** |
+| `reexport_graph` | 103.0 ± 10.0 ms | 43.5 ± 3.6 ms | **29.0 ± 2.3 ms** | **1.50× faster** |
+| `tsx_components` | 160.6 ± 6.7 ms | 46.5 ± 1.0 ms | **27.7 ± 0.6 ms** | **1.68× faster** |
+| `generic_calls` | 191.2 ± 35.5 ms | 56.1 ± 1.7 ms | **38.8 ± 0.7 ms** | **1.45× faster** |
+| `control_flow` | 209.6 ± 69.8 ms | 61.7 ± 7.5 ms | **56.7 ± 25.4 ms** | **1.09× faster** |
+| `overload_resolution` | 207.2 ± 10.5 ms | 66.4 ± 3.7 ms | **58.1 ± 2.2 ms** | **1.14× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -61,6 +62,7 @@ not a claim that every real project or machine has the same speedup.
 | `tsx_components` | One module with 256 typed generic component declarations and JSX trees | TSX scanning, parsing, contextual props, expressions, and checking |
 | `generic_calls` | One module with 256 typed generic call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
 | `control_flow` | One module with 256 exhaustive discriminated-union functions | Narrowing, branch joins, definite assignment, exhaustive switches, property reads, and typed object returns |
+| `overload_resolution` | One module with 128 groups of eight typed overload calls | Literal-discriminated overload selection, generic inference, object and tuple payloads, callbacks, and typed result consumption |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -113,15 +115,27 @@ workload-specific shortcuts:
   declaration scans for function-arity checks against non-callable targets;
 - checker compatibility paths use conservative source-feature facts to skip
   impossible UMD, import, CommonJS, namespace, class, enum, and expando scans;
-- simple annotated bindings reuse their already-resolved declaration type, and
-  visible type-existence queries reuse the per-scope declaration index; and
+- simple annotated bindings and their active lexical lookups reuse indexed,
+  virtual-section-aware declarations and already-resolved types for ordinary
+  reads while declared-type lookups retain their full semantic path;
+- overload resolution rejects definite exact-literal mismatches before generic
+  inference and substitution, while composite, contextual, spread, enum, and
+  ambiguous candidates retain the complete resolver; and
 - program-level declaration, namespace, interface, class, and CommonJS
   collectors skip files whose source cannot contain the syntax they collect.
 
 The `control_flow` workload was deliberately added before these optimizations.
 Its five-run red baseline (`20260826T203831Z`) measured Home at
 2,927.8 ± 159.6 ms versus native TypeScript 7 at 81.5 ± 21.8 ms. The unchanged
-workload now measures 55.5 ± 11.3 ms in the 30-run snapshot above: a 52.8×
-Home improvement and a 1.13× win over the fastest competitor. The improvement
+workload now measures 56.7 ± 25.4 ms in the 30-run snapshot above: a 51.6×
+Home improvement and a 1.09× win over the fastest competitor. The improvement
 came from removing repeated general-purpose source and HIR scans; the corpus,
 compiler options, validity gate, and measurement schedule were not weakened.
+
+The `overload_resolution` workload was likewise frozen before its optimization.
+Its five-run red baseline (`20260826T221712Z`) measured Home at
+126.9 ± 0.9 ms versus native TypeScript 7 at 70.3 ± 1.1 ms. The unchanged
+workload now measures 58.1 ± 2.2 ms in the 30-run snapshot above: a 2.18×
+Home improvement and a 1.14× win over the fastest competitor. The optimized
+path only eliminates candidates whose fixed primitive literal parameter is
+provably incompatible with the corresponding literal expression.

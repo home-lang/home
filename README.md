@@ -79,14 +79,15 @@ three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 65.5 ms | 38.5 ms | **3.3 ms** | **11.85× faster** |
-| 256 files | 205.5 ms | 52.6 ms | **30.7 ms** | **1.71× faster** |
-| Deep types | 133.1 ms | 52.2 ms | **19.7 ms** | **2.65× faster** |
-| 128-module import graph | 130.0 ms | 45.2 ms | **25.6 ms** | **1.76× faster** |
-| 64-leaf barrel graph | 95.4 ms | 40.9 ms | **30.9 ms** | **1.33× faster** |
-| 256 typed TSX components | 158.9 ms | 46.2 ms | **28.2 ms** | **1.64× faster** |
-| 256 generic call groups | 181.3 ms | 56.0 ms | **45.2 ms** | **1.24× faster** |
-| 256 exhaustive control-flow functions | 203.8 ms | 62.7 ms | **55.5 ms** | **1.13× faster** |
+| Startup | 74.8 ms | 42.2 ms | **3.7 ms** | **11.26× faster** |
+| 256 files | 229.6 ms | 58.9 ms | **33.7 ms** | **1.75× faster** |
+| Deep types | 194.4 ms | 65.5 ms | **24.7 ms** | **2.65× faster** |
+| 128-module import graph | 146.0 ms | 51.7 ms | **29.5 ms** | **1.75× faster** |
+| 64-leaf barrel graph | 103.0 ms | 43.5 ms | **29.0 ms** | **1.50× faster** |
+| 256 typed TSX components | 160.6 ms | 46.5 ms | **27.7 ms** | **1.68× faster** |
+| 256 generic call groups | 191.2 ms | 56.1 ms | **38.8 ms** | **1.45× faster** |
+| 256 exhaustive control-flow functions | 209.6 ms | 61.7 ms | **56.7 ms** | **1.09× faster** |
+| 128 × 8 overload calls | 207.2 ms | 66.4 ms | **58.1 ms** | **1.14× faster** |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
