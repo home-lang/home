@@ -38687,6 +38687,13 @@ const harness_prelude =
     \\__home_http2_Http2Session.prototype.request = function() { return 0; };
     \\function __home_http2_Http2Stream() {}
     \\__home_http2_Http2Stream.prototype.info = function() { return 0; };
+    \\Object.defineProperty(__home_http2_Http2Stream.prototype, __home_util_inspect_custom, { configurable: true, value: function(depth, options, inspect) {
+    \\  if (typeof depth === "number" && depth < 0) return this;
+    \\  const forwarded = Object.assign({}, options || {});
+    \\  if (typeof depth === "number") forwarded.depth = depth - 1;
+    \\  const render = typeof inspect === "function" ? inspect : __home_util_inspect;
+    \\  return "Http2Stream " + render({ id: this.id || "<pending>", closed: !!this.closed, destroyed: !!this.destroyed, state: this.state, readableState: this._readableState, writableState: this._writableState }, forwarded);
+    \\} });
     \\function __home_http2_ServerHttp2Session() {}
     \\function __home_http2_Http2ServerRequest() {}
     \\__home_http2_Http2ServerRequest.prototype = Object.create(__home_stream_readable.prototype);
@@ -38744,6 +38751,7 @@ const harness_prelude =
     \\}
     \\function __home_http2_terminal_stream(client, error, aborted) {
     \\  const stream = Object.assign(__home_http_event_target(), { session: client, pending: false, closed: false, destroyed: true, aborted: false, rstCode: 0 });
+    \\  Object.setPrototypeOf(stream, __home_http2_Http2Stream.prototype);
     \\  stream.setEncoding = function(encoding) { this.__home_encoding = encoding; return this; };
     \\  stream.resume = function() { return this; };
     \\  stream.pause = function() { return this; };
@@ -39106,9 +39114,10 @@ const harness_prelude =
     \\  }
     \\  function createRawStream(streamId, flags) {
     \\    if (session.__home_streams[streamId]) { failRawSession(__home_http2_nghttp_error(-510), session.__home_streams[streamId]); return null; }
-    \\    const stream = Object.assign(__home_http_event_target(), { id: streamId, session, closed: false, destroyed: false, rstCode: 0, readableEnded: !!(flags & 1), __home_received_data: 0 });
+    \\    const stream = Object.assign(__home_http_event_target(), { id: streamId, session, closed: false, destroyed: false, aborted: false, rstCode: 0, readableEnded: !!(flags & 1), __home_received_data: 0 });
     \\    Object.setPrototypeOf(stream, __home_http2_Http2Stream.prototype);
     \\    stream._readableState = { highWaterMark: 16384 };
+    \\    stream._writableState = { highWaterMark: 16384 };
     \\    stream.pause = function() { this.__home_paused = true; return this; };
     \\    stream.resume = function() { this.__home_paused = false; return this; };
     \\    stream.respond = function(headers) { this.sentHeaders = __home_http2_validate_header_context(headers, "response"); return this; };
@@ -40112,12 +40121,14 @@ const harness_prelude =
     \\    if (!serverStream.pushAllowed) throw __home_http2_error_with_code("ERR_HTTP2_PUSH_DISABLED", "HTTP/2 server push is disabled");
     \\    const client = clientStream.session;
     \\    const normalizedPushHeaders = __home_http2_prepare_push_headers(pushHeaders, clientStream.sentHeaders, clientStream.scheme || "http", clientStream.sentHeaders && (clientStream.sentHeaders[":authority"] || clientStream.sentHeaders.host));
-    \\    const pushedClient = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, sentHeaders: normalizedPushHeaders });
+    \\    const pushedClient = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, aborted: false, sentHeaders: normalizedPushHeaders });
+    \\    Object.setPrototypeOf(pushedClient, __home_http2_Http2Stream.prototype);
     \\    client.__home_next_push_stream_id += 2;
     \\    pushedClient.setEncoding = function(value) { this.__home_encoding = String(value || "utf8"); return this; };
     \\    pushedClient.resume = function() { return this; };
     \\    pushedClient.pause = function() { return this; };
-    \\    const pushStream = Object.assign(__home_http_event_target(), { id: pushedClient.id, session: serverStream.session, closed: false, destroyed: false });
+    \\    const pushStream = Object.assign(__home_http_event_target(), { id: pushedClient.id, session: serverStream.session, closed: false, destroyed: false, aborted: false });
+    \\    Object.setPrototypeOf(pushStream, __home_http2_Http2Stream.prototype);
     \\    const pushResponse = Object.assign(__home_http_event_target(), { stream: pushStream, statusCode: 200, finished: false, writableEnded: false, __home_headers: {} });
     \\    pushResponse.setHeader = function(name, value) { this.__home_headers[String(name).toLowerCase()] = String(value); return this; };
     \\    pushResponse.end = function(chunk) { if (this.finished) return this; this.finished = true; this.writableEnded = true; const target = this; Promise.resolve().then(() => { pushedClient.emit("push", Object.assign({ ":status": target.statusCode, date: new Date(0).toUTCString() }, target.__home_headers), 4); if (chunk !== undefined && chunk !== null) pushedClient.emit("data", pushedClient.__home_encoding ? Buffer.from(String(chunk)).toString(pushedClient.__home_encoding) : chunk); pushedClient.closed = true; pushedClient.destroyed = true; pushedClient.emit("end"); pushedClient.emit("close"); pushStream.closed = true; pushStream.emit("close"); target.emit("finish"); }); return this; };
@@ -40414,7 +40425,8 @@ const harness_prelude =
     \\      else if (type === 6 && !(flags & 1) && streamId === 0 && length === 8) writeFrame(6, 1, 0, payload);
     \\      else if (type === 5 && payload.length >= 4) {
     \\        const promisedId = payload.readUInt32BE(0) & 0x7fffffff;
-    \\        const pushed = Object.assign(__home_http_event_target(), { id: promisedId, closed: false });
+    \\        const pushed = Object.assign(__home_http_event_target(), { id: promisedId, closed: false, destroyed: false, aborted: false });
+    \\        Object.setPrototypeOf(pushed, __home_http2_Http2Stream.prototype);
     \\        client.__home_promised[promisedId] = { stream: pushed, headersSeen: false };
     \\        client.emit("stream", pushed, {}, flags);
     \\      } else if (type === 1) {
@@ -40957,6 +40969,7 @@ const harness_prelude =
     \\    const connectProtocolEnabled = this.remoteSettings ? this.remoteSettings.enableConnectProtocol === true : !!(server && server.__home_settings && server.__home_settings.enableConnectProtocol === true);
     \\    if (extendedConnect && !connectProtocolEnabled) return __home_http2_terminal_stream(this, __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"));
     \\    const stream = __home_http_event_target();
+    \\    Object.setPrototypeOf(stream, __home_http2_Http2Stream.prototype);
     \\    const streamId = this.__home_next_stream_id;
     \\    this.__home_next_stream_id += 2;
     \\    this.state.nextStreamID = this.__home_next_stream_id;
@@ -41171,7 +41184,8 @@ const harness_prelude =
     \\    }
     \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" && server.listenerCount("stream") === 0 || requestHeaders.expect !== undefined);
     \\    if (hasCompatHandler) {
-    \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0, sentInfoHeaders: [] });
+    \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, aborted: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0, sentInfoHeaders: [] });
+    \\      Object.setPrototypeOf(handlerServerStream, __home_http2_Http2Stream.prototype);
     \\      Object.defineProperty(handlerServerStream, "writableHighWaterMark", { configurable: true, enumerable: true, get() { return Number(this._writableState && this._writableState.highWaterMark || 16384); } });
     \\      stream.__home_server_stream = handlerServerStream;
     \\      handlerServerStream.__home_client_stream = stream;
@@ -41367,6 +41381,7 @@ const harness_prelude =
     \\    serverStream.session = this.__home_server_session;
     \\    serverStream.closed = false;
     \\    serverStream.destroyed = false;
+    \\    serverStream.aborted = false;
     \\    serverStream.rstCode = 0;
     \\    serverStream.pushAllowed = initialSettings.enablePush !== false;
     \\    serverStream.endAfterHeaders = ["GET", "HEAD"].includes(String(stream.sentHeaders[":method"] || "GET").toUpperCase());
@@ -41640,7 +41655,8 @@ const harness_prelude =
     \\      const maxReserved = Number(options && options.maxReservedRemoteStreams);
     \\      const rejectReserved = Number.isFinite(maxReserved) && Number(client.__home_reserved_remote_streams || 0) >= maxReserved;
     \\      if (!rejectReserved) client.__home_reserved_remote_streams = Number(client.__home_reserved_remote_streams || 0) + 1;
-    \\      const pushed = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, sentHeaders: normalizedPushHeaders, _writableState: { ended: String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD" } });
+    \\      const pushed = Object.assign(__home_http_event_target(), { id: client.__home_next_push_stream_id, session: client, closed: false, destroyed: false, aborted: false, sentHeaders: normalizedPushHeaders, _writableState: { ended: String(normalizedPushHeaders[":method"] || "GET").toUpperCase() === "HEAD" } });
+    \\      Object.setPrototypeOf(pushed, __home_http2_Http2Stream.prototype);
     \\      pushed.__home_rejected_reserved = rejectReserved;
     \\      client.__home_next_push_stream_id += 2;
     \\      pushed.__home_pending_read = [];
@@ -155828,6 +155844,7 @@ test "bootstrap HTTP2 session settings shutdown and socket corpus tranche contra
         "js/node/test/parallel/test-http2-socket-close.js",
         "js/node/test/parallel/test-http2-socket-proxy.js",
         "js/node/test/parallel/test-http2-socket-proxy-handler-for-has.js",
+        "js/node/test/parallel/test-http2-stream-client.js",
         "js/node/test/parallel/test-http2-too-many-settings.js",
         "js/node/test/parallel/test-http2-unbound-socket-proxy.js",
     };
