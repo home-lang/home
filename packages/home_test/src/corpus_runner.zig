@@ -39591,6 +39591,8 @@ const harness_prelude =
     \\    return String(chunk);
     \\  }).join("");
     \\}
+    \\let __home_http2_invalid_connection_warned = false;
+    \\let __home_http2_status_message_warned = false;
     \\function __home_http2_dispatch_request(server, headers, callback, serverStream, clientStream) {
     \\  const normalizedHeaders = {};
     \\  for (const key of Object.keys(headers || {})) normalizedHeaders[String(key).toLowerCase()] = headers[key];
@@ -39701,7 +39703,7 @@ const harness_prelude =
     \\    enumerable: true,
     \\    get() { return this.__home_status_code; },
     \\    set(value) {
-    \\      const status = Number(value);
+    \\      const status = Number(value) | 0;
     \\      if (status >= 100 && status < 200) { const error = new RangeError("Informational status codes cannot be used"); error.code = "ERR_HTTP2_INFO_STATUS_NOT_ALLOWED"; throw error; }
     \\      if (!Number.isInteger(status) || status < 200 || status > 599) { const error = new RangeError("Invalid status code: " + String(value)); error.code = "ERR_HTTP2_STATUS_INVALID"; throw error; }
     \\      this.__home_status_code = status;
@@ -39716,7 +39718,8 @@ const harness_prelude =
     \\  res.finished = false;
     \\  res.writableEnded = false;
     \\  res.writableFinished = false;
-    \\  res.sendDate = true;
+    \\  res.__home_send_date = true;
+    \\  Object.defineProperty(res, "sendDate", { configurable: true, enumerable: true, get() { return this.__home_send_date; }, set(value) { this.__home_send_date = Boolean(value); } });
     \\  res.writableCorked = 0;
     \\  res.__home_corked_writes = [];
     \\  Object.defineProperty(res, "writableHighWaterMark", { configurable: true, enumerable: true, get() { return Number(serverStream && serverStream.writableHighWaterMark || socket && socket.writableHighWaterMark || 16384); } });
@@ -39740,13 +39743,14 @@ const harness_prelude =
     \\  }
     \\  function normalizeHeaderValue(name, value) {
     \\    if (value === undefined || value === null) { const error = new TypeError('Invalid value "' + String(value) + '" for header "' + name + '"'); error.code = "ERR_HTTP2_INVALID_HEADER_VALUE"; throw error; }
-    \\    return Array.isArray(value) ? value.map(String) : String(value);
+    \\    if (Array.isArray(value)) { for (const entry of value) if (entry === undefined || entry === null) { const error = new TypeError('Invalid value "' + String(entry) + '" for header "' + name + '"'); error.code = "ERR_HTTP2_INVALID_HEADER_VALUE"; throw error; } }
+    \\    return value;
     \\  }
     \\  res.setHeader = function(name, value) {
     \\    if (this.headersSent) throw headersSentError();
     \\    const normalized = normalizeHeaderName(name);
     \\    if (normalized.startsWith(":")) { const error = new TypeError("Cannot set HTTP/2 pseudo-headers"); error.code = "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"; throw error; }
-    \\    if (normalized === "connection") { process.emitWarning("The provided connection header is not valid, the value will be dropped from the header and will never be in use.", "UnsupportedWarning"); return this; }
+    \\    if (normalized === "connection" && String(value).toLowerCase() !== "trailers") { if (!__home_http2_invalid_connection_warned) { __home_http2_invalid_connection_warned = true; process.emitWarning("The provided connection header is not valid, the value will be dropped from the header and will never be in use.", "UnsupportedWarning"); } return this; }
     \\    this.__home_headers[normalized] = normalizeHeaderValue(normalized, value);
     \\    return this;
     \\  };
@@ -39755,22 +39759,30 @@ const harness_prelude =
     \\  res.getHeader = function(name) { return this.__home_headers[normalizeHeaderName(name)]; };
     \\  res.removeHeader = function(name) { if (this.headersSent) throw headersSentError(); const normalized = normalizeHeaderName(name); delete this.__home_headers[normalized]; if (normalized === "date") this.sendDate = false; return this; };
     \\  res.getHeaderNames = function() { return Object.keys(this.__home_headers); };
-    \\  res.getHeaders = function() { const copy = Object.create(null); for (const name of Object.keys(this.__home_headers)) copy[name] = Array.isArray(this.__home_headers[name]) ? this.__home_headers[name].slice() : this.__home_headers[name]; return copy; };
-    \\  function warnStatusMessage() { if (res.__home_status_message_warned) return; res.__home_status_message_warned = true; process.emitWarning("Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)", "UnsupportedWarning"); }
+    \\  res.getHeaders = function() { const copy = Object.create(null); for (const name of Object.keys(this.__home_headers)) copy[name] = this.__home_headers[name]; return copy; };
+    \\  function warnStatusMessage() { if (__home_http2_status_message_warned) return; __home_http2_status_message_warned = true; process.emitWarning("Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)", "UnsupportedWarning"); }
     \\  Object.defineProperty(res, "statusMessage", { configurable: true, enumerable: true, get() { warnStatusMessage(); return ""; }, set(value) { void value; warnStatusMessage(); } });
     \\  res.writeHead = function(statusCode, statusMessage, responseHeaders) {
     \\    if (serverStream && (serverStream.closed || serverStream.destroyed || serverStream.writable === false)) return this;
     \\    if (this.finished) return this;
     \\    if (this.headersSent) throw headersSentError();
-    \\    this.statusCode = statusCode;
     \\    if (typeof statusMessage === "string") warnStatusMessage();
-    \\    else if (typeof statusMessage === "object") responseHeaders = statusMessage;
+    \\    else if (responseHeaders === undefined && typeof statusMessage === "object") responseHeaders = statusMessage;
+    \\    const preparedHeaders = [];
     \\    if (Array.isArray(responseHeaders)) {
     \\      const pairs = responseHeaders.length > 0 && Array.isArray(responseHeaders[0]) ? responseHeaders : (responseHeaders.length % 2 === 0 ? Array.from({ length: responseHeaders.length / 2 }, (_, index) => [responseHeaders[index * 2], responseHeaders[index * 2 + 1]]) : null);
     \\      if (!pairs) { const error = new TypeError("The argument 'headers' is invalid"); error.code = "ERR_INVALID_ARG_VALUE"; throw error; }
-    \\      for (const pair of pairs) this.appendHeader(pair[0], pair[1]);
-    \\    } else if (responseHeaders) for (const key of Object.keys(responseHeaders)) this.setHeader(key, responseHeaders[key]);
-    \\    emitStreamingHeaders(String(req.method).toUpperCase() === "HEAD");
+    \\      for (const pair of pairs) preparedHeaders.push([normalizeHeaderName(pair[0]), normalizeHeaderValue(String(pair[0]).trim().toLowerCase(), pair[1])]);
+    \\    } else if (responseHeaders) for (const key of Object.keys(responseHeaders)) preparedHeaders.push([normalizeHeaderName(key), normalizeHeaderValue(String(key).trim().toLowerCase(), responseHeaders[key])]);
+    \\    for (const entry of preparedHeaders) if (entry[0].startsWith(":")) { const error = new TypeError("Cannot set HTTP/2 pseudo-headers"); error.code = "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"; throw error; }
+    \\    this.statusCode = statusCode;
+    \\    if (Array.isArray(responseHeaders)) {
+    \\      for (const name of new Set(preparedHeaders.map(entry => entry[0]))) delete this.__home_headers[name];
+    \\      for (const entry of preparedHeaders) this.appendHeader(entry[0], entry[1]);
+    \\    } else for (const entry of preparedHeaders) this.setHeader(entry[0], entry[1]);
+    \\    const finalHeaders = !responseHasBody();
+    \\    emitStreamingHeaders(finalHeaders);
+    \\    if (finalHeaders) completeHeaderOnlyResponse();
     \\    return this;
     \\  };
     \\  function responseHasBody() { const method = String(req.method || "GET").toUpperCase(); return method !== "HEAD" && ![204, 205, 304].includes(Number(res.statusCode)); }
@@ -39781,10 +39793,15 @@ const harness_prelude =
     \\    res._header = true;
     \\    clientStream.__home_response_started = true;
     \\    if (res.socket) res.socket.bytesWritten = Number(res.socket.bytesWritten || 0) + 9;
-    \\    const outputHeaders = { ":status": res.statusCode };
-    \\    if (res.sendDate && !Object.prototype.hasOwnProperty.call(res.__home_headers, "date")) outputHeaders.date = new Date(0).toUTCString();
-    \\    for (const name of Object.keys(res.__home_headers)) { const value = Array.isArray(res.__home_headers[name]) ? res.__home_headers[name].join(", ") : res.__home_headers[name]; if (clientStream.__home_strict_field_whitespace && /^[ \t]|[ \t]$/.test(String(value))) continue; outputHeaders[name] = value; }
+    \\    const outputHeaders = Object.assign(Object.create(null), { ":status": res.statusCode });
+    \\    if (res.sendDate && !Object.prototype.hasOwnProperty.call(res.__home_headers, "date")) outputHeaders.date = new Date().toUTCString();
+    \\    for (const name of Object.keys(res.__home_headers)) { const stored = res.__home_headers[name]; const value = name === "set-cookie" && Array.isArray(stored) ? stored : (Array.isArray(stored) ? stored.join(", ") : String(stored)); if (clientStream.__home_strict_field_whitespace && /^[ \t]|[ \t]$/.test(String(value))) continue; outputHeaders[name] = value; }
     \\    clientStream.emit("response", outputHeaders, finalHeaders && !responseHasBody() ? 5 : 4);
+    \\  }
+    \\  function completeHeaderOnlyResponse() {
+    \\    if (!clientStream || clientStream.__home_response_ended || clientStream.aborted) return;
+    \\    clientStream.__home_response_ended = true;
+    \\    Promise.resolve().then(() => { clientReceive("end"); if (typeof clientStream.__home_maybe_finish_pair === "function") clientStream.__home_maybe_finish_pair(); });
     \\  }
     \\  function maybeCloseServerStream() {
     \\    if (!serverStream || serverStream.__home_close_emitted || !res.__home_ended || !req.complete) return;
@@ -39811,15 +39828,20 @@ const harness_prelude =
     \\    if (clientStream) { clientStream.sentInfoHeaders.push({ ":status": 100 }); clientStream.emit("continue"); clientStream.emit("headers", { ":status": 100 }, 4); }
     \\    return true;
     \\  };
+    \\  function refreshResponseTimeout() {
+    \\    if (res.__home_timeout_handle) { clearTimeout(res.__home_timeout_handle); res.__home_timeout_handle = null; }
+    \\    if (!(res.__home_timeout_ms > 0) || res.finished || res.__home_destroyed) return;
+    \\    res.__home_timeout_handle = setTimeout(() => { res.__home_timeout_handle = null; if (!res.finished && !res.__home_destroyed) res.emit("timeout"); }, res.__home_timeout_ms);
+    \\  }
     \\  res.setTimeout = function(milliseconds, timeoutListener) {
-    \\    if (this.finished || this.__home_destroyed) return this;
+    \\    if (timeoutListener !== undefined && typeof timeoutListener !== "function") { const error = new TypeError('The "callback" argument must be of type function. Received ' + String(timeoutListener)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\    if (this.finished || this.__home_destroyed) return undefined;
     \\    if (typeof timeoutListener === "function") this.once("timeout", timeoutListener);
-    \\    if (this.__home_timeout_handle) clearTimeout(this.__home_timeout_handle);
-    \\    const target = this;
-    \\    this.__home_timeout_handle = setTimeout(() => { if (target.finished || target.__home_destroyed || target.__home_timeout_fired) return; target.__home_timeout_fired = true; target.emit("timeout"); }, Number(milliseconds) || 0);
-    \\    return this;
+    \\    this.__home_timeout_ms = Math.max(0, Number(milliseconds) || 0);
+    \\    refreshResponseTimeout();
+    \\    return undefined;
     \\  };
-    \\  res.setTrailer = function(name, value) { const normalized = normalizeHeaderName(name); this.__home_trailers[normalized] = normalizeHeaderValue(normalized, value); return this; };
+    \\  res.setTrailer = function(name, value) { const normalized = normalizeHeaderName(name); if (normalized.startsWith(":")) { const error = new TypeError("Cannot set HTTP/2 pseudo-headers"); error.code = "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED"; throw error; } const normalizedValue = normalizeHeaderValue(normalized, value); this.__home_trailers[normalized] = Array.isArray(normalizedValue) ? normalizedValue.map(String) : String(normalizedValue); return undefined; };
     \\  res.addTrailers = function(values) { for (const name of Object.keys(values || {})) this.setTrailer(name, values[name]); return this; };
     \\  res.writeEarlyHints = function(values, hintsCallback) {
     \\    if (!values || typeof values !== "object" || Array.isArray(values)) { const error = new TypeError('The "hints" argument must be of type object.'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
@@ -39846,9 +39868,18 @@ const harness_prelude =
     \\    const payload = payloads.length === 0 ? Buffer.alloc(0) : Buffer.concat(payloads);
     \\    Promise.resolve().then(() => {
     \\      if (clientStream && responseHasBody() && payload.length > 0 && !clientStream.aborted) clientReceive("data", payload);
-    \\      if (serverStream) { serverStream.bufferSize = Math.max(0, Number(serverStream.bufferSize || 0) - payload.length); serverStream.writableNeedDrain = serverStream.bufferSize >= Number(serverStream.writableHighWaterMark || 16384); }
-    \\      for (const record of records) if (typeof record.callback === "function") record.callback(null);
+    \\      if (serverStream) { const highWaterMark = responseHighWaterMark(); serverStream.bufferSize = Math.max(0, Number(serverStream.bufferSize || 0) - payload.length); serverStream.writableNeedDrain = serverStream.bufferSize >= highWaterMark; }
+    \\      for (const record of records) if (typeof record.callback === "function") record.callback();
     \\    });
+    \\  }
+    \\  function responseHighWaterMark() { return Number(serverStream && serverStream._writableState && serverStream._writableState.highWaterMark || serverStream && serverStream.writableHighWaterMark || 16384); }
+    \\  function responseChunkPayload(chunk, encoding) {
+    \\    if (chunk instanceof Buffer) return Buffer.from(chunk);
+    \\    if (chunk instanceof Uint8Array) return Buffer.from(chunk);
+    \\    if (typeof ArrayBuffer === "function" && chunk instanceof ArrayBuffer) return Buffer.from(new Uint8Array(chunk));
+    \\    if (typeof ArrayBuffer === "function" && ArrayBuffer.isView && ArrayBuffer.isView(chunk)) return Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+    \\    if (typeof chunk === "string") return Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined);
+    \\    const error = new TypeError('The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ' + String(chunk)); error.code = "ERR_INVALID_ARG_TYPE"; throw error;
     \\  }
     \\  res.cork = function() { this.writableCorked++; if (serverStream) serverStream.writableCorked = this.writableCorked; return undefined; };
     \\  res.uncork = function() { this.writableCorked = Math.max(0, this.writableCorked - 1); if (serverStream) serverStream.writableCorked = this.writableCorked; if (this.writableCorked === 0) flushCorkedWrites(); return undefined; };
@@ -39857,13 +39888,14 @@ const harness_prelude =
     \\    if (this.__home_destroyed) return false;
     \\    if (this.finished) { if (typeof done === "function") { const error = __home_http2_error_with_code("ERR_STREAM_WRITE_AFTER_END", "write after end"); Promise.resolve().then(() => done(error)); } return false; }
     \\    if (serverStream && (serverStream.closed || serverStream.destroyed)) { if (typeof done === "function") { const error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed"); Promise.resolve().then(() => done(error)); } return false; }
+    \\    refreshResponseTimeout();
     \\    emitStreamingHeaders(false);
     \\    if (chunk !== undefined && chunk !== null) {
     \\      chunks.push(chunk);
-    \\      const payload = chunk instanceof Buffer ? chunk : Buffer.from(String(chunk));
+    \\      const payload = responseChunkPayload(chunk, typeof encoding === "string" ? encoding : undefined);
     \\      if (socket) socket.bytesWritten = Number(socket.bytesWritten || 0) + 9 + payload.length;
-    \\      if (serverStream) { serverStream.bufferSize = Number(serverStream.bufferSize || 0) + payload.length; serverStream.writableNeedDrain = serverStream.bufferSize >= Number(serverStream.writableHighWaterMark || 16384); }
-    \\      if (payload.length === 0) { if (typeof done === "function") Promise.resolve().then(() => done(null)); return !serverStream || !serverStream.writableNeedDrain; }
+    \\      if (serverStream) { serverStream.bufferSize = Number(serverStream.bufferSize || 0) + payload.length; serverStream.writableNeedDrain = serverStream.bufferSize >= responseHighWaterMark(); }
+    \\      if (payload.length === 0) { if (typeof done === "function") Promise.resolve().then(() => done()); return !serverStream || !serverStream.writableNeedDrain; }
     \\      if (this.writableCorked > 0) { this.__home_corked_writes.push({ payload, callback: done }); return !serverStream || !serverStream.writableNeedDrain; }
     \\      if (clientStream && responseHasBody()) Promise.resolve().then(() => {
     \\        if (!clientStream.aborted) clientReceive("data", payload);
@@ -39872,11 +39904,11 @@ const harness_prelude =
     \\          const wasBackpressured = serverStream.bufferSize >= highWaterMark;
     \\          serverStream.bufferSize = Math.max(0, serverStream.bufferSize - payload.length);
     \\          serverStream.writableNeedDrain = serverStream.bufferSize >= highWaterMark;
-    \\          if (wasBackpressured && serverStream.bufferSize < highWaterMark) { serverStream.emit("drain"); res.emit("drain"); }
+    \\          if (!res.finished && !res.__home_destroyed && wasBackpressured && serverStream.bufferSize < highWaterMark) { serverStream.emit("drain"); res.emit("drain"); }
     \\        }
-    \\        if (typeof done === "function") done(null);
+    \\        if (typeof done === "function") done();
     \\      });
-    \\      else if (typeof done === "function") Promise.resolve().then(() => done(null));
+    \\      else if (typeof done === "function") Promise.resolve().then(() => done());
     \\    }
     \\    const highWaterMark = Number(serverStream && serverStream._writableState && serverStream._writableState.highWaterMark || 16384);
     \\    return !serverStream || Number(serverStream.bufferSize || 0) < highWaterMark;
@@ -39885,7 +39917,7 @@ const harness_prelude =
     \\    const done = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : endCallback);
     \\    if (serverStream && (serverStream.closed || serverStream.destroyed || serverStream.writable === false) && !this.headersSent) { this.finished = true; this.writableEnded = true; if (typeof done === "function") Promise.resolve().then(done); return this; }
     \\    if (this.finished) { if (typeof done === "function") Promise.resolve().then(done); return this; }
-    \\    if (typeof chunk !== "function" && chunk !== undefined && chunk !== null) this.write(chunk);
+    \\    if (responseHasBody() && typeof chunk !== "function" && chunk !== undefined && chunk !== null) this.write(chunk, typeof encoding === "string" ? encoding : undefined);
     \\    if (this.writableCorked > 0) { this.writableCorked = 0; if (serverStream) serverStream.writableCorked = 0; flushCorkedWrites(); }
     \\    this.finished = true;
     \\    this.writableEnded = true;
@@ -39927,6 +39959,8 @@ const harness_prelude =
     \\        clientStream.destroyed = true;
     \\        clientReceive("close");
     \\      }
+    \\      if (clientStream && typeof clientStream.__home_release_active === "function") clientStream.__home_release_active();
+    \\      if (clientStream && clientStream.session) __home_http2_maybe_close_client(clientStream.session);
     \\      if (serverStream && !serverStream.__home_close_emitted) { serverStream.closed = true; serverStream.destroyed = true; serverStream.__home_close_emitted = true; serverStream.emit("close"); }
     \\    });
     \\    return this;
@@ -40892,6 +40926,7 @@ const harness_prelude =
     \\    const hasCompatHandler = server && (typeof server.__home_handler === "function" || ["request", "checkContinue", "checkExpectation", "connect"].some(name => server.listenerCount(name) > 0) || requestedMethod === "CONNECT" || requestHeaders.expect !== undefined);
     \\    if (hasCompatHandler) {
     \\      const handlerServerStream = Object.assign(__home_http_event_target(), { id: streamId, session: this.__home_server_session, closed: false, destroyed: false, readable: true, writable: true, rstCode: 0, state: { state: 2, weight: 16, sumDependencyWeight: 0, localClose: 0, remoteClose: 0, localWindowSize: 65535 }, _readableState: { highWaterMark: 16384 }, _writableState: { highWaterMark: 16384 }, bufferSize: 0, writableHighWaterMark: 16384, writableObjectMode: false, writableNeedDrain: false, writableCorked: 0 });
+    \\      Object.defineProperty(handlerServerStream, "writableHighWaterMark", { configurable: true, enumerable: true, get() { return Number(this._writableState && this._writableState.highWaterMark || 16384); } });
     \\      stream.__home_server_stream = handlerServerStream;
     \\      handlerServerStream.__home_client_stream = stream;
     \\      handlerServerStream.pushAllowed = initialSettings.enablePush !== false;
@@ -40953,6 +40988,9 @@ const harness_prelude =
     \\        Promise.resolve().then(() => {
     \\          if (!stream.__home_response_ended) { stream.__home_response_ended = true; if (typeof stream.__home_receive === "function") stream.__home_receive("end"); else stream.emit("end"); }
     \\          if (!stream.closed) { stream.closed = true; stream.destroyed = true; if (typeof stream.__home_receive === "function") stream.__home_receive("close"); else stream.emit("close"); }
+    \\          if (!handlerServerStream.__home_close_emitted) { handlerServerStream.destroyed = true; handlerServerStream.writable = false; handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\          stream.__home_release_active();
+    \\          __home_http2_maybe_close_client(client);
     \\          if (typeof closeCallback === "function") closeCallback();
     \\        });
     \\        return this;
@@ -154971,6 +155009,33 @@ test "bootstrap HTTP2 compatibility headers socket and hints corpus tranche cont
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expect(summary.passed != 0 or summary.allowed_empty_files == 1);
     }
+}
+
+test "bootstrap HTTP2 compatibility response lifecycle logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("destroyed compat responses finish once and distinguish clean and coded peers", async () => { let finishes = 0; const server = http2.createServer((request, response) => { response.on("error", error => { throw error; }); response.on("finish", () => finishes++); const reason = request.url === "/clean" ? undefined : (request.url === "/string" ? "test-error" : new Error("test")); response.destroy(reason); response.destroy(reason); }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); const run = (path, expectError) => new Promise((resolve, reject) => { const request = client.request({ ":path": path }); let errors = 0; let ends = 0; let closes = 0; request.on("response", () => reject(new Error("destroyed response emitted headers"))); request.on("error", error => { errors++; try { assert.strictEqual(error.code, "ERR_HTTP2_STREAM_ERROR"); assert.strictEqual(error.message, "Stream closed with error code NGHTTP2_INTERNAL_ERROR"); } catch (cause) { reject(cause); } }); request.on("end", () => ends++); request.on("close", () => { closes++; Promise.resolve().then(() => resolve({ errors, ends, closes })); }); request.resume(); request.end(); }); assert.deepStrictEqual(await run("/clean", false), { errors: 0, ends: 1, closes: 1 }); assert.deepStrictEqual(await run("/string", true), { errors: 1, ends: 0, closes: 1 }); assert.deepStrictEqual(await run("/error", true), { errors: 1, ends: 0, closes: 1 }); assert.strictEqual(finishes, 3); client.close(); await new Promise(resolve => server.close(resolve)); });
+        \\test("compat drain mirrors stream backpressure and writes after end fail asynchronously", async () => { await new Promise((resolve, reject) => { let serverDone = false; let clientDone = false; const finish = (client, server) => { if (!serverDone || !clientDone) return; client.close(); server.close(resolve); }; const server = http2.createServer((_request, response) => { response.stream._writableState.highWaterMark = 5; try { assert.strictEqual(response.write("tests"), false); } catch (error) { reject(error); } response.once("drain", () => { response.end("tests", () => { const returned = response.write("late", error => { try { assert.strictEqual(error.code, "ERR_STREAM_WRITE_AFTER_END"); serverDone = true; finish(client, server); } catch (cause) { reject(cause); } }); try { assert.strictEqual(returned, false); } catch (error) { reject(error); } }); }); }); let client; server.listen(0, () => { client = http2.connect("http://localhost:" + server.address().port); const request = client.request({ ":method": "POST" }); let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(body, "teststests"); clientDone = true; finish(client, server); } catch (error) { reject(error); } }); request.end(); }); }); });
+        \\test("bodyless statuses and HEAD suppress payloads and finish with END_STREAM", async () => { const server = http2.createServer((request, response) => { const status = request.url === "/head" ? 200 : Number(request.url.slice(1)); response.writeHead(status, { marker: "ok" }); response.end("forbidden"); }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); const run = (path, method) => new Promise((resolve, reject) => { const request = client.request({ ":path": path, ":method": method || "GET" }); let body = ""; let flags = 0; request.setEncoding("utf8"); request.on("response", (headers, responseFlags) => { try { assert.strictEqual(headers.marker, "ok"); assert.strictEqual(headers[":status"], path === "/head" ? 200 : Number(path.slice(1))); flags = responseFlags; } catch (error) { reject(error); } }); request.on("data", chunk => body += chunk); request.on("error", reject); request.on("end", () => resolve({ body, flags })); request.end(); }); for (const value of [await run("/204"), await run("/205"), await run("/304"), await run("/head", "HEAD")]) { assert.strictEqual(value.body, ""); assert.strictEqual(value.flags, 5); } client.close(); await new Promise(resolve => server.close(resolve)); });
+        \\test("compat headers status warnings arrays and trailers retain public semantics", async () => { await new Promise((resolve, reject) => { let warnings = 0; const onWarning = warning => { if (warning.name === "UnsupportedWarning" && /Status message is not supported/.test(warning.message)) warnings++; }; process.on("warning", onWarning); const server = http2.createServer((_request, response) => { try { response.setHeader(" Foo-Bar ", "abc123"); assert.strictEqual(response.hasHeader("foo-bar"), true); assert.strictEqual(response.getHeader(" FOO-BAR "), "abc123"); response.appendHeader("foo-bar", "def456"); assert.deepStrictEqual(response.getHeader("foo-bar"), ["abc123", "def456"]); assert.strictEqual(Object.getPrototypeOf(response.getHeaders()), null); assert.throws(() => { response.statusCode = 100; }, { code: "ERR_HTTP2_INFO_STATUS_NOT_ALLOWED" }); assert.throws(() => { response.statusCode = 600; }, { code: "ERR_HTTP2_STATUS_INVALID" }); response.removeHeader("date"); assert.strictEqual(response.sendDate, false); response.addTrailers({ ABC: 123 }); response.setTrailer("ABCD", 456); response.writeHead(201, "Created", [["x-array", "a"], ["x-array", "b"]]); response.end(); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); request.on("error", reject); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 201); assert.strictEqual(headers["foo-bar"], "abc123, def456"); assert.strictEqual(headers["x-array"], "a, b"); assert.strictEqual(headers.date, undefined); } catch (error) { reject(error); } }); request.on("trailers", trailers => { try { assert.strictEqual(trailers.abc, "123"); assert.strictEqual(trailers.abcd, "456"); } catch (error) { reject(error); } }); request.on("end", () => { try { process.removeListener("warning", onWarning); assert.strictEqual(warnings, 1); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("compat writes preserve encodings binary chunks and successful callback shape", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => { try { response.write("e9", "hex", function() { assert.strictEqual(arguments.length, 0); }); response.end(new Uint8Array([1, 2])); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); const chunks = []; request.on("error", reject); request.on("data", chunk => chunks.push(Buffer.from(chunk))); request.on("end", () => { try { assert.strictEqual(Buffer.concat(chunks).toString("hex"), "e90102"); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.end(); }); }); });
+        \\test("writeHead validates atomically overrides duplicate arrays and coerces status", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => { try { const identity = ["one", "two"]; response.setHeader("foo", "old"); response.setHeader("keep", "retained"); response.setHeader("identity", identity); assert.strictEqual(response.getHeaders().identity, identity); response.statusCode = 202; assert.throws(() => response.writeHead(418, ["foo", "bar", "odd"]), { code: "ERR_INVALID_ARG_VALUE" }); assert.strictEqual(response.statusCode, 202); assert.strictEqual(response.getHeader("foo"), "old"); assert.throws(() => response.setTrailer(":status", 200), { code: "ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED" }); response.setHeader("connection", "trailers"); response.writeHead(204.9, [["foo", "bar"], ["foo", "baz"]]); response.end("suppressed"); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); request.on("error", reject); request.on("response", (headers, flags) => { try { assert.strictEqual(headers[":status"], 204); assert.strictEqual(headers.foo, "bar, baz"); assert.strictEqual(headers.keep, "retained"); assert.strictEqual(headers.connection, "trailers"); assert.strictEqual(flags, 5); } catch (error) { reject(error); } }); request.on("data", () => reject(new Error("204 response emitted body"))); request.on("end", () => { client.close(); server.close(resolve); }); request.end(); }); }); });
+        \\test("response timeouts validate callbacks fire once and become inert after finish", async () => { await new Promise((resolve, reject) => { let events = 0; const server = http2.createServer((_request, response) => { try { assert.throws(() => response.setTimeout(1, "bad"), { code: "ERR_INVALID_ARG_TYPE" }); assert.strictEqual(response.setTimeout(1, () => { events++; response.end(); }), undefined); response.on("timeout", () => events++); response.on("finish", () => { assert.strictEqual(response.setTimeout(1, () => reject(new Error("timeout after finish"))), undefined); }); } catch (error) { reject(error); } }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(events, 2); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("paused short responses remain buffered until consumers attach", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => { response.setHeader("content-type", "text/plain"); response.end("test"); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); let earlyClose = false; const early = () => earlyClose = true; request.on("error", reject); request.on("close", early); setTimeout(() => { request.removeListener("close", early); let body = ""; request.setEncoding("utf8"); request.on("data", chunk => body += chunk); request.on("end", () => { try { assert.strictEqual(body, "test"); assert.strictEqual(earlyClose, false); } catch (error) { reject(error); } }); request.on("close", () => { client.close(); server.close(resolve); }); }, 5); request.end(); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-compat-response-lifecycle-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 compat response lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 
 test "bootstrap HTTP2 CONNECT session and diagnostics corpus tranche contracts" {
