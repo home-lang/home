@@ -23,6 +23,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CORPUS = HERE / "corpus"
 TOOLS = HERE / ".tools"
+TSC_TOOLS = TOOLS / "tsc"
+TSGO_TOOLS = TOOLS / "tsgo"
 RESULTS = HERE / "results"
 MANIFEST = HERE / "corpus.toml"
 
@@ -325,7 +327,6 @@ def cmd_corpus() -> None:
 
 def cmd_setup() -> None:
     versions = manifest()["compilers"]
-    TOOLS.mkdir(parents=True, exist_ok=True)
     run(
         [
             "npm",
@@ -333,9 +334,19 @@ def cmd_setup() -> None:
             "--no-save",
             "--no-package-lock",
             "--prefix",
-            str(TOOLS),
+            str(TSC_TOOLS),
             f"typescript@{versions['tsc']['version']}",
-            f"@typescript/native-preview@{versions['tsgo']['version']}",
+        ]
+    )
+    run(
+        [
+            "npm",
+            "install",
+            "--no-save",
+            "--no-package-lock",
+            "--prefix",
+            str(TSGO_TOOLS),
+            f"typescript@{versions['tsgo']['version']}",
         ]
     )
 
@@ -343,8 +354,8 @@ def cmd_setup() -> None:
 def compiler_commands() -> dict[str, list[str]]:
     home = Path(os.environ.get("HOME_TSC", ROOT / "zig-out/bin/home-tsc"))
     commands = {
-        "tsc": [str(TOOLS / "node_modules/.bin/tsc")],
-        "tsgo": [str(TOOLS / "node_modules/.bin/tsgo")],
+        "tsc": [str(TSC_TOOLS / "node_modules/.bin/tsc")],
+        "tsgo": [str(TSGO_TOOLS / "node_modules/.bin/tsc")],
         "home": [str(home)],
     }
     missing = [name for name, command in commands.items() if not Path(command[0]).is_file()]
