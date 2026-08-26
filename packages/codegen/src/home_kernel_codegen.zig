@@ -843,8 +843,19 @@ pub const HomeKernelCodegen = struct {
             // A Zig module has no Home declarations to read.
             if (resolved.is_zig) continue;
 
-            // Visit each file once: kernel modules form a diamond around
-            // core/foundation.home, and cycles exist.
+            // An alias belongs to the importer, not to the imported file, so
+            // it must be recorded before the visited check below. Registering
+            // it after meant that a module already pulled in through some
+            // other path — these form a diamond around core/foundation.home —
+            // was skipped here and its alias never recorded, so every call
+            // through it failed to resolve.
+            if (depth == 0) {
+                const alias_now = decl.alias orelse resolved.name;
+                const imported_id = try moduleIdFromPath(arena, resolved.file_path);
+                try self.module_aliases.put(alias_now, imported_id);
+            }
+
+            // Collect each file's declarations once: cycles exist.
             if (self.imported_files.contains(resolved.file_path)) continue;
             const key = arena.dupe(u8, resolved.file_path) catch continue;
             self.imported_files.put(key, {}) catch continue;
@@ -880,13 +891,6 @@ pub const HomeKernelCodegen = struct {
 
             // The alias the importing file uses, or the module's own name.
             const alias = decl.alias orelse resolved.name;
-
-            // Only direct imports of the file being compiled establish a
-            // callable alias; deeper levels are pulled in for their types.
-            if (depth == 0) {
-                const imported_id = try moduleIdFromPath(arena, resolved.file_path);
-                try self.module_aliases.put(alias, imported_id);
-            }
 
             try self.registerImportedDecls(imported, alias);
             try self.collectImports(imported, depth + 1);
