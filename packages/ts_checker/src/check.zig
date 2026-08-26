@@ -107330,13 +107330,13 @@ pub const Checker = struct {
                         var constraint_failed = false;
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
-                            try subs.put(self.gpa, type_params[i], explicit_t);
                             if (!constraint_failed) {
                                 const diagnostic_start = self.diagnostics.items.len;
                                 try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
                                 constraint_failed = self.diagnostics.items.len != diagnostic_start;
                                 explicit_type_arg_resolution_failed = explicit_type_arg_resolution_failed or constraint_failed;
                             }
+                            try subs.put(self.gpa, type_params[i], explicit_t);
                         }
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
@@ -107369,13 +107369,13 @@ pub const Checker = struct {
                         var constraint_failed = false;
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
-                            try subs.put(self.gpa, type_params[i], explicit_t);
                             if (!constraint_failed) {
                                 const diagnostic_start = self.diagnostics.items.len;
                                 try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
                                 constraint_failed = self.diagnostics.items.len != diagnostic_start;
                                 explicit_type_arg_resolution_failed = explicit_type_arg_resolution_failed or constraint_failed;
                             }
+                            try subs.put(self.gpa, type_params[i], explicit_t);
                         }
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(effective_callee_t, &subs) catch effective_callee_t;
@@ -107512,7 +107512,7 @@ pub const Checker = struct {
                             }
                             const rest_arr_t = param_ts[param_ts.len - 1];
                             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                                if (args.len > fixed_count or !call_subs.contains(rest_arr_t)) {
+                                if (!call_subs.contains(rest_arr_t)) {
                                     if (try self.synthesizedRestArgumentListType(
                                         node,
                                         args,
@@ -107622,6 +107622,15 @@ pub const Checker = struct {
                             try self.normalizeCallInferenceSubstitutions(effective_callee_t, &call_subs);
                             try self.applyInferredConditionalConstraintsFromCallArgs(param_ts, arg_types.items, &call_subs);
                             try self.applyInferredConditionalConstraintsToSubs(effective_callee_t, &call_subs);
+                            if (try self.reportInferredGenericRestConstraintMismatch(
+                                node,
+                                args,
+                                arg_types.items,
+                                effective_callee_t,
+                                &call_subs,
+                            )) {
+                                explicit_type_arg_resolution_failed = true;
+                            }
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
                             if (self.hir.kindOf(c.callee) == .member_access and !receiver_specialized_signature) {
                                 effective_callee_t = try self.relowerSignatureParametersWithInferences(effective_callee_t, &call_subs);
@@ -122548,12 +122557,12 @@ pub const Checker = struct {
             // parameter's `extends` constraint. Mirrors upstream
             // `nonPrimitiveInGeneric.ts(25,8)` where
             // `bound2<number>()` violates `T extends object`.
-            try subs.put(self.gpa, type_params[i], explicit_t);
             if (check_constraints and !constraint_failed) {
                 const diagnostic_start = self.diagnostics.items.len;
                 try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
                 constraint_failed = self.diagnostics.items.len != diagnostic_start;
             }
+            try subs.put(self.gpa, type_params[i], explicit_t);
             try explicit_types.append(self.gpa, explicit_t);
         }
         if (explicit_types.items.len > 0) {
@@ -138652,10 +138661,10 @@ pub const Checker = struct {
         }
         const tuple_constraint_chain = try self.typeArgTupleConstraintChain(arg_t, constraint);
         const broad_function_to_call = self.builtinFunctionSourceCannotSatisfyCallTarget(arg_t, constraint);
+        if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (!broad_function_to_call and
             tuple_constraint_chain.len == 0 and
             try self.genericConstraintAssignable(arg_t, constraint)) return;
-        if (try self.reportTypeParameterArgConstraintMismatch(arg_node, arg_t, constraint)) return;
         if (self.containsFreeTypeParameter(arg_t)) return;
         if (self.functionObjectTargetAcceptsArgument(arg_t, constraint, 0)) return;
         // Deferred indexed-access argument over a generic parameter
@@ -153219,7 +153228,7 @@ pub const Checker = struct {
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
-                if (args.len > fixed_count or !subs.contains(rest_arr_t)) {
+                if (!subs.contains(rest_arr_t)) {
                     if (try self.synthesizedRestArgumentListType(
                         hir_mod.none_node_id,
                         args,
@@ -153281,6 +153290,50 @@ pub const Checker = struct {
         try self.applyParameterlessCallbackConstraintFallback(sig, param_ts, args, subs);
         try self.refineRepeatedDirectInferences(param_ts, args, arg_types, subs);
         try self.inferDescriptorLikeReturnTypeParameter(sig, arg_types, subs);
+    }
+
+    fn reportInferredGenericRestConstraintMismatch(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        if (!self.rest_signatures.contains(sig)) return false;
+        const params = self.interner.signatureParams(sig);
+        if (params.len == 0) return false;
+        const rest_param = params[params.len - 1];
+        if (rest_param >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(rest_param).is_type_parameter)
+        {
+            return false;
+        }
+        const candidate = subs.get(rest_param) orelse return false;
+        if (candidate == types.Primitive.any or candidate == types.Primitive.unknown or candidate == types.Primitive.never) return false;
+        const raw_constraint = self.typeParameterConstraint(rest_param) orelse return false;
+        const constraint = self.substituteType(raw_constraint, subs) catch raw_constraint;
+        if (constraint == types.Primitive.any or constraint == types.Primitive.unknown or
+            try self.genericConstraintAssignable(candidate, constraint))
+        {
+            return false;
+        }
+
+        const fixed_count = params.len - 1;
+        const source_name = (try self.restArgsTupleAnnotationDisplay(args, arg_types, fixed_count)) orelse
+            (try self.allocSimpleTypeName(candidate)) orelse return false;
+        const target_name = (try self.typeParameterConstraintSourceName(rest_param)) orelse
+            (try self.allocSimpleTypeName(constraint)) orelse return false;
+        try self.diagnostics.append(self.gpa, .{
+            .node = if (fixed_count < args.len) args[fixed_count] else call_node,
+            .code = TsCodes.argument_type_mismatch,
+            .message = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ source_name, target_name },
+            ),
+        });
+        return true;
     }
 
     fn applyParameterlessCallbackConstraintFallback(
@@ -167649,8 +167702,8 @@ pub const Checker = struct {
             var i: usize = 0;
             while (i < npairs) : (i += 1) {
                 const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
-                try subs.put(self.gpa, type_params[i], explicit_t);
                 try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
+                try subs.put(self.gpa, type_params[i], explicit_t);
             }
         } else {
             try self.inferCallSubstitutions(sig, args, arg_types, &subs);
@@ -226195,7 +226248,7 @@ test "checker: parity 4451-5250 callback params infer fixed generic rest tuple a
         \\  handler: (...args: TS) => unknown,
         \\  ...args: TS): void;
         \\call((x: number, y: number) => x + y);
-        \\call((x: number, y: number) => x + y, 4, 2);
+        \\call((x: number, y: number) => x + y, 1, 2, 3, 4, 5, 6, 7);
         \\declare function capture<TS extends unknown[]>(handler: (...args: TS) => unknown): TS;
         \\capture((p00: number, p01: number, p02: number, p03: number, p04: number, p05: number,
         \\  p06: number, p07: number, p08: number, p09: number, p10: number, p11: number,
@@ -226205,7 +226258,7 @@ test "checker: parity 4451-5250 callback params infer fixed generic rest tuple a
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_arguments));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqualStrings(
         "Expected 3 arguments, but got 1.",
@@ -226612,7 +226665,11 @@ test "checker: rest tuple width display substitutes array constraint" {
 test "checker: readonly type argument fails mutable array constraint" {
     const s = try newSetup(
         \\declare function fx1<T extends unknown[]>(a: string, ...args: T): T;
-        \\function gx1<V extends readonly unknown[]>(v: V) {
+        \\function gx1<U extends unknown[], V extends readonly unknown[]>(u: U, v: V) {
+        \\  fx1('abc');
+        \\  fx1('abc', ...u);
+        \\  fx1('abc', ...v);
+        \\  fx1<U>('abc', ...u);
         \\  fx1<V>('abc', ...v);
         \\}
     );
@@ -226629,6 +226686,22 @@ test "checker: readonly type argument fails mutable array constraint" {
         }
     }
     try T.expect(saw);
+}
+
+test "checker: inferred generic rest tuple must satisfy its union constraint" {
+    const s = try newSetup(
+        \\declare function hmm<A extends [] | [number, string]>(...args: A): void;
+        \\hmm();
+        \\hmm(1, "s");
+        \\hmm("what");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqualStrings(
+        "Argument of type '[\"what\"]' is not assignable to parameter of type '[] | [number, string]'.",
+        checkerFirstMessageForCode(s, TsCodes.argument_type_mismatch) orelse return error.MissingDiagnostic,
+    );
 }
 
 test "checker: readonly variadic tuple assigned to type parameter reports direct mismatch" {
