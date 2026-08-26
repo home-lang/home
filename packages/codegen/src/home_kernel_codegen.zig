@@ -1163,6 +1163,19 @@ pub const HomeKernelCodegen = struct {
     /// The boot entry points are the exception. `kernel_main` is called from
     /// hand-written assembly in boot.s, which cannot know a module prefix, so
     /// those keep their bare names and are the kernel's true ABI surface.
+    /// True when `name` is a variable (local or module-level) whose declared
+    /// or inferred type is a function pointer — the target of an indirect
+    /// call, as in `wakeup_callback(pid)`.
+    fn isCallableVariable(self: *HomeKernelCodegen, name: []const u8) !bool {
+        if (self.local_types.get(name)) |t| {
+            return std.mem.indexOf(u8, t, "fn(") != null;
+        }
+        if (self.global_vars.get(name)) |g| {
+            return std.mem.indexOf(u8, g.type_name, "fn(") != null;
+        }
+        return false;
+    }
+
     fn functionSymbol(self: *HomeKernelCodegen, name: []const u8) ![]const u8 {
         if (isBootEntryPoint(name) or self.module_id.len == 0) return name;
         return std.fmt.allocPrint(
@@ -3013,6 +3026,27 @@ pub const HomeKernelCodegen = struct {
                         // if it does not exist.
                         if (self.declared_fns.contains(func_name)) {
                             try self.print("    call {s}\n", .{try self.functionSymbol(func_name)});
+                        } else if (try self.isCallableVariable(func_name)) {
+                            // Indirect call through a function-pointer
+                            // variable: callbacks, handler tables, driver
+                            // ops. The pointer is loaded AFTER the arguments
+                            // are in place (it may live in a stack slot the
+                            // argument pushes must not disturb).
+                            var ptr_reg: []const u8 = undefined;
+                            var had_ptr: bool = false;
+                            if (self.locals.get(func_name)) |slot| {
+                                try self.print("    movq {d}(%rbp), %r10\n", .{slot});
+                                ptr_reg = "%r10";
+                                had_ptr = true;
+                            } else if (self.global_vars.get(func_name)) |gv| {
+                                try self.print("    movq {s}(%rip), %r10\n", .{gv.symbol});
+                                ptr_reg = "%r10";
+                                had_ptr = true;
+                            }
+                            if (!had_ptr) {
+                                try self.print("    # ERROR: cannot lower call through '{s}'\n", .{func_name});
+                            }
+                            try self.print("    call *{s}\n", .{ptr_reg});
                         } else {
                             try self.print("    call {s}\n", .{func_name});
                         }

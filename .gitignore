@@ -99,3 +99,7 @@ app-with-resources
 /.survey
 /.zig-global-cache-home-test
 /.ts-cloud
+/.codex-git-parity.git
+/js
+/file:
+/.codex-cache-final
