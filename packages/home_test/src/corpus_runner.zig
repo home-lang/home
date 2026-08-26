@@ -38704,6 +38704,16 @@ const harness_prelude =
     \\  if (cause !== undefined) error.cause = cause;
     \\  return error;
     \\}
+    \\function __home_http2_reset_name(code) {
+    \\  const names = { 0: "NGHTTP2_NO_ERROR", 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 3: "NGHTTP2_FLOW_CONTROL_ERROR", 4: "NGHTTP2_SETTINGS_TIMEOUT", 5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR", 7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL", 9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR", 11: "NGHTTP2_ENHANCE_YOUR_CALM", 12: "NGHTTP2_INADEQUATE_SECURITY", 13: "NGHTTP2_HTTP_1_1_REQUIRED" };
+    \\  return names[Number(code)] || String(code);
+    \\}
+    \\function __home_http2_transport_server(socket) {
+    \\  if (!socket) return null;
+    \\  return socket.__home_http2_server ||
+    \\    socket.__home_server_stream && socket.__home_server_stream.__home_http2_server ||
+    \\    socket.__home_client_stream && socket.__home_client_stream.__home_http2_server || null;
+    \\}
     \\function __home_http2_nghttp_error(code) {
     \\  const error = new __home_http2_NghttpError(__home_http2_nghttp2_error_string(code));
     \\  error.code = "ERR_HTTP2_ERROR";
@@ -39849,6 +39859,7 @@ const harness_prelude =
     \\        if (trailerNames.length > 0 && !clientStream.aborted) { const trailers = {}; for (const name of trailerNames) trailers[name] = Array.isArray(res.__home_trailers[name]) ? res.__home_trailers[name].join(", ") : res.__home_trailers[name]; clientReceive("trailers", trailers); }
     \\        if (!clientStream.__home_response_ended && !clientStream.aborted) { clientStream.__home_response_ended = true; clientReceive("end"); }
     \\        if (!clientStream.closed) { clientStream.closed = true; clientStream.destroyed = true; clientReceive("close"); }
+    \\        if (typeof clientStream.__home_release_active === "function") clientStream.__home_release_active();
     \\        finishResponse();
     \\        if (typeof done === "function") done();
     \\        maybeCloseServerStream();
@@ -40285,9 +40296,9 @@ const harness_prelude =
     \\    return undefined;
     \\  };
     \\  let suppliedTransport = typeof options.createConnection === "function" ? options.createConnection(authorityUrl, options) : null;
-    \\  if (!server && suppliedTransport && suppliedTransport.__home_http2_server) server = suppliedTransport.__home_http2_server;
+    \\  if (!server) server = __home_http2_transport_server(suppliedTransport);
     \\  if (!suppliedTransport && rawNetServer && globalThis.__home_modules["net"] && typeof globalThis.__home_modules["net"].connect === "function") suppliedTransport = globalThis.__home_modules["net"].connect({ port: authorityPort, host: connectHost, localAddress: options.localAddress, family: options.family, __home_sync_accept: true });
-    \\  if (!server && suppliedTransport && suppliedTransport.__home_http2_server) server = suppliedTransport.__home_http2_server;
+    \\  if (!server) server = __home_http2_transport_server(suppliedTransport);
     \\  if (!suppliedTransport && !server && authorityUrl.protocol === "http:" && authorityPort === 80 && globalThis.__home_modules["net"] && typeof globalThis.__home_modules["net"].connect === "function") {
     \\    suppliedTransport = globalThis.__home_modules["net"].connect({ port: authorityUrl.port || "80", host: connectHost, localAddress: options.localAddress, family: options.family });
     \\  }
@@ -40314,7 +40325,12 @@ const harness_prelude =
     \\  serverTransportSocket.remotePort = serverTransportSocket.remotePort || authorityPort;
     \\  if (client.encrypted) { if (serverTransportSocket.servername === undefined) serverTransportSocket.servername = secureServername; if (serverTransportSocket.alpnProtocol === undefined) serverTransportSocket.alpnProtocol = transportSocket.alpnProtocol || "h2"; serverTransportSocket.encrypted = true; }
     \\  const rawTransportEmit = typeof transportSocket.emit === "function" ? transportSocket.emit.bind(transportSocket) : null;
-    \\  if (rawTransportEmit) transportSocket.emit = function(name) { if (String(name) === "close") { if (this.__home_native_close_seen) return false; this.__home_native_close_seen = true; this.__home_close_emitted = true; } return rawTransportEmit.apply(this, arguments); };
+    \\  if (rawTransportEmit) transportSocket.emit = function(name) {
+    \\    const eventName = String(name);
+    \\    if (eventName === "close") { if (this.__home_native_close_seen) return false; this.__home_native_close_seen = true; this.__home_close_emitted = true; }
+    \\    if (eventName === "error") { if (this.__home_native_error_seen) return false; this.__home_native_error_seen = true; }
+    \\    return rawTransportEmit.apply(this, arguments);
+    \\  };
     \\  const originalTransportDestroy = typeof transportSocket.destroy === "function" ? transportSocket.destroy.bind(transportSocket) : null;
     \\  transportSocket.destroy = function(error) {
     \\    if (this.__home_h2_destroying) return this;
@@ -40335,6 +40351,7 @@ const harness_prelude =
     \\  client.__home_server_session.socket = serverTransportSocket;
     \\  client.__home_server_session[__home_http2_k_socket] = serverTransportSocket;
     \\  serverTransportSocket.on("error", error => {
+    \\    if (transportSocket.__home_suppress_h2_session_error && client.__home_termination_scheduled) return;
     \\    const session = client.__home_server_session;
     \\    if (session.__home_socket_error_seen) return;
     \\    session.__home_socket_error_seen = true;
@@ -40448,7 +40465,7 @@ const harness_prelude =
     \\    this.__home_termination_scheduled = true;
     \\    this.closed = true;
     \\    if (kind === "destroy") this.destroyed = true;
-    \\    if (!fromSocket && !transportSocket.destroyed && typeof transportSocket.destroy === "function") transportSocket.destroy(cause || undefined);
+    \\    if (!fromSocket && !transportSocket.destroyed && typeof transportSocket.destroy === "function") { transportSocket.__home_suppress_h2_session_error = true; transportSocket.destroy(cause || undefined); }
     \\    Promise.resolve().then(() => {
     \\      if (cause) this.emit("error", cause);
     \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
@@ -40604,7 +40621,9 @@ const harness_prelude =
     \\    const requestHeaders = __home_http2_validate_request_headers(headers, options.strictSingleValueFields !== false);
     \\    const requestedMethod = String(requestHeaders[":method"] || "GET").toUpperCase();
     \\    if (["DELETE", "GET", "HEAD"].includes(requestedMethod) && requestHeaders["content-length"] !== undefined && Number(requestHeaders["content-length"]) > 0) { const terminal = __home_http2_terminal_stream(this, __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_PROTOCOL_ERROR")); terminal.rstCode = __home_http2_constants.NGHTTP2_PROTOCOL_ERROR; return terminal; }
-    \\    const maxConcurrentStreams = Number(this.remoteSettings && this.remoteSettings.maxConcurrentStreams !== undefined ? this.remoteSettings.maxConcurrentStreams : (server && server.__home_settings && server.__home_settings.maxConcurrentStreams));
+    \\    const advertisedMaxStreams = this.remoteSettings && this.remoteSettings.maxConcurrentStreams;
+    \\    const configuredMaxStreams = server && server.__home_settings && server.__home_settings.maxConcurrentStreams;
+    \\    const maxConcurrentStreams = advertisedMaxStreams !== undefined && advertisedMaxStreams !== null ? Number(advertisedMaxStreams) : (configuredMaxStreams !== undefined && configuredMaxStreams !== null ? Number(configuredMaxStreams) : Infinity);
     \\    if (Number.isFinite(maxConcurrentStreams) && this.__home_active_streams >= maxConcurrentStreams) { const refused = __home_http2_terminal_stream(this, __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_REFUSED_STREAM"), true); refused.id = this.__home_next_stream_id; refused.session = this; refused.rstCode = __home_http2_constants.NGHTTP2_REFUSED_STREAM; this.__home_next_stream_id += 2; this.state.nextStreamID = this.__home_next_stream_id; return refused; }
     \\    const extendedConnect = requestedMethod === "CONNECT" && requestHeaders[":protocol"] !== undefined;
     \\    if (requestedMethod === "CONNECT" && !extendedConnect) {
@@ -40900,6 +40919,7 @@ const harness_prelude =
     \\      };
     \\      this.state.lastProcStreamID = streamId;
     \\      Promise.resolve().then(() => {
+    \\        if (stream.__home_suppress_dispatch || stream.destroyed) return;
     \\        server.emit("stream", handlerServerStream, stream.sentHeaders, 0);
     \\        this.__home_server_session.emit("stream", handlerServerStream, stream.sentHeaders, 0);
     \\        try {
@@ -40955,8 +40975,37 @@ const harness_prelude =
     \\        if (!this.aborted) handlerServerStream.emit("trailers", this.sentTrailers, 0);
     \\        return undefined;
     \\      };
-    \\      stream.close = function(code) { this.closed = true; this.destroyed = true; this.rstCode = Number(code) || 0; this.emit("close"); return this; };
-    \\      stream.destroy = stream.close;
+    \\      stream.close = function(code, closeCallback) {
+    \\        const resetCode = code === undefined ? 0 : Number(code);
+    \\        if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\        if (this.closed) return this;
+    \\        this.closed = true; this.destroyed = true; this.rstCode = resetCode; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
+    \\        const target = this;
+    \\        Promise.resolve().then(() => {
+    \\          const error = resetCode !== 0 && resetCode !== __home_http2_constants.NGHTTP2_CANCEL ? __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode)) : null;
+    \\          target._destroy(error, function() {});
+    \\          if (error) target.emit("error", error);
+    \\          if (!handlerServerStream.__home_close_emitted) { handlerServerStream.rstCode = resetCode; handlerServerStream.aborted = resetCode !== 0; handlerServerStream.closed = true; handlerServerStream.destroyed = true; if (resetCode !== 0) handlerServerStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(resetCode))); handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\          target.emit("end");
+    \\          if (typeof closeCallback === "function") closeCallback();
+    \\          target.emit("close");
+    \\          __home_http2_maybe_close_client(client);
+    \\        });
+    \\        return this;
+    \\      };
+    \\      stream.destroy = function(error) {
+    \\        if (this.destroyed) return this;
+    \\        this.closed = true; this.destroyed = true; this.rstCode = error ? __home_http2_constants.NGHTTP2_INTERNAL_ERROR : 0; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
+    \\        const target = this;
+    \\        Promise.resolve().then(() => {
+    \\          target._destroy(error || null, function() {});
+    \\          if (error) target.emit("error", error);
+    \\          if (!handlerServerStream.__home_close_emitted) { handlerServerStream.rstCode = target.rstCode; handlerServerStream.aborted = !!error; handlerServerStream.closed = true; handlerServerStream.destroyed = true; if (error) handlerServerStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_INTERNAL_ERROR", error)); handlerServerStream.__home_close_emitted = true; handlerServerStream.emit("close"); }
+    \\          target.emit("close");
+    \\          __home_http2_maybe_close_client(client);
+    \\        });
+    \\        return this;
+    \\      };
     \\      return stream;
     \\    }
     \\    const serverStream = __home_http_event_target();
@@ -41342,11 +41391,10 @@ const harness_prelude =
     \\      this.destroyed = true;
     \\      const target = this;
     \\      Promise.resolve().then(() => {
-    \\        const names = { 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 7: "NGHTTP2_REFUSED_STREAM" };
-    \\        const name = names[code];
+    \\        const name = __home_http2_reset_name(code);
     \\        stream.aborted = true; stream.closed = true; stream.destroyed = true;
     \\        stream.emit("aborted");
-    \\        if (name) { const error = __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + name); target.emit("error", error); stream.emit("error", error); }
+    \\        if (code !== 0) { const error = __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + name); target.emit("error", error); stream.emit("error", error); }
     \\        stream.emit("close");
     \\        if (!target.__home_close_emitted) { target.__home_close_emitted = true; target.emit("close"); }
     \\        releaseActiveStream(); delete client.__home_streams[stream.id];
@@ -41366,7 +41414,7 @@ const harness_prelude =
     \\      return this;
     \\    };
     \\    Promise.resolve().then(() => {
-    \\      if (!server) server = serverTransportSocket && serverTransportSocket.__home_http2_server || transportSocket && transportSocket.__home_http2_server || null;
+    \\      if (!server) server = __home_http2_transport_server(serverTransportSocket) || __home_http2_transport_server(transportSocket);
     \\      if (!server) return;
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
     \\      server.emit("stream", serverStream, stream.__home_received_headers, 5, stream.sentRawHeaders);
@@ -41382,10 +41430,9 @@ const harness_prelude =
     \\        serverStream.closed = true;
     \\        serverStream.destroyed = true;
     \\        if (stream.rstCode !== 0) {
-    \\          const names = { 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 3: "NGHTTP2_FLOW_CONTROL_ERROR", 5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR", 7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL", 9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR", 11: "NGHTTP2_ENHANCE_YOUR_CALM" };
-    \\          serverStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + String(names[stream.rstCode] || stream.rstCode)));
+    \\          serverStream.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(stream.rstCode)));
     \\        }
-    \\        serverStream.emit("close");
+    \\        if (!serverStream.__home_close_emitted) { serverStream.__home_close_emitted = true; serverStream.emit("close"); }
     \\        return;
     \\      }
     \\      if (!serverStream.__home_request_ended && String(requestHeaders[":method"] || "GET").toUpperCase() === "GET") {
@@ -41447,8 +41494,7 @@ const harness_prelude =
     \\      Promise.resolve().then(() => {
     \\        let error = null;
     \\        if (code !== 0 && code !== __home_http2_constants.NGHTTP2_CANCEL) {
-    \\          const names = { 1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR", 3: "NGHTTP2_FLOW_CONTROL_ERROR", 5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR", 7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL", 9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR", 11: "NGHTTP2_ENHANCE_YOUR_CALM" };
-    \\          error = new Error("Stream closed with error code " + String(names[code] || code));
+    \\          error = new Error("Stream closed with error code " + __home_http2_reset_name(code));
     \\          error.code = "ERR_HTTP2_STREAM_ERROR";
     \\        }
     \\        target._destroy(error, function() {});
@@ -41459,7 +41505,7 @@ const harness_prelude =
     \\          peer.aborted = code !== 0;
     \\          peer.closed = true;
     \\          peer.destroyed = true;
-    \\          if (code !== 0) peer.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + (code === __home_http2_constants.NGHTTP2_CANCEL ? "NGHTTP2_CANCEL" : String(code))));
+    \\          if (code !== 0) peer.emit("error", __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code " + __home_http2_reset_name(code)));
     \\          peer.__home_close_emitted = true;
     \\          peer.emit("close");
     \\        }
@@ -41491,7 +41537,7 @@ const harness_prelude =
     \\  };
     \\  function finishConnect() {
     \\    if (client.destroyed || client.__home_termination_scheduled) return;
-    \\    if (!server && serverTransportSocket && serverTransportSocket.__home_http2_server) server = serverTransportSocket.__home_http2_server;
+    \\    if (!server) server = __home_http2_transport_server(serverTransportSocket) || __home_http2_transport_server(transportSocket);
     \\    if (protocolMismatch) {
     \\      client.connecting = false;
     \\      client.closed = true;
@@ -41522,7 +41568,7 @@ const harness_prelude =
     \\    transportSocket.connecting = false;
     \\    for (const id of Object.keys(client.__home_streams)) if (client.__home_streams[id]) client.__home_streams[id].pending = false;
     \\    if (server) {
-    \\      if (transportSocket.__home_http2_server !== server && serverTransportSocket.__home_http2_server !== server) server.emit("connection", serverTransportSocket);
+    \\      if (__home_http2_transport_server(transportSocket) !== server && __home_http2_transport_server(serverTransportSocket) !== server) server.emit("connection", serverTransportSocket);
     \\      server.__home_sessions.add(client.__home_server_session);
     \\      server.emit("session", client.__home_server_session);
     \\      if (client.closed || client.destroyed || client.__home_server_session.closed || client.__home_server_session.destroyed) return;
@@ -41575,7 +41621,7 @@ const harness_prelude =
     \\    const done = error => {
     \\      if (called) return;
     \\      called = true;
-    \\      if (error) { client.connecting = false; client.closed = true; client.destroyed = true; cleanupConnectSignal(); client.emit("error", error); client.emit("close"); transportSocket.destroy(error); }
+    \\      if (error) { client.connecting = false; cleanupConnectSignal(); client.__home_terminate("destroy", error, false); }
     \\      else finishConnect();
     \\    };
     \\    try { options.lookup(connectHost, { family: Number(options.family) || 0, all: false }, done); } catch (error) { done(error); }
@@ -66266,7 +66312,7 @@ const harness_prelude =
     \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
     \\  Promise.resolve().then(() => {
     \\    try {
-    \\    let server = __home_tls_servers[port] || tcpSocket && (tcpSocket.__home_http2_server || tcpSocket.__home_server_stream && tcpSocket.__home_server_stream.__home_http2_server || tcpSocket.__home_client_stream && tcpSocket.__home_client_stream.__home_http2_server);
+    \\    let server = __home_tls_servers[port] || __home_http2_transport_server(tcpSocket);
     \\    if (!server) {
     \\      const serveHandle = globalThis.__home_serve_handles_by_origin["https://" + String(options.host || "localhost") + ":" + String(port)] || globalThis.__home_serve_handles_by_origin["https://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["https://127.0.0.1:" + String(port)];
     \\      if (serveHandle && !serveHandle.stopped && serveHandle.__home_tls_options) {
@@ -154686,6 +154732,32 @@ test "bootstrap HTTP2 transition ALTSVC backpressure and rejection logical contr
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 transition/ALTSVC/backpressure/rejection logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 client proxy reset lookup and upload logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const util = require("util");
+        \\test("CONNECT streams are adopted once as nested HTTP2 transports", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); let connections = 0; let sessions = 0; server.on("connection", () => connections++); server.on("session", () => sessions++); server.once("connect", (request, response) => { try { assert.strictEqual(request.headers[":method"], "CONNECT"); response.writeHead(200); server.emit("connection", response.stream); } catch (error) { reject(error); } }); server.once("request", (_request, response) => { response.writeHead(204); response.end(); }); server.listen(0, () => { const outer = http2.connect("http://localhost:" + server.address().port); outer.on("error", reject); const tunnel = outer.request({ ":method": "CONNECT", ":authority": "example.com:80" }); tunnel.on("error", reject); tunnel.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); } catch (error) { reject(error); return; } const nested = http2.connect("http://example.com", { createConnection: () => tunnel }); nested.on("error", reject); const request = nested.request(); request.on("error", reject); request.on("response", nestedHeaders => { try { assert.strictEqual(nestedHeaders[":status"], 204); } catch (error) { reject(error); } }); request.on("end", () => { try { assert.strictEqual(connections, 2); assert.strictEqual(sessions, 2); nested.close(); tunnel.close(); outer.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); }); tunnel.end(); }); }); });
+        \\test("pre-connect protocol resets terminate each stream endpoint exactly once", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); let serverErrors = 0; let serverCloses = 0; server.on("stream", stream => { stream.on("error", error => { serverErrors++; try { assert.strictEqual(error.code, "ERR_HTTP2_STREAM_ERROR"); assert.strictEqual(error.message, "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"); } catch (cause) { reject(cause); } }); stream.on("close", () => { serverCloses++; }); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request(); let clientErrors = 0; let clientCloses = 0; let clientEnds = 0; let destroyCalls = 0; const destroy = request._destroy.bind(request); request._destroy = function(error, callback) { destroyCalls++; return destroy(error, callback); }; request.on("response", () => reject(new Error("reset request received a response"))); request.on("error", error => { clientErrors++; try { assert.strictEqual(error.code, "ERR_HTTP2_STREAM_ERROR"); assert.strictEqual(error.message, "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"); } catch (cause) { reject(cause); } }); request.on("end", () => clientEnds++); request.on("close", () => { clientCloses++; Promise.resolve().then(() => { try { assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_PROTOCOL_ERROR); assert.strictEqual(clientErrors, 1); assert.strictEqual(clientCloses, 1); assert.strictEqual(clientEnds, 1); assert.strictEqual(destroyCalls, 1); assert.strictEqual(serverErrors, 1); assert.strictEqual(serverCloses, 1); client.close(); server.close(resolve); } catch (error) { reject(error); } }); }); request.resume(); request.close(http2.constants.NGHTTP2_PROTOCOL_ERROR, error => { if (error) reject(error); }); request.end(); }); }); });
+        \\test("lookup failure emits one terminal error and promisify preserves identity", async () => { const original = new Error("Unable to resolve hostname"); await new Promise((resolve, reject) => { const client = http2.connect("http://hostname", { lookup(_hostname, _options, callback) { callback(original); } }); let errors = 0; let closes = 0; client.on("error", error => { errors++; try { assert.strictEqual(error, original); } catch (cause) { reject(cause); } }); client.on("close", () => { closes++; Promise.resolve().then(() => { try { assert.strictEqual(errors, 1); assert.strictEqual(closes, 1); resolve(); } catch (error) { reject(error); } }); }); }); const promisedConnect = util.promisify(http2.connect); let caught; try { await promisedConnect("http://hostname", { lookup(_hostname, _options, callback) { callback(original); } }); } catch (error) { caught = error; } assert.strictEqual(caught, original); });
+        \\test("many pending requests complete without warning or listener leakage", async () => { await new Promise((resolve, reject) => { const server = http2.createServer((_request, response) => response.end("ok")); let warnings = 0; const onWarning = () => warnings++; process.on("warning", onWarning); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const requests = Array.from({ length: 11 }, () => new Promise((done, fail) => { const request = client.request(); request.on("error", fail); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); } catch (error) { fail(error); } }); request.on("end", done); request.resume(); request.end(); })); Promise.all(requests).then(() => { try { process.removeListener("warning", onWarning); assert.strictEqual(warnings, 0); assert.strictEqual(client.__home_active_streams, 0); client.close(); server.close(resolve); } catch (error) { reject(error); } }, reject); }); }); });
+        \\test("destroy before connect suppresses dispatch and reports the original error once", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(() => reject(new Error("destroyed request reached server"))); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const original = new Error("test"); const request = client.request(); let errors = 0; let closes = 0; request.on("response", () => reject(new Error("destroyed request received response"))); request.on("end", () => reject(new Error("destroyed request ended normally"))); request.on("error", error => { errors++; try { assert.strictEqual(error, original); } catch (cause) { reject(cause); } }); request.on("close", () => { closes++; Promise.resolve().then(() => { try { assert.strictEqual(errors, 1); assert.strictEqual(closes, 1); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_INTERNAL_ERROR); client.close(); server.close(resolve); } catch (error) { reject(error); } }); }); request.resume(); request.destroy(original); }); }); });
+        \\test("client uploads preserve ordered byte integrity", async () => { await new Promise((resolve, reject) => { const expected = "alpha-beta-gamma"; const server = http2.createServer(); server.on("stream", stream => { let body = ""; stream.setEncoding("utf8"); stream.on("data", chunk => body += chunk); stream.on("end", () => { try { assert.strictEqual(body, expected); stream.respond({ ":status": 200 }); stream.end("ok"); } catch (error) { reject(error); } }); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request({ ":method": "POST" }); request.on("error", reject); request.on("response", headers => { try { assert.strictEqual(headers[":status"], 200); } catch (error) { reject(error); } }); request.on("end", () => { client.close(); server.close(resolve); }); request.resume(); request.write("alpha-"); request.write("beta-"); request.end("gamma"); }); }); });
+        \\test("early upload rejection remains a clean no-error stream close", async () => { await new Promise((resolve, reject) => { const server = http2.createServer(); server.on("stream", stream => { stream.once("data", () => { stream.respond({ ":status": 400 }); stream.end("rejected"); }); stream.resume(); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port); const request = client.request({ ":method": "POST" }); let status = 0; request.on("error", reject); request.on("response", headers => { status = headers[":status"]; request.write("continued"); request.end("-upload"); }); request.on("end", () => { try { assert.strictEqual(status, 400); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_NO_ERROR); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.write("first"); }); }); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-client-proxy-reset-lookup-upload-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 client proxy/reset/lookup/upload logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
