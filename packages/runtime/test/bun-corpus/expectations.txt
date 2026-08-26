@@ -141,23 +141,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # contacting external hosts) using a deterministic local hanging connect.
 [ DARWIN ] test/js/bun/io/fetch/fetch-abort-slow-connect.test.ts [ FLAKY ] # connect-during-abort race depends on host routing of 192.0.2.1; darwin CI agents return an immediate routing error
 
-# node:http2 tests ported together with the HTTP/2 engine overhaul that do not pass yet
-# (remaining compatibility work: ALPN/h1-fallback, tunnelling, perf_hooks entries, stream
-# write semantics, async_hooks integration, node-internal-module dependencies). Burn these
-# down as the corresponding features land.
-test/js/node/test/parallel/test-diagnostics-channel-http2-server-stream-close.js [ FAIL ] # not yet passing
-test/js/node/test/parallel/test-http2-autoselect-protocol.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-client-connection-tunnelling.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-client-jsstream-destroy.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-https-fallback-http-server-options.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-max-invalid-frames.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-pack-end-stream-flag.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-ping-unsolicited-ack.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/parallel/test-http2-session-cleanup-on-nghttp2-goaway.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/sequential/test-http2-max-session-memory.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/sequential/test-http2-ping-flood.js [ SKIP ] # hangs; skip until the underlying feature lands
-test/js/node/test/sequential/test-http2-settings-flood.js [ SKIP ] # hangs; skip until the underlying feature lands
-
 # AddressSanitizer findings under investigation on the HTTP/2 inbound path
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js [ SKIP ] # ASan report under investigation
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-error.js [ SKIP ] # ASan report under investigation
@@ -173,11 +156,6 @@ test/js/node/http2/node-http2.test.js [ FAIL ] # full compatibility matrix and s
 test/js/node/http2/h2-conformance.test.ts [ FAIL ] # shared inbound frame validation tracked in home-lang/home#426
 test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # incremental padding codec tracked in home-lang/home#425
 [ ASAN ] test/js/third_party/grpc-js/test-server.test.ts [ SKIP ] # connect-race socket lifetime report under investigation
-
-# Linux diagnostics failures pending the shared HTTP2 lifecycle publisher; native Windows
-# binding and teardown verification continues in home-lang/home#424.
-[ LINUX ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
-[ LINUX ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-error.js [ FAIL ] # connect-race / teardown gap, see socket-layer investigation
 
 # The connect-race socket-lifetime report can surface in any http2 test on the ASan pipeline;
 # skip the family there until the socket-layer fix lands (prefix entries — the runner matches by substring).
