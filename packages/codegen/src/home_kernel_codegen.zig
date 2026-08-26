@@ -44,6 +44,9 @@ const GlobalVar = struct {
     /// Initial value for a scalar with a compile-time constant initializer.
     /// null means zero-initialized, which goes in .bss.
     init_value: ?i64,
+    /// Elements of a module-level array literal, emitted as a table in
+    /// .data. Kernel tables of message strings are declared this way.
+    init_elements: ?[]const *ast.Expr = null,
 };
 
 /// One field of a laid-out struct.
@@ -1056,6 +1059,18 @@ pub const HomeKernelCodegen = struct {
         return null;
     }
 
+    /// `line:col` for an expression, for refusal messages. A marker that
+    /// says only *what* could not be lowered leaves the reader grepping the
+    /// source for it; the ratchet's whole value is pointing at work to do.
+    fn at(self: *HomeKernelCodegen, expr: *const ast.Expr) []const u8 {
+        const loc = expr.getLocation();
+        return std.fmt.allocPrint(
+            self.import_arena.allocator(),
+            "{d}:{d}",
+            .{ loc.line, loc.column },
+        ) catch "?:?";
+    }
+
     /// The type an argument in type position denotes: a bare name is the type
     /// itself, and `@TypeOf(x)` is x's declared type — which is how this tree
     /// writes `@sizeOf(@TypeOf(idt))`.
@@ -1280,6 +1295,11 @@ pub const HomeKernelCodegen = struct {
                 }
                 return field.type_name;
             },
+            .StringLiteral => {
+                // The literal's value already is the address of its bytes.
+                try self.generateExpr(expr);
+                return "str";
+            },
             .UnaryExpr => |unary| {
                 // `*p` as an lvalue: the address is p's value.
                 if (unary.op == .Deref) {
@@ -1290,11 +1310,11 @@ pub const HomeKernelCodegen = struct {
                     }
                     return "";
                 }
-                try self.writeAll("    # ERROR: not an addressable expression\n");
+                try self.print("    # ERROR: not an addressable expression at {s}\n", .{self.at(expr)});
                 return null;
             },
             else => {
-                try self.writeAll("    # ERROR: not an addressable expression\n");
+                try self.print("    # ERROR: not an addressable expression at {s} ({s})\n", .{ self.at(expr), @tagName(expr.*) });
                 return null;
             },
         }
@@ -1731,6 +1751,46 @@ pub const HomeKernelCodegen = struct {
     /// cannot be determined, which is a refusal rather than a guess: emitting
     /// a symbol of the wrong length would corrupt whatever follows it.
     fn declareGlobalVar(self: *HomeKernelCodegen, decl: *const ast.LetDecl) !bool {
+        // A module-level array literal needs no annotation: its length is the
+        // number of elements, and its element width comes from what they are.
+        // `let exception_names = ["Division By Zero", ...]` is how this tree
+        // declares its message tables, and without this the whole binding was
+        // unsizable and every use of it — including `.len` — was refused.
+        if (decl.type_name == null) {
+            if (decl.value) |value| {
+                if (value.* == .ArrayLiteral) {
+                    const elements = value.ArrayLiteral.elements;
+                    if (elements.len > 0) {
+                        if (self.literalTableElemType(elements)) |elem_type| {
+                            const elem_size = self.sizeOf(elem_type) orelse 8;
+                            const sym = try std.fmt.allocPrint(
+                                self.import_arena.allocator(),
+                                GLOBAL_SYMBOL_PREFIX ++ "{s}",
+                                .{decl.name},
+                            );
+                            const tn = try std.fmt.allocPrint(
+                                self.import_arena.allocator(),
+                                "[{d}]{s}",
+                                .{ elements.len, elem_type },
+                            );
+                            try self.global_vars.put(decl.name, .{
+                                .name = decl.name,
+                                .symbol = sym,
+                                .type_name = tn,
+                                .size = elements.len * elem_size,
+                                .elem_size = elem_size,
+                                .is_array = true,
+                                .init_value = null,
+                                .init_elements = elements,
+                            });
+                            try self.global_order.append(self.allocator, decl.name);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
         const type_name = decl.type_name orelse return false;
 
         const symbol = try std.fmt.allocPrint(
@@ -1791,13 +1851,80 @@ pub const HomeKernelCodegen = struct {
         return true;
     }
 
+    /// Label for a string literal's .rodata entry, reusing an existing one
+    /// when the same text has already been emitted.
+    fn internStringLiteral(self: *HomeKernelCodegen, content: []const u8) !usize {
+        for (self.string_literals.items) |existing| {
+            if (std.mem.eql(u8, existing.content, content)) return existing.label;
+        }
+        const label = self.freshLabel();
+        try self.string_literals.append(self.allocator, .{ .label = label, .content = content });
+        return label;
+    }
+
+    /// Element type of a module-level array literal, when every element is a
+    /// form that can be emitted statically. Returns null otherwise, so a
+    /// table needing runtime evaluation is refused rather than half-built.
+    fn literalTableElemType(self: *HomeKernelCodegen, elements: []const *ast.Expr) ?[]const u8 {
+        var all_strings = true;
+        var all_ints = true;
+        for (elements) |e| {
+            switch (e.*) {
+                .StringLiteral => all_ints = false,
+                .IntegerLiteral, .BooleanLiteral => all_strings = false,
+                .Identifier => {
+                    // A named constant counts as an integer element.
+                    if (self.globals.get(e.Identifier.name) == null) return null;
+                    all_strings = false;
+                },
+                else => return null,
+            }
+        }
+        if (all_strings) return "str";
+        if (all_ints) return "u64";
+        return null;
+    }
+
     /// Emit .data and .bss for the module-level bindings collected above.
     fn emitGlobals(self: *HomeKernelCodegen) !void {
         var data_count: usize = 0;
         var bss_count: usize = 0;
         for (self.global_order.items) |name| {
             const g = self.global_vars.get(name) orelse continue;
+            if (g.init_elements != null) continue;
             if (g.init_value != null) data_count += 1 else bss_count += 1;
+        }
+
+        // Tables first: an array literal is data even though it has no
+        // scalar init_value.
+        var table_count: usize = 0;
+        for (self.global_order.items) |name| {
+            const g = self.global_vars.get(name) orelse continue;
+            if (g.init_elements != null) table_count += 1;
+        }
+        if (table_count > 0) {
+            try self.writeAll("\n.section .data\n");
+            for (self.global_order.items) |name| {
+                const g = self.global_vars.get(name) orelse continue;
+                const elements = g.init_elements orelse continue;
+                try self.print(".align {d}\n", .{@min(g.elem_size, @as(usize, 8))});
+                try self.print("{s}:\n", .{g.symbol});
+                for (elements) |e| {
+                    switch (e.*) {
+                        .StringLiteral => |lit| {
+                            const label = try self.internStringLiteral(lit.value);
+                            try self.print("    .quad .L_str_{d}\n", .{label});
+                        },
+                        .IntegerLiteral => |lit| try self.print("    .quad {d}\n", .{lit.value}),
+                        .BooleanLiteral => |lit| try self.print("    .quad {d}\n", .{@as(i64, if (lit.value) 1 else 0)}),
+                        .Identifier => |id| {
+                            const v = self.globals.get(id.name) orelse 0;
+                            try self.print("    .quad {d}\n", .{v});
+                        },
+                        else => try self.writeAll("    .quad 0\n"),
+                    }
+                }
+            }
         }
 
         if (data_count > 0) {
@@ -1821,7 +1948,7 @@ pub const HomeKernelCodegen = struct {
             try self.writeAll("\n.section .bss\n");
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
-                if (g.init_value != null) continue;
+                if (g.init_value != null or g.init_elements != null) continue;
                 // Align to the element width, capped at 16 — enough for the
                 // scalars and byte arrays a kernel declares, without forcing
                 // page alignment on everything.
@@ -3208,7 +3335,7 @@ pub const HomeKernelCodegen = struct {
                 // code leaves %rax holding the previous computation, so the
                 // surrounding statement compiles cleanly and computes the
                 // wrong answer — the worst failure mode this backend has.
-                try self.print("    # ERROR: unsupported expression: {s}\n", .{@tagName(expr.*)});
+                try self.print("    # ERROR: unsupported expression: {s} at {s}\n", .{ @tagName(expr.*), self.at(expr) });
                 try self.writeAll("    movq $0, %rax\n");
             },
         }
