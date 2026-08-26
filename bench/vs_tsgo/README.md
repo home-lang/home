@@ -26,6 +26,8 @@ Raw Hyperfine JSON and run metadata land under `results/<UTC timestamp>/`.
 - A validation pass requires every compiler to exit successfully and silently
   before timing begins. A compiler cannot win by skipping an unsupported input.
 - Hyperfine runs three warmups followed by ten measured processes by default.
+  Each measured round contains all three compilers, with their order rotated so
+  changing workstation load cannot systematically favor one compiler.
 - Compiler versions, host details, timestamp, and run counts are saved beside
   the raw results.
 

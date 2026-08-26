@@ -4,18 +4,25 @@
 from __future__ import annotations
 
 import json
+import statistics
 import sys
 from pathlib import Path
 
 
-def load_result(path: Path) -> dict | None:
+def load_results(path: Path) -> list[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as error:
         print(f"warning: skipped {path}: {error}", file=sys.stderr)
-        return None
-    results = data.get("results", [])
-    return results[0] if results else None
+        return []
+    return data.get("results", [])
+
+
+def summarize_times(times: list[float]) -> dict:
+    return {
+        "mean": statistics.mean(times),
+        "stddev": statistics.stdev(times) if len(times) > 1 else 0.0,
+    }
 
 
 def format_time(result: dict | None) -> str:
@@ -30,15 +37,30 @@ def main() -> int:
         return 2
     directory = Path(sys.argv[1])
     rows: dict[str, dict[str, dict]] = {}
+    interleaved: dict[str, dict[str, list[float]]] = {}
     for path in sorted(directory.glob("*.json")):
         if path.name == "metadata.json":
+            continue
+        if "-round-" in path.stem:
+            workload = path.stem.rsplit("-round-", 1)[0]
+            for result in load_results(path):
+                compiler = result.get("command", "").split(" ", 1)[0]
+                if compiler not in {"tsc", "tsgo", "home"}:
+                    continue
+                interleaved.setdefault(workload, {}).setdefault(compiler, []).extend(result.get("times", []))
             continue
         workload, separator, compiler = path.stem.rpartition("-")
         if not separator or compiler not in {"tsc", "tsgo", "home"}:
             continue
-        result = load_result(path)
-        if result:
-            rows.setdefault(workload, {})[compiler] = result
+        results = load_results(path)
+        if results:
+            rows.setdefault(workload, {})[compiler] = results[0]
+    for workload, compilers in interleaved.items():
+        rows[workload] = {
+            compiler: summarize_times(times)
+            for compiler, times in compilers.items()
+            if times
+        }
     if not rows:
         print(f"no benchmark results found in {directory}", file=sys.stderr)
         return 1

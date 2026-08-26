@@ -229,29 +229,56 @@ def cmd_cold(runs: int, warmup: int) -> Path:
         "processor": platform.processor(),
         "runs": runs,
         "warmup": warmup,
+        "schedule": "round-robin interleaved",
         "compilers": {name: version_output(command) for name, command in commands.items()},
     }
     write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
     for workload in manifest()["workloads"]:
         validate(commands, workload)
         config = CORPUS / workload / "tsconfig.json"
-        for name, command in commands.items():
-            benchmark = command + ["--noEmit", "-p", str(config)]
-            run(
-                [
-                    "hyperfine",
-                    "--shell=none",
-                    "--warmup",
-                    str(warmup),
-                    "--runs",
-                    str(runs),
-                    "--export-json",
-                    str(output / f"{workload}-{name}.json"),
-                    "--command-name",
-                    f"{name} {workload}",
-                    shlex.join(benchmark),
-                ]
-            )
+        benchmarks = {
+            name: command + ["--noEmit", "-p", str(config)]
+            for name, command in commands.items()
+        }
+        names = list(benchmarks)
+
+        # Warm and measure in balanced round-robin order. Running every sample
+        # for compiler A before compiler B lets changing workstation load bias
+        # the comparison; rotating the order makes each compiler occupy every
+        # position equally while retaining Hyperfine's process timer.
+        for index in range(warmup):
+            order = names[index % len(names) :] + names[: index % len(names)]
+            for name in order:
+                subprocess.run(
+                    benchmarks[name],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+        print(f"+ hyperfine interleaved {workload}: {runs} runs after {warmup} warmups", flush=True)
+        for index in range(runs):
+            offset = index % len(names)
+            order = names[offset:] + names[:offset]
+            command_line = [
+                "hyperfine",
+                "--shell=none",
+                "--runs",
+                "1",
+                "--style",
+                "none",
+                "--export-json",
+                str(output / f"{workload}-round-{index:03d}.json"),
+            ]
+            for name in order:
+                command_line.extend(
+                    [
+                        "--command-name",
+                        f"{name} {workload}",
+                        shlex.join(benchmarks[name]),
+                    ]
+                )
+            subprocess.run(command_line, check=True)
     print(f"Results: {output}")
     return output
 
