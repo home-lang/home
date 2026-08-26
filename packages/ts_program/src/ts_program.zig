@@ -1570,6 +1570,7 @@ pub const Program = struct {
         body_end: usize,
         out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
     ) ProgramError!void {
+        const export_assignment_target = ambientModuleExportAssignmentTarget(source, body_start, body_end);
         var search_start = body_start;
         while (search_start < body_end) {
             const class_pos = std.mem.indexOfPos(u8, source, search_start, "class") orelse break;
@@ -1592,10 +1593,45 @@ pub const Program = struct {
                 .ambient_module_name = spec,
                 .class_name = source[name_start..name_end],
                 .type_parameter_names = type_parameter_names,
+                .is_export_assignment_target = if (export_assignment_target) |target|
+                    std.mem.eql(u8, target, source[name_start..name_end])
+                else
+                    false,
                 .members = members,
             });
             search_start = name_end;
         }
+    }
+
+    fn ambientModuleExportAssignmentTarget(source: []const u8, body_start: usize, body_end: usize) ?[]const u8 {
+        var index = body_start;
+        var depth: usize = 0;
+        while (index < body_end) {
+            if (skipProgramCommentOrString(source, index, body_end)) |next| {
+                index = next;
+                continue;
+            }
+            switch (source[index]) {
+                '{' => depth += 1,
+                '}' => if (depth > 0) {
+                    depth -= 1;
+                },
+                else => {},
+            }
+            if (depth != 0 or !identifierKeywordAt(source, index, "export")) {
+                index += 1;
+                continue;
+            }
+            var cursor = skipProgramTrivia(source, index + "export".len, body_end);
+            if (cursor >= body_end or source[cursor] != '=') {
+                index += "export".len;
+                continue;
+            }
+            cursor = skipProgramTrivia(source, cursor + 1, body_end);
+            const target_end = parseIdentifierEnd(source, cursor, body_end) orelse return null;
+            return source[cursor..target_end];
+        }
+        return null;
     }
 
     fn classBodyOpenAfterName(source: []const u8, name_end: usize, limit: usize) ?usize {
@@ -4718,6 +4754,45 @@ fn moduleDefinePropertyDescriptorObject(
     return null;
 }
 
+test "Program: ambient module export assignment target is collected" {
+    const source =
+        \\declare module "SubModule" {
+        \\  class Other {}
+        \\  class SubModule {}
+        \\  export = SubModule;
+        \\}
+    ;
+    const body_start = std.mem.indexOfScalar(u8, source, '{').? + 1;
+    const body_end = Program.findMatchingBrace(source, body_start - 1).?;
+    const target = Program.ambientModuleExportAssignmentTarget(source, body_start, body_end) orelse return error.MissingTarget;
+    try T.expectEqualStrings("SubModule", target);
+    const facts = ambientModuleExportFacts(T.allocator, source, "SubModule", "", false) orelse return error.MissingTarget;
+    try T.expect(facts.exported_type);
+    try T.expect(facts.exported_value);
+}
+
+test "Program: ambient export assignment class supplies require alias type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/ambient.d.ts",
+        \\declare module "SubModule" {
+        \\  class SubModule { value: number; }
+        \\  export = SubModule;
+        \\}
+    );
+    const main_id = try program.add("/main.ts",
+        \\import SubModule = require("SubModule");
+        \\class MainModule { member: SubModule; }
+    );
+    try program.compileAll(.{ .no_emit = true });
+    try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2749);
+}
+
 fn moduleObjectPropertyName(
     hir: *const hir_mod_ns.Hir,
     key: hir_mod_ns.NodeId,
@@ -5656,8 +5731,10 @@ pub fn ambientModuleExportFacts(
         };
         if (!moduleNameMatchesSpecifier(module_name, specifier)) continue;
         found_module = true;
-        if (name_id) |id| {
-            const body = hir_mod_ns.namespaceBody(&compilation.hir, local);
+        const body = hir_mod_ns.namespaceBody(&compilation.hir, local);
+        if (name.len == 0) {
+            collectAmbientExportAssignmentFacts(gpa, &compilation.hir, body, &facts);
+        } else if (name_id) |id| {
             collectAmbientModuleExportFacts(&compilation.hir, id, body, true, &facts);
             if (ambientExportAssignmentHasValueMember(gpa, &compilation.hir, &compilation.interner, body, id)) {
                 facts.exported_value = true;
@@ -5665,6 +5742,34 @@ pub fn ambientModuleExportFacts(
         }
     }
     return if (found_module) facts else null;
+}
+
+fn collectAmbientExportAssignmentFacts(
+    gpa: std.mem.Allocator,
+    hir: *const hir_mod_ns.Hir,
+    stmts: []const hir_mod_ns.NodeId,
+    facts: *ModuleExportFacts,
+) void {
+    var target_path: std.ArrayListUnmanaged(hir_mod_ns.StringId) = .empty;
+    defer target_path.deinit(gpa);
+    if (!appendAmbientExportAssignmentTargetPath(gpa, hir, stmts, &target_path) or target_path.items.len == 0) return;
+    if (target_path.items.len > 1) {
+        facts.exported_type = true;
+        facts.exported_value = true;
+        return;
+    }
+    const target = target_path.items[0];
+    for (stmts) |raw| {
+        const declaration = if (hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(hir, raw).decl
+        else
+            raw;
+        if (declaration == hir_mod_ns.none_node_id or declarationName(hir, declaration) != target) continue;
+        facts.exported_type = declCreatesTypeSpaceName(hir, declaration);
+        facts.exported_value = declCreatesRuntimeValue(hir, declaration);
+        facts.export_assignment_type_only = facts.exported_type and !facts.exported_value;
+        return;
+    }
 }
 
 fn ambientExportAssignmentHasValueMember(

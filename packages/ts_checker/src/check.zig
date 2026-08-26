@@ -480,6 +480,7 @@ pub const ProgramExportedClass = struct {
     class_name: []const u8,
     type_parameter_names: []const []const u8 = &.{},
     is_default: bool = false,
+    is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
 };
@@ -60380,6 +60381,18 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
                 if (try self.virtualExportAssignmentTargetInstanceType(anchor, imp.module)) |t| return t;
+                if (try self.programExportedClassInstanceTypeForImportedName(local_name, anchor)) |t| return t;
+                if (self.external_resolver) |resolver| {
+                    const containing = if (self.importer_path.len > 0)
+                        self.importer_path
+                    else if (self.virtualSectionFilenameForNode(anchor)) |raw|
+                        raw
+                    else
+                        "/__root__.ts";
+                    if (resolver.moduleExport(spec_text, containing, "")) |info| {
+                        if (info.exported_type) return types.Primitive.any;
+                    }
+                }
             }
             if (!self.importDeclIsRequireAssignment(stmt) and
                 imp.default_binding != hir_mod.none_node_id and
@@ -60708,6 +60721,28 @@ pub const Checker = struct {
             const ns = hir_mod.namespaceOf(self.hir, node);
             if (!self.namespaceNameMatchesSpecifier(ns.name, spec)) continue;
             if (try self.namespaceExportType(node, exported_name)) |t| return t;
+        }
+        return null;
+    }
+
+    fn ambientModuleExportAssignmentTargetType(
+        self: *Checker,
+        spec: []const u8,
+    ) CheckError!?TypeId {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .namespace_decl) continue;
+            if (!self.namespaceDeclIsAmbient(node) and !self.namespaceDeclWasPrefixedWithDeclare(node)) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (!self.namespaceNameMatchesSpecifier(ns.name, spec)) continue;
+            for (hir_mod.namespaceBody(self.hir, node)) |statement| {
+                if (!self.isExportAssignmentDecl(statement)) continue;
+                const expression = hir_mod.exportOf(self.hir, statement).decl;
+                if (expression == hir_mod.none_node_id or self.hir.kindOf(expression) != .identifier) continue;
+                const target_name = hir_mod.identifierOf(self.hir, expression).name;
+                const target = self.findNamedTypeDeclInNamespace(node, target_name) orelse continue;
+                return try self.typeOfExportedTypeDecl(target, target_name);
+            }
         }
         return null;
     }
@@ -74536,6 +74571,8 @@ pub const Checker = struct {
                         if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
                             !self.visibleTypeDeclarationExistsAt(type_node, r.name))
                         {
+                            if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |import_t| return import_t;
+                            if (try self.importedTypeRefForLocal(r.name, type_node)) |import_t| return import_t;
                             if (try self.checkJsDestructuredRequireClassInstanceType(type_node, r.name)) |class_t| {
                                 return class_t;
                             }
@@ -76345,6 +76382,7 @@ pub const Checker = struct {
             }
             return null;
         };
+        if (try self.exportedImportEqualsTypeInNamespace(ns_node, r.name)) |t| return t;
         const decl = self.findVisibleTypeDeclInNamespace(ns_node, r.name, type_node) orelse {
             if (self.findExportedValueDeclInNamespace(ns_node, r.name) != null) {
                 try self.reportQualifiedValueUsedAsTypeDidYouMeanTypeofOnce(type_node);
@@ -77495,6 +77533,9 @@ pub const Checker = struct {
     }
 
     fn typeOfExportedTypeDecl(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.hir.kindOf(decl) == .member_access) {
+            if (try self.entityNameExpressionTypeMeaning(decl)) |t| return t;
+        }
         if ((self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) and
             self.classNameDeclaredInOtherVirtualSection(name, decl))
         {
@@ -77560,6 +77601,16 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    fn entityNameExpressionTypeMeaning(self: *Checker, node: NodeId) CheckError!?TypeId {
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        if (!try self.appendEntityNameExpressionPath(&path, node) or path.items.len < 2) return null;
+        const leaf = path.items[path.items.len - 1];
+        const namespace = self.findVisibleNamespaceByPath(node, path.items[0 .. path.items.len - 1]) orelse return null;
+        const declaration = self.findVisibleTypeDeclInNamespace(namespace, leaf, node) orelse return null;
+        return try self.typeOfExportedTypeDecl(declaration, leaf);
     }
 
     fn shallowClassInstanceTypeFromDecl(self: *Checker, decl: NodeId, class_name: hir_mod.StringId) CheckError!?TypeId {
@@ -77661,9 +77712,14 @@ pub const Checker = struct {
                 const stmt = self.unwrapExportDecl(raw_stmt);
                 if (stmt == hir_mod.none_node_id or self.hir.kindOf(stmt) != .import_decl) continue;
                 const imp = hir_mod.importOf(self.hir, stmt);
-                if (self.string_interner.get(imp.module).len != 0) continue;
                 if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
                 if (hir_mod.identifierOf(self.hir, imp.default_binding).name != name) continue;
+                if (self.string_interner.get(imp.module).len != 0) {
+                    if (!self.importDeclIsRequireAssignment(stmt)) continue;
+                    if (try self.virtualExportAssignmentTargetInstanceType(type_node, imp.module)) |t| return t;
+                    if (try self.ambientModuleExportAssignmentTargetType(self.string_interner.get(imp.module))) |t| return t;
+                    return null;
+                }
                 if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return null;
                 if (try self.reportCircularImportAlias(stmt)) return types.Primitive.any;
                 return try self.lowererLowerWithTypeParams(imp.import_equals);
@@ -78025,6 +78081,28 @@ pub const Checker = struct {
             return self.findNamedTypeDeclInNamespace(ns_node, name);
         }
         return self.findExportedTypeDeclInNamespace(ns_node, name);
+    }
+
+    fn exportedImportEqualsTypeInNamespace(
+        self: *Checker,
+        ns_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const ambient_namespace = self.namespaceDeclIsAmbient(ns_node);
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            const node = switch (self.hir.kindOf(raw)) {
+                .export_decl => self.unwrapExportDecl(raw),
+                .import_decl => if (self.importDeclHasExportKeyword(raw)) raw else continue,
+                else => if (ambient_namespace) raw else continue,
+            };
+            if (self.hir.kindOf(node) != .import_decl or self.importEqualsAliasName(node) != name) continue;
+            const imp = hir_mod.importOf(self.hir, node);
+            const target = self.importEqualsTargetDecl(imp.import_equals) orelse continue;
+            if (!self.declHasTypeMeaning(target)) continue;
+            const target_name = self.declarationName(target) orelse name;
+            return try self.typeOfExportedTypeDecl(target, target_name);
+        }
+        return null;
     }
 
     fn findNamedValueDeclInNamespace(
@@ -103905,8 +103983,13 @@ pub const Checker = struct {
             hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
         {
             for (self.program_exported_classes) |exported_class| {
-                if (!exported_class.is_default) continue;
-                if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
+                if (self.importDeclIsRequireAssignment(import_node)) {
+                    if (!exported_class.is_export_assignment_target or
+                        !self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) continue;
+                } else {
+                    if (!exported_class.is_default) continue;
+                    if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
+                }
                 const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
                 return try self.syntheticProgramClassStaticType(exported_class, class_name, local_name, anchor);
             }
@@ -136315,6 +136398,19 @@ pub const Checker = struct {
         // An unresolved-import binding is typed `any` by tsc and is
         // usable as a type — suppress TS2749 for it.
         if (self.nameBoundByUnresolvedImport(node, name)) return;
+        if (self.requireSpecifierForLocal(name, node)) |specifier| {
+            if (self.external_resolver) |resolver| {
+                const containing = if (self.importer_path.len > 0)
+                    self.importer_path
+                else if (self.virtualSectionFilenameForNode(node)) |raw|
+                    raw
+                else
+                    "/__root__.ts";
+                if (resolver.moduleExport(specifier, containing, "")) |info| {
+                    if (info.exported_type) return;
+                }
+            }
+        }
         const raw = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -192593,6 +192689,71 @@ test "checker: ambient module export target does not conflict with import equals
         try T.expect(d.code != TsCodes.cannot_find_module);
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: exported import alias retains its class target type meaning" {
+    const s = try newSetup(
+        \\export namespace M {
+        \\  export class C {}
+        \\  export import b = M.C;
+        \\}
+        \\export namespace Q {
+        \\  export interface I extends M.b {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: ambient export assignment class is a require alias type" {
+    const s = try newSetup(
+        \\// @filename: /ambient.d.ts
+        \\declare module "SubModule" {
+        \\  class SubModule { value: number; }
+        \\  export = SubModule;
+        \\}
+        \\// @filename: /main.ts
+        \\/// <reference path="/ambient.d.ts" />
+        \\import SubModule = require("SubModule");
+        \\class MainModule { member: SubModule; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: program ambient export assignment class is a require alias type" {
+    const s = try newSetup(
+        \\import SubModule = require("SubModule");
+        \\class MainModule { member: SubModule; }
+    );
+    defer destroySetup(s);
+    const classes = [_]ProgramExportedClass{.{
+        .target_path = "/ambient.d.ts",
+        .ambient_module_name = "SubModule",
+        .class_name = "SubModule",
+        .is_export_assignment_target = true,
+    }};
+    s.checker.setProgramExportedClasses(&classes);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: default exported merged property resolves through type space" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @filename: /a.ts
+        \\class C { static B: number; }
+        \\namespace C { export interface B { c: number; } }
+        \\export default C.B;
+        \\// @filename: /b.ts
+        \\import B from "./a";
+        \\const x: B = { c: B };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: import equals reports missing namespace root" {
