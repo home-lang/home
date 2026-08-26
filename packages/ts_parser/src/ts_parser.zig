@@ -8552,7 +8552,9 @@ pub const Parser = struct {
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
-        if (self.peek().kind == .semicolon or self.peek().kind == .eof or self.peek().flags.preceded_by_newline) {
+        if (self.peek().kind == .semicolon or self.peek().kind == .eof or
+            (self.peek().flags.preceded_by_newline and self.peek().kind != .equal))
+        {
             const anchor = self.peek();
             try self.reportCodeAt(anchor.span.start, anchor.line, 1005, "'=' expected.");
             if (self.peek().kind == .semicolon) _ = self.advance();
@@ -35253,6 +35255,17 @@ test "parser: TS1191 stays clean for export-import-equals and plain import" {
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1191));
     }
+}
+
+test "parser: type alias permits equals on the following line" {
+    var s = try newTestSetup(
+        \\type Values<T extends object>
+        \\  = T[keyof T];
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1109));
 }
 
 test "parser: TS1193 fires for a modifier on an export declaration" {
