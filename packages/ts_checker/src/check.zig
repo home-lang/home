@@ -3643,6 +3643,23 @@ const SourceFacts = struct {
     no_lib_true_directive: ?bool = null,
     contains_import_meta: ?bool = null,
     use_define_for_class_fields_true: ?bool = null,
+    jsx_syntax: ?bool = null,
+    jsx_factory_scanned: bool = false,
+    jsx_factory: ?[]const u8 = null,
+    jsx_fragment_factory_scanned: bool = false,
+    jsx_fragment_factory: ?[]const u8 = null,
+    react_jsx_reference: ?bool = null,
+    react16_jsx_reference: ?bool = null,
+    react18_jsx_reference: ?bool = null,
+    may_have_jsdoc: ?bool = null,
+    target_es2016_or_later: ?bool = null,
+};
+
+const RecoveredParameterSyntax = struct {
+    declaration_start: u32,
+    declaration_end: u32,
+    type_name: hir_mod.StringId,
+    optional: bool,
 };
 
 pub const Checker = struct {
@@ -4638,6 +4655,15 @@ pub const Checker = struct {
     source_facts: SourceFacts = .{},
     parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
     parameter_annotation_index_built: bool = false,
+    /// Source-level parameter annotations grouped by identifier name. Some
+    /// parser-recovery compatibility paths need the original spelling, but
+    /// rescanning the whole prefix for every use makes repeated names (such as
+    /// TSX `props`) superlinear. Values retain source order for reverse lookup.
+    recovered_parameter_syntax: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(RecoveredParameterSyntax),
+    ) = .empty,
+    recovered_parameter_syntax_built: bool = false,
     source_has_virtual_sections: bool = false,
     /// UMD globals require an `export as namespace` declaration. Cache a
     /// conservative keyword prefilter so ordinary type references do not
@@ -4658,6 +4684,11 @@ pub const Checker = struct {
     jsx_factory_compiler_option_present: bool = false,
     jsx_fragment_factory_compiler_option_present: bool = false,
     jsx_fragment_factory_scope_required: bool = false,
+    jsx_intrinsic_attributes_decl_scanned: bool = false,
+    jsx_intrinsic_attributes_decl: bool = false,
+    jsx_namespace_decl_scanned: bool = false,
+    jsx_namespace_decl: bool = false,
+    jsx_local_factory_namespace_type_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     /// True when the effective JSX mode is the classic `react` runtime
     /// (`@jsx: react` directive, tsconfig `jsx: react`, or the classic
     /// emit runtime with the jsx option present). tsgo only emits
@@ -4948,6 +4979,7 @@ pub const Checker = struct {
             .pattern_binding_source_in_progress = .empty,
             .return_annotation_in_progress = .empty,
             .generator_type_info = .empty,
+            .recovered_parameter_syntax = .empty,
             .current_generator_info = null,
             .current_async_function_return_check = false,
             .function_body_depth = 0,
@@ -4986,8 +5018,17 @@ pub const Checker = struct {
     pub fn setSource(self: *Checker, source: []const u8) void {
         self.source = source;
         self.source_facts = .{};
+        self.jsx_intrinsic_attributes_decl_scanned = false;
+        self.jsx_intrinsic_attributes_decl = false;
+        self.jsx_namespace_decl_scanned = false;
+        self.jsx_namespace_decl = false;
+        self.jsx_local_factory_namespace_type_cache.clearRetainingCapacity();
         self.parameter_annotation_index.clearRetainingCapacity();
         self.parameter_annotation_index_built = false;
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.clearRetainingCapacity();
+        self.recovered_parameter_syntax_built = false;
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
@@ -5426,6 +5467,10 @@ pub const Checker = struct {
         self.visible_named_type_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
+        self.jsx_local_factory_namespace_type_cache.deinit(self.gpa);
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.ts_expect_error_directive_lines.deinit(self.gpa);
@@ -24472,24 +24517,33 @@ pub const Checker = struct {
     }
 
     fn sourceHasReactJsxReference(self: *Checker) bool {
+        if (self.source_facts.react_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react") != null;
+        self.source_facts.react_jsx_reference = result;
+        return result;
     }
 
     fn sourceHasTargetEs2016OrLaterDirective(self: *Checker) bool {
+        if (self.source_facts.target_es2016_or_later) |cached| return cached;
         const src = self.source orelse return false;
-        const target_pos = std.mem.indexOf(u8, src, "@target") orelse return false;
+        const target_pos = std.mem.indexOf(u8, src, "@target") orelse {
+            self.source_facts.target_es2016_or_later = false;
+            return false;
+        };
         const line_end = std.mem.indexOfScalarPos(u8, src, target_pos, '\n') orelse src.len;
         var buf: [128]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[target_pos..line_end], " \t\r");
         const n = @min(raw_line.len, buf.len);
         const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
-        return std.mem.indexOf(u8, line, "es2016") != null or
+        const result = std.mem.indexOf(u8, line, "es2016") != null or
             std.mem.indexOf(u8, line, "es2017") != null or
             std.mem.indexOf(u8, line, "es2018") != null or
             std.mem.indexOf(u8, line, "es2019") != null or
             std.mem.indexOf(u8, line, "es202") != null or
             std.mem.indexOf(u8, line, "esnext") != null;
+        self.source_facts.target_es2016_or_later = result;
+        return result;
     }
 
     fn sourceLibDirectiveNeedsIterableIterator(self: *Checker) bool {
@@ -95978,7 +96032,13 @@ pub const Checker = struct {
     }
 
     fn leadingJsDocBodyWithStart(self: *Checker, src: []const u8, decl_start: u32) ?JsDocBody {
-        _ = self;
+        if (self.source_facts.may_have_jsdoc) |cached| {
+            if (!cached) return null;
+        } else {
+            const may_have_jsdoc = std.mem.indexOf(u8, src, "/**") != null;
+            self.source_facts.may_have_jsdoc = may_have_jsdoc;
+            if (!may_have_jsdoc) return null;
+        }
         var limit = @min(@as(usize, decl_start), src.len);
         var trimmed_end = limit;
         while (trimmed_end > 0 and std.ascii.isWhitespace(src[trimmed_end - 1])) : (trimmed_end -= 1) {}
@@ -117027,10 +117087,15 @@ pub const Checker = struct {
     }
 
     fn sourceSectionHasJsxSyntax(self: *Checker, anchor: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (self.source_facts.jsx_syntax) |cached| return cached;
+        }
         const src = self.sourceSectionForNode(anchor);
-        return std.mem.indexOf(u8, src, "<>") != null or
+        const result = std.mem.indexOf(u8, src, "<>") != null or
             std.mem.indexOf(u8, src, "</") != null or
             std.mem.indexOf(u8, src, "/>") != null;
+        if (!self.sourceHasVirtualFilenameSections()) self.source_facts.jsx_syntax = result;
+        return result;
     }
 
     fn jsxPragmaReferencesImport(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
@@ -117052,36 +117117,59 @@ pub const Checker = struct {
     }
 
     fn sourceJsxFactoryPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.source_facts.jsx_factory_scanned) return self.source_facts.jsx_factory;
         const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
-            if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
+            if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| {
+                if (cacheable) {
+                    self.source_facts.jsx_factory_scanned = true;
+                    self.source_facts.jsx_factory = value;
+                }
+                return value;
+            }
             if (std.mem.startsWith(u8, line, "@jsx") and line.len > "@jsx".len and
                 (line["@jsx".len] == ' ' or line["@jsx".len] == '\t'))
             {
-                if (jsxDirectiveLineValue(line, "@jsx")) |value| return value;
+                if (jsxDirectiveLineValue(line, "@jsx")) |value| {
+                    if (cacheable) {
+                        self.source_facts.jsx_factory_scanned = true;
+                        self.source_facts.jsx_factory = value;
+                    }
+                    return value;
+                }
             }
         }
-        if (self.source) |all_source| {
+        if (!cacheable) if (self.source) |all_source| {
             var all_lines = std.mem.splitScalar(u8, all_source, '\n');
             while (all_lines.next()) |line_raw| {
                 const line = std.mem.trim(u8, line_raw, " \t\r/*");
                 if (!std.mem.startsWith(u8, line, "@jsxFactory:")) continue;
                 if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
             }
-        }
+        };
+        if (cacheable) self.source_facts.jsx_factory_scanned = true;
         return null;
     }
 
     fn sourceJsxFragPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.source_facts.jsx_fragment_factory_scanned) return self.source_facts.jsx_fragment_factory;
         const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
-            if (jsxDirectiveLineValue(line, "@jsxFrag")) |value| return value;
-            if (jsxDirectiveLineValue(line, "@jsxfrag")) |value| return value;
+            if (jsxDirectiveLineValue(line, "@jsxFrag") orelse jsxDirectiveLineValue(line, "@jsxfrag")) |value| {
+                if (cacheable) {
+                    self.source_facts.jsx_fragment_factory_scanned = true;
+                    self.source_facts.jsx_fragment_factory = value;
+                }
+                return value;
+            }
         }
+        if (cacheable) self.source_facts.jsx_fragment_factory_scanned = true;
         return null;
     }
 
@@ -117107,6 +117195,24 @@ pub const Checker = struct {
     }
 
     fn jsxLocalFactoryNamespaceType(self: *Checker, anchor: NodeId, leaf_name: hir_mod.StringId) CheckError!?TypeId {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable) {
+            if (self.jsx_local_factory_namespace_type_cache.get(leaf_name)) |cached| {
+                return if (cached == types.Primitive.none) null else cached;
+            }
+        }
+        const result = try self.jsxLocalFactoryNamespaceTypeUncached(anchor, leaf_name);
+        if (cacheable) {
+            try self.jsx_local_factory_namespace_type_cache.put(
+                self.gpa,
+                leaf_name,
+                result orelse types.Primitive.none,
+            );
+        }
+        return result;
+    }
+
+    fn jsxLocalFactoryNamespaceTypeUncached(self: *Checker, anchor: NodeId, leaf_name: hir_mod.StringId) CheckError!?TypeId {
         const factory_root = self.jsxFactoryRootName(self.jsxFactoryNameText(anchor)) orelse return null;
         const local_name = self.string_interner.intern(factory_root) catch return error.OutOfMemory;
         const import_info = (try self.localImportModuleInfo(local_name, anchor)) orelse return null;
@@ -117427,13 +117533,19 @@ pub const Checker = struct {
     /// `react.d.ts` declares `props: P & { children?: ReactNode }`;
     /// the JSX managed-attrs prose keeps each lib's constituent order.
     fn sourceHasReact16JsxReference(self: *Checker) bool {
+        if (self.source_facts.react16_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react16") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react16") != null;
+        self.source_facts.react16_jsx_reference = result;
+        return result;
     }
 
     fn sourceHasReact18JsxReference(self: *Checker) bool {
+        if (self.source_facts.react18_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react18/") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react18/") != null;
+        self.source_facts.react18_jsx_reference = result;
+        return result;
     }
 
     /// `{ children?: ReactNode | undefined }` — the children
@@ -117552,6 +117664,17 @@ pub const Checker = struct {
     }
 
     fn jsxHasNamespaceDecl(self: *Checker, anchor: NodeId) CheckError!bool {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.jsx_namespace_decl_scanned) return self.jsx_namespace_decl;
+        const result = try self.jsxHasNamespaceDeclUncached(anchor);
+        if (cacheable) {
+            self.jsx_namespace_decl_scanned = true;
+            self.jsx_namespace_decl = result;
+        }
+        return result;
+    }
+
+    fn jsxHasNamespaceDeclUncached(self: *Checker, anchor: NodeId) CheckError!bool {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const element_name = self.string_interner.intern("Element") catch return error.OutOfMemory;
         if ((try self.jsxLocalFactoryNamespaceType(anchor, element_name)) != null) return true;
@@ -119238,51 +119361,92 @@ pub const Checker = struct {
         const use_start = @min(raw_use_start, source.len);
         const name_text = self.string_interner.get(name);
         if (name_text.len == 0 or use_start < name_text.len) return null;
-        var search_end = use_start;
-        while (std.mem.lastIndexOf(u8, source[0..search_end], name_text)) |found| {
-            if (found > 0 and (std.ascii.isAlphanumeric(source[found - 1]) or source[found - 1] == '_' or source[found - 1] == '$')) {
-                search_end = found;
-                continue;
-            }
-            var cursor = found + name_text.len;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            const optional = cursor < use_start and source[cursor] == '?';
-            if (optional) cursor += 1;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            if (cursor >= use_start or source[cursor] != ':') {
-                search_end = found;
-                continue;
-            }
-            if (!sourceParameterDeclarationContainsUse(source, found, use_start)) {
-                search_end = found;
-                continue;
-            }
-            cursor += 1;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            const type_start = cursor;
-            while (cursor < use_start and
-                (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) cursor += 1;
-            if (cursor == type_start) {
-                search_end = found;
-                continue;
-            }
-            const type_end = cursor;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            if (cursor >= use_start or
-                (source[cursor] != ',' and source[cursor] != ')' and source[cursor] != '='))
-            {
-                search_end = found;
-                continue;
-            }
-            const type_name = self.string_interner.intern(source[type_start..type_end]) catch return null;
-            const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, type_name) orelse
-                self.recoveredNamedTypeAt(node, type_name) orelse {
-                search_end = found;
-                continue;
-            };
-            return if (optional) self.unionWithUndefined(base) catch base else base;
+        const entries = self.recoveredParameterSyntaxForName(name) orelse return null;
+        var index = entries.len;
+        while (index > 0) {
+            index -= 1;
+            const entry = entries[index];
+            if (entry.declaration_start >= use_start or entry.declaration_end >= use_start) continue;
+            if (!sourceParameterDeclarationContainsUse(source, entry.declaration_start, use_start)) continue;
+            const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, entry.type_name) orelse
+                self.recoveredNamedTypeAt(node, entry.type_name) orelse continue;
+            return if (entry.optional) self.unionWithUndefined(base) catch base else base;
         }
         return null;
+    }
+
+    fn recoveredParameterSyntaxForName(
+        self: *Checker,
+        name: hir_mod.StringId,
+    ) ?[]const RecoveredParameterSyntax {
+        if (!self.recovered_parameter_syntax_built and !self.buildRecoveredParameterSyntaxIndex()) return null;
+        const cached = self.recovered_parameter_syntax.getPtr(name) orelse return &.{};
+        return cached.items;
+    }
+
+    fn buildRecoveredParameterSyntaxIndex(self: *Checker) bool {
+        const source = self.source orelse return false;
+        var scan: usize = 0;
+        while (scan < source.len) {
+            if (!std.ascii.isAlphabetic(source[scan]) and source[scan] != '_' and source[scan] != '$') {
+                scan += 1;
+                continue;
+            }
+            const name_start = scan;
+            scan += 1;
+            while (scan < source.len and
+                (std.ascii.isAlphanumeric(source[scan]) or source[scan] == '_' or source[scan] == '$')) scan += 1;
+            const name_end = scan;
+            var cursor = name_end;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const optional = cursor < source.len and source[cursor] == '?';
+            if (optional) cursor += 1;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= source.len or source[cursor] != ':') continue;
+            cursor += 1;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const type_start = cursor;
+            while (cursor < source.len and
+                (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) cursor += 1;
+            if (cursor == type_start) continue;
+            const type_end = cursor;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= source.len or
+                (source[cursor] != ',' and source[cursor] != ')' and source[cursor] != '='))
+            {
+                continue;
+            }
+            const name = self.string_interner.intern(source[name_start..name_end]) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            const type_name = self.string_interner.intern(source[type_start..type_end]) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            const entry = self.recovered_parameter_syntax.getOrPut(self.gpa, name) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            entry.value_ptr.append(self.gpa, .{
+                .declaration_start = @intCast(name_start),
+                .declaration_end = @intCast(cursor),
+                .type_name = type_name,
+                .optional = optional,
+            }) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+        }
+        self.recovered_parameter_syntax_built = true;
+        return true;
+    }
+
+    fn clearRecoveredParameterSyntaxIndex(self: *Checker) void {
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.clearRetainingCapacity();
     }
 
     fn contextualCallParameterTypeForRecoveredAnnotation(
@@ -180008,6 +180172,19 @@ pub const Checker = struct {
     }
 
     fn jsxHasIntrinsicAttributesDecl(self: *Checker, anchor: NodeId) bool {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.jsx_intrinsic_attributes_decl_scanned) {
+            return self.jsx_intrinsic_attributes_decl;
+        }
+        const result = self.jsxHasIntrinsicAttributesDeclUncached(anchor);
+        if (cacheable) {
+            self.jsx_intrinsic_attributes_decl_scanned = true;
+            self.jsx_intrinsic_attributes_decl = result;
+        }
+        return result;
+    }
+
+    fn jsxHasIntrinsicAttributesDeclUncached(self: *Checker, anchor: NodeId) bool {
         // Inline `declare namespace JSX { interface IntrinsicAttributes
         // { ÃÂ¢ÃÂÃÂ¦ } }` ÃÂ¢ÃÂÃÂ direct lookup.
         const jsx_name = self.string_interner.intern("JSX") catch return false;
