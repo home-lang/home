@@ -7546,7 +7546,26 @@ pub const Parser = struct {
             // properly now.
             if (self.check(.String)) {
                 const str_token = self.advance();
-                const instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+                var instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+
+                // Adjacent string literals concatenate, so a multi-instruction
+                // block can be written a line at a time:
+                //
+                //     asm volatile ("pushfq\n"
+                //                   "popq %0\n"
+                //                   "cli" : "=r" (flags))
+                //
+                // Only the template does this — clobbers and constraints are
+                // always introduced by a colon, so no string in those
+                // positions can be reached from here.
+                while (self.check(.String)) {
+                    const cont = self.advance();
+                    const piece = cont.lexeme[1 .. cont.lexeme.len - 1];
+                    const joined = try self.allocator.alloc(u8, instruction.len + piece.len);
+                    @memcpy(joined[0..instruction.len], instruction);
+                    @memcpy(joined[instruction.len..], piece);
+                    instruction = joined;
+                }
 
                 var outputs = std.ArrayList(ast.AsmOperand).empty;
                 defer outputs.deinit(self.allocator);
@@ -7555,13 +7574,40 @@ pub const Parser = struct {
                 var clobbers = std.ArrayList([]const u8).empty;
                 defer clobbers.deinit(self.allocator);
 
-                // Up to three `:`-introduced sections, each of which may be
-                // empty — `asm("x" ::: "memory")` is three colons and only
-                // clobbers.
+                // Up to three `:`-introduced sections — outputs, inputs,
+                // clobbers — any of which may be empty. `asm("x" ::: "mem")`
+                // is three colons and only clobbers.
+                //
+                // The colons do not arrive one per token: the lexer folds `::`
+                // into a single ColonColon (it doubles as the path operator),
+                // so `:::` is ColonColon followed by Colon. Count colons rather
+                // than tokens, and treat a section as empty when another colon
+                // follows immediately — otherwise the clobber string in
+                // `::: "mem"` gets read as an input operand and the parse
+                // fails on it.
                 var section: usize = 0;
-                while (self.match(&.{.Colon}) and section < 3) : (section += 1) {
-                    if (section < 2) {
-                        try self.parseAsmOperands(if (section == 0) &outputs else &inputs);
+                var pending_colons: usize = 0;
+                while (section < 3) {
+                    if (pending_colons == 0) {
+                        if (self.check(.ColonColon)) {
+                            _ = self.advance();
+                            pending_colons = 2;
+                        } else if (self.check(.Colon)) {
+                            _ = self.advance();
+                            pending_colons = 1;
+                        } else break;
+                    }
+                    pending_colons -= 1;
+                    section += 1;
+
+                    const next_opens_section = pending_colons > 0 or
+                        self.check(.Colon) or self.check(.ColonColon);
+                    if (next_opens_section) continue; // this section is empty
+
+                    if (section == 1) {
+                        try self.parseAsmOperands(&outputs);
+                    } else if (section == 2) {
+                        try self.parseAsmOperands(&inputs);
                     } else {
                         // Clobbers are bare strings.
                         while (self.check(.String)) {

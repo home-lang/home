@@ -2299,7 +2299,7 @@ pub const HomeKernelCodegen = struct {
         // percent is a literal percent.
         if (asm_node.outputs.len == 0 and asm_node.inputs.len == 0) {
             const plain = try self.reducePercent(self.import_arena.allocator(), asm_node.instruction);
-            try self.print("    {s}\n", .{plain});
+            try self.printAsmText(plain);
             return;
         }
 
@@ -2377,7 +2377,7 @@ pub const HomeKernelCodegen = struct {
             text = try self.substituteOperand(arena, text, pos, in_regs[i]);
         }
         text = try self.reducePercent(arena, text);
-        try self.print("    {s}\n", .{text});
+        try self.printAsmText(text);
 
         // Copy outputs back into their destinations.
         for (asm_node.outputs, 0..) |op, i| {
@@ -2398,6 +2398,59 @@ pub const HomeKernelCodegen = struct {
             }
             try self.print("    # ERROR: asm output has no assignable destination\n", .{});
         }
+    }
+
+    /// Emit an assembly template, one instruction per line.
+    ///
+    /// A multi-instruction block is written with `\n` separators inside the
+    /// string literal, and the lexeme reaches codegen with the escape
+    /// *unprocessed* — so `"pushfq\npopq %0"` would otherwise be emitted as a
+    /// single line containing a literal backslash, which the assembler
+    /// rejects. Translate the escapes and give each instruction its own line.
+    fn printAsmText(self: *HomeKernelCodegen, text: []const u8) !void {
+        var line_start: usize = 0;
+        var i: usize = 0;
+        var pending = false; // something was written on the current line
+        while (i < text.len) {
+            if (text[i] == '\\' and i + 1 < text.len and (text[i + 1] == 'n' or text[i + 1] == 't')) {
+                const kind = text[i + 1];
+                if (i > line_start) {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print("{s}", .{text[line_start..i]});
+                    pending = true;
+                }
+                if (kind == 'n') {
+                    if (pending) try self.print("\n", .{});
+                    pending = false;
+                } else {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print(" ", .{});
+                    pending = true;
+                }
+                i += 2;
+                line_start = i;
+                continue;
+            }
+            if (text[i] == '\n') {
+                if (i > line_start) {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print("{s}", .{text[line_start..i]});
+                    pending = true;
+                }
+                if (pending) try self.print("\n", .{});
+                pending = false;
+                i += 1;
+                line_start = i;
+                continue;
+            }
+            i += 1;
+        }
+        if (line_start < text.len) {
+            if (!pending) try self.print("    ", .{});
+            try self.print("{s}", .{text[line_start..]});
+            pending = true;
+        }
+        if (pending) try self.print("\n", .{});
     }
 
     /// Reduce GCC's doubled-percent escape. In a C compiler's asm template
