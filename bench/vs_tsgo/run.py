@@ -308,6 +308,63 @@ def generate_generic_calls(directory: Path, calls: int) -> None:
     write(directory / "src/generic-calls.ts", "".join(blocks))
 
 
+def generate_control_flow(directory: Path, functions: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "type WorkflowEvent<N extends number> =\n"
+        "  | { readonly kind: \"queued\"; readonly id: N }\n"
+        "  | { readonly kind: \"running\"; readonly id: N; readonly progress: number }\n"
+        "  | { readonly kind: \"complete\"; readonly id: N; readonly output: { readonly label: string; readonly score: number } }\n"
+        "  | { readonly kind: \"failed\"; readonly id: N; readonly error: { readonly message: string; readonly retryable: boolean } };\n\n"
+        "interface Summary<N extends number> {\n"
+        "  readonly id: N;\n"
+        "  readonly label: string;\n"
+        "  readonly score: number;\n"
+        "  readonly terminal: boolean;\n"
+        "}\n\n"
+    ]
+    for index in range(functions):
+        blocks.append(
+            f"export function summarize{index}(event: WorkflowEvent<{index}>): Summary<{index}> {{\n"
+            "  let label: string;\n"
+            "  let score: number;\n"
+            "  let terminal: boolean;\n"
+            "  switch (event.kind) {\n"
+            "    case \"queued\":\n"
+            "      label = \"queued\";\n"
+            "      score = 0;\n"
+            "      terminal = false;\n"
+            "      break;\n"
+            "    case \"running\":\n"
+            "      label = \"running\";\n"
+            "      score = event.progress;\n"
+            "      terminal = false;\n"
+            "      break;\n"
+            "    case \"complete\":\n"
+            "      label = event.output.label;\n"
+            "      score = event.output.score;\n"
+            "      terminal = true;\n"
+            "      break;\n"
+            "    case \"failed\":\n"
+            "      label = event.error.message;\n"
+            "      score = event.error.retryable ? 1 : 0;\n"
+            "      terminal = true;\n"
+            "      break;\n"
+            "    default: {\n"
+            "      const exhaustive: never = event;\n"
+            "      return exhaustive;\n"
+            "    }\n"
+            "  }\n"
+            "  return { id: event.id, label, score, terminal };\n"
+            "}\n\n"
+            f"export const summary{index}: Summary<{index}> = summarize{index}({{\n"
+            f"  kind: \"complete\", id: {index}, output: {{ label: \"item-{index}\", score: {index} }},\n"
+            "});\n\n"
+        )
+    write(directory / "src/control-flow.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -322,6 +379,7 @@ def cmd_corpus() -> None:
     )
     generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
     generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
+    generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 

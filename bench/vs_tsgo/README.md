@@ -43,6 +43,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `reexport_graph` | 64 leaves + 8 barrels | Recursive export-star projection through barrel modules |
 | `tsx_components` | 256 typed components | TSX scanning, parsing, contextual props, expressions, and checking |
 | `generic_calls` | 256 typed call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
+| `control_flow` | 256 exhaustive functions | Discriminated-union narrowing, branch joins, definite assignment, and exhaustiveness |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
 They do not stand in for application-scale measurements; pinned real-world
