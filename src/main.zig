@@ -1783,13 +1783,18 @@ const VmRunState = struct {
 
         if (vm.loadEntryPoint(this.entry_path)) |promise| {
             if (promise.status() == .rejected) {
-                _ = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
+                const handled = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
                 promise.setHandled();
-                vm.exit_handler.exit_code = 1;
-                home_rt.Output.flush();
-                printUnhandledFooterIfNeeded(vm);
-                vm.onExit();
-                vm.globalExit();
+                vm.pending_internal_promise_reported_at = vm.hot_reload_counter;
+                // A user handler may recover, schedule async work, or choose
+                // its own exitCode. Only an unhandled entry failure is fatal.
+                if (!handled) {
+                    vm.exit_handler.exit_code = 1;
+                    home_rt.Output.flush();
+                    printUnhandledFooterIfNeeded(vm);
+                    vm.onExit();
+                    vm.globalExit();
+                }
             }
             _ = promise.result(vm.global.vm());
         } else |err| {

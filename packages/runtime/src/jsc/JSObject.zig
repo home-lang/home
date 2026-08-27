@@ -30,8 +30,12 @@ pub const JSObject = opaque {
         return @enumFromInt(@as(i64, @bitCast(@as(u64, @intCast(@intFromPtr(this))))));
     }
 
-    pub fn getCodePropertyVMInquiry(_: *JSObject, _: *home_rt.jsc.JSGlobalObject) ?home_rt.jsc.JSValue {
-        return null;
+    extern fn Bun__JSObject__getCodePropertyVMInquiry(global: *home_rt.jsc.JSGlobalObject, object: *JSObject) home_rt.jsc.JSValue;
+
+    /// Read a data-valued error code without invoking getters or proxy traps.
+    pub fn getCodePropertyVMInquiry(object: *JSObject, global: *home_rt.jsc.JSGlobalObject) ?home_rt.jsc.JSValue {
+        const value = Bun__JSObject__getCodePropertyVMInquiry(global, object);
+        return if (value == .zero) null else value;
     }
 
     /// Faithful to upstream `jsc/JSObject.zig:24`. Marshall a struct into a

@@ -6603,7 +6603,10 @@ pub fn NewParser_(
                     logger.Loc.Empty,
                 );
 
-                try parts.ensureUnusedCapacity(1);
+                // Empty/comment-only modules have no existing Part metadata.
+                // Match Bun's default Part insertion before wrapping the CJS
+                // body; exposing an uninitialized slot corrupts symbol lists.
+                if (parts.items.len == 0) try parts.append(.{});
                 parts.items.len = 1;
                 parts.items[0].stmts = top_level_stmts;
             }
