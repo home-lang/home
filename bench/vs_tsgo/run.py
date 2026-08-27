@@ -382,7 +382,7 @@ def generate_type_predicates(directory: Path, families: int) -> None:
         blocks.append(
             f"interface Ready{index} {{\n"
             '  readonly kind: "ready";\n'
-            "  readonly id: number;\n"
+            f"  readonly id: {index};\n"
             "  readonly payload: { readonly label: string; readonly score: number };\n"
             "  readonly meta: { readonly active: boolean };\n"
             "}\n\n"
