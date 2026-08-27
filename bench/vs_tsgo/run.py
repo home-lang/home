@@ -65,7 +65,7 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def shared_config(*, jsx: bool = False) -> str:
+def shared_config(*, jsx: bool = False, check_js: bool = False) -> str:
     compiler_options: dict[str, object] = {
         "strict": True,
         "noEmit": True,
@@ -75,7 +75,15 @@ def shared_config(*, jsx: bool = False) -> str:
     }
     if jsx:
         compiler_options["jsx"] = "preserve"
-    include = ["src/**/*.ts", "src/**/*.tsx"] if jsx else ["src/**/*.ts"]
+    if check_js:
+        compiler_options["allowJs"] = True
+        compiler_options["checkJs"] = True
+    if jsx:
+        include = ["src/**/*.ts", "src/**/*.tsx"]
+    elif check_js:
+        include = ["src/**/*.js", "src/**/*.d.ts"]
+    else:
+        include = ["src/**/*.ts"]
     return json.dumps(
         {
             "compilerOptions": compiler_options,
@@ -583,6 +591,75 @@ def generate_variadic_tuples(directory: Path, families: int) -> None:
     write(directory / "src/variadic-tuples.ts", "".join(blocks))
 
 
+def generate_checkjs_jsdoc(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config(check_js=True))
+    generate_minimal_lib(directory)
+    blocks = ["// @ts-check\n\n"]
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            "/**\n"
+            f" * @typedef {{object}} Model{index}\n"
+            " * @property {number} id\n"
+            " * @property {string} name\n"
+            " * @property {{ active: boolean, label: string }} meta\n"
+            " */\n\n"
+            "/**\n"
+            " * @template T\n"
+            f" * @typedef {{object}} Box{index}\n"
+            " * @property {T} value\n"
+            " * @property {string} label\n"
+            " */\n\n"
+            "/**\n"
+            f" * @callback Project{index}\n"
+            f" * @param {{Model{index}}} input\n"
+            " * @returns {string}\n"
+            " */\n\n"
+            "/**\n"
+            f" * @template {{Model{index}}} T\n"
+            " * @param {T} value\n"
+            " * @returns {T}\n"
+            " */\n"
+            f"function preserve{index}(value) {{\n"
+            "  return value;\n"
+            "}\n\n"
+            f"class Store{index} {{\n"
+            "  /**\n"
+            f"   * @param {{Box{index}<Model{index}>}} box\n"
+            "   */\n"
+            "  constructor(box) {\n"
+            "    this.box = box;\n"
+            "  }\n\n"
+            "  /**\n"
+            f"   * @param {{Project{index}}} project\n"
+            "   * @returns {string}\n"
+            "   */\n"
+            "  read(project) {\n"
+            "    return project(this.box.value);\n"
+            "  }\n"
+            "}\n\n"
+            f"/** @type {{Model{index}}} */\n"
+            f"const model{index} = {{\n"
+            f'  id: {index}, name: "model-{index}", meta: {{ active: {active}, label: "meta-{index}" }},\n'
+            "};\n"
+            f"const preserved{index} = preserve{index}(model{index});\n"
+            f"/** @type {{Box{index}<Model{index}>}} */\n"
+            f"const box{index} = {{ value: preserved{index}, label: \"box-{index}\" }};\n"
+            f"/** @type {{Project{index}}} */\n"
+            f"const project{index} = (input) => `${{input.meta.label}}:${{input.name}}`;\n"
+            f"const store{index} = new Store{index}(box{index});\n"
+            f"const rendered{index} = store{index}.read(project{index});\n"
+            "/** @type {{ id: number, name: string, active: boolean, rendered: string }} */\n"
+            f"export const jsdocResult{index} = {{\n"
+            f"  id: preserved{index}.id,\n"
+            f"  name: preserved{index}.name,\n"
+            f"  active: preserved{index}.meta.active,\n"
+            f"  rendered: rendered{index},\n"
+            "};\n\n"
+        )
+    write(directory / "src/checkjs-jsdoc.js", "".join(blocks).rstrip() + "\n")
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -608,6 +685,10 @@ def cmd_corpus() -> None:
     generate_variadic_tuples(
         CORPUS / "variadic_tuples",
         cfg["variadic_tuple_families"],
+    )
+    generate_checkjs_jsdoc(
+        CORPUS / "checkjs_jsdoc",
+        cfg["checkjs_jsdoc_families"],
     )
     print(f"Generated deterministic corpus in {CORPUS}")
 

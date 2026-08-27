@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "noLib": true,
+    "skipLibCheck": true,
+    "pretty": false,
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": [
+    "src/**/*.js",
+    "src/**/*.d.ts"
+  ]
+}

@@ -16,6 +16,7 @@ class_hierarchy_families = 128
 structural_object_families = 128
 interface_composition_families = 128
 variadic_tuple_families = 256
+checkjs_jsdoc_families = 128
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -55,6 +56,9 @@ description = "One module with 128 generic interface families covering multi-bas
 
 [workloads.variadic_tuples]
 description = "One module with 256 readonly variadic-tuple families covering inference, concat, conditional head/tail extraction, rest, spread, indexing, and typed consumption."
+
+[workloads.checkjs_jsdoc]
+description = "One checked JavaScript module with 128 JSDoc families covering typedefs, constrained templates, callbacks, classes, property reads, and typed consumption."
 
 [compilers.tsc]
 version = "6.0.3"
