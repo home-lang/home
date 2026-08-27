@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include "BunWorkerGlobalScope.h"
+#include "HomeMessagePortLifecycle.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -17,6 +18,7 @@ void WorkerGlobalScope::onDidChangeListenerImpl(EventTarget& self, const AtomStr
                 global.scriptExecutionContext()->refEventLoop();
             }
             global.m_messageEventCount++;
+            WorkerParentPort::startForGlobalListener(*global.scriptExecutionContext());
             break;
         case Remove:
             global.m_messageEventCount--;

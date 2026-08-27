@@ -95,7 +95,9 @@ ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& state, JSC::JSVa
     if (!isEntangled())
         return {};
 
-    m_pipe->send(m_side, MessageWithMessagePorts { messageData.releaseReturnValue(), WTF::move(transferredPorts) });
+    MessageWithMessagePorts message { messageData.releaseReturnValue(), WTF::move(transferredPorts) };
+    if (!WorkerParentPort::send(m_pipe.get(), m_side, WTF::move(message)))
+        m_pipe->send(m_side, WTF::move(message));
     return {};
 }
 
@@ -213,6 +215,7 @@ void MessagePort::dispatchOneMessage(ScriptExecutionContext& context, MessageWit
 
     auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), {}, {}, {}, WTF::move(ports));
     dispatchEvent(event.event);
+    WorkerParentPort::forwardGlobalEvent(*this, context, event.event.get());
 }
 
 JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
@@ -362,17 +365,17 @@ void MessagePort::onDidChangeListenerImpl(EventTarget& self, const AtomString& e
     switch (kind) {
     case Add:
         if (port.m_messageEventCount == 0 && context)
-            context->refEventLoop();
+            port.jsRef(context->jsGlobalObject());
         port.m_messageEventCount++;
         break;
     case Remove:
         port.m_messageEventCount--;
         if (port.m_messageEventCount == 0 && context)
-            context->unrefEventLoop();
+            port.jsUnref(context->jsGlobalObject());
         break;
     case Clear:
         if (port.m_messageEventCount > 0 && context)
-            context->unrefEventLoop();
+            port.jsUnref(context->jsGlobalObject());
         port.m_messageEventCount = 0;
         break;
     }

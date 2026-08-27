@@ -74,6 +74,8 @@ async function main() {
     ['jsc/bindings/webcore/MessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp', 'MessagePort.h'],
     ['jsc/bindings/webcore/MessagePortPipe.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp', 'MessagePortPipe.h'],
     ['jsc/bindings/webcore/Worker.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp', 'Worker.h'],
+    ['jsc/bindings/BunWorkerGlobalScope.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'],
+    ['jsc/bindings/webcore/JSMessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp', 'JSMessagePort.h'],
   ] as const).map(([relativeSource, unifiedName, outputName, abiHeader]) => {
     const source = path.join(homeSource, relativeSource)
     const basename = path.basename(source)

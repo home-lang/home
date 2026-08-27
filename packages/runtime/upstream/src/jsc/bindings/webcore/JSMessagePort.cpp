@@ -202,7 +202,10 @@ static inline bool setJSMessagePort_onmessageSetter(JSGlobalObject& lexicalGloba
     vm.writeBarrier(&thisObject, value);
     ensureStillAliveHere(value);
 
-    thisObject.wrapped().jsRef(&lexicalGlobalObject);
+    if (value.isCallable())
+        thisObject.wrapped().jsRef(&lexicalGlobalObject);
+    else if (!thisObject.wrapped().hasEventListeners(eventNames().messageEvent))
+        thisObject.wrapped().jsUnref(&lexicalGlobalObject);
 
     return true;
 }
@@ -230,8 +233,6 @@ static inline bool setJSMessagePort_onmessageerrorSetter(JSGlobalObject& lexical
     setEventHandlerAttribute<JSEventListener>(thisObject.wrapped(), eventNames().messageerrorEvent, value, thisObject);
     vm.writeBarrier(&thisObject, value);
     ensureStillAliveHere(value);
-
-    thisObject.wrapped().jsRef(&lexicalGlobalObject);
 
     return true;
 }

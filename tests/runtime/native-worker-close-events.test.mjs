@@ -113,6 +113,11 @@ await check('asynchronous both-end close, callbacks, and exactly-once delivery',
   await Promise.all([first.done, second.done])
   await turn()
   assert.equal(first.calls.length, 1)
+  for (const call of [...first.calls, ...second.calls]) {
+    assert.equal(call.args.length, 1)
+    assert.ok(call.args[0] instanceof Event)
+    assert.equal(call.args[0].type, 'close')
+  }
   assert.equal(second.calls.length, 1)
   assert.equal(receiveMessageOnPort(port1), undefined)
   assert.equal(receiveMessageOnPort(port2), undefined)

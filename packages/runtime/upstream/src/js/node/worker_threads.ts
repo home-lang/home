@@ -25,12 +25,14 @@ const {
   1: _threadId,
   2: _receiveMessageOnPort,
   3: environmentData,
+  4: nativeParentPort,
 } = $cpp("Worker.cpp", "createNodeWorkerThreadsBinding") as [
   unknown,
   number,
   // eslint-disable-next-line pickier/no-unused-vars -- Parameter names describe the native ABI type.
   (port: unknown) => { message: unknown } | undefined,
   Map<unknown, unknown>,
+  MessagePort | null,
 ];
 
 type NodeWorkerOptions = import("node:worker_threads").WorkerOptions;
@@ -61,8 +63,8 @@ function injectFakeEmitter(Class) {
   function functionForEventType(event, listener) {
     switch (event) {
       case "close": {
-        const callback = function () {
-          return listener.$call(this);
+        const callback = function (event) {
+          return listener.$call(this, event);
         };
         listener[wrappedListener] = callback;
         return callback;
@@ -127,7 +129,7 @@ const MessagePort = _MessagePort;
 
 // The native binding owns close delivery, including peer/transfer/teardown
 // paths. Node's optional close(callback) is an EventTarget listener: preserve
-// callback identity, this, and its Event argument (unlike .on("close")).
+// callback identity, this, and its Event argument, including repeated close().
 const nativeMessagePortClose = MessagePort.prototype.close;
 MessagePort.prototype.close = function (callback) {
   if (typeof callback === "function") this.addEventListener("close", callback, { once: true });
@@ -378,81 +380,8 @@ function receiveMessageOnPort(port: MessagePort) {
   return _receiveMessageOnPort(port);
 }
 
-// TODO: parent port emulation is not complete
-function fakeParentPort() {
-  const fake = Object.create(MessagePort.prototype);
-  Object.defineProperty(fake, "onmessage", {
-    get() {
-      return self.onmessage;
-    },
-    set(value) {
-      self.onmessage = value;
-    },
-  });
-
-  Object.defineProperty(fake, "onmessageerror", {
-    get() {
-      return self.onmessageerror;
-    },
-    set(value) {
-      self.onmessageerror = value;
-    },
-  });
-
-  const postMessage = $newCppFunction("ZigGlobalObject.cpp", "jsFunctionPostMessage", 1);
-  Object.defineProperty(fake, "postMessage", {
-    value(...args: [any, any]) {
-      return postMessage.$apply(null, args);
-    },
-  });
-
-  Object.defineProperty(fake, "close", {
-    value() {},
-  });
-
-  Object.defineProperty(fake, "start", {
-    value() {},
-  });
-
-  Object.defineProperty(fake, "unref", {
-    value() {},
-  });
-
-  Object.defineProperty(fake, "ref", {
-    value() {},
-  });
-
-  Object.defineProperty(fake, "hasRef", {
-    value() {
-      return false;
-    },
-  });
-
-  Object.defineProperty(fake, "setEncoding", {
-    value() {},
-  });
-
-  Object.defineProperty(fake, "addEventListener", {
-    value: self.addEventListener.bind(self),
-  });
-
-  Object.defineProperty(fake, "removeEventListener", {
-    value: self.removeEventListener.bind(self),
-  });
-
-  Object.defineProperty(fake, "removeListener", {
-    value: self.removeEventListener.bind(self),
-    enumerable: false,
-  });
-
-  Object.defineProperty(fake, "addListener", {
-    value: self.addEventListener.bind(self),
-    enumerable: false,
-  });
-
-  return fake;
-}
-const parentPort: MessagePort | null = isMainThread ? null : fakeParentPort();
+// The worker VM owns a real, transferable native MessagePort before user code runs.
+const parentPort: MessagePort | null = nativeParentPort;
 
 function getEnvironmentData(key: unknown): unknown {
   return environmentData.get(key);

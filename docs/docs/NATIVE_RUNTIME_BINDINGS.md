@@ -16,7 +16,7 @@ This is incremental binding ownership, not an independent C++ runtime build. Mov
 
 ## Builtin module ownership
 
-The native build also compiles Home's `InternalModuleRegistry.cpp`, `webcore/MessagePort.cpp`, `webcore/MessagePortPipe.cpp`, and `webcore/Worker.cpp`, and regenerates the `node:url` and `node:worker_threads` builtins from Home's source. The corresponding external unified objects are excluded. Their other C++ implementations are rebuilt from their ABI-matched external sources; they are not yet Home-owned.
+The native build also compiles Home's `InternalModuleRegistry.cpp`, `BunWorkerGlobalScope.cpp`, `webcore/JSMessagePort.cpp`, `webcore/MessagePort.cpp`, `webcore/MessagePortPipe.cpp`, and `webcore/Worker.cpp`, and regenerates the `node:url` and `node:worker_threads` builtins from Home's source. The corresponding external unified objects are excluded. Their other C++ implementations are rebuilt from their ABI-matched external sources; they are not yet Home-owned.
 
 MessagePort and Worker class headers must be byte-identical to the external headers selected by each unified source. Generation rejects drift, missing implementations, or duplicate owned includes before creating output. Class layouts and vtables remain unchanged; the private `HomeMessagePortLifecycle.h` contains only constants for reserved pipe-state bits. The owned implementations and worker builtin are generated together, and all selected headers are cache dependencies.
 
@@ -99,7 +99,7 @@ Transfers close the old wrapper asynchronously, not the transferred endpoint. Dr
 
 Teardown GC can destroy ports before their stopped context leaves the global registry. Scheduling new local drains then would strand pipe references in an event loop that cannot run. Scheduling first enters the owning context, checks its VM state outside the registry lock, and only then queues asynchronous delivery. This avoids reading another thread's VM state or releasing native captures under the registry lock. Live remote peers still receive notifications. General cancellation of already-queued remote C++ tasks is separate work in [#465](https://github.com/home-lang/home/issues/465).
 
-The worker builtin only adapts Node's optional `close(callback)` and zero-argument `.on('close')` convention; native code owns local, peer, transfer, and teardown delivery. Repeated close is idempotent, duplicate callback identity is preserved, and late callbacks do not replay an event.
+The worker builtin adapts Node's optional `close(callback)`; native code owns local, peer, transfer, and teardown delivery. Repeated close is idempotent, duplicate callback identity is preserved, and late callbacks do not replay an event. Both callbacks and `.on('close')` listeners receive the close event object. The earlier zero-argument `.on('close')` implementation was incorrect; native Node controls exposed it during the parent-port checkpoint below.
 
 The pending-local-close window is tracked in [#466](https://github.com/home-lang/home/issues/466). Outgoing delivery, asynchronous local message dispatch, and transferring the closing endpoint stop immediately, but synchronous receive still consumes accepted data, including new peer sends before completion. The native detached flag remains set for serialization validation; the existing post-detachment state distinguishes local close from a transferred-away wrapper, which cannot read or close its replacement. Class layouts remain unchanged. Close completion discards remaining local data iteratively before callbacks. Orphaned endpoints and context destruction discard immediately, without a pending receive window.
 
@@ -175,3 +175,22 @@ The normal-exit control initially exposed another real gap: `fakeParentPort.clos
 ### Publication
 
 The 65 prior local port commits through `6de9852ea8443c3b5d4a58dcdbcf11944456fd2e` were recovered from the existing separate Git metadata and published on `codex/runtime-port` on 2026-08-27. Their original hashes and sole Chris Breuer author/committer identities were preserved, with no coauthor trailers or force push. Publication on this branch is not a merge into `main` or a claim of complete Bun ownership.
+
+## Native worker parent port
+
+The `fakeParentPort` JavaScript stand-in is removed. Before evaluating a worker's entry point, Home creates a real native `MessagePort` endpoint. Its virtual peer belongs to the native Worker transport. Startup inbox migration and subsequent parent sends share a registry/inbox lock order, preserving FIFO order even before the worker is online. Synchronous receive reads the same pipe queue as asynchronous delivery, including falsy and `undefined` payloads. Transferring the endpoint uses the existing native transfer machinery and retains its original Worker peer.
+
+Outgoing port messages enter the existing parent-bound native inbox after normal structured-clone and transfer validation. The registry lifetime is bounded by the worker's create-time reference; shutdown unregisters and closes the virtual peer on the worker thread before its VM is destroyed. Resource destruction happens outside the registry lock. Close remains asynchronous and does not terminate other worker resources. The Web Worker global event surface still starts native delivery and receives the same deserialized value and transferred endpoints, without cloning transfers twice.
+
+`BunWorkerGlobalScope.cpp` and `JSMessagePort.cpp` are now compiled from Home sources with byte-identical external class headers. Message-listener references use the same native ref state as explicit `ref()`/`unref()`, so unref can release a listening parent port. Clearing `onmessage` releases its reference, while an `onmessageerror` handler does not acquire one. These changes also correct the corresponding transferred-MessagePort behavior. The EventEmitter adapter now forwards the close event to `.on('close')` listeners, as verified against Node 24.18.0.
+
+Verification for [#477](https://github.com/home-lang/home/issues/477):
+
+- Build and unchanged cached rebuild: **16/16 steps**. All **19 native runtime regression files** pass.
+- `tests/runtime/native-worker-parent-port.test.mjs`: **11 Home scenarios**, including synchronous/pending-close receive, reference transitions, repeated asynchronous close, continued timer work after close, self-transfer rejection, transfer to a descendant, and the Web Worker global surface. **10 shared scenarios pass two Node control runs**; the Web Worker extension is Home-only. Two further native runs with main-VM destruction pass.
+- The descendant test once again uses a persistent parent-port listener and real `parentPort.close()` for normal exit. It no longer needs the temporary one-shot isolation used before this fix.
+- **15 byte-identical upstream Node worker fixtures pass**, covering parent-port references, onmessage clearing, transfer/termination, SharedArrayBuffer, and WebAssembly module/thread transfer.
+- Unmodified guard behavior in the three native worker suites reports **15 pass, 3 debug/sanitizer skips, 0 fail / 529 assertions**. Separately, a temporary derivative enabled all three guarded stress bodies without altering their assertions: **13 pass, 0 fail / 525 assertions**, including concurrent channel creation and cross-thread message/microtask ordering. This is additional native stress evidence, not an ASAN or UBSan run. The temporary file was removed.
+- **12 generator/ABI/source-contract tests / 123 assertions** and **4 Zig build-helper tests** pass. Newly owned class headers participate in pre-generation ABI checks and cache inputs. Focused test/build-helper Pickier checks and Zig formatting pass; the builtin source retains its existing quote-style warning.
+
+The historical parent-port pending regression is now the active native suite above. General queued-task cancellation (#465), producer quiescence (#468), and snapshot request settlement (#471) are still separate work. This checkpoint does not establish full Bun ownership, whole-suite completion, or other-platform verification.

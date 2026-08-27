@@ -10,3 +10,18 @@ inline constexpr uint64_t PeerClosed = 1ull << 3;
 inline constexpr uint64_t CloseDispatched = 1ull << 4;
 
 } // namespace WebCore::MessagePortLifecycle
+
+namespace WebCore {
+class MessagePort;
+class MessagePortPipe;
+class MessageEvent;
+class ScriptExecutionContext;
+struct MessageWithMessagePorts;
+
+namespace WorkerParentPort {
+// Native worker transport hooks; neither function changes MessagePort's ABI.
+bool send(MessagePortPipe&, uint8_t, MessageWithMessagePorts&&);
+void forwardGlobalEvent(MessagePort&, ScriptExecutionContext&, MessageEvent&);
+void startForGlobalListener(ScriptExecutionContext&);
+}
+}

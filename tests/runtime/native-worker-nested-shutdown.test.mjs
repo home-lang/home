@@ -195,9 +195,8 @@ const monitoredLeafCode = `
     parentPort.postMessage({ type: 'child-close' });
     parentPort.close();
   });
-  // A one-shot listener lets the normal control exit without depending on
-  // parentPort.close(), whose separate lifecycle is tracked in Home #477.
-  parentPort.once('message', ({ port }) => {
+  // Explicit parentPort.close() below must release this persistent listener.
+  parentPort.on('message', ({ port }) => {
     Atomics.add(state, workerData.handlerIndex, 1);
     port.close();
     held.close();

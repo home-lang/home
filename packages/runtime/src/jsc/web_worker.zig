@@ -150,6 +150,8 @@ extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObje
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
 extern fn Home__Worker__isExitTask(*jsc.CppTask) bool;
 extern fn Home__Worker__performExitTask(*jsc.JSGlobalObject, *jsc.CppTask) void;
+extern fn Home__Worker__prepareParentPort(*anyopaque, *jsc.JSGlobalObject) void;
+extern fn Home__Worker__closeParentPort(*anyopaque) void;
 
 /// Nested exit-task publication is protected by the parent's child counter,
 /// unlike an arbitrary raw-global producer. The main-parent path still uses
@@ -680,6 +682,9 @@ fn spin(this: *WebWorker) void {
     }
 
     vm.preload = this.preloads;
+    // Install the actual MessagePort before user code can receive or transfer
+    // messages. Importing node:worker_threads later returns this same endpoint.
+    Home__Worker__prepareParentPort(this.cpp_worker, vm.global);
 
     // Resolve the entry point on the worker thread (the parent only stored the
     // raw specifier). The returned slice is BORROWED from storage that outlives
@@ -848,6 +853,7 @@ fn shutdown(this: *WebWorker) void {
     // native Worker-exit cleanup on its owning thread; never tick arbitrary JS.
     LiveWorkers.joinChildren(this);
     if (vm_to_deinit) |vm| drainChildExitTasks(vm);
+    Home__Worker__closeParentPort(cpp_worker);
 
     // ---- 3. JSC VM teardown ----------------------------------------------
     if (globalObject) |global| {

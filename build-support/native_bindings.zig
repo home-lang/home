@@ -12,6 +12,8 @@ var cached_napi_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
 var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_worker_object: ?std.Build.LazyPath = null;
+var cached_worker_scope_object: ?std.Build.LazyPath = null;
+var cached_js_message_port_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -67,6 +69,22 @@ pub fn workerObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     return object;
 }
 
+pub fn workerScopeObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_worker_scope_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-0.cpp", output.path(b, "HomeBunWorkerGlobalScope.cpp"));
+    cached_worker_scope_object = object;
+    return object;
+}
+
+pub fn jsMessagePortObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_js_message_port_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-2.cpp", output.path(b, "HomeJSMessagePort.cpp"));
+    cached_js_message_port_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -89,6 +107,10 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/ErrorCode.ts",
         "packages/runtime/upstream/src/jsc/bindings/js_classes.ts",
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessagePort.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessagePort.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePortPipe.cpp",
@@ -109,6 +131,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/GeneratedJS2Native.h",
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
+        "unified/UnifiedSource-src_jsc_bindings-0.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp",
@@ -122,6 +146,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "MessagePortPipe.cpp", "MessagePortPipe.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "Worker.cpp", "Worker.h" },
+        .{ "UnifiedSource-src_jsc_bindings-0.cpp", "BunWorkerGlobalScope.cpp", "BunWorkerGlobalScope.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSMessagePort.cpp", "JSMessagePort.h" },
     }) |entry| {
         const unified_path = b.fmt("{s}/unified/{s}", .{ build_root, entry[0] });
         const unified = std.Io.Dir.cwd().readFileAlloc(io, unified_path, b.allocator, .limited(1024 * 1024)) catch |err|

@@ -8,7 +8,7 @@ const nativeBuild = path.dirname(process.env.HOME_BUN_OBJ_ROOT || '/Users/chris/
 const available = existsSync(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
 const nativeTest = available ? test : test.skip
 const read = (file: string) => readFileSync(file, 'utf8')
-const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp']
+const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp']
 
 function createNativeFixture(temporary: string) {
   const codegen = path.join(temporary, 'codegen')
@@ -27,7 +27,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (basename === 'MessagePort.cpp' || basename === 'MessagePortPipe.cpp' || basename === 'Worker.cpp') {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp'].includes(basename)) {
         const header = basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -71,7 +71,7 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
-    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]]]) {
+    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => path.basename(relative) === basename
@@ -82,7 +82,7 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
       expect(includes.filter(include => include === basename)).toHaveLength(1)
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - 1)
-      const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', basename)
+      const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', basename === 'BunWorkerGlobalScope.cpp' ? '' : 'webcore', basename)
       expect(read(path.join(output, basename))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
     }
     const privateHeader = 'HomeMessagePortLifecycle.h'
@@ -122,9 +122,9 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
     writeFileSync(errorHeader, original)
     const wrapperHeader = path.join(codegen, 'GeneratedJS2Native.h')
     const wrappers = read(wrapperHeader)
-    const signature = 'globalObject, 1, "jsFunctionPostMessage"_s, jsFunctionPostMessage,'
+    const signature = 'return createNodeWorkerThreadsBinding(global);'
     expect(wrappers).toContain(signature)
-    writeFileSync(wrapperHeader, wrappers.replace(signature, 'globalObject, 2, "jsFunctionPostMessage"_s, jsFunctionPostMessage,'))
+    writeFileSync(wrapperHeader, wrappers.replace(signature, 'return missingNodeWorkerThreadsBinding(global);'))
     const wrapperOutput = path.join(temporary, 'wrapper-output')
     const mismatch = Bun.spawnSync([process.execPath, path.join(import.meta.dir, 'bundle-native-modules.ts'), temporary, wrapperOutput], {
       cwd: root, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15000,
@@ -143,7 +143,7 @@ nativeTest('rejects MessagePort and Worker class-header drift and invalid native
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
