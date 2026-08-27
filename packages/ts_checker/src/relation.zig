@@ -58,7 +58,7 @@ pub const Result = enum(u2) {
 /// Pack `(relation, source, target)` into a u64 for cache keys.
 /// Layout: `rel:8 | source:28 | target:28`.
 pub fn packKey(rel: Relation, src: TypeId, tgt: TypeId) u64 {
-    return (@as(u64, @intFromEnum(rel)) << 56) |
+    return (@as(u64, @backingInt(rel)) << 56) |
         (@as(u64, src) << 28) |
         @as(u64, tgt);
 }
@@ -151,6 +151,10 @@ pub const L1Cache = struct {
                 self.ring_head = (self.ring_head + 1) % self.cap;
                 self.ring_len -= 1;
             }
+            // FIFO churn otherwise fills the open-addressed table with
+            // tombstones, making misses probe the entire backing capacity.
+            // Rehash in place after the batch; no entry pointers escape here.
+            self.table.rehash(std.hash_map.AutoContext(u64){});
         }
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
@@ -214,6 +218,9 @@ pub const L2Cache = struct {
                 self.ring_head = (self.ring_head + 1) % self.cap;
                 self.ring_len -= 1;
             }
+            // Reclaim deletion tombstones while retaining the same entries
+            // and ring order. The existing lock also covers this rehash.
+            self.table.rehash(std.hash_map.AutoContext(u64){});
         }
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
@@ -3468,6 +3475,47 @@ test "L2Cache: insert + lookup under lock" {
     try l2.insert(42, .yes);
     try T.expectEqual(Result.yes, l2.lookup(42));
     try T.expectEqual(Result.miss, l2.lookup(43));
+}
+
+test "relation cache churn preserves FIFO results and clears deletion tombstones" {
+    inline for (.{ L1Cache, L2Cache }) |Cache| {
+        const cap = 8;
+        var cache = try Cache.initWithCapacity(T.allocator, cap);
+        defer cache.deinit();
+        try cache.table.ensureTotalCapacity(T.allocator, cap + 1);
+        var failing = std.testing.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+        {
+            cache.gpa = failing.allocator();
+            defer cache.gpa = T.allocator;
+            var first_live: u32 = 0;
+            for (0..512) |i| {
+                const key = packKey(.assignable, @intCast(i), @intCast(i + 1));
+                const evicts = cache.count() == cap;
+                try cache.insert(key, .pending);
+                if (evicts) {
+                    first_live += cap / 2;
+                    // Maintenance must reclaim deleted slots, not merely
+                    // bound the number of live entries in a fragmented map.
+                    for (cache.table.metadata.?[0..cache.table.capacity()]) |slot| {
+                        try T.expect(!slot.isTombstone());
+                    }
+                }
+                try T.expectEqual(Result.pending, cache.lookup(key));
+                const count = cache.count();
+                const head = cache.ring_head;
+                const result: Result = @fromBackingInt(@intCast(1 + i % 3));
+                try cache.insert(key, result);
+                try T.expectEqual(count, cache.count());
+                try T.expectEqual(head, cache.ring_head);
+                for (0..i + 1) |j| {
+                    const expected: Result = if (j < first_live) .miss else @fromBackingInt(@intCast(1 + j % 3));
+                    try T.expectEqual(expected, cache.lookup(packKey(.assignable, @intCast(j), @intCast(j + 1))));
+                }
+            }
+            // Once capacity is reserved, churn maintenance needs no allocation.
+            try T.expect(!failing.has_induced_failure);
+        }
+    }
 }
 
 test "TwoLevelCache: L1 hit avoids L2 entirely" {
