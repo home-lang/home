@@ -16,6 +16,12 @@ identical, deterministic TypeScript projects.
 
 Set `HOME_TSC=/absolute/path/to/home-tsc` to benchmark a different Home binary.
 Raw Hyperfine JSON and run metadata land under `results/<UTC timestamp>/`.
+The runner rejects installed TS 6 or TS 7 versions that differ from
+`corpus.toml` before creating timing results. Rerun `setup` after changing a pin.
+The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
+
+Run harness regression tests with
+`python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'`.
 
 ## Methodology
 

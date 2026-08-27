@@ -887,6 +887,19 @@ def version_output(command: list[str]) -> str:
     return (result.stdout or result.stderr).strip()
 
 
+def verified_compiler_versions(commands: dict[str, list[str]]) -> dict[str, str]:
+    versions = {name: version_output(command) for name, command in commands.items()}
+    pinned = manifest()["compilers"]
+    for name in ("tsc", "tsgo"):
+        expected = f"Version {pinned[name]['version']}"
+        if versions.get(name) != expected:
+            raise SystemExit(
+                f"{name} version mismatch: expected {expected!r}, got {versions.get(name)!r}; "
+                "run './bench/vs_tsgo/run.sh setup' before benchmarking"
+            )
+    return versions
+
+
 def validate(commands: dict[str, list[str]], workload: str) -> None:
     config = CORPUS / workload / "tsconfig.json"
     for name, command in commands.items():
@@ -974,6 +987,7 @@ def cmd_cold(runs: int, warmup: int) -> Path:
     if not CORPUS.is_dir():
         cmd_corpus()
     commands = compiler_commands()
+    versions = verified_compiler_versions(commands)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = RESULTS / stamp
     output.mkdir(parents=True)
@@ -985,7 +999,7 @@ def cmd_cold(runs: int, warmup: int) -> Path:
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
-        "compilers": {name: version_output(command) for name, command in commands.items()},
+        "compilers": versions,
     }
     write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
     for workload in manifest()["workloads"]:
