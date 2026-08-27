@@ -816,6 +816,10 @@ def cmd_corpus() -> None:
         CORPUS / "type_predicates",
         cfg["type_predicate_families"],
     )
+    generate_type_predicates(
+        CORPUS / "type_predicates_large",
+        cfg["type_predicate_large_families"],
+    )
     generate_null_safe_access(
         CORPUS / "null_safe_access",
         cfg["null_safe_access_families"],
@@ -896,16 +900,16 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
             raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
     if workload == "destructuring":
         validate_destructuring_negatives(commands)
-    elif workload == "type_predicates":
-        validate_type_predicate_negatives(commands)
+    elif workload in ("type_predicates", "type_predicates_large"):
+        validate_type_predicate_negatives(commands, workload)
 
 
-def validate_type_predicate_negatives(commands: dict[str, list[str]]) -> None:
+def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: str) -> None:
     # Both guards and assertion functions must narrow to the real object
     # shape, not any or the original union. These mutations are never timed.
     with tempfile.TemporaryDirectory(prefix="home-bench-predicates-") as temporary:
         project = Path(temporary) / "project"
-        shutil.copytree(CORPUS / "type_predicates", project)
+        shutil.copytree(CORPUS / workload, project)
         source_path = project / "src/type-predicates.ts"
         source = source_path.read_text(encoding="utf-8")
         anchors = ["  if (isReady0(value)) {\n", "  assertReady0(value);\n"]
@@ -927,7 +931,7 @@ def validate_type_predicate_negatives(commands: dict[str, list[str]]) -> None:
             details = result.stdout + result.stderr
             codes = sorted(re.findall(r"\berror TS(\d+):", details))
             if result.returncode == 0 or codes != ["2322"] * 2 + ["2339"] * 2:
-                raise SystemExit(f"{name} failed type-predicate negative controls:\n{details}")
+                raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
 
 
 def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:

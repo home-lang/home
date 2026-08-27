@@ -12,6 +12,7 @@ tsx_components = 256
 generic_calls = 256
 control_flow_functions = 256
 type_predicate_families = 256
+type_predicate_large_families = 2048
 null_safe_access_families = 256
 destructuring_families = 128
 overload_call_groups = 128
@@ -47,6 +48,9 @@ description = "One module with 256 exhaustive discriminated-union functions and 
 
 [workloads.type_predicates]
 description = "One module with 256 user-defined type-predicate families covering predicate signatures, assertion functions, call-driven narrowing, and typed consumption."
+
+[workloads.type_predicates_large]
+description = "The identical type-predicate generator at 2048 families, exposing scaling costs without changing feature coverage or compiler options."
 
 [workloads.null_safe_access]
 description = "One module with 256 nullable object families covering optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption."
