@@ -120880,12 +120880,17 @@ pub const Checker = struct {
 
     fn sourceHasDirectSelfConditionalAssignmentBeforeUse(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         const source = self.source orelse return false;
+        // A conditional RHS must contain '?'. These exact byte-absence
+        // gates avoid identifier searches without changing the source-based
+        // boundary or RHS checks below (including comments and strings).
+        if (self.sourceMarkerPosition("?") == null) return false;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const statement_end = std.mem.lastIndexOfScalar(u8, source[0..use_start], ';') orelse return false;
         const prior_end = std.mem.lastIndexOfScalar(u8, source[0..statement_end], ';');
         const statement_start = if (prior_end) |end| end + 1 else 0;
         const statement = std.mem.trim(u8, source[statement_start..statement_end], " \t\r\n");
+        if (std.mem.indexOfScalar(u8, statement, '?') == null) return false;
         const name_text = self.string_interner.get(name);
         var search_start: usize = 0;
         var cursor: usize = 0;
@@ -201533,6 +201538,103 @@ test "checker: strict false directive suppresses conditional var TS2454" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
     }
+}
+
+test "checker: conditional assignment filters match original source scans" {
+    const Reference = struct {
+        fn scan(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+            const source = self.source orelse return false;
+            const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
+            const use_start = @min(raw_use_start, source.len);
+            const statement_end = std.mem.lastIndexOfScalar(u8, source[0..use_start], ';') orelse return false;
+            const prior_end = std.mem.lastIndexOfScalar(u8, source[0..statement_end], ';');
+            const statement_start = if (prior_end) |end| end + 1 else 0;
+            const statement = std.mem.trim(u8, source[statement_start..statement_end], " \t\r\n");
+            const name_text = self.string_interner.get(name);
+            var search_start: usize = 0;
+            var cursor: usize = 0;
+            while (std.mem.indexOfPos(u8, statement, search_start, name_text)) |name_start| {
+                search_start = name_start + name_text.len;
+                if (name_start > 0 and (std.ascii.isAlphanumeric(statement[name_start - 1]) or statement[name_start - 1] == '_' or statement[name_start - 1] == '$')) continue;
+                const name_end = name_start + name_text.len;
+                if (name_end < statement.len and (std.ascii.isAlphanumeric(statement[name_end]) or statement[name_end] == '_' or statement[name_end] == '$')) continue;
+                cursor = name_end;
+                while (cursor < statement.len and std.ascii.isWhitespace(statement[cursor])) cursor += 1;
+                if (cursor >= statement.len or statement[cursor] != '=') continue;
+                if (cursor + 1 < statement.len and (statement[cursor + 1] == '=' or statement[cursor + 1] == '>')) continue;
+                break;
+            } else return false;
+            const rhs = statement[cursor + 1 ..];
+            return std.mem.indexOfScalar(u8, rhs, '?') != null and
+                std.mem.indexOfScalar(u8, rhs, ':') != null and
+                std.mem.indexOf(u8, rhs, name_text) != null;
+        }
+
+        fn compare(s: *TestSetup, node: NodeId, source: []const u8) !void {
+            for ([_]bool{ true, false }) |cached_markers| {
+                s.checker.setSource(source);
+                if (!cached_markers) s.checker.source_markers = null;
+                for (0..source.len + 3) |pos| {
+                    s.hir.spans.items[node] = .{ .start = @intCast(pos), .end = @intCast(pos) };
+                    for ([_][]const u8{ "x", "xx", "y", "_x", "$x", "flag", "use", "absent" }) |text| {
+                        const name = try s.sint.intern(text);
+                        try T.expectEqual(
+                            scan(&s.checker, node, name),
+                            s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name),
+                        );
+                    }
+                }
+            }
+        }
+    };
+    const s = try newSetup("x;");
+    defer destroySetup(s);
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const name = try s.sint.intern("x");
+    const node = try builder.addIdentifier(.{ .start = 0, .end = 0 }, name);
+    for ([_][]const u8{
+        "",                       "x",                            ";;;",                                 "x = flag ? x : 0; use",               "let x; x = 1; use",
+        "xx = flag ? x : 0; use", "_x = flag ? x : 0; use",       "$x = flag ? x : 0; use",              "x == flag ? x : 0; use",              "x => flag ? x : 0; use",
+        "x === x ? x : 0; use",   "x = 1, x = flag ? x : 0; use", "x = 1, y = flag ? x : 0; use",        "if (flag) { x = flag ? x : 0; use }", "x = flag ? x : 0; y = 1; use",
+        "x = '? : x'; use",       "/* ? : */ x = 1; use",         "x = 1 /* ? : x */; use",              "x = flag ? y : 0; use",               "x = flag ? x; use",
+        "x = flag : x; use",      "x\t=\r\nflag ? x : 0;\r\nuse", "x = flag ? x : 0; use; later = '?';", "x = '\x00\xff? : x'; use",            "x = '?; : x'; use",
+    }) |source| try Reference.compare(s, node, source);
+    var seed: u32 = 0xdecafbad;
+    var buffer: [128]u8 = undefined;
+    const alphabet = "xx_y$=?>:; '\n\r\t\x00\xff";
+    for (0..128) |round| {
+        const len = round % buffer.len;
+        for (buffer[0..len]) |*byte| {
+            seed = seed *% 1664525 +% 1013904223;
+            byte.* = alphabet[seed % alphabet.len];
+        }
+        try Reference.compare(s, node, buffer[0..len]);
+    }
+}
+
+test "checker: conditional assignment filters retain positives and source replacement" {
+    const s = try newSetup("x;");
+    defer destroySetup(s);
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const name = try s.sint.intern("x");
+    const node = try builder.addIdentifier(.{ .start = 0, .end = 0 }, name);
+    const Case = struct { source: []const u8, expected: bool };
+    for ([_]Case{
+        .{ .source = "x = flag ? x : 0; use", .expected = true },
+        .{ .source = "x = 1; use", .expected = false },
+        .{ .source = "x = '? : x'; use", .expected = true },
+        .{ .source = "/* ? : */ x = 1; use", .expected = false },
+        .{ .source = "x = flag ? x : 0; y = 1; use", .expected = false },
+        .{ .source = "x = flag ? x : 0; use", .expected = true },
+    }) |case| {
+        s.checker.setSource(case.source);
+        s.hir.spans.items[node] = .{ .start = @intCast(case.source.len), .end = @intCast(case.source.len) };
+        try T.expectEqual(case.expected, s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name));
+    }
+    s.checker.source = null;
+    try T.expect(!s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name));
 }
 
 test "checker: source fact cache resets when source changes" {
