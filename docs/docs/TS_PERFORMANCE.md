@@ -10,37 +10,37 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-27 at commit `dad87a665` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `d33019821` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T193257Z`. Home records a lower
-mean than the faster competitor on 18 of 18 workloads, but the large predicate
-case is a near tie: its 0.2% lower mean is small relative to the observed
-variation and does not establish a convincing lead. The original smaller
-workload has a 1.60× mean lead. The round-robin compiler order and complete,
-unfiltered 30-sample result are retained. Several workloads have substantial
-variance; these local results do not establish universal superiority.
+The local raw-result identifier is `20260827T195539Z`. Home records a lower
+mean than the faster competitor on all 18 workloads. Large predicates have a
+1.09× mean lead, independently confirmed at 1.10× in the additional 30-round
+run `20260827T200026Z`. The original smaller workload has a 1.69× mean lead.
+The round-robin compiler order and complete, unfiltered samples from both runs
+are retained. Several workloads have substantial variance; these local results
+do not establish universal superiority.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 63.9 ± 10.2 ms | 42.8 ± 21.7 ms | **3.2 ± 0.6 ms** | **13.46× faster** |
-| `many_files` | 199.1 ± 7.1 ms | 50.9 ± 2.5 ms | **30.8 ± 3.0 ms** | **1.65× faster** |
-| `deep_types` | 121.9 ± 2.1 ms | 49.6 ± 1.1 ms | **12.7 ± 0.3 ms** | **3.91× faster** |
-| `import_graph` | 123.3 ± 1.0 ms | 44.0 ± 3.1 ms | **25.8 ± 5.5 ms** | **1.71× faster** |
-| `reexport_graph` | 100.2 ± 29.4 ms | 43.7 ± 14.1 ms | **31.2 ± 9.9 ms** | **1.40× faster** |
-| `tsx_components` | 156.1 ± 2.9 ms | 45.7 ± 1.3 ms | **21.3 ± 0.5 ms** | **2.14× faster** |
-| `generic_calls` | 169.3 ± 7.8 ms | 53.0 ± 7.2 ms | **22.0 ± 2.9 ms** | **2.41× faster** |
-| `control_flow` | 182.8 ± 18.1 ms | 55.3 ± 1.0 ms | **32.5 ± 0.6 ms** | **1.70× faster** |
-| `type_predicates` | 225.1 ± 7.8 ms | 68.4 ± 2.0 ms | **42.8 ± 1.7 ms** | **1.60× faster** |
-| `type_predicates_large` | 956.6 ± 37.9 ms | 326.6 ± 8.3 ms | 326.0 ± 10.0 ms | 1.00× (near tie) |
-| `null_safe_access` | 180.7 ± 1.7 ms | 54.9 ± 1.0 ms | **38.7 ± 0.5 ms** | **1.42× faster** |
-| `destructuring` | 132.1 ± 1.5 ms | 44.8 ± 0.9 ms | **33.9 ± 0.5 ms** | **1.32× faster** |
-| `overload_resolution` | 204.3 ± 43.8 ms | 73.6 ± 26.9 ms | **29.8 ± 3.2 ms** | **2.47× faster** |
-| `class_hierarchy` | 173.9 ± 2.3 ms | 52.6 ± 14.6 ms | **28.0 ± 1.3 ms** | **1.88× faster** |
-| `structural_objects` | 177.0 ± 2.4 ms | 56.4 ± 1.7 ms | **31.1 ± 0.5 ms** | **1.82× faster** |
-| `interface_composition` | 190.6 ± 3.2 ms | 60.4 ± 1.3 ms | **42.0 ± 0.6 ms** | **1.44× faster** |
-| `variadic_tuples` | 233.8 ± 2.6 ms | 73.1 ± 1.3 ms | **41.9 ± 0.7 ms** | **1.75× faster** |
-| `checkjs_jsdoc` | 194.2 ± 2.5 ms | 52.0 ± 1.4 ms | **36.2 ± 0.8 ms** | **1.44× faster** |
+| `startup` | 66.7 ± 2.5 ms | 42.0 ± 9.6 ms | **3.6 ± 0.4 ms** | **11.73× faster** |
+| `many_files` | 215.4 ± 3.3 ms | 56.7 ± 7.5 ms | **32.4 ± 6.3 ms** | **1.75× faster** |
+| `deep_types` | 146.0 ± 8.6 ms | 58.3 ± 3.7 ms | **14.1 ± 0.8 ms** | **4.12× faster** |
+| `import_graph` | 139.0 ± 4.4 ms | 49.8 ± 4.1 ms | **29.3 ± 2.0 ms** | **1.70× faster** |
+| `reexport_graph` | 111.0 ± 46.4 ms | 47.0 ± 19.2 ms | **31.1 ± 6.1 ms** | **1.51× faster** |
+| `tsx_components` | 178.0 ± 25.2 ms | 50.2 ± 1.6 ms | **23.3 ± 4.1 ms** | **2.16× faster** |
+| `generic_calls` | 188.4 ± 12.9 ms | 57.3 ± 3.9 ms | **23.2 ± 2.0 ms** | **2.47× faster** |
+| `control_flow` | 190.2 ± 4.8 ms | 59.5 ± 2.2 ms | **33.6 ± 5.4 ms** | **1.77× faster** |
+| `type_predicates` | 237.8 ± 12.7 ms | 70.9 ± 2.0 ms | **41.9 ± 0.8 ms** | **1.69× faster** |
+| `type_predicates_large` | 1010.4 ± 25.3 ms | 351.4 ± 15.2 ms | **323.8 ± 10.2 ms** | **1.09× faster** |
+| `null_safe_access` | 191.9 ± 4.1 ms | 57.2 ± 1.1 ms | **38.7 ± 0.5 ms** | **1.48× faster** |
+| `destructuring` | 138.4 ± 1.6 ms | 47.3 ± 1.0 ms | **34.4 ± 0.5 ms** | **1.37× faster** |
+| `overload_resolution` | 203.1 ± 3.4 ms | 64.6 ± 1.4 ms | **29.1 ± 0.6 ms** | **2.22× faster** |
+| `class_hierarchy` | 186.1 ± 7.9 ms | 53.4 ± 7.8 ms | **28.1 ± 0.4 ms** | **1.90× faster** |
+| `structural_objects` | 185.8 ± 2.9 ms | 58.1 ± 1.6 ms | **30.3 ± 0.6 ms** | **1.92× faster** |
+| `interface_composition` | 214.9 ± 41.7 ms | 64.7 ± 4.3 ms | **45.6 ± 6.0 ms** | **1.42× faster** |
+| `variadic_tuples` | 252.9 ± 6.3 ms | 77.7 ± 2.5 ms | **42.4 ± 1.0 ms** | **1.83× faster** |
+| `checkjs_jsdoc` | 211.5 ± 27.6 ms | 54.3 ± 1.2 ms | **36.9 ± 0.9 ms** | **1.47× faster** |
 
 The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
 Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
@@ -54,7 +54,8 @@ filtering, local value-declaration indexing, registered-TypeId filtering,
 relation-cache tombstone maintenance, named-shape candidate indexing, static
 builtin-name lookup, shared exact source-marker searches, candidate directive-line
 iteration, shared builtin Function member construction, exact conditional-assignment
-absence filters, and the large predicate scaling case; no samples were discarded.
+absence filters, shared program collection markers, and the large predicate
+scaling case; no samples were discarded.
 The first 18-workload snapshot
 `20260827T165255Z` recorded Home at 855.8 ± 42.1 ms against native TypeScript 7
 at 382.3 ± 25.1 ms on large predicates (2.24× slower); it remains part of the
@@ -65,8 +66,10 @@ record. Snapshot `20260827T172600Z` recorded 592.0 ± 14.6 versus
 (1.19× slower). Snapshot `20260827T183613Z` recorded 491.0 ± 54.1 versus
 430.2 ± 40.9 ms (1.14× slower). Snapshot `20260827T185149Z` recorded
 399.7 ± 25.6 versus 338.0 ± 16.1 ms (1.18× slower). Snapshot `20260827T191750Z`
-recorded 379.3 ± 15.8 versus 356.0 ± 20.1 ms (1.07× slower). The current large
-row is 326.0 ± 10.0 versus 326.6 ± 8.3 ms (near tie). Unrelated concurrent
+recorded 379.3 ± 15.8 versus 356.0 ± 20.1 ms (1.07× slower). Snapshot
+`20260827T193257Z` recorded 326.0 ± 10.0 versus 326.6 ± 8.3 ms (near tie).
+The current large row is 323.8 ± 10.2 versus 351.4 ± 15.2 ms (1.09× faster).
+Unrelated concurrent
 workstation jobs were observed during this measurement session; several rows
 are noisy, and no samples were filtered or replaced. The different sessions
 do not by themselves isolate the effect of each optimization.
@@ -158,6 +161,17 @@ The harness records compiler versions, host metadata, timing configuration,
 and raw per-round Hyperfine JSON under
 `bench/vs_tsgo/results/<UTC timestamp>/`. Results are ignored by Git because
 they are machine-specific; the reviewed snapshot above is the durable record.
+
+An independent confirmation of a selected workload uses the same validation
+and interleaved timing rules:
+
+```sh
+./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3 --workload type_predicates_large
+```
+
+The selection is recorded in metadata. Repeat `--workload` to select several
+cases; omitting it runs the full suite. Targeted runs supplement the full
+report, never replace it or justify discarding an earlier result.
 
 ## Improvements behind this result
 
@@ -891,3 +905,78 @@ Next work should share exact program source facts while auditing source
 replacement, redirects, and declaration visibility. The broader #416 goal,
 the #457 narrow margin, #467 semantic discrepancy, and #464 unvalidated
 container harness all remain open.
+
+Commit `d33019821` shares exact program-source marker searches across 19
+existing collection prechecks. Nine byte markers cover namespace/global,
+ambient interface, class, augmentation, and CommonJS collection. The existing
+matcher implementation is reused; collection parsers, identifier rules, and
+declaration visibility are unchanged. Matches inside comments, strings, and
+larger identifiers retain the original byte-search meaning.
+
+Each serial, streaming, or parallel compilation entry builds a transient
+snapshot for non-redirected files and clears it on every exit. Redirect sources
+are excluded before reading their bytes. Source replacement invalidates the
+snapshot, and calls outside a collection pass retain the original searches.
+Snapshot construction adds no allocation path or retained source ownership.
+
+Four new regressions compare exact first positions on generated bytes,
+nonempty metadata from all six affected collection categories with and without
+snapshots, source replacement and redirect exclusion, and successful/error
+cleanup in all three compilation entry points. All 99 program tests,
+4,221 checker tests, 173 driver tests, ten harness/report tests, and the final
+release build pass. All 18 shared projects and 13 negative controls pass per
+compiler, with frozen predicate hashes unchanged.
+
+Alternating preserved binaries after three warmups measured small predicates
+at 46.73 ± 6.07 ms before and 43.23 ± 0.75 ms after (30 samples each),
+with medians of 45.18 and 43.27 ms. Large predicates measured
+355.52 ± 21.14 versus 332.16 ± 7.11 ms (10 each), with medians of
+348.05 and 330.08 ms. Many files measured 32.21 ± 1.53 versus
+30.88 ± 1.35 ms (30 each). Every observation is retained, including baseline
+maxima of 77.06 ms on small predicates and 413.82 ms on large predicates.
+The lower means and medians favor the change, but concurrent workstation
+activity and baseline outliers limit the inference from these paired samples.
+
+The lifetime audit separately identified pre-existing source-update risks,
+tracked in [issue #472](https://github.com/home-lang/home/issues/472): failure
+after removing the old source-map entry can leave inconsistent state, and
+canonical source replacement does not refresh borrowed redirect slices.
+This is a source-level finding awaiting dedicated failure/recovery tests;
+the transient snapshot optimization does not claim to fix those semantics.
+
+The full snapshot `20260827T195539Z` records 18/18 lower Home means across
+30 interleaved rounds after three warmups. Large predicates measure
+323.8 ± 10.2 ms for Home, 351.4 ± 15.2 ms for native TypeScript 7.0.2,
+and 1010.4 ± 25.3 ms for JavaScript TypeScript 6.0.3: a 1.09× Home mean lead.
+Small predicates measure 41.9 ± 0.8 versus 70.9 ± 2.0 ms, a 1.69× lead.
+
+The independent large-predicate confirmation was declared before inspecting
+the full-run results. Snapshot `20260827T200026Z` retains another 30 rounds
+after three warmups: Home 327.1 ± 10.4 ms, native TS 7 359.7 ± 14.2 ms,
+and TS 6 1026.1 ± 37.1 ms, a 1.10× Home mean lead. Home was faster than
+native TS 7 in 29/30 paired large-case rounds of the full run and 30/30 in
+the confirmation. The full-run table above is not replaced or averaged with
+the confirmation. Both runs retain every observation, including their
+outliers and variability.
+
+Commit `d8e32bd9d` adds reproducible workload selection for these confirmations.
+Six regressions cover the unchanged full-suite default, requested order,
+empty/unknown/duplicate rejection, and failure before creating result files.
+All 16 harness/report tests pass. Selection does not alter project inputs,
+negative controls, compiler flags, timing, or sample aggregation.
+
+All 1,710 timed samples succeeded. The 540 full-suite and 30 confirmation
+rounds, exact versions, balanced ordering, selected-workload metadata,
+published tables, frozen predicate hashes, and preserved release binary were
+verified. The repeated local lead addresses the frozen scaling case tracked
+in [issue #457](https://github.com/home-lang/home/issues/457); it does not prove
+performance on other projects or machines. The earlier losses and near tie
+remain in this history.
+
+A separate post-run 8,192-family diagnostic profile still shows repeated
+checker/driver setup and remaining ambient-interface collection searches.
+These counts guide further work and are not timing claims. The broader #416
+goal remains open: next coverage is dedicated async/await type propagation
+under [issue #473](https://github.com/home-lang/home/issues/473), followed by
+validated real-world projects and cross-platform measurements. Semantic
+issues #467 and #472 and the unvalidated container path #464 remain open.

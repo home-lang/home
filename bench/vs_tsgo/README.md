@@ -23,6 +23,13 @@ The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
 Run harness regression tests with
 `python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'`.
 
+For an additional targeted confirmation, use
+`./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3 --workload type_predicates_large`.
+Repeat `--workload` for multiple cases; omitting it still runs the full suite.
+Selection is recorded in metadata, and unknown or duplicate names are rejected
+before creating results. Validation and timing rules are unchanged. A targeted
+run supplements the full-suite report; retain and report both results.
+
 ## Methodology
 
 - Every compiler receives `--noEmit -p <same tsconfig>`; all other benchmark
