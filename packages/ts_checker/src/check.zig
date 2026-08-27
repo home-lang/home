@@ -4743,6 +4743,12 @@ pub const Checker = struct {
     source_function_spans: std.ArrayListUnmanaged(SourceFunctionSpan) = .empty,
     source_function_spans_indexed: bool = false,
     source_function_spans_valid: bool = false,
+    /// First function binding by name in each immutable statement container.
+    /// Scope walks and binder precedence remain with the calling resolver.
+    function_decls_by_container: std.AutoHashMapUnmanaged(
+        NodeId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) = .empty,
     /// Named `@typedef` and `@callback` blocks in a physical JS source.
     /// JSDoc lowering probes several declaration categories per reference;
     /// indexing once avoids repeated whole-source negative scans.
@@ -5205,6 +5211,9 @@ pub const Checker = struct {
         self.source_function_spans.clearRetainingCapacity();
         self.source_function_spans_indexed = false;
         self.source_function_spans_valid = false;
+        var function_decls_it = self.function_decls_by_container.valueIterator();
+        while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
+        self.function_decls_by_container.clearRetainingCapacity();
         self.jsdoc_named_declarations.clearRetainingCapacity();
         self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
         self.jsdoc_named_declarations_built = false;
@@ -5721,6 +5730,9 @@ pub const Checker = struct {
         self.recovered_parameter_use_spans.deinit(self.gpa);
         self.source_function_containing_pos_cache.deinit(self.gpa);
         self.source_function_spans.deinit(self.gpa);
+        var function_decls_it = self.function_decls_by_container.valueIterator();
+        while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
+        self.function_decls_by_container.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
         self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
         self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
@@ -93969,7 +93981,7 @@ pub const Checker = struct {
         if (anchor == hir_mod.none_node_id) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const fn_node = self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, root), name) orelse return null;
+        const fn_node = self.findFunctionDeclInContainer(root, name) orelse return null;
         const existing = self.hir.typeOf(fn_node);
         if (existing != types.Primitive.none and !self.typeIsAnyLike(existing)) return existing;
         const sig = try self.checkFnSignatureOnly(fn_node);
@@ -169950,7 +169962,7 @@ pub const Checker = struct {
         var scope = anchor;
         while (scope != hir_mod.none_node_id) : (scope = self.hir.parentOf(scope)) {
             if (self.hir.kindOf(scope) != .block_stmt) continue;
-            if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, scope), name)) |fn_node| return fn_node;
+            if (self.findFunctionDeclInContainer(scope, name)) |fn_node| return fn_node;
         }
         if (self.hir.kindOf(anchor) == .identifier) return self.findSiblingFunctionDecl(anchor);
         return null;
@@ -171131,7 +171143,7 @@ pub const Checker = struct {
                 }
             }
             if (k == .namespace_decl) {
-                return self.findFunctionDeclInStatements(hir_mod.namespaceBody(self.hir, cur), id.name);
+                return self.findFunctionDeclInContainer(cur, id.name);
             }
             if (k == .block_stmt) {
                 if (cur == root) {
@@ -171150,7 +171162,7 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, cur), id.name)) |fn_node| return fn_node;
+                if (self.findFunctionDeclInContainer(cur, id.name)) |fn_node| return fn_node;
             }
         }
         return null;
@@ -171160,6 +171172,41 @@ pub const Checker = struct {
         const fn_node = self.findSiblingFunctionDecl(callee_node) orelse return null;
         const sig = self.hir.typeOf(fn_node);
         return if (self.interner.isSignature(sig)) sig else null;
+    }
+
+    fn findFunctionDeclInContainer(self: *Checker, container: NodeId, name: hir_mod.StringId) ?NodeId {
+        const stmts = self.containerStatements(container) orelse return null;
+        // Empty and singleton lists already have constant lookup cost.
+        if (stmts.len <= 1) return self.findFunctionDeclInStatements(stmts, name);
+        if (self.function_decls_by_container.getPtr(container)) |entries| return entries.get(name);
+        self.indexFunctionDeclsInContainer(container, stmts) catch
+            return self.findFunctionDeclInStatements(stmts, name);
+        return self.function_decls_by_container.getPtr(container).?.get(name);
+    }
+
+    fn indexFunctionDeclsInContainer(self: *Checker, container: NodeId, stmts: []const NodeId) !void {
+        var entries: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        errdefer entries.deinit(self.gpa);
+        for (stmts) |stmt| {
+            const declaration = self.unwrapExportDecl(stmt);
+            const fn_node = switch (self.hir.kindOf(declaration)) {
+                .fn_decl => declaration,
+                .var_decl, .let_decl, .const_decl => blk: {
+                    const initializer = hir_mod.varDeclOf(self.hir, declaration).init;
+                    if (initializer == hir_mod.none_node_id) continue;
+                    const kind = self.hir.kindOf(initializer);
+                    if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+                    break :blk initializer;
+                },
+                else => continue,
+            };
+            const name = self.declarationName(declaration) orelse continue;
+            const entry = try entries.getOrPut(self.gpa, name);
+            if (!entry.found_existing) entry.value_ptr.* = fn_node;
+        }
+        // Publish only a complete index. On allocation failure the caller can
+        // still use the original scanner without observing partial entries.
+        try self.function_decls_by_container.put(self.gpa, container, entries);
     }
 
     fn findFunctionDeclInStatements(self: *Checker, stmts: []const NodeId, name: hir_mod.StringId) ?NodeId {
@@ -201373,6 +201420,64 @@ test "checker: indexed source function containment matches the full scan" {
     try T.expect(!s.checker.source_function_spans_valid);
     try T.expectEqual(@as(usize, 0), s.checker.source_function_spans.items.len);
     try T.expectEqual(@as(u32, 0), s.checker.source_function_containing_pos_cache.count());
+}
+
+test "checker: function declaration index matches statement scanning" {
+    const s = try newSetup(
+        \\export function repeated(value: number): number;
+        \\export function repeated(value: number) { return value; }
+        \\const numberOnly = 1;
+        \\var expression = function Inner() { return 1; };
+        \\export const arrow = () => 2;
+        \\const { destructured } = { destructured: () => 3 };
+        \\export { numberOnly };
+        \\namespace N {
+        \\  export function repeated() { return 4; }
+        \\  const arrow = () => 5;
+        \\  const numberOnly = 6;
+        \\}
+        \\function outer(repeated: () => number) {
+        \\  let expression = function () { return 7; };
+        \\  function arrow() { return 8; }
+        \\  return expression();
+        \\}
+    );
+    defer destroySetup(s);
+    const names = [_][]const u8{ "repeated", "numberOnly", "expression", "Inner", "arrow", "destructured", "outer", "missing" };
+    var container: NodeId = 1;
+    while (container < s.hir.nodeCount()) : (container += 1) {
+        const statements = s.checker.containerStatements(container) orelse continue;
+        for (names) |text| {
+            const name = try s.sint.intern(text);
+            const expected = s.checker.findFunctionDeclInStatements(statements, name);
+            try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(container, name));
+            try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(container, name));
+        }
+    }
+    try T.expect(s.checker.function_decls_by_container.count() > 0);
+    s.checker.setSource("const next = 1;");
+    try T.expectEqual(@as(u32, 0), s.checker.function_decls_by_container.count());
+}
+
+test "checker: function declaration index retains scanner on allocation failure" {
+    for (0..2) |fail_index| {
+        const s = try newSetup("function first() {} const second = () => 1;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("second");
+        const expected = s.checker.findFunctionDeclInStatements(hir_mod.blockStmts(&s.hir, s.root), name);
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const actual = blk: {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            break :blk s.checker.findFunctionDeclInContainer(s.root, name);
+        };
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(expected, actual);
+        try T.expectEqual(@as(u32, 0), s.checker.function_decls_by_container.count());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(s.root, name));
+    }
 }
 
 test "checker: named shape misses expire on registration and rebinding" {
