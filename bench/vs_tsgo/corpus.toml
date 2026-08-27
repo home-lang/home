@@ -14,6 +14,7 @@ control_flow_functions = 256
 overload_call_groups = 128
 class_hierarchy_families = 128
 structural_object_families = 128
+interface_composition_families = 128
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -47,6 +48,9 @@ description = "One module with 128 generic class families covering inheritance, 
 
 [workloads.structural_objects]
 description = "One module with 128 plain-object families covering nested structural compatibility, tuples, intersections, and generic function properties."
+
+[workloads.interface_composition]
+description = "One module with 128 generic interface families covering multi-base inheritance, declaration merging, namespace merging, and structural consumption."
 
 [compilers.tsc]
 version = "6.0.3"

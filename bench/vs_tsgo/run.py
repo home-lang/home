@@ -491,6 +491,55 @@ def generate_structural_objects(directory: Path, families: int) -> None:
     write(directory / "src/structural-objects.ts", "".join(blocks))
 
 
+def generate_interface_composition(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Identity{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "}\n\n"
+            f"interface Payload{index}<T> {{\n"
+            "  readonly payload: T;\n"
+            "}\n\n"
+            f"interface Composite{index}<T, N extends number> extends Identity{index}<N>, Payload{index}<T> {{\n"
+            "  readonly label: string;\n"
+            "}\n\n"
+            f"interface Composite{index}<T, N extends number> {{\n"
+            "  readonly meta: { readonly active: boolean; readonly tags: readonly [string, number] };\n"
+            "  summarize(prefix: string): string;\n"
+            "}\n\n"
+            f"namespace Composite{index} {{\n"
+            "  export interface Snapshot<N extends number> {\n"
+            "    readonly id: N;\n"
+            "    readonly summary: string;\n"
+            "  }\n"
+            "  export function snapshot<N extends number>(\n"
+            "    value: { readonly id: N; summarize(prefix: string): string },\n"
+            "  ): Snapshot<N> {\n"
+            '    return { id: value.id, summary: value.summarize("merged") };\n'
+            "  }\n"
+            "}\n\n"
+            f"const composite{index}: Composite{index}<{{ readonly value: number; readonly name: string }}, {index}> = {{\n"
+            f"  id: {index},\n"
+            f'  payload: {{ value: {index}, name: "item-{index}" }},\n'
+            f'  label: "composite-{index}",\n'
+            f'  meta: {{ active: {active}, tags: ["tag-{index}", {index}] }},\n'
+            "  summarize(prefix: string): string { return `${prefix}:${this.label}`; },\n"
+            "};\n\n"
+            f"const snapshot{index}: Composite{index}.Snapshot<{index}> = Composite{index}.snapshot(composite{index});\n"
+            f"function consumeComposite{index}(value: Composite{index}<{{ readonly value: number; readonly name: string }}, {index}>): readonly [{index}, string, number, boolean, string] {{\n"
+            "  return [value.id, value.label, value.payload.value, value.meta.active, value.summarize(\"consume\")];\n"
+            "}\n"
+            f"export const interfaceResult{index}: readonly [{index}, string, number, boolean, string, string] = [\n"
+            f"  ...consumeComposite{index}(composite{index}), snapshot{index}.summary,\n"
+            "];\n\n"
+        )
+    write(directory / "src/interface-composition.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -509,6 +558,10 @@ def cmd_corpus() -> None:
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
     generate_structural_objects(CORPUS / "structural_objects", cfg["structural_object_families"])
+    generate_interface_composition(
+        CORPUS / "interface_composition",
+        cfg["interface_composition_families"],
+    )
     print(f"Generated deterministic corpus in {CORPUS}")
 
 

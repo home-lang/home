@@ -47,6 +47,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `overload_resolution` | 128 groups × 8 calls | Overload candidate selection, generic literal inference, and contextual argument typing |
 | `class_hierarchy` | 128 generic class families | Inheritance, overrides, constructors, instance members, and structural interface checking |
 | `structural_objects` | 128 source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, and excess source members |
+| `interface_composition` | 128 merged interface families | Multi-base generic inheritance, repeated interface declarations, namespace/type merging, inherited member aggregation, and structural consumption |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
 They do not stand in for application-scale measurements; pinned real-world
