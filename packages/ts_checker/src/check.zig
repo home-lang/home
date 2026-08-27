@@ -4024,6 +4024,9 @@ pub const Checker = struct {
     /// validated against `type_names` before use so name rebinding cannot
     /// leave a stale diagnostic identity.
     named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
+    /// TypeIds already confirmed absent from `type_names`. Negative caching
+    /// avoids rescanning every registered name for anonymous structural types.
+    unnamed_type_ids: std.AutoHashMapUnmanaged(TypeId, void),
     /// Most-recent `interface_decl` node that registered a type under
     /// each name. Lets the interface-merge logic in
     /// `checkInterfaceDecl` confirm the previous declaration shares
@@ -4723,6 +4726,8 @@ pub const Checker = struct {
     source_may_have_computed_prototype_assignment: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_same_name_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     visible_namespace_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_namespace_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     containers_with_dotted_namespace_decls: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
@@ -4969,6 +4974,7 @@ pub const Checker = struct {
             .class_static_private_set_only_accessors = .empty,
             .type_names = .empty,
             .named_type_by_id = .empty,
+            .unnamed_type_ids = .empty,
             .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .generic_interfaces_by_decl = .empty,
@@ -5128,9 +5134,12 @@ pub const Checker = struct {
             std.mem.indexOfScalar(u8, source, '[') != null and
             std.mem.indexOfScalar(u8, source, '=') != null and
             std.mem.indexOfScalar(u8, source, '{') != null;
+        self.may_have_expando_property_assignments = null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
+        self.visible_same_name_value_decls.clearRetainingCapacity();
+        self.indexed_same_name_value_containers.clearRetainingCapacity();
         self.visible_namespace_decls.clearRetainingCapacity();
         self.indexed_namespace_containers.clearRetainingCapacity();
         self.containers_with_dotted_namespace_decls.clearRetainingCapacity();
@@ -5440,6 +5449,7 @@ pub const Checker = struct {
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         self.named_type_by_id.deinit(self.gpa);
+        self.unnamed_type_ids.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -5569,6 +5579,8 @@ pub const Checker = struct {
         self.virtual_section_start_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
+        self.visible_same_name_value_decls.deinit(self.gpa);
+        self.indexed_same_name_value_containers.deinit(self.gpa);
         self.visible_namespace_decls.deinit(self.gpa);
         self.indexed_namespace_containers.deinit(self.gpa);
         self.containers_with_dotted_namespace_decls.deinit(self.gpa);
@@ -21086,6 +21098,7 @@ pub const Checker = struct {
         if (base_t < types.Primitive.first_dynamic or base_t >= self.interner.pool.typeCount()) return null;
         const base_flags = self.interner.pool.flagsOf(base_t);
         if (!base_flags.is_signature and !(base_flags.is_object_type and self.objectHasCallOrConstructSignature(base_t))) return null;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return null;
         var cur = ref_node;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const stmts: []const NodeId = switch (self.hir.kindOf(cur)) {
@@ -62917,6 +62930,7 @@ pub const Checker = struct {
     };
 
     fn plainNamedImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?PlainNamedImport {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -73202,7 +73216,8 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -73211,25 +73226,47 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, cur)
             else
                 hir_mod.namespaceBody(self.hir, cur);
-            for (stmts) |raw| {
-                const decl = self.unwrapExportDecl(raw);
-                switch (self.hir.kindOf(decl)) {
-                    .var_decl,
-                    .let_decl,
-                    .const_decl,
-                    .fn_decl,
-                    .fn_expr,
-                    .enum_decl,
-                    => {
-                        if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
-                        const decl_name = self.declarationName(decl) orelse continue;
-                        if (decl_name == name) return decl;
-                    },
-                    else => {},
-                }
-            }
+
+            self.indexVisibleSameNameValueBindings(cur, stmts, has_virtual_sections);
+            if (self.visible_same_name_value_decls.get(.{
+                .container = cur,
+                .name = name,
+                .virtual_section_start = anchor_section,
+            })) |decl| return decl;
         }
         return null;
+    }
+
+    fn indexVisibleSameNameValueBindings(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_same_name_value_containers.contains(container)) return;
+
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(decl)) {
+                .var_decl,
+                .let_decl,
+                .const_decl,
+                .fn_decl,
+                .fn_expr,
+                .enum_decl,
+                => {},
+                else => continue,
+            }
+            const decl_name = self.declarationName(decl) orelse continue;
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_same_name_value_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+        }
+        self.indexed_same_name_value_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn findVisibleNamedClassDecl(
@@ -129010,6 +129047,18 @@ pub const Checker = struct {
                         if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
                     }
                 }
+                const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+                self.indexVisibleSameNameValueBindings(cur, stmts, has_virtual_sections);
+                if (self.visible_same_name_value_decls.get(.{
+                    .container = cur,
+                    .name = id.name,
+                    .virtual_section_start = if (has_virtual_sections)
+                        self.virtualSectionStartForNode(node)
+                    else
+                        0,
+                })) |declaration| {
+                    if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
+                }
                 for (stmts) |s| {
                     if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
                 }
@@ -151848,6 +151897,7 @@ pub const Checker = struct {
         if (pair_entry.found_existing) return true;
         defer _ = self.active_inference_pairs.remove(pair_key);
         for (param_args, arg_args) |param_arg, arg_arg| {
+            if (!self.containsFreeTypeParameter(param_arg)) continue;
             try self.inferFromPair(param_arg, arg_arg, subs);
         }
         return true;
@@ -182033,6 +182083,7 @@ pub const Checker = struct {
     fn putTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
         const previous = self.type_names.get(name);
         try self.type_names.put(self.gpa, name, t);
+        _ = self.unnamed_type_ids.remove(t);
         if (previous) |previous_t| {
             if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
                 _ = self.named_type_by_id.remove(previous_t);
@@ -182046,12 +182097,15 @@ pub const Checker = struct {
             if (self.type_names.get(name) == t) return name;
             _ = self.named_type_by_id.remove(t);
         }
-        var it = self.type_names.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.* == t) {
-                self.named_type_by_id.put(self.gpa, t, entry.key_ptr.*) catch {};
-                return entry.key_ptr.*;
+        if (!self.unnamed_type_ids.contains(t)) {
+            var it = self.type_names.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* == t) {
+                    self.named_type_by_id.put(self.gpa, t, entry.key_ptr.*) catch {};
+                    return entry.key_ptr.*;
+                }
             }
+            self.unnamed_type_ids.put(self.gpa, t, {}) catch {};
         }
         // Partial class instance types built inside per-field
         // initializer checks aren't in `type_names` yet but they are
