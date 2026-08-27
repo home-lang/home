@@ -3643,6 +3643,8 @@ fn jsonStringContentEnd(src: []const u8, content_start: usize) ?usize {
 const SourceFacts = struct {
     check_js_directive: ?bool = null,
     allow_js_directive: ?bool = null,
+    declaration_true_directive: ?bool = null,
+    no_implicit_references_true_directive: ?bool = null,
     explicitly_disables_check_js: ?bool = null,
     strict_false_directive: ?bool = null,
     legacy_decorators: ?bool = null,
@@ -3667,6 +3669,32 @@ const RecoveredParameterSyntax = struct {
     declaration_end: u32,
     type_name: hir_mod.StringId,
     optional: bool,
+};
+
+const JsDocNamedDeclarationKind = enum {
+    typedef,
+    callback,
+};
+
+const JsDocNamedDeclarationKey = struct {
+    name: hir_mod.StringId,
+    owner_function: NodeId,
+    kind: JsDocNamedDeclarationKind,
+};
+
+const JsDocNamedDeclarationAnyKey = struct {
+    name: hir_mod.StringId,
+    kind: JsDocNamedDeclarationKind,
+};
+
+const JsDocNamedDeclaration = struct {
+    comment_start: usize,
+};
+
+const PriorJsDocPropertyAssignment = struct {
+    node: NodeId,
+    start: u32,
+    section: usize,
 };
 
 pub const Checker = struct {
@@ -4026,7 +4054,6 @@ pub const Checker = struct {
     named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
     /// TypeIds already confirmed absent from `type_names`. Negative caching
     /// avoids rescanning every registered name for anonymous structural types.
-    unnamed_type_ids: std.AutoHashMapUnmanaged(TypeId, void),
     /// Most-recent `interface_decl` node that registered a type under
     /// each name. Lets the interface-merge logic in
     /// `checkInterfaceDecl` confirm the previous declaration shares
@@ -4694,6 +4721,28 @@ pub const Checker = struct {
     /// positions. Cache immutable HIR containment results so source scans do
     /// not multiply a full node walk by every referenced typedef.
     source_function_containing_pos_cache: std.AutoHashMapUnmanaged(u32, NodeId) = .empty,
+    /// Named `@typedef` and `@callback` blocks in a physical JS source.
+    /// JSDoc lowering probes several declaration categories per reference;
+    /// indexing once avoids repeated whole-source negative scans.
+    jsdoc_named_declarations: std.AutoHashMapUnmanaged(JsDocNamedDeclarationKey, JsDocNamedDeclaration) = .empty,
+    jsdoc_named_declarations_any_scope: std.AutoHashMapUnmanaged(JsDocNamedDeclarationAnyKey, JsDocNamedDeclaration) = .empty,
+    jsdoc_named_declarations_built: bool = false,
+    /// Generic aliases materialized from JSDoc typedefs. Subsequent
+    /// instantiations can reuse the registered generic body and run the
+    /// normal substitution/constraint path instead of reparsing the typedef.
+    jsdoc_generic_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    /// Resolved non-generic JSDoc typedef object shapes in a physical source.
+    /// These are immutable, but the same alias is commonly referenced from
+    /// callbacks, constraints, parameters, and variable annotations.
+    jsdoc_typedef_object_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    /// Resolved non-generic JSDoc callback signatures in a physical source.
+    jsdoc_callback_signatures: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    /// Plain member assignments with a leading JSDoc `@type`. Checked-JS
+    /// property writes otherwise search every HIR node for each assignment,
+    /// making repeated constructor fields quadratic even when none of those
+    /// writes has a declaration tag.
+    prior_jsdoc_property_assignments: std.ArrayListUnmanaged(PriorJsDocPropertyAssignment) = .empty,
+    prior_jsdoc_property_assignments_built: bool = false,
     source_has_virtual_sections: bool = false,
     /// UMD globals require an `export as namespace` declaration. Cache a
     /// conservative keyword prefilter so ordinary type references do not
@@ -4709,6 +4758,10 @@ pub const Checker = struct {
     /// Import lookup helpers otherwise walk the source root for every
     /// identifier and type reference, even in import-free programs.
     source_may_have_import_declaration: bool = false,
+    /// JSDoc `@import` lookup scans source text rather than bound imports.
+    /// Keep an exact tag prefilter so ordinary JSDoc type references do not
+    /// rescan files that cannot contain such a declaration.
+    source_may_have_jsdoc_import_tag: bool = false,
     /// CommonJS binding lookup walks the source root for every candidate
     /// member access. Attached source without `require` cannot produce one.
     source_may_have_require_binding: bool = false,
@@ -4728,6 +4781,15 @@ pub const Checker = struct {
     /// Checked-JS computed prototype replacement requires a computed access to
     /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
     source_may_have_computed_prototype_assignment: bool = false,
+    /// Legacy checked-JS constructor recovery walks assignments and source
+    /// prefixes looking for `Ctor.prototype`. Files without that exact syntax
+    /// cannot participate, so keep the negative path constant-time.
+    source_may_have_prototype_assignment: bool = false,
+    /// Protected-member syntax is uncommon, but accessibility probes run for
+    /// every property access. External/imported protected members remain
+    /// discoverable from object-member metadata even when this source has no
+    /// `protected` spelling.
+    source_may_have_protected_member: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
@@ -4978,7 +5040,6 @@ pub const Checker = struct {
             .class_static_private_set_only_accessors = .empty,
             .type_names = .empty,
             .named_type_by_id = .empty,
-            .unnamed_type_ids = .empty,
             .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .generic_interfaces_by_decl = .empty,
@@ -5059,6 +5120,8 @@ pub const Checker = struct {
             .generator_type_info = .empty,
             .recovered_parameter_syntax = .empty,
             .source_function_containing_pos_cache = .empty,
+            .jsdoc_named_declarations = .empty,
+            .jsdoc_named_declarations_any_scope = .empty,
             .current_generator_info = null,
             .current_async_function_return_check = false,
             .function_body_depth = 0,
@@ -5109,6 +5172,14 @@ pub const Checker = struct {
         self.recovered_parameter_syntax.clearRetainingCapacity();
         self.recovered_parameter_syntax_built = false;
         self.source_function_containing_pos_cache.clearRetainingCapacity();
+        self.jsdoc_named_declarations.clearRetainingCapacity();
+        self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
+        self.jsdoc_named_declarations_built = false;
+        self.jsdoc_generic_typedef_aliases.clearRetainingCapacity();
+        self.jsdoc_typedef_object_types.clearRetainingCapacity();
+        self.jsdoc_callback_signatures.clearRetainingCapacity();
+        self.prior_jsdoc_property_assignments.clearRetainingCapacity();
+        self.prior_jsdoc_property_assignments_built = false;
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
@@ -5125,6 +5196,7 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "import") != null and
             std.mem.indexOfScalar(u8, source, '=') != null;
         self.source_may_have_import_declaration = std.mem.indexOf(u8, source, "import") != null;
+        self.source_may_have_jsdoc_import_tag = std.mem.indexOf(u8, source, "@import") != null;
         self.source_may_have_require_binding = std.mem.indexOf(u8, source, "require") != null;
         self.source_may_have_namespace_declaration =
             std.mem.indexOf(u8, source, "namespace") != null or
@@ -5140,6 +5212,8 @@ pub const Checker = struct {
             std.mem.indexOfScalar(u8, source, '[') != null and
             std.mem.indexOfScalar(u8, source, '=') != null and
             std.mem.indexOfScalar(u8, source, '{') != null;
+        self.source_may_have_prototype_assignment = std.mem.indexOf(u8, source, ".prototype") != null;
+        self.source_may_have_protected_member = std.mem.indexOf(u8, source, "protected") != null;
         self.may_have_expando_property_assignments = null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
@@ -5455,7 +5529,6 @@ pub const Checker = struct {
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         self.named_type_by_id.deinit(self.gpa);
-        self.unnamed_type_ids.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -5602,6 +5675,12 @@ pub const Checker = struct {
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.deinit(self.gpa);
         self.source_function_containing_pos_cache.deinit(self.gpa);
+        self.jsdoc_named_declarations.deinit(self.gpa);
+        self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
+        self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
+        self.jsdoc_typedef_object_types.deinit(self.gpa);
+        self.jsdoc_callback_signatures.deinit(self.gpa);
+        self.prior_jsdoc_property_assignments.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.ts_expect_error_directive_lines.deinit(self.gpa);
@@ -6151,6 +6230,7 @@ pub const Checker = struct {
     fn checkJSDocLegacyModuleNamepathTypes(self: *Checker, root: NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
+        if (std.mem.indexOf(u8, src, "{module:") == null) return;
         var comment_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, comment_start, "/**")) |open| {
             const body_start = open + 3;
@@ -20345,6 +20425,7 @@ pub const Checker = struct {
 
     fn checkExpandoPropertyCircularInference(self: *Checker, stmts: []const NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return;
         for (stmts) |stmt| try self.scanExpandoPropertyCircularInference(stmt);
     }
 
@@ -20617,6 +20698,8 @@ pub const Checker = struct {
         const m = hir_mod.memberOf(self.hir, node);
         if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        const object_name = self.string_interner.get(obj_id.name);
+        if (std.mem.eql(u8, object_name, "this") or std.mem.eql(u8, object_name, "super")) return null;
         if (self.findNamedDeclInVirtualSection(m.object, obj_id.name)) |declaration| {
             const kind = self.hir.kindOf(declaration);
             if (kind == .class_decl or kind == .class_expr) return null;
@@ -20881,20 +20964,17 @@ pub const Checker = struct {
         target: NodeId,
     ) CheckError!?TypeId {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        try self.ensurePriorJsDocPropertyAssignmentIndex();
         const target_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target), " \t\r\n");
         if (target_text.len == 0) return null;
         const section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(assignment_node) else 0;
         const assignment_start = self.hir.spanOf(assignment_node).start;
         var best_node: NodeId = hir_mod.none_node_id;
         var best_start: u32 = 0;
-        var candidate: NodeId = 1;
-        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
-            if (self.hir.kindOf(candidate) != .assignment) continue;
-            const candidate_span = self.hir.spanOf(candidate);
-            if (candidate_span.start >= assignment_start or candidate_span.start < best_start) continue;
-            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(candidate) != section) continue;
+        for (self.prior_jsdoc_property_assignments.items) |entry| {
+            if (entry.start >= assignment_start or entry.start < best_start or entry.section != section) continue;
+            const candidate = entry.node;
             const assignment = hir_mod.assignmentOf(self.hir, candidate);
-            if (assignment.op != null or assignment.target == hir_mod.none_node_id) continue;
             const candidate_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(assignment.target), " \t\r\n");
             if (!std.mem.eql(u8, candidate_text, target_text)) continue;
             const parent = self.hir.parentOf(candidate);
@@ -20906,7 +20986,7 @@ pub const Checker = struct {
                 try self.jsDocTypeForLeadingNode(candidate);
             if (declared_t == null) continue;
             best_node = candidate;
-            best_start = candidate_span.start;
+            best_start = entry.start;
         }
         if (best_node == hir_mod.none_node_id) return null;
         const parent = self.hir.parentOf(best_node);
@@ -20916,6 +20996,44 @@ pub const Checker = struct {
             best_node;
         return (try self.jsDocTypeForLeadingNode(anchor)) orelse
             try self.jsDocTypeForLeadingNode(best_node);
+    }
+
+    fn ensurePriorJsDocPropertyAssignmentIndex(self: *Checker) CheckError!void {
+        if (self.prior_jsdoc_property_assignments_built) return;
+        self.prior_jsdoc_property_assignments_built = true;
+        const src = self.source orelse return;
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const parent = self.hir.parentOf(candidate);
+            const anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+                parent
+            else
+                candidate;
+            const anchor_body = self.leadingJsDocBody(src, self.leadingJsDocStartForNode(anchor));
+            const candidate_body = if (anchor == candidate)
+                null
+            else
+                self.leadingJsDocBody(src, self.leadingJsDocStartForNode(candidate));
+            const anchor_has_type = if (anchor_body) |body|
+                jsDocBlockTagBracedTypeText(body, "@type") != null
+            else
+                false;
+            const candidate_has_type = if (candidate_body) |body|
+                jsDocBlockTagBracedTypeText(body, "@type") != null
+            else
+                false;
+            if (!anchor_has_type and !candidate_has_type) continue;
+            try self.prior_jsdoc_property_assignments.append(self.gpa, .{
+                .node = candidate,
+                .start = self.hir.spanOf(candidate).start,
+                .section = if (has_virtual_sections) self.virtualSectionStartForNode(candidate) else 0,
+            });
+        }
     }
 
     fn reportExpandoAssignmentInferenceErrors(
@@ -47524,26 +47642,19 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
-        var syntax_static_class: ?hir_mod.StringId = null;
-        var syntax_instance_class: ?hir_mod.StringId = null;
-        if (self.hir.kindOf(node) == .member_access) {
-            const m = hir_mod.memberOf(self.hir, node);
-            if (self.hir.kindOf(m.object) == .identifier) {
-                const ident = hir_mod.identifierOf(self.hir, m.object);
-                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
-                if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
-                    syntax_static_class = ident.name;
-                } else {
-                    syntax_instance_class = self.explicitClassAnnotationName(m.object);
-                }
+        if (self.source != null and
+            !self.source_may_have_protected_member and
+            self.interface_extends_visibility_class.count() == 0 and
+            obj_t < self.interner.pool.typeCount())
+        {
+            const flags = self.interner.pool.flagsOf(obj_t);
+            if (!flags.is_union and !flags.is_intersection) {
+                const member = self.interner.objectMemberInfo(obj_t, prop_name);
+                if (member == null or member.?.visibility != .protected) return;
             }
         }
         const Receiver = struct { class_name: hir_mod.StringId, is_static: bool };
-        const receiver: Receiver = if (syntax_static_class) |name|
-            .{ .class_name = name, .is_static = true }
-        else if (syntax_instance_class) |name|
-            .{ .class_name = name, .is_static = false }
-        else if (self.class_name_by_instance.get(obj_t)) |name|
+        var receiver: ?Receiver = if (self.class_name_by_instance.get(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else if (self.class_name_by_static.get(obj_t)) |name|
             .{ .class_name = name, .is_static = true }
@@ -47554,21 +47665,36 @@ pub const Checker = struct {
         else if (self.interfaceInheritedVisibilityClass(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else
-            return;
-        const declaring_class = self.protectedMemberDeclaringClass(receiver.class_name, prop_name, receiver.is_static) orelse blk: {
-            const own_members = if (receiver.is_static)
-                self.class_static_member_names.getPtr(receiver.class_name)
+            null;
+        if (self.hir.kindOf(node) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, node);
+            if (self.hir.kindOf(m.object) == .identifier) {
+                const ident = hir_mod.identifierOf(self.hir, m.object);
+                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
+                if (receiver == null) {
+                    if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
+                        receiver = .{ .class_name = ident.name, .is_static = true };
+                    } else if (self.explicitClassAnnotationName(m.object)) |name| {
+                        receiver = .{ .class_name = name, .is_static = false };
+                    }
+                }
+            }
+        }
+        const resolved_receiver = receiver orelse return;
+        const declaring_class = self.protectedMemberDeclaringClass(resolved_receiver.class_name, prop_name, resolved_receiver.is_static) orelse blk: {
+            const own_members = if (resolved_receiver.is_static)
+                self.class_static_member_names.getPtr(resolved_receiver.class_name)
             else
-                self.class_instance_member_names.getPtr(receiver.class_name);
+                self.class_instance_member_names.getPtr(resolved_receiver.class_name);
             if (own_members) |members| {
                 if (members.contains(prop_name)) return;
-            } else if (self.classSyntaxMemberVisibility(receiver.class_name, prop_name, receiver.is_static)) |visibility| {
+            } else if (self.classSyntaxMemberVisibility(resolved_receiver.class_name, prop_name, resolved_receiver.is_static)) |visibility| {
                 if (visibility != .protected) return;
             }
             if (obj_t >= self.interner.pool.typeCount()) return;
             const member = self.interner.objectMemberInfo(obj_t, prop_name) orelse return;
             if (member.visibility != .protected) return;
-            break :blk receiver.class_name;
+            break :blk resolved_receiver.class_name;
         };
         if (self.nearestEnclosingClassInProtectedChain(node, declaring_class)) |access_class| {
             // TS2446's receiver constraint applies to instance members.
@@ -47576,12 +47702,12 @@ pub const Checker = struct {
             // constructor while lexically inside the declaring class or a
             // subclass; a redeclared static member has its own declaring
             // class and therefore still fails the lexical-chain test above.
-            if (receiver.is_static) return;
-            if (self.classIsOrExtendsClass(receiver.class_name, access_class)) return;
+            if (resolved_receiver.is_static) return;
+            if (self.classIsOrExtendsClass(resolved_receiver.class_name, access_class)) return;
             const prop_str = self.string_interner.get(prop_name);
             const access_display = try self.classDisplayName(node, access_class);
             defer self.gpa.free(access_display);
-            const receiver_display = try self.classDisplayName(node, receiver.class_name);
+            const receiver_display = try self.classDisplayName(node, resolved_receiver.class_name);
             defer self.gpa.free(receiver_display);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -47596,7 +47722,7 @@ pub const Checker = struct {
             });
             return;
         }
-        if (!receiver.is_static and self.hir.kindOf(node) == .member_access) {
+        if (!resolved_receiver.is_static and self.hir.kindOf(node) == .member_access) {
             const m = hir_mod.memberOf(self.hir, node);
             if (self.nodeIsThisReference(m.object) and self.enclosingThisHostHasExplicitThisParam(m.object)) return;
         }
@@ -47607,7 +47733,7 @@ pub const Checker = struct {
             members.contains(prop_name)
         else
             false) or self.classSyntaxMemberVisibility(declaring_class, prop_name, true) != null;
-        const owned_static_display: ?[]u8 = if (receiver.is_static and !declaring_class_owns_static)
+        const owned_static_display: ?[]u8 = if (resolved_receiver.is_static and !declaring_class_owns_static)
             try std.fmt.allocPrint(self.gpa, "typeof {s}", .{bare_class_display})
         else
             null;
@@ -50031,6 +50157,19 @@ pub const Checker = struct {
     }
 
     fn sourceDirectiveIsTrue(self: *Checker, marker: []const u8) bool {
+        const cached: *?bool = if (std.mem.eql(u8, marker, "@declaration"))
+            &self.source_facts.declaration_true_directive
+        else if (std.mem.eql(u8, marker, "@noImplicitReferences"))
+            &self.source_facts.no_implicit_references_true_directive
+        else
+            return self.scanSourceDirectiveIsTrue(marker);
+        if (cached.*) |result| return result;
+        const result = self.scanSourceDirectiveIsTrue(marker);
+        cached.* = result;
+        return result;
+    }
+
+    fn scanSourceDirectiveIsTrue(self: *const Checker, marker: []const u8) bool {
         const src = self.source orelse return false;
         const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
         var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
@@ -62669,6 +62808,7 @@ pub const Checker = struct {
 
     fn memberAccessOnVirtualJsDefaultImport(self: *Checker, object_node: NodeId, member_name: hir_mod.StringId) CheckError!bool {
         if (!self.sourceHasAllowJsDirective()) return false;
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         if (self.hir.kindOf(object_node) != .identifier) return false;
         if (std.mem.eql(u8, self.string_interner.get(member_name), "default")) return false;
         const local_name = hir_mod.identifierOf(self.hir, object_node).name;
@@ -73282,7 +73422,8 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) ?NodeId {
         if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -73295,7 +73436,7 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
                 if (decl_kind != .class_decl and decl_kind != .class_expr) continue;
-                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                if (has_virtual_sections and self.virtualSectionStartForNode(decl) != anchor_section) continue;
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name == name) return decl;
             }
@@ -88763,6 +88904,7 @@ pub const Checker = struct {
     /// qualified member-assigned constructors.
     fn enclosingPrototypeMethodConstructor(self: *Checker, fn_node: NodeId) ?NodeId {
         if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.source != null and !self.source_may_have_prototype_assignment) return null;
         var owner: ?hir_mod.StringId = null;
         const parent = self.hir.parentOf(fn_node);
         if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment) {
@@ -93381,8 +93523,22 @@ pub const Checker = struct {
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
         if (try self.jsDocImportedNameType(src, base)) |t| return t;
+        // JSDoc declarations occupy type space and take precedence over
+        // same-spelled JavaScript values. Resolve the indexed type-space
+        // candidates before value-space diagnostic probes, which otherwise
+        // walk lexical statements for every ordinary typedef reference.
+        if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
+        if (base.len == trimmed.len) {
+            if (try self.jsDocGenericTypedefTypeTextToType(src, base, "")) |t| return t;
+        }
+        if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
+        if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
+        const base_name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        if (self.lookupNarrow(base_name)) |narrow_t| {
+            if (narrow_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(narrow_t).is_type_parameter) return narrow_t;
+        }
         if (self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
-            const base_name = self.string_interner.intern(base) catch return error.OutOfMemory;
             if (try self.checkJsDestructuredRequireClassInstanceType(self.jsdoc_diagnostic_anchor, base_name)) |class_t| {
                 return class_t;
             }
@@ -93392,19 +93548,12 @@ pub const Checker = struct {
         if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
-        if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
-        if (base.len == trimmed.len) {
-            if (try self.jsDocGenericTypedefTypeTextToType(src, base, "")) |t| return t;
-        }
-        if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
-        if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
         const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
             if (!self.typeIsAnyLike(t)) return t;
         }
         if (base.len == trimmed.len and self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
-            const name = self.string_interner.intern(base) catch return error.OutOfMemory;
-            if (try self.jsDocRequireAliasType(self.jsdoc_diagnostic_anchor, name, true)) |t| return t;
+            if (try self.jsDocRequireAliasType(self.jsdoc_diagnostic_anchor, base_name, true)) |t| return t;
         }
         if (simple_t) |t| return t;
         if (try self.jsDocUnresolvedSimpleNameToType(src, trimmed, base)) |t| return t;
@@ -93540,6 +93689,7 @@ pub const Checker = struct {
         src: []const u8,
         name_text: []const u8,
     ) CheckError!bool {
+        if (self.source != null and !self.source_may_have_require_binding) return false;
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
@@ -93588,6 +93738,7 @@ pub const Checker = struct {
         src: []const u8,
         name_text: []const u8,
     ) CheckError!bool {
+        if (self.source != null and !self.source_may_have_require_binding) return false;
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
@@ -94348,6 +94499,7 @@ pub const Checker = struct {
     fn jsDocImportedNameType(self: *Checker, src: []const u8, base: []const u8) CheckError!?TypeId {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or base.len == 0) return null;
+        if (self.source != null and !self.source_may_have_jsdoc_import_tag) return null;
         var search: usize = 0;
         var match_count: usize = 0;
         var spec_buf: [512]u8 = undefined;
@@ -94720,6 +94872,13 @@ pub const Checker = struct {
             return instantiated;
         }
 
+        const generic_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections and self.jsdoc_generic_typedef_aliases.contains(generic_name)) {
+            if (try self.jsDocGenericNominalTypeTextToType(src, name, args_text, type_text)) |cached_typedef_t| {
+                return cached_typedef_t;
+            }
+        }
+
         if (try self.jsDocGenericTypedefTypeTextToType(src, name, args_text)) |typedef_t| {
             return typedef_t;
         }
@@ -94772,7 +94931,15 @@ pub const Checker = struct {
             try arg_types.append(self.gpa, arg_t);
             try arg_positions.append(self.gpa, self.sliceStartPos(src, arg_text));
         }
-        var search_start: usize = 0;
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                name,
+                .typedef,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -94880,6 +95047,7 @@ pub const Checker = struct {
                     .is_type_alias = true,
                 });
             }
+            try self.jsdoc_generic_typedef_aliases.put(self.gpa, alias_name, {});
             if (subs.count() > 0) {
                 try self.extendSubstitutionsByMatchingTypeParamNames(generic_body, formal_params.items, &subs);
                 typedef_t = self.substituteType(typedef_t, &subs) catch typedef_t;
@@ -95898,6 +96066,7 @@ pub const Checker = struct {
     }
 
     fn jsDocImportedNamespaceMemberType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_jsdoc_import_tag) return null;
         var dot_count: usize = 0;
         var dot_pos: usize = 0;
         for (type_text, 0..) |c, i| {
@@ -96083,7 +96252,19 @@ pub const Checker = struct {
         wanted_name: []const u8,
         out_type_params: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!?TypeId {
-        var search_start: usize = 0;
+        const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections) {
+            if (self.jsdoc_callback_signatures.get(wanted_id)) |cached| return cached;
+        }
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                wanted_name,
+                .callback,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -96172,6 +96353,9 @@ pub const Checker = struct {
             }
             const sig = self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
             try self.recordJsDocSignatureArity(sig, omittable.items, has_rest);
+            if (!self.source_has_virtual_sections and !has_templates) {
+                try self.jsdoc_callback_signatures.put(self.gpa, wanted_id, sig);
+            }
             return sig;
         }
         return null;
@@ -96347,12 +96531,33 @@ pub const Checker = struct {
         {
             limit = trimmed_end - "export".len;
         }
-        const before = src[0..limit];
-        const end = std.mem.lastIndexOf(u8, before, "*/") orelse return null;
-        if (!jsDocTrailingTriviaOnly(before[end + 2 ..])) return null;
-        const start = std.mem.lastIndexOf(u8, before[0..end], "/**") orelse return null;
+        // Walk backward through only the trivia adjacent to the declaration.
+        // A whole-prefix `lastIndexOf` makes a large file with many functions
+        // quadratic even though the relevant comment is always local.
+        var cursor = limit;
+        const end = while (true) {
+            while (cursor > 0 and std.ascii.isWhitespace(src[cursor - 1])) cursor -= 1;
+            if (cursor >= 2 and std.mem.eql(u8, src[cursor - 2 .. cursor], "*/")) {
+                break cursor - 2;
+            }
+            var line_start = cursor;
+            while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') {
+                line_start -= 1;
+            }
+            const line_comment = std.mem.indexOf(u8, src[line_start..cursor], "//") orelse return null;
+            cursor = line_start + line_comment;
+        };
+        var start_cursor = end;
+        const start = while (start_cursor > 0) {
+            start_cursor -= 1;
+            if (start_cursor + 2 > end or
+                src[start_cursor] != '/' or
+                src[start_cursor + 1] != '*') continue;
+            if (start_cursor + 2 < src.len and src[start_cursor + 2] == '*') break start_cursor;
+            return null;
+        } else return null;
         return .{
-            .body = before[start + 3 .. end],
+            .body = src[start + 3 .. end],
             .start = start + 3,
         };
     }
@@ -96455,6 +96660,184 @@ pub const Checker = struct {
         return trimmed[0..i];
     }
 
+    fn canUseJsDocNamedDeclarationIndex(self: *const Checker, src: []const u8) bool {
+        const full_source = self.source orelse return false;
+        return !self.source_has_virtual_sections and
+            src.ptr == full_source.ptr and
+            src.len == full_source.len;
+    }
+
+    fn jsDocNamedTagNameOnLine(line_text: []const u8, tag: []const u8) ?[]const u8 {
+        var line = std.mem.trim(u8, line_text, " \t\r");
+        if (line.len > 0 and line[0] == '*') line = std.mem.trimStart(u8, line[1..], " \t\r");
+        if (!std.mem.startsWith(u8, line, tag)) return null;
+        if (line.len > tag.len and isJsDocIdentChar(line[tag.len])) return null;
+        var rest = std.mem.trimStart(u8, line[tag.len..], " \t\r");
+        if (rest.len > 0 and rest[0] == '{') {
+            const type_len = jsDocBalancedBraceLen(rest);
+            if (type_len == 0) return null;
+            rest = std.mem.trimStart(u8, rest[type_len..], " \t\r");
+        }
+        var name_end: usize = 0;
+        while (name_end < rest.len and
+            (isJsDocIdentChar(rest[name_end]) or rest[name_end] == '.' or rest[name_end] == '~')) : (name_end += 1)
+        {}
+        return if (name_end == 0) null else rest[0..name_end];
+    }
+
+    fn ensureJsDocNamedDeclarationIndex(self: *Checker) CheckError!void {
+        if (self.jsdoc_named_declarations_built) return;
+        self.jsdoc_named_declarations_built = true;
+        const src = self.source orelse return;
+        if (self.source_has_virtual_sections) return;
+
+        const IndexedBlock = struct {
+            comment_start: usize,
+            body_start: usize,
+            body_end: usize,
+            owner_function: NodeId = hir_mod.none_node_id,
+            owner_span_len: u32 = std.math.maxInt(u32),
+        };
+        var blocks: std.ArrayListUnmanaged(IndexedBlock) = .empty;
+        defer blocks.deinit(self.gpa);
+
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const body_end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse break;
+            search_start = body_end + 2;
+            try blocks.append(self.gpa, .{
+                .comment_start = comment_start,
+                .body_start = body_start,
+                .body_end = body_end,
+            });
+        }
+
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const span = self.hir.spanOf(node);
+            var low: usize = 0;
+            var high = blocks.items.len;
+            while (low < high) {
+                const mid = low + (high - low) / 2;
+                if (blocks.items[mid].comment_start < span.start) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            const span_len = span.end - span.start;
+            var block_index = low;
+            while (block_index < blocks.items.len and blocks.items[block_index].comment_start < span.end) : (block_index += 1) {
+                if (span_len >= blocks.items[block_index].owner_span_len) continue;
+                blocks.items[block_index].owner_function = node;
+                blocks.items[block_index].owner_span_len = span_len;
+            }
+        }
+
+        for (blocks.items) |block| {
+            const body = src[block.body_start..block.body_end];
+            if (jsDocTypedefDeclaredName(body)) |name_text| {
+                if (!jsDocTypedefIsMalformedClosure(body, name_text)) {
+                    const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = .typedef,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = .typedef };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+            const parsed_tags: ?[]ts_parser.jsdoc.Tag = ts_parser.jsdoc.parse(self.gpa, body) catch null;
+            defer if (parsed_tags) |tags| self.gpa.free(tags);
+            if (parsed_tags) |tags| {
+                for (tags) |tag| {
+                    if (tag.kind != .typedef_tag or tag.name.len == 0) continue;
+                    if (jsDocTypedefIsMalformedClosure(body, tag.name)) continue;
+                    const name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = .typedef,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = .typedef };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+            var line_start: usize = 0;
+            var i: usize = 0;
+            while (i <= body.len) : (i += 1) {
+                if (i < body.len and body[i] != '\n') continue;
+                const line = body[line_start..i];
+                line_start = i + 1;
+                for ([_]struct { tag: []const u8, kind: JsDocNamedDeclarationKind }{
+                    .{ .tag = "@typedef", .kind = .typedef },
+                    .{ .tag = "@callback", .kind = .callback },
+                }) |entry| {
+                    const name_text = jsDocNamedTagNameOnLine(line, entry.tag) orelse continue;
+                    if (entry.kind == .typedef and jsDocTypedefIsMalformedClosure(body, name_text)) continue;
+                    const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = entry.kind,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = entry.kind };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+        }
+    }
+
+    fn indexedJsDocNamedDeclaration(
+        self: *Checker,
+        name_text: []const u8,
+        kind: JsDocNamedDeclarationKind,
+        anchor: NodeId,
+        any_scope: bool,
+    ) CheckError!?JsDocNamedDeclaration {
+        try self.ensureJsDocNamedDeclarationIndex();
+        const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        if (any_scope) {
+            return self.jsdoc_named_declarations_any_scope.get(.{ .name = name, .kind = kind });
+        }
+        const owner = self.enclosingFunctionLike(anchor) orelse hir_mod.none_node_id;
+        if (self.jsdoc_named_declarations.get(.{
+            .name = name,
+            .owner_function = owner,
+            .kind = kind,
+        })) |declaration| return declaration;
+        if (owner == hir_mod.none_node_id) return null;
+        return self.jsdoc_named_declarations.get(.{
+            .name = name,
+            .owner_function = hir_mod.none_node_id,
+            .kind = kind,
+        });
+    }
+
     fn jsDocTypedefObjectSkeleton(
         self: *Checker,
         src: []const u8,
@@ -96462,30 +96845,45 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         if (wanted_name.len == 0) return null;
         const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections) {
+            if (self.jsdoc_typedef_object_types.get(wanted_id)) |cached| return cached;
+        }
         if (self.resolving_jsdoc_typedef_aliases.contains(wanted_id)) return types.Primitive.any;
         try self.resolving_jsdoc_typedef_aliases.put(self.gpa, wanted_id, {});
         defer _ = self.resolving_jsdoc_typedef_aliases.remove(wanted_id);
 
-        var search_start: usize = 0;
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                wanted_name,
+                .typedef,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
             defer search_start = end + 2;
             const body = src[body_start..end];
             if (jsDocTypedefIsMalformedClosure(body, wanted_name)) continue;
+            const cacheable = !self.source_has_virtual_sections and std.mem.indexOf(u8, body, "@template") == null;
             if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
                 if (try self.jsDocObjectSkeletonFromTypeText(type_text)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
             if (jsDocBlockHasNamedTag(body, "@typedef", wanted_name)) {
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
@@ -96496,10 +96894,12 @@ pub const Checker = struct {
                 if (!std.mem.eql(u8, tag.name, wanted_name)) continue;
                 if (try self.jsDocObjectSkeletonFromTypeText(tag.type_text)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
@@ -96619,7 +97019,15 @@ pub const Checker = struct {
         const pass_count: usize = if (use_function != null) 2 else 1;
         var pass: usize = 0;
         while (pass < pass_count) : (pass += 1) {
-            var search_start: usize = 0;
+            var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+                const declaration = (try self.indexedJsDocNamedDeclaration(
+                    wanted_name,
+                    .typedef,
+                    self.jsdoc_diagnostic_anchor,
+                    false,
+                )) orelse return null;
+                break :blk declaration.comment_start;
+            } else 0;
             while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
                 const body_start = start + 3;
                 const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -96661,6 +97069,20 @@ pub const Checker = struct {
         if (name_end == 0) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn jsDocTypedefDeclaredName(body: []const u8) ?[]const u8 {
+        const tag_pos = std.mem.indexOf(u8, body, "@typedef") orelse return null;
+        const rest = body[tag_pos + "@typedef".len ..];
+        const brace_pos = std.mem.indexOfScalar(u8, rest, '{') orelse return null;
+        const type_len = jsDocBalancedBraceLen(rest[brace_pos..]);
+        if (type_len == 0) return null;
+        const trailing = std.mem.trimStart(u8, rest[brace_pos + type_len ..], " \t\r\n*");
+        var name_end: usize = 0;
+        while (name_end < trailing.len and
+            (isJsDocIdentChar(trailing[name_end]) or trailing[name_end] == '.' or trailing[name_end] == '~')) : (name_end += 1)
+        {}
+        return if (name_end == 0) null else trailing[0..name_end];
     }
 
     fn jsDocTypedefIsMalformedClosure(body: []const u8, wanted_name: []const u8) bool {
@@ -96729,6 +97151,9 @@ pub const Checker = struct {
     }
 
     fn jsDocTypedefNameExistsInSliceAt(self: *Checker, anchor: NodeId, src: []const u8, wanted: []const u8) bool {
+        if (self.canUseJsDocNamedDeclarationIndex(src)) {
+            return (self.indexedJsDocNamedDeclaration(wanted, .typedef, anchor, false) catch return false) != null;
+        }
         const use_function = self.enclosingFunctionLike(anchor);
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
@@ -118874,6 +119299,7 @@ pub const Checker = struct {
 
     fn checkJsObjectLiteralExpandoMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return null;
         const prop_name = self.propertyAccessName(node) orelse return null;
         const object = self.propertyAccessObject(node) orelse return null;
         if (self.memberAccessObjectIsGlobalThisThis(object)) return null;
@@ -119202,6 +119628,22 @@ pub const Checker = struct {
 
     fn identifierNamesUntypedObjectLiteralBindingInScope(self: *Checker, name: hir_mod.StringId, from_node: NodeId) bool {
         const use_start = self.hir.spanOf(from_node).start;
+        if (self.enclosingFunctionLike(from_node) == null) {
+            if (self.module) |module| {
+                if (module.root.lookup(name)) |symbol| {
+                    for (symbol.decls.items) |raw_decl| {
+                        const decl = self.unwrapExportDecl(raw_decl);
+                        const kind = self.hir.kindOf(decl);
+                        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                        if (self.hir.spanOf(decl).start > use_start) continue;
+                        const variable = hir_mod.varDeclOf(self.hir, decl);
+                        if (variable.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(decl)) return false;
+                        return variable.init != hir_mod.none_node_id and self.hir.kindOf(variable.init) == .object_literal;
+                    }
+                    return false;
+                }
+            }
+        }
         const has_sections = self.sourceHasVirtualFilenameSections();
         const section_start = if (has_sections) self.virtualSectionStartForNode(from_node) else 0;
         var cur = self.hir.parentOf(from_node);
@@ -119694,6 +120136,11 @@ pub const Checker = struct {
 
     fn recoveredSourceParameterAnnotationType(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
         const source = self.source orelse return null;
+        // This recovery path recognizes TypeScript `name: Type` parameter
+        // syntax that was not retained on the HIR node. JavaScript sections
+        // cannot declare parameters with TS annotations, and JSDoc supplies
+        // their types through the dedicated parameter-tag path.
+        if (self.sourcePositionIsJsLike(self.hir.spanOf(node).start)) return null;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const name_text = self.string_interner.get(name);
@@ -119987,6 +120434,27 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            const cached_t = self.hir.typeOf(variable.name);
+                            if (cached_t != types.Primitive.none) return cached_t;
+                            const annotated_t = self.lowerValueTypeAnnotation(id.name, variable.type_annotation) catch types.Primitive.any;
+                            return self.adjustAmbientUnresolvedBareTypeAnnotation(variable.is_ambient, variable.type_annotation, annotated_t) catch types.Primitive.any;
+                        }
+                    }
+                    continue;
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -143910,6 +144378,7 @@ pub const Checker = struct {
 
     fn reportUnsupportedJsPrototypeObjectThisMembers(self: *Checker, object_node: NodeId, object_t: TypeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(object_node) != .object_literal) return;
+        if (self.source != null and !self.source_may_have_prototype_assignment) return;
         var assignment_node = hir_mod.none_node_id;
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
@@ -167558,6 +168027,19 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, node);
         const use_start = self.hir.spanOf(node).start;
+        if (self.enclosingFunctionLike(node) == null) {
+            if (self.module) |module| {
+                if (module.root.lookup(id.name)) |symbol| {
+                    for (symbol.decls.items) |raw_decl| {
+                        const declaration = self.unwrapExportDecl(raw_decl);
+                        const kind = self.hir.kindOf(declaration);
+                        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                        if (self.hir.spanOf(declaration).start <= use_start) return declaration;
+                    }
+                    return null;
+                }
+            }
+        }
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -169105,6 +169587,20 @@ pub const Checker = struct {
                         if (self.hir.kindOf(d) == .fn_decl) return d;
                     }
                 }
+                for (sym.decls.items) |d| {
+                    const kind = self.hir.kindOf(d);
+                    if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                    const initializer = hir_mod.varDeclOf(self.hir, d).init;
+                    if (initializer == hir_mod.none_node_id) continue;
+                    const initializer_kind = self.hir.kindOf(initializer);
+                    if (initializer_kind == .fn_decl or initializer_kind == .fn_expr or initializer_kind == .arrow_fn) {
+                        return initializer;
+                    }
+                }
+                // The binder has a definitive same-name value declaration,
+                // but it is not function-like (commonly a class). Avoid
+                // rescanning every top-level statement for that negative.
+                return null;
             }
         }
         if (self.findFunctionDeclForNameNearNode(anchor, name)) |fn_node| return fn_node;
@@ -169659,6 +170155,10 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (!self.sourceHasCheckJsDirective() or !self.isInAssignmentTargetChain(node) or
             object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
+        // This diagnostic only reconciles declarations from distinct
+        // `@filename` sections in compiler fixtures. A physical source has a
+        // single section, so `has_other_class` below can never become true.
+        if (!self.sourceHasVirtualFilenameSections()) return false;
         const object = hir_mod.identifierOf(self.hir, object_node);
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -170319,13 +170819,38 @@ pub const Checker = struct {
     fn findSiblingFunctionDecl(self: *Checker, callee_node: NodeId) ?NodeId {
         if (self.hir.kindOf(callee_node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, callee_node);
+        const root = self.rootBlockFor(callee_node);
         var cur = self.hir.parentOf(callee_node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const payload = hir_mod.parameterOf(self.hir, param);
+                    if (payload.name == hir_mod.none_node_id or self.hir.kindOf(payload.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, payload.name).name == id.name) return null;
+                }
+            }
             if (k == .namespace_decl) {
                 return self.findFunctionDeclInStatements(hir_mod.namespaceBody(self.hir, cur), id.name);
             }
             if (k == .block_stmt) {
+                if (cur == root) {
+                    if (self.module) |module| {
+                        if (module.root.lookup(id.name)) |symbol| {
+                            for (symbol.decls.items) |declaration| {
+                                if (self.hir.kindOf(declaration) == .fn_decl) return declaration;
+                                const decl_kind = self.hir.kindOf(declaration);
+                                if (decl_kind != .var_decl and decl_kind != .let_decl and decl_kind != .const_decl) continue;
+                                const initializer = hir_mod.varDeclOf(self.hir, declaration).init;
+                                if (initializer == hir_mod.none_node_id) continue;
+                                const init_kind = self.hir.kindOf(initializer);
+                                if (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) return initializer;
+                            }
+                            return null;
+                        }
+                    }
+                }
                 if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, cur), id.name)) |fn_node| return fn_node;
             }
         }
@@ -182098,7 +182623,6 @@ pub const Checker = struct {
     fn putTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
         const previous = self.type_names.get(name);
         try self.type_names.put(self.gpa, name, t);
-        _ = self.unnamed_type_ids.remove(t);
         if (previous) |previous_t| {
             if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
                 _ = self.named_type_by_id.remove(previous_t);
@@ -182111,16 +182635,6 @@ pub const Checker = struct {
         if (self.named_type_by_id.get(t)) |name| {
             if (self.type_names.get(name) == t) return name;
             _ = self.named_type_by_id.remove(t);
-        }
-        if (!self.unnamed_type_ids.contains(t)) {
-            var it = self.type_names.iterator();
-            while (it.next()) |entry| {
-                if (entry.value_ptr.* == t) {
-                    self.named_type_by_id.put(self.gpa, t, entry.key_ptr.*) catch {};
-                    return entry.key_ptr.*;
-                }
-            }
-            self.unnamed_type_ids.put(self.gpa, t, {}) catch {};
         }
         // Partial class instance types built inside per-field
         // initializer checks aren't in `type_names` yet but they are
@@ -182692,6 +183206,7 @@ pub const Checker = struct {
         anchor: NodeId,
     ) ?NodeId {
         if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(anchor)) return null;
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
@@ -184562,14 +185077,37 @@ pub const Checker = struct {
         if (callee == hir_mod.none_node_id) return null;
         if (self.hir.kindOf(callee) == .identifier) {
             const name = hir_mod.identifierOf(self.hir, callee).name;
+            const root = self.rootBlockFor(callee);
             var cur = self.hir.parentOf(callee);
             while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                const kind = self.hir.kindOf(cur);
+                if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                    for (hir_mod.fnParams(self.hir, cur)) |param| {
+                        if (self.hir.kindOf(param) != .parameter) continue;
+                        const payload = hir_mod.parameterOf(self.hir, param);
+                        if (payload.name == hir_mod.none_node_id or self.hir.kindOf(payload.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, payload.name).name == name) return null;
+                    }
+                }
                 const statements: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
                     .block_stmt => hir_mod.blockStmts(self.hir, cur),
                     .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
                     else => null,
                 };
                 if (statements) |items| {
+                    if (cur == root) {
+                        if (self.module) |module| {
+                            if (module.root.lookup(name)) |sym| {
+                                var found: ?NodeId = null;
+                                for (sym.decls.items) |declaration| {
+                                    if (self.hir.kindOf(declaration) != .fn_decl) continue;
+                                    if (found != null) return null;
+                                    found = declaration;
+                                }
+                                return found;
+                            }
+                        }
+                    }
                     if (self.singleNamedFunctionDecl(items, name)) |decl| return decl;
                 }
             }
