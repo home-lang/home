@@ -1725,6 +1725,24 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.socket_global.install(allocator, ctx, global);
 }
 
+/// Complete a native JSC run through Node-compatible natural process exit.
+/// Listener failures are fatal, while a listener-assigned `process.exitCode`
+/// becomes the host process status. Explicit `process.exit()` remains noreturn
+/// and therefore never reaches this path.
+fn finishNaturalProcess(allocator: std.mem.Allocator, ctx: anytype) void {
+    var result = home_rt.jsc.process_global.emitNaturalExit(allocator, ctx) catch |err| {
+        std.debug.print("{s}error:{s} failed to emit process exit: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+        std.process.exit(1);
+    };
+    defer result.deinit(allocator);
+
+    if (result.exception_message) |message| {
+        std.debug.print("{s}error:{s} process exit listener threw: {s}\n", .{ Color.Red.code(), Color.Reset.code(), message });
+        std.process.exit(1);
+    }
+    if (result.exit_code != 0) std.process.exit(result.exit_code);
+}
+
 /// True when env var `name` is set to a non-empty value.
 fn envFlagSet(name: [*:0]const u8) bool {
     const value = std.c.getenv(name) orelse return false;
@@ -2313,6 +2331,7 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         // (blocks until the process is killed); no-op otherwise.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
         home_rt.jsc.socket_global.runLoop(allocator, ctx);
+        finishNaturalProcess(allocator, ctx);
         return true;
     }
 }
@@ -2382,6 +2401,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         // If the eval'd code called Bun.serve(), stay alive serving requests.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
         home_rt.jsc.socket_global.runLoop(allocator, ctx);
+        finishNaturalProcess(allocator, ctx);
     }
 }
 
