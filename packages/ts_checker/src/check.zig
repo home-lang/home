@@ -4834,6 +4834,11 @@ pub const Checker = struct {
     class_extends_call_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     named_shape_non_class_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     named_shape_any_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    /// A failed shape search stays valid until a named type is registered or
+    /// rebound. Class registrations only remove non-class candidates, so they
+    /// cannot turn a miss into a match. Keep both preference modes distinct.
+    named_shape_misses: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    type_names_generation: u64 = 0,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -5260,6 +5265,7 @@ pub const Checker = struct {
         self.class_extends_call_static_type_cache.clearRetainingCapacity();
         self.named_shape_non_class_cache.clearRetainingCapacity();
         self.named_shape_any_cache.clearRetainingCapacity();
+        self.named_shape_misses.clearRetainingCapacity();
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5703,6 +5709,7 @@ pub const Checker = struct {
         self.class_extends_call_static_type_cache.deinit(self.gpa);
         self.named_shape_non_class_cache.deinit(self.gpa);
         self.named_shape_any_cache.deinit(self.gpa);
+        self.named_shape_misses.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
         var parameter_annotations_it = self.parameter_annotations_by_name.valueIterator();
         while (parameter_annotations_it.next()) |items| items.deinit(self.gpa);
@@ -53064,6 +53071,8 @@ pub const Checker = struct {
         else
             &self.named_shape_any_cache;
         if (cache.get(t)) |name| return name;
+        const miss_key = (@as(u64, t) << 1) | @intFromBool(prefer_non_class);
+        if (self.named_shape_misses.get(miss_key) == self.type_names_generation) return null;
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (prefer_non_class and self.class_instance_types.contains(entry.key_ptr.*)) continue;
@@ -53076,6 +53085,7 @@ pub const Checker = struct {
                 return entry.key_ptr.*;
             }
         }
+        self.named_shape_misses.put(self.gpa, miss_key, self.type_names_generation) catch {};
         return null;
     }
 
@@ -182912,6 +182922,7 @@ pub const Checker = struct {
     fn putTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
         const previous = self.type_names.get(name);
         try self.type_names.put(self.gpa, name, t);
+        if (previous != t) self.type_names_generation += 1;
         if (previous) |previous_t| {
             if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
                 _ = self.named_type_by_id.remove(previous_t);
@@ -201362,6 +201373,69 @@ test "checker: indexed source function containment matches the full scan" {
     try T.expect(!s.checker.source_function_spans_valid);
     try T.expectEqual(@as(usize, 0), s.checker.source_function_spans.items.len);
     try T.expectEqual(@as(u32, 0), s.checker.source_function_containing_pos_cache.count());
+}
+
+test "checker: named shape misses expire on registration and rebinding" {
+    for ([_]bool{ false, true }) |prefer_non_class| {
+        const s = try newSetup("const value = 1;");
+        defer destroySetup(s);
+        const property = try s.sint.intern("value");
+        const name = try s.sint.intern("Named");
+        const members = [_]types.ObjectMember{.{
+            .name = property,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }};
+        const query = try s.ti.internObjectType(&members);
+        const matching = try s.ti.internObjectType(&members);
+        const mismatch = try s.ti.internObjectType(&.{.{
+            .name = property,
+            .type = types.Primitive.string_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }});
+        const miss_key = (@as(u64, query) << 1) | @intFromBool(prefer_non_class);
+        try T.expect(s.checker.objectTypeHasNamedShape(query, prefer_non_class) == null);
+        try T.expectEqual(s.checker.type_names_generation, s.checker.named_shape_misses.get(miss_key).?);
+        try s.checker.putTypeName(name, mismatch);
+        try T.expect(s.checker.named_shape_misses.get(miss_key).? != s.checker.type_names_generation);
+        try T.expect(s.checker.objectTypeHasNamedShape(query, prefer_non_class) == null);
+        const generation = s.checker.type_names_generation;
+        try s.checker.putTypeName(name, mismatch);
+        try T.expectEqual(generation, s.checker.type_names_generation);
+        try s.checker.putTypeName(name, matching);
+        try T.expectEqual(@as(u32, 1), s.checker.type_names.count());
+        try T.expectEqual(name, s.checker.objectTypeHasNamedShape(query, prefer_non_class).?);
+        s.checker.setSource("const next = 2;");
+        try T.expectEqual(@as(u32, 0), s.checker.named_shape_misses.count());
+    }
+}
+
+test "checker: named shape misses keep class preference separate" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const property = try s.sint.intern("value");
+    const class_name = try s.sint.intern("ClassShape");
+    const interface_name = try s.sint.intern("InterfaceShape");
+    const members = [_]types.ObjectMember{.{
+        .name = property,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }};
+    const query = try s.ti.internObjectType(&members);
+    const class_type = try s.ti.internObjectType(&members);
+    const interface_type = try s.ti.internObjectType(&members);
+    try s.checker.putTypeName(class_name, class_type);
+    try s.checker.class_instance_types.put(s.checker.gpa, class_name, class_type);
+    try T.expect(s.checker.objectTypeHasNamedShape(query, true) == null);
+    try T.expectEqual(class_name, s.checker.objectTypeHasNamedShape(query, false).?);
+    try s.checker.putTypeName(interface_name, interface_type);
+    try T.expectEqual(interface_name, s.checker.objectTypeHasNamedShape(query, true).?);
 }
 
 test "checker: source recovery skips an unannotated lexical parameter" {
