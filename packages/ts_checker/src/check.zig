@@ -4079,8 +4079,11 @@ pub const Checker = struct {
     /// validated against `type_names` before use so name rebinding cannot
     /// leave a stale diagnostic identity.
     named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
-    /// TypeIds already confirmed absent from `type_names`. Negative caching
-    /// avoids rescanning every registered name for anonymous structural types.
+    /// Monotonic membership proves never-registered TypeIds cannot occur in
+    /// `type_names`. Rebinding may leave obsolete IDs, which only cause an
+    /// extra full scan. This has the same lifetime as the type-name table.
+    registered_named_type_ids: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    registered_named_type_ids_complete: bool = true,
     /// Most-recent `interface_decl` node that registered a type under
     /// each name. Lets the interface-merge logic in
     /// `checkInterfaceDecl` confirm the previous declaration shares
@@ -5599,6 +5602,7 @@ pub const Checker = struct {
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         self.named_type_by_id.deinit(self.gpa);
+        self.registered_named_type_ids.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -53093,11 +53097,19 @@ pub const Checker = struct {
         }
         if (self.objectTypeHasNamedShape(t, true)) |name| return self.string_interner.get(name);
         if (direct_name) |name| return self.string_interner.get(name);
+        if (self.registeredTypeNameForId(t)) |name| return self.string_interner.get(name);
+        if (self.objectTypeHasNamedShape(t, false)) |name| return self.string_interner.get(name);
+        return null;
+    }
+
+    fn registeredTypeNameForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.registered_named_type_ids_complete and !self.registered_named_type_ids.contains(t)) return null;
+        // Keep the original scan order. The reverse map may have lost a
+        // selected alias through rebinding while another alias still exists.
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.* == t) return self.string_interner.get(entry.key_ptr.*);
+            if (entry.value_ptr.* == t) return entry.key_ptr.*;
         }
-        if (self.objectTypeHasNamedShape(t, false)) |name| return self.string_interner.get(name);
         return null;
     }
 
@@ -183102,6 +183114,12 @@ pub const Checker = struct {
         if (previous != t) {
             self.type_names_generation += 1;
             self.recordNamedShapeMemberFacts(t);
+            if (self.registered_named_type_ids_complete) {
+                self.registered_named_type_ids.put(self.gpa, t, {}) catch {
+                    // A partial index cannot prove that an ID is absent.
+                    self.registered_named_type_ids_complete = false;
+                };
+            }
         }
         if (previous) |previous_t| {
             if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
@@ -201673,6 +201691,87 @@ test "checker: local value declaration index retains scanner on allocation failu
         try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
         try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(use, name));
     }
+}
+
+test "checker: registered type ID index preserves rebinding aliases and source lifetime" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    try T.expect(s.checker.registeredTypeNameForId(types.Primitive.number_t) == null);
+    try T.expect(s.checker.knownTypeDisplayName(types.Primitive.number_t) == null);
+    try s.checker.putTypeName(a, types.Primitive.number_t);
+    try s.checker.putTypeName(b, types.Primitive.number_t);
+    try T.expectEqual(b, s.checker.namedTypeForId(types.Primitive.number_t).?);
+    try s.checker.putTypeName(b, types.Primitive.string_t);
+    try T.expect(s.checker.namedTypeForId(types.Primitive.number_t) == null);
+    try T.expectEqual(a, s.checker.registeredTypeNameForId(types.Primitive.number_t).?);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    s.checker.setSource("const next = 2;");
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    try s.checker.putTypeName(a, types.Primitive.string_t);
+    try T.expect(s.checker.registered_named_type_ids.contains(types.Primitive.number_t));
+    try T.expect(s.checker.registeredTypeNameForId(types.Primitive.number_t) == null);
+    try T.expect(s.checker.knownTypeDisplayName(types.Primitive.number_t) == null);
+    try s.checker.putTypeName(a, types.Primitive.number_t);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+}
+
+test "checker: registered type ID index preserves structural class and alias precedence" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const class_name = try s.sint.intern("ClassShape");
+    const interface_name = try s.sint.intern("InterfaceShape");
+    const member = types.ObjectMember{
+        .name = try s.sint.intern("value"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    };
+    const query = try s.ti.internObjectType(&.{member});
+    const class_type = try s.ti.internObjectType(&.{member});
+    const interface_type = try s.ti.internObjectType(&.{member});
+    try s.checker.putTypeName(class_name, class_type);
+    try s.checker.class_instance_types.put(s.checker.gpa, class_name, class_type);
+    try T.expect(!s.checker.registered_named_type_ids.contains(query));
+    try T.expectEqualStrings("ClassShape", s.checker.knownTypeDisplayName(query).?);
+    try T.expectEqualStrings("ClassShape", s.checker.knownTypeDisplayName(class_type).?);
+    try s.checker.putTypeName(interface_name, interface_type);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(query).?);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(class_type).?);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(interface_type).?);
+    try s.checker.alias_display_names.put(s.checker.gpa, query, "AliasShape");
+    try T.expectEqualStrings("AliasShape", s.checker.knownTypeDisplayName(query).?);
+}
+
+test "checker: registered type ID index falls back after allocation failure" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    const allocator = s.checker.gpa;
+    // Reserve authoritative maps so the optional membership index is the
+    // only allocation attempted by the first primitive registration.
+    try s.checker.type_names.ensureUnusedCapacity(allocator, 2);
+    try s.checker.named_type_by_id.ensureUnusedCapacity(allocator, 2);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    {
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = allocator;
+        try s.checker.putTypeName(a, types.Primitive.number_t);
+    }
+    try T.expect(failing.has_induced_failure);
+    try T.expect(!s.checker.registered_named_type_ids_complete);
+    try T.expect(!s.checker.registered_named_type_ids.contains(types.Primitive.number_t));
+    try s.checker.putTypeName(b, types.Primitive.number_t);
+    try s.checker.putTypeName(b, types.Primitive.string_t);
+    try T.expect(s.checker.namedTypeForId(types.Primitive.number_t) == null);
+    try T.expectEqual(a, s.checker.registeredTypeNameForId(types.Primitive.number_t).?);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    s.checker.setSource("const next = 2;");
+    try T.expect(!s.checker.registered_named_type_ids_complete);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
 }
 
 test "checker: named shape misses expire on registration and rebinding" {
