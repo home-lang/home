@@ -100155,7 +100155,7 @@ fn isNativeNodeCoreCorpusFile(relative: []const u8) bool {
     if (!std.mem.startsWith(u8, relative, prefix) or !std.mem.endsWith(u8, relative, ".js")) return false;
     const basename = relative[prefix.len..];
     if (std.mem.indexOfScalar(u8, basename, '/') != null) return false;
-    inline for (.{ "assert", "buffer", "module", "path", "querystring" }) |family| {
+    inline for (.{ "assert", "buffer", "module", "path", "querystring", "events", "eventtarget", "url", "util", "string-decoder" }) |family| {
         if (std.mem.eql(u8, basename, "test-" ++ family ++ ".js") or
             std.mem.startsWith(u8, basename, "test-" ++ family ++ "-")) return true;
     }
@@ -100174,10 +100174,18 @@ fn isNativeNodeTestCorpusFile(relative: []const u8) bool {
         "test-assert-typedarray-deepequal.js",
         "test-assert.js",
         "test-buffer-resizable.js",
+        "test-url-format-invalid-input.js",
     }) |name| {
         if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return true;
     }
     return false;
+}
+
+fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
+        return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
+    }
+    return null;
 }
 
 fn isNativeHomeCorpusFile(relative: []const u8) bool {
@@ -100198,15 +100206,18 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
     errdefer result.deinit(allocator);
 
     const scan = source[0..@min(source.len, 1500)];
-    const flags_index = std.mem.indexOf(u8, scan, "// Flags:") orelse return result;
-    const flags_tail = scan[flags_index + "// Flags:".len ..];
-    const flags_line = flags_tail[0 .. std.mem.indexOfScalar(u8, flags_tail, '\n') orelse flags_tail.len];
-    var flags = std.mem.tokenizeAny(u8, flags_line, " \t\r");
-    while (flags.next()) |flag| {
-        if (!std.mem.startsWith(u8, flag, "--")) continue;
-        const owned_flag = try allocator.dupe(u8, flag);
-        errdefer allocator.free(owned_flag);
-        try result.values.append(allocator, owned_flag);
+    var lines = std.mem.splitScalar(u8, scan, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimStart(u8, raw_line, " \t");
+        if (!std.mem.startsWith(u8, line, "// Flags:")) continue;
+        var flags = std.mem.tokenizeAny(u8, line["// Flags:".len..], " \t\r");
+        while (flags.next()) |flag| {
+            if (!std.mem.startsWith(u8, flag, "--")) continue;
+            const owned_flag = try allocator.dupe(u8, flag);
+            errdefer allocator.free(owned_flag);
+            try result.values.append(allocator, owned_flag);
+        }
+        break;
     }
     return result;
 }
@@ -100342,7 +100353,10 @@ fn runRelativeFile(
         try appendSummaryStdout(allocator, summary, native_run.stdout);
 
         if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
-            if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr)) |reason| {
+            if (nativeCorpusDisabledReason(relative)) |reason| {
+                file_result.unsupported = 1;
+                try recordFailure(allocator, summary, relative, reason);
+            } else if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr)) |reason| {
                 file_result.unsupported = 1;
                 const diagnostic = try std.fmt.allocPrint(allocator, "native Home corpus fixture skipped: {s}", .{reason});
                 defer allocator.free(diagnostic);
@@ -100495,7 +100509,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 176), native_count);
+    try std.testing.expectEqual(@as(usize, 220), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -100651,12 +100665,37 @@ test "native node core corpus predicates cover the audited inventory" {
         if (isNativeNodeCoreCorpusFile(relative)) core_count += 1;
         if (isNativeNodeTestCorpusFile(relative)) node_test_count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 124), core_count);
-    try std.testing.expectEqual(@as(usize, 10), node_test_count);
+    try std.testing.expectEqual(@as(usize, 169), core_count);
+    try std.testing.expectEqual(@as(usize, 11), node_test_count);
     try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/nested/test-buffer-from.js"));
     try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-buffer-from.mjs"));
     try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-modules.js"));
     try std.testing.expect(!isNativeNodeTestCorpusFile("js/node/test/parallel/test-assert-strict-exists.js"));
+}
+
+test "native corpus disabled body remains visible and contains no active test" {
+    const relative = "js/node/test/parallel/test-util-emit-experimental-warning.js";
+    try std.testing.expect(nativeCorpusDisabledReason(relative) != null);
+    try std.testing.expect(nativeCorpusDisabledReason("js/node/test/parallel/test-util-types.js") == null);
+    const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(source);
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        // If upstream activates this body, remove the disabled classification
+        // and validate the actual contract before accepting its clean exit.
+        try std.testing.expect(line.len == 0 or std.mem.eql(u8, line, "'use strict';") or std.mem.startsWith(u8, line, "//"));
+    }
+    var flags = try parseNativeCorpusFlags(std.testing.allocator, source);
+    defer flags.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), flags.values.items.len);
+}
+
+test "native corpus flags ignore disabled and inline directives" {
+    var flags = try parseNativeCorpusFlags(std.testing.allocator, "// // Flags: --disabled\nconst value = 1; // Flags: --inline\n  // Flags: --actual\n");
+    defer flags.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), flags.values.items.len);
+    try std.testing.expectEqualStrings("--actual", flags.values.items[0]);
 }
 
 test "native corpus summary does not double count unsupported tests" {

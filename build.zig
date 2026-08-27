@@ -1,4 +1,5 @@
 const std = @import("std");
+const native_bindings = @import("build-support/native_bindings.zig");
 
 /// Compile flags for the vendored SQLite amalgamation (Bun's feature set:
 /// fast, small, threadsafe). Applied only when statically compiling sqlite3.c
@@ -102,6 +103,7 @@ const native_vendor_roots = [_][]const u8{
 const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/uv-posix-stubs.c.o",
     "src/jsc/bindings/napi.cpp.o",
+    "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
 };
 
 fn shouldLinkBunObject(path: []const u8) bool {
@@ -147,6 +149,8 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         return;
     };
     defer dir.close(io);
+
+    m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return;
     defer walker.deinit();
@@ -1290,6 +1294,15 @@ pub fn build(b: *std.Build) void {
     const run_tpm_tests = b.addRunArtifact(tpm_tests);
 
     const test_step = b.step("test", "Run all tests");
+    const native_binding_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build-support/native_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_native_binding_tests = b.addRunArtifact(native_binding_tests);
+    dependOnTest(test_step, &run_native_binding_tests.step, test_filter, "native-bindings");
     dependOnTest(test_step, &run_lexer_tests.step, test_filter, "lexer");
     dependOnTest(test_step, &run_parser_tests.step, test_filter, "parser");
     dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
