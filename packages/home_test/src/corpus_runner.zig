@@ -52720,7 +52720,9 @@ const harness_prelude =
     \\    super(message);
     \\    this.name = "AssertionError";
     \\    this.code = "ERR_ASSERTION";
-    \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.")) : null;
+    \\    const sourcePath = String(globalThis.__home_current_filename || "");
+    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(this, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    Object.defineProperty(this, "message", { value: message, enumerable: true, configurable: true, writable: true });
     \\    if (options) {
@@ -52771,7 +52773,9 @@ const harness_prelude =
     \\    const identityDetail = actualRendered === expectedRendered ? " [actual: " + typeof actual + ", undefined=" + String(actual === undefined) + ", global=" + String(actual === globalThis) + "; expected: " + typeof expected + ", undefined=" + String(expected === undefined) + ", global=" + String(expected === globalThis) + "]" : "";
     \\    const error = new __home_AssertionError({ message: message || ("Expected " + actualRendered + " to be strictly equal to " + expectedRendered + identityDetail), actual, expected, operator: "strictEqual" });
     \\    const trace = new Error().stack;
-    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.")) : null;
+    \\    const sourcePath = String(globalThis.__home_current_filename || "");
+    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(error, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    throw error;
     \\  }
@@ -59349,6 +59353,11 @@ const harness_prelude =
     \\  allValidUsages() { return [[]]; },
     \\  objectToString(value) { try { return JSON.stringify(value); } catch (error) { return String(value); } },
     \\};
+    \\function __home_stream_map(mapper) {
+    \\  if (typeof mapper !== "function") throw new TypeError('The "mapper" argument must be a function');
+    \\  const source = this;
+    \\  return { async *[Symbol.asyncIterator]() { for await (const chunk of source) yield await mapper(chunk); } };
+    \\}
     \\function __home_stream_readable(options) {
     \\  const stream = __home_http_event_target();
     \\  Object.setPrototypeOf(stream, new.target && new.target.prototype ? new.target.prototype : __home_stream_readable.prototype);
@@ -59356,13 +59365,19 @@ const harness_prelude =
     \\  stream.__home_read_started = false;
     \\  stream.__home_read_in_flight = false;
     \\  stream.__home_read_ended = false;
+    \\  stream.readable = true;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_pipe_destination = null;
     \\  stream.__home_pending_chunks = [];
     \\  stream.__home_read_waiters = [];
+    \\  stream.map = __home_stream_map;
     \\  stream.push = function(chunk) {
     \\    this.__home_read_in_flight = false;
     \\    if (chunk === null) {
     \\      this.__home_read_ended = true;
+    \\      this.readable = false;
     \\      while (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: true, value: undefined });
     \\      this.emit("end");
     \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
@@ -59390,6 +59405,28 @@ const harness_prelude =
     \\    return destination;
     \\  };
     \\  stream.resume = function() { this.__home_start_read(); return this; };
+    \\  stream.read = function(size) {
+    \\    if (this.__home_pending_chunks.length) return this.__home_pending_chunks.shift();
+    \\    this.__home_start_read(size);
+    \\    return this.__home_pending_chunks.length ? this.__home_pending_chunks.shift() : null;
+    \\  };
+    \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    this.readable = false;
+    \\    this.__home_read_ended = true;
+    \\    while (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: true, value: undefined });
+    \\    const finish = destroyError => {
+    \\      const reason = destroyError || error;
+    \\      this.closed = true;
+    \\      if (reason) this.emit("error", reason);
+    \\      this.emit("close");
+    \\    };
+    \\    if (typeof opts.destroy === "function") {
+    \\      try { opts.destroy.call(this, error || null, finish); } catch (destroyError) { finish(destroyError); }
+    \\    } else finish();
+    \\    return this;
+    \\  };
     \\  stream[Symbol.asyncIterator] = function() {
     \\    const readable = this;
     \\    return {
@@ -59453,9 +59490,13 @@ const harness_prelude =
     \\      : null;
     \\  if (!iterator || typeof iterator.next !== "function") throw new TypeError("The iterable argument must be an iterable");
     \\  stream.__home_iterator = iterator;
+    \\  stream.map = __home_stream_map;
     \\  stream.__home_iterator_closed = false;
     \\  stream.__home_iterator_done = false;
     \\  stream.__home_destroyed = false;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_pumping = false;
     \\  stream.__home_end_emitted = false;
     \\  stream.__home_close_iterator = async function(value) {
@@ -59528,8 +59569,9 @@ const harness_prelude =
     \\  stream.destroy = function(error) {
     \\    if (this.__home_destroyed) return this;
     \\    this.__home_destroyed = true;
+    \\    this.destroyed = true;
     \\    Promise.resolve(this.__home_close_iterator()).then(
-    \\      () => this.emit("close"),
+    \\      () => { this.closed = true; this.emit("close"); },
     \\      closeError => this.emit("error", closeError),
     \\    );
     \\    if (error) this.emit("error", error);
@@ -59559,11 +59601,17 @@ const harness_prelude =
     \\  stream.__home_waiters = [];
     \\  stream.__home_ended = false;
     \\  stream.__home_error = null;
+    \\  stream.map = __home_stream_map;
+    \\  stream.__home_pipe_destination = null;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.push = function(chunk) {
     \\    if (chunk === null) {
     \\      this.__home_ended = true;
     \\      while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
     \\      this.emit("end");
+    \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
     \\      return false;
     \\    }
     \\    if (!this.__home_object_mode && !__home_stream_is_byte_chunk(chunk)) {
@@ -59577,6 +59625,7 @@ const harness_prelude =
     \\    else this.__home_chunks.push(chunk);
     \\    this.emit("readable");
     \\    this.emit("data", chunk);
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
     \\    return true;
     \\  };
     \\  stream._transform = typeof opts.transform === "function" ? opts.transform : function(chunk, _encoding, cb) { cb(null, chunk); };
@@ -59612,6 +59661,21 @@ const harness_prelude =
     \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
+    \\  stream.pipe = function(destination) {
+    \\    this.__home_pipe_destination = destination;
+    \\    for (const chunk of this.__home_chunks.splice(0)) if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\    if (this.__home_ended && destination && typeof destination.end === "function") destination.end();
+    \\    return destination;
+    \\  };
+    \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    this.closed = true;
+    \\    this.__home_ended = true;
+    \\    if (error && this.__home_error !== error) this.emit("error", error);
+    \\    this.emit("close");
+    \\    return this;
+    \\  };
     \\  stream[Symbol.asyncIterator] = function() {
     \\    const self = this;
     \\    return {
@@ -59628,20 +59692,52 @@ const harness_prelude =
     \\}
     \\__home_crypto_Hash.prototype.__home_transform_instance = true;
     \\Object.defineProperty(__home_stream_transform, Symbol.hasInstance, { configurable: true, value(value) { return !!(value && value.__home_transform_instance); } });
-    \\function __home_stream_pass_through() {
+    \\function __home_stream_pass_through(options) {
+    \\  const opts = options || {};
     \\  const stream = __home_http_event_target();
     \\  stream.__home_chunks = [];
-    \\  stream.write = function(chunk) {
-    \\    this.__home_chunks.push(chunk);
+    \\  stream.__home_waiters = [];
+    \\  stream.__home_ended = false;
+    \\  stream.__home_error = null;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
+    \\  stream.readable = opts.readable !== false;
+    \\  stream.writable = opts.writable !== false;
+    \\  stream.map = __home_stream_map;
+    \\  stream.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: false, value: chunk }); else this.__home_chunks.push(chunk);
     \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
     \\    this.emit("readable");
+    \\    this.emit("data", chunk);
+    \\    if (typeof callback === "function") callback();
     \\    return true;
     \\  };
-    \\  stream.end = function(chunk) {
-    \\    if (chunk !== undefined) this.write(chunk);
+    \\  stream.push = function(chunk) {
+    \\    if (chunk !== null) { this.write(chunk); return true; }
+    \\    this.__home_ended = true;
+    \\    this.readable = false;
+    \\    while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
     \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
     \\    this.emit("readable");
     \\    this.emit("end");
+    \\    return false;
+    \\  };
+    \\  stream.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
+    \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (chunk !== undefined) this.write(chunk);
+    \\    this.__home_ended = true;
+    \\    this.writable = false;
+    \\    this.writableEnded = true;
+    \\    if (this.readable === false && opts.autoDestroy !== false) this.destroyed = true;
+    \\    while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
+    \\    this.emit("readable");
+    \\    this.emit("end");
+    \\    this.emit("finish");
+    \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
     \\  stream.pipe = function(destination) {
@@ -59649,6 +59745,12 @@ const harness_prelude =
     \\    this.__home_pipe_destination = destination;
     \\    return destination;
     \\  };
+    \\  stream.resume = function() { return this; };
+    \\  stream[Symbol.asyncIterator] = function() {
+    \\    const self = this;
+    \\    return { next() { if (self.__home_chunks.length) return Promise.resolve({ done: false, value: self.__home_chunks.shift() }); if (self.__home_error) return Promise.reject(self.__home_error); if (self.__home_ended) return Promise.resolve({ done: true, value: undefined }); return new Promise((resolve, reject) => self.__home_waiters.push({ resolve, reject })); }, [Symbol.asyncIterator]() { return this; } };
+    \\  };
+    \\  stream.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.closed = true; this.__home_ended = true; this.__home_error = error || null; while (this.__home_waiters.length) { const waiter = this.__home_waiters.shift(); if (error) waiter.reject(error); else waiter.resolve({ done: true, value: undefined }); } if (error) this.emit("error", error); this.emit("close"); return this; };
     \\  return stream;
     \\}
     \\function __home_stream_writable(options) {
@@ -59658,6 +59760,8 @@ const harness_prelude =
     \\  Object.assign(stream, __home_http_event_target());
     \\  stream.writable = true;
     \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_writable_object_mode = !!opts.objectMode;
     \\  stream.__home_default_encoding = "utf8";
     \\  stream.__home_corked = 0;
@@ -59698,10 +59802,14 @@ const harness_prelude =
     \\      chunk = Buffer.from(chunk, selectedEncoding);
     \\      encoding = "buffer";
     \\    }
-    \\    if (this.__home_corked > 0) this.__home_pending_writes.push({ chunk, encoding, callback });
-    \\    else if (typeof opts.write === "function") opts.write.call(this, chunk, encoding, typeof callback === "function" ? callback : function() {});
-    \\    else if (typeof this._write === "function") this._write(chunk, encoding, typeof callback === "function" ? callback : function() {});
-    \\    else if (typeof callback === "function") callback();
+    \\    const done = error => {
+    \\      if (error) { this.__home_error = error; this.emit("error", error); }
+    \\      if (typeof callback === "function") callback(error);
+    \\    };
+    \\    if (this.__home_corked > 0) this.__home_pending_writes.push({ chunk, encoding, callback: done });
+    \\    else if (typeof opts.write === "function") opts.write.call(this, chunk, encoding, done);
+    \\    else if (typeof this._write === "function") this._write(chunk, encoding, done);
+    \\    else done();
     \\    return !this.destroyed;
     \\  };
     \\  stream.end = function(chunk, encoding, callback) {
@@ -59714,17 +59822,20 @@ const harness_prelude =
     \\    }
     \\    if (chunk !== undefined) this.write(chunk, encoding);
     \\    while (this.__home_corked > 0) this.uncork();
-    \\    this.destroyed = true;
-    \\    if (typeof opts.destroy === "function") opts.destroy.call(this);
+    \\    this.writable = false;
+    \\    this.writableFinished = true;
     \\    this.emit("finish");
+    \\    this.closed = true;
     \\    this.emit("close");
     \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
     \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
     \\    this.destroyed = true;
-    \\    if (typeof opts.destroy === "function") opts.destroy.call(this, error);
-    \\    this.emit("close");
+    \\    this.writable = false;
+    \\    const finish = destroyError => { const reason = destroyError || error; this.closed = true; if (reason && this.__home_error !== reason) this.emit("error", reason); this.emit("close"); };
+    \\    if (typeof opts.destroy === "function") { try { opts.destroy.call(this, error || null, finish); } catch (destroyError) { finish(destroyError); } } else finish();
     \\    return this;
     \\  };
     \\  return stream;
@@ -59736,6 +59847,8 @@ const harness_prelude =
     \\  this.readable = true;
     \\  this.writable = true;
     \\  this.destroyed = false;
+    \\  this.closed = false;
+    \\  this.__home_pipeline_wait_for_close = true;
     \\  this.__home_readable_object_mode = !!(opts.objectMode || opts.readableObjectMode);
     \\  this.__home_writable_object_mode = !!(opts.objectMode || opts.writableObjectMode);
     \\  this.readableObjectMode = this.__home_readable_object_mode;
@@ -59743,6 +59856,7 @@ const harness_prelude =
     \\  this.readableHighWaterMark = Number(opts.readableHighWaterMark || opts.highWaterMark) > 0 ? Number(opts.readableHighWaterMark || opts.highWaterMark) : 16 * 1024;
     \\  this.writableHighWaterMark = Number(opts.writableHighWaterMark || opts.highWaterMark) > 0 ? Number(opts.writableHighWaterMark || opts.highWaterMark) : 16 * 1024;
     \\  this.writableNeedDrain = false;
+    \\  this.map = __home_stream_map;
     \\  this._readableState = { decoder: null, encoding: null, objectMode: this.__home_readable_object_mode, highWaterMark: this.readableHighWaterMark };
     \\  this._writableState = { objectMode: this.__home_writable_object_mode, highWaterMark: this.writableHighWaterMark, length: 0, needDrain: false };
     \\  this.__home_duplex_paused = false;
@@ -59824,9 +59938,34 @@ const harness_prelude =
     \\    if (typeof this._final === "function") this._final(finish); else finish();
     \\    return this;
     \\  };
-    \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.readable = false; this.writable = false; if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.closed = true; this.readable = false; this.writable = false; if (error) this.emit("error", error); this.emit("close"); return this; };
     \\  this.pipe = function(destination) { this.on("data", chunk => destination.write(chunk)); this.on("end", () => destination.end()); return destination; };
     \\}
+    \\__home_stream_duplex.from = function(body) {
+    \\  if (typeof body !== "function") throw new TypeError('The "body" argument must be a function');
+    \\  const input = __home_stream_pass_through({ objectMode: true });
+    \\  const duplex = __home_stream_pass_through({ objectMode: true });
+    \\  const outputWrite = duplex.write;
+    \\  let output;
+    \\  try { output = body(input); } catch (error) { Promise.resolve().then(() => duplex.destroy(error)); return duplex; }
+    \\  const originalDestroy = duplex.destroy;
+    \\  duplex.write = function(chunk, encoding, callback) { return input.write(chunk, encoding, callback); };
+    \\  duplex.end = function(chunk, encoding, callback) { input.end(chunk, encoding, callback); return this; };
+    \\  duplex.destroy = function(error) { if (!input.destroyed) input.destroy(error); return originalDestroy.call(this, error); };
+    \\  Promise.resolve().then(async () => {
+    \\    try {
+    \\      for await (const chunk of output) outputWrite.call(duplex, chunk);
+    \\      duplex.__home_ended = true;
+    \\      duplex.readable = false;
+    \\      while (duplex.__home_waiters.length) duplex.__home_waiters.shift().resolve({ done: true, value: undefined });
+    \\      if (duplex.__home_pipe_destination && typeof duplex.__home_pipe_destination.end === "function") duplex.__home_pipe_destination.end();
+    \\      duplex.emit("readable");
+    \\      duplex.emit("end");
+    \\    }
+    \\    catch (error) { duplex.destroy(error); }
+    \\  });
+    \\  return duplex;
+    \\};
     \\function __home_stream_duplex_pair() {
     \\  let first, second;
     \\  first = new __home_stream_duplex({ write(chunk, _encoding, callback) { if (!second.destroyed) second.emit("data", Buffer.from(chunk)); callback(); } });
@@ -59921,33 +60060,171 @@ const harness_prelude =
     \\function __home_stream_pipeline() {
     \\  const values = Array.from(arguments);
     \\  const callback = typeof values[values.length - 1] === "function" ? values.pop() : null;
+    \\  if (!callback) {
+    \\    const error = new TypeError('ERR_INVALID_ARG_TYPE: The "callback" argument must be of type function');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  let pipelineOptions = null;
+    \\  const optionCandidate = values[values.length - 1];
+    \\  if (optionCandidate && typeof optionCandidate === "object" && typeof optionCandidate.on !== "function" && typeof optionCandidate.pipe !== "function" && typeof optionCandidate.write !== "function" && typeof optionCandidate[Symbol.iterator] !== "function" && typeof optionCandidate[Symbol.asyncIterator] !== "function") pipelineOptions = values.pop();
+    \\  if (values.length === 1 && Array.isArray(values[0])) values.splice(0, 1, ...values[0]);
     \\  if (values.length < 2) {
-    \\    const error = new TypeError("pipeline requires at least two streams");
+    \\    const error = new TypeError("ERR_MISSING_ARGS: pipeline requires at least two streams");
     \\    error.code = "ERR_MISSING_ARGS";
-    \\    if (callback) { callback(error); return undefined; }
     \\    throw error;
     \\  }
     \\  let settled = false;
-    \\  const finish = error => {
+    \\  const finish = (error, value) => {
     \\    if (settled) return;
     \\    settled = true;
-    \\    if (callback) callback(error);
+    \\    const deliver = () => callback(error, value);
+    \\    if (!error && pipelineOptions && pipelineOptions.end === false) {
+    \\      for (let index = 0; index + 1 < values.length; index++) {
+    \\        const stream = values[index];
+    \\        if (stream && typeof stream.destroy === "function" && !stream.destroyed) { try { stream.destroy(); } catch (destroyError) {} }
+    \\      }
+    \\    }
+    \\    if (error) {
+    \\      let pendingCloses = 0;
+    \\      let scanning = true;
+    \\      const closed = () => { pendingCloses = Math.max(0, pendingCloses - 1); if (!scanning && pendingCloses === 0) deliver(); };
+    \\      for (const stream of values) {
+    \\        if (stream && typeof stream.destroy === "function") {
+    \\          if (stream.__home_pipeline_wait_for_close && stream.closed === false && typeof stream.once === "function") { pendingCloses++; stream.once("close", closed); }
+    \\          if (!stream.destroyed) { try { stream.destroy(error); } catch (destroyError) { closed(); } }
+    \\        } else if (stream && typeof stream.emit === "function") {
+    \\          try { stream.emit("error", error); } catch (emitError) {}
+    \\        }
+    \\      }
+    \\      scanning = false;
+    \\      if (pendingCloses === 0) deliver();
+    \\      return;
+    \\    }
+    \\    deliver();
     \\  };
+    \\  const abortError = () => { const error = new Error("The operation was aborted"); error.name = "AbortError"; error.code = "ABORT_ERR"; return error; };
+    \\  const invalidReturn = value => { const error = new TypeError("Expected a stream, iterable, async iterable, or promise from a pipeline stage"); error.code = "ERR_INVALID_RETURN_VALUE"; error.value = value; return error; };
+    \\  const signal = pipelineOptions && pipelineOptions.signal;
+    \\  const first = values[0];
+    \\  const firstIsBareIterable = first && (typeof first[Symbol.iterator] === "function" || typeof first[Symbol.asyncIterator] === "function") && typeof first.pipe !== "function" && typeof first.on !== "function";
+    \\  const hasFunctionStage = values.some(value => typeof value === "function");
+    \\  if (hasFunctionStage || firstIsBareIterable) {
+    \\    const toIterable = source => {
+    \\      if (source && (typeof source[Symbol.iterator] === "function" || typeof source[Symbol.asyncIterator] === "function")) return source;
+    \\      if (!source || typeof source.on !== "function") throw invalidReturn(source);
+    \\      const chunks = Array.isArray(source.__home_chunks) ? source.__home_chunks.splice(0) : [];
+    \\      let ended = !!source.__home_ended;
+    \\      let failure = source.__home_error || null;
+    \\      const waiters = [];
+    \\      source.on("data", chunk => { if (waiters.length) waiters.shift().resolve({ done: false, value: chunk }); else chunks.push(chunk); });
+    \\      source.on("end", () => { ended = true; while (waiters.length) waiters.shift().resolve({ done: true, value: undefined }); });
+    \\      source.on("error", error => { failure = error; while (waiters.length) waiters.shift().reject(error); });
+    \\      if (typeof source.resume === "function") source.resume();
+    \\      return { [Symbol.asyncIterator]() { return this; }, next() { if (chunks.length) return Promise.resolve({ done: false, value: chunks.shift() }); if (failure) return Promise.reject(failure); if (ended) return Promise.resolve({ done: true, value: undefined }); return new Promise((resolve, reject) => waiters.push({ resolve, reject })); } };
+    \\    };
+    \\    const pumpInto = async (source, destination, endDestination) => {
+    \\      if (!destination || typeof destination.write !== "function") throw invalidReturn(destination);
+    \\      for await (const chunk of toIterable(source)) {
+    \\        if (signal && signal.aborted) throw abortError();
+    \\        await new Promise((resolve, reject) => { try { destination.write(chunk, error => error ? reject(error) : resolve(undefined)); } catch (error) { reject(error); } });
+    \\      }
+    \\      if (signal && signal.aborted) throw abortError();
+    \\      if (endDestination !== false) await new Promise((resolve, reject) => { try { destination.end(error => error ? reject(error) : resolve(undefined)); } catch (error) { reject(error); } });
+    \\      return destination;
+    \\    };
+    \\    let current;
+    \\    try { current = typeof first === "function" ? first() : first; } catch (error) { throw error; }
+    \\    if (current === undefined || current === null) throw invalidReturn(current);
+    \\    const pending = [];
+    \\    let finalThen = null;
+    \\    for (let index = 1; index < values.length; index++) {
+    \\      const next = values[index];
+    \\      const isLast = index === values.length - 1;
+    \\      if (typeof next === "function") {
+    \\        current = next(toIterable(current));
+    \\        if (current === undefined || current === null) throw invalidReturn(current);
+    \\        if (isLast) {
+    \\          const then = current && current.then;
+    \\          if (typeof then === "function") finalThen = then;
+    \\          else if (typeof current[Symbol.asyncIterator] !== "function") throw invalidReturn(current);
+    \\        }
+    \\      } else {
+    \\        pending.push(pumpInto(current, next, !(isLast && pipelineOptions && pipelineOptions.end === false)));
+    \\        current = next;
+    \\      }
+    \\    }
+    \\    const last = values[values.length - 1];
+    \\    if (typeof last === "function" && current && typeof current[Symbol.asyncIterator] === "function") {
+    \\      const returnStream = __home_stream_readable.from(current);
+    \\      const completion = new Promise((resolve, reject) => { returnStream.once("end", () => resolve(undefined)); returnStream.once("error", reject); });
+    \\      Promise.all(pending.concat(completion)).then(() => finish(undefined), finish);
+    \\      Promise.resolve().then(() => returnStream.resume());
+    \\      return returnStream;
+    \\    }
+    \\    const completion = finalThen ? new Promise((resolve, reject) => { try { finalThen.call(current, resolve, reject); } catch (error) { reject(error); } }) : Promise.resolve(current);
+    \\    Promise.all(pending.concat(completion)).then(results => finish(undefined, results[results.length - 1]), finish);
+    \\    return typeof last === "function" ? undefined : last;
+    \\  }
     \\  for (const stream of values) {
-    \\    if (stream && typeof stream.once === "function") stream.once("error", finish);
+    \\    if (stream && typeof stream.once === "function") {
+    \\      stream.once("error", finish);
+    \\      stream.once("close", () => {
+    \\        if (settled) return;
+    \\        const error = new Error("Premature close");
+    \\        error.code = "ERR_STREAM_PREMATURE_CLOSE";
+    \\        finish(error);
+    \\      });
+    \\    }
+    \\  }
+    \\  const finalStream = values[values.length - 1];
+    \\  const completionStream = pipelineOptions && pipelineOptions.end === false ? values[values.length - 2] : finalStream;
+    \\  if (completionStream && typeof completionStream.once === "function") {
+    \\    completionStream.once("finish", () => finish(undefined));
+    \\    completionStream.once("end", () => finish(undefined));
+    \\  }
+    \\  if (finalStream && (finalStream.closed || finalStream.destroyed || finalStream.writable === false || finalStream.writableEnded || finalStream.writableFinished)) {
+    \\    const error = new Error("ERR_STREAM_UNABLE_TO_PIPE: Cannot pipe to a closed or destroyed stream");
+    \\    error.code = "ERR_STREAM_UNABLE_TO_PIPE";
+    \\    Promise.resolve().then(() => finish(error));
+    \\    return finalStream;
     \\  }
     \\  try {
     \\    let destination = values[0];
     \\    for (let index = 1; index < values.length; index++) {
-    \\      if (!destination || typeof destination.pipe !== "function") throw new TypeError("pipeline source is not readable");
-    \\      destination = destination.pipe(values[index]);
+    \\      const next = values[index];
+    \\      const suppressEnd = pipelineOptions && pipelineOptions.end === false && index === values.length - 1;
+    \\      if (destination && typeof destination.pipe === "function" && !suppressEnd) destination = destination.pipe(next);
+    \\      else if (destination && typeof destination.on === "function") {
+    \\        destination.on("data", chunk => { if (next && typeof next.write === "function") next.write(chunk); });
+    \\        if (!suppressEnd) destination.on("end", () => { if (next && typeof next.end === "function") next.end(); });
+    \\        if (typeof destination.resume === "function") destination.resume();
+    \\        destination = next;
+    \\      } else throw new TypeError("pipeline source is not readable");
     \\    }
-    \\    Promise.resolve().then(() => finish(undefined));
+    \\    if (!finalStream || typeof finalStream.once !== "function") Promise.resolve().then(() => finish(undefined));
     \\    return destination;
     \\  } catch (error) {
     \\    finish(error);
     \\    return undefined;
     \\  }
+    \\}
+    \\function __home_stream_add_abort_signal(signal, stream) {
+    \\  if (!signal || typeof signal.addEventListener !== "function") throw new TypeError('The "signal" argument must be an AbortSignal');
+    \\  if (!stream || typeof stream.destroy !== "function") throw new TypeError('The "stream" argument must be a stream');
+    \\  let handled = false;
+    \\  const abort = () => {
+    \\    if (handled) return;
+    \\    handled = true;
+    \\    const error = new Error("The operation was aborted", { cause: signal.reason });
+    \\    error.name = "AbortError";
+    \\    error.code = "ABORT_ERR";
+    \\    error.cause = signal.reason;
+    \\    stream.destroy(error);
+    \\  };
+    \\  if (signal.aborted) Promise.resolve().then(abort); else signal.addEventListener("abort", abort, { once: true });
+    \\  if (typeof stream.once === "function") stream.once("close", () => { handled = true; if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abort); });
+    \\  return stream;
     \\}
     \\function __home_stream_finished(stream, callback) {
     \\  if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
@@ -60128,7 +60405,7 @@ const harness_prelude =
     \\__home_JSStreamSocket.StreamWrap = __home_JSStreamSocket;
     \\__home_JSStreamSocket.JSStreamSocket = __home_JSStreamSocket;
     \\const __home_stream_wrap_binding = { ShutdownWrap: __home_stream_ShutdownWrap, WriteWrap: __home_stream_WriteWrap };
-    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex, duplexPair: __home_stream_duplex_pair, finished: __home_stream_finished, pipeline: __home_stream_pipeline });
+    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex, duplexPair: __home_stream_duplex_pair, addAbortSignal: __home_stream_add_abort_signal, finished: __home_stream_finished, pipeline: __home_stream_pipeline });
     \\Object.setPrototypeOf(__home_http2_Http2Stream.prototype, __home_stream_duplex.prototype);
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
@@ -60990,6 +61267,18 @@ const harness_prelude =
     \\globalThis.__home_modules["stream/iter"] = __home_stream_iter_module;
     \\globalThis.__home_modules["node:stream/iter"] = __home_stream_iter_module;
     \\const __home_stream_promises_module = {
+    \\  pipeline() {
+    \\    const streams = Array.from(arguments);
+    \\    return new Promise((resolve, reject) => {
+    \\      try {
+    \\        __home_stream_pipeline.apply(undefined, streams.concat(function(error, value) {
+    \\          if (error) reject(error); else resolve(value);
+    \\        }));
+    \\      } catch (error) {
+    \\        reject(error);
+    \\      }
+    \\    });
+    \\  },
     \\  finished(stream) {
     \\    if (stream && (stream.writableFinished || stream.readableEnded || stream.__home_close_emitted)) return Promise.resolve(undefined);
     \\    if (stream && stream.destroyed) {
