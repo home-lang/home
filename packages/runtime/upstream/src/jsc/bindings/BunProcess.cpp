@@ -161,6 +161,7 @@ JSC_DECLARE_HOST_FUNCTION(Process_functionCwd);
 
 extern "C" uint8_t Bun__getExitCode(void*);
 extern "C" uint8_t Bun__setExitCode(void*, uint8_t);
+extern "C" bool Bun__Process__beginExitDispatch(void*);
 extern "C" bool Bun__closeChildIPC(JSGlobalObject*);
 
 extern "C" bool Bun__GlobalObject__connectedIPC(JSGlobalObject*);
@@ -278,16 +279,18 @@ static JSValue constructProcessReleaseObject(VM& vm, JSObject* processObject)
 
 static void dispatchExitInternal(JSC::JSGlobalObject* globalObject, Process* process, int exitCode)
 {
-    static bool processIsExiting = false;
-    if (processIsExiting)
-        return;
-    processIsExiting = true;
-    auto& emitter = process->wrapped();
     auto& vm = JSC::getVM(globalObject);
 
     if (vm.hasTerminationRequest() || vm.hasExceptionsAfterHandlingTraps())
         return;
 
+    // Workers share this code, but not their process object or exit lifecycle.
+    // Guard in Home's VM state without changing the linked Process class ABI
+    // or trusting the user-writable process._exiting property.
+    if (!Bun__Process__beginExitDispatch(bunVM(vm)))
+        return;
+
+    auto& emitter = process->wrapped();
     auto event = Identifier::fromString(vm, "exit"_s);
     if (!emitter.hasEventListeners(event)) {
         return;

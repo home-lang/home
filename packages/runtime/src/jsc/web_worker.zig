@@ -740,7 +740,9 @@ fn shutdown(this: *WebWorker) void {
         // clear it so process.on('exit') handlers can run. teardownJSCVM
         // re-sets it for the JSC VM teardown.
         vm.jsc_vm.clearHasTerminationRequest();
-        vm.is_shutting_down = true;
+        // onExit marks shutdown after user exit listeners and before Node-API
+        // cleanup hooks. Marking it here would suppress uncaughtException()
+        // and turn assertions thrown by worker exit listeners into success.
         vm.onExit();
         jsc.API.cron.CronJob.clearAllForVM(vm, .teardown);
         // Embedded socket groups must drain while JSC is still alive —

@@ -202,6 +202,8 @@ void MessagePort::dispatchOneMessage(ScriptExecutionContext& context, MessageWit
 
 JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
 {
+    auto& vm = lexicalGlobalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     if (!isEntangled())
         return jsUndefined();
 
@@ -214,7 +216,18 @@ JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
         return jsUndefined();
 
     auto ports = MessagePort::entanglePorts(*context, WTF::move(message->transferredPorts));
-    return message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, WTF::move(ports), SerializationErrorMode::NonThrowing);
+    auto value = message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, WTF::move(ports), SerializationErrorMode::Throwing);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!value) [[unlikely]] {
+        throwTypeError(lexicalGlobalObject, scope, "Failed to deserialize MessagePort message"_s);
+        return {};
+    }
+    // Presence is independent of the serialized value. In particular, a real
+    // undefined message must be distinguishable from an empty receive queue.
+    auto* result = constructEmptyObject(lexicalGlobalObject);
+    RETURN_IF_EXCEPTION(scope, {});
+    result->putDirect(vm, vm.propertyNames->message, value);
+    RELEASE_AND_RETURN(scope, result);
 }
 
 void MessagePort::dispatchEvent(Event& event)

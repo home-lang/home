@@ -23,14 +23,28 @@ export function requiredId(values: Map<string, number>, name: string): number {
 }
 
 export function nativeFunctionId(header: string, type: string, filename: string, symbol: string, length: number | null): number {
-  // Wrapped functions need signature validation and Zig calls need matching
-  // exported adapters. Do not silently treat either as a direct C++ factory.
-  if (type !== 'cpp' || length !== null) throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
+  // Zig calls need matching exported adapters. C++ wrappers are accepted only
+  // when their complete generated signature matches the linked dispatch ABI.
+  if (type !== 'cpp') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
   if (!header.includes(`#include "${filename.replace(/\.cpp$/, '.h')}"`)) {
     throw new Error(`Linked native dispatch has no header for ${filename}`)
   }
+  let target = symbol
+  if (length !== null) {
+    if (!Number.isSafeInteger(length) || length < 0 || !/^[A-Za-z_][A-Za-z0-9_:]*$/.test(symbol)) {
+      throw new Error(`Invalid native wrapper signature: ${symbol}`)
+    }
+    target = `js2native_wrap_${symbol.replace(/[^A-Za-z]/g, '_')}`
+    const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const wrappers = [...header.matchAll(new RegExp(`static ALWAYS_INLINE JSC::JSValue ${escaped}\\(Zig::GlobalObject\\* globalObject\\) \\{([^}]+)\\}`, 'g'))]
+    const displayName = symbol.split(/[^A-Za-z0-9]/g).pop()
+    const expected = `return JSC::JSFunction::create(globalObject->vm(), globalObject, ${length}, "${displayName}"_s, ${symbol}, JSC::ImplementationVisibility::Public);`
+    if (wrappers.length !== 1 || wrappers[0][1].replace(/\s+/g, ' ').trim() !== expected) {
+      throw new Error(`Linked native wrapper signature mismatch: ${symbol}`)
+    }
+  }
   const matches = [...header.matchAll(/case (\d+): return ([A-Za-z_][A-Za-z0-9_:]*)\(global\);/g)]
-    .filter(match => match[2] === symbol)
+    .filter(match => match[2] === target)
   if (matches.length !== 1) throw new Error(`Linked native dispatch must contain exactly one ${symbol}`)
   return Number(matches[0][1])
 }

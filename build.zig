@@ -105,6 +105,7 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/napi.cpp.o",
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
+    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort
 };
 
 fn shouldLinkBunObject(path: []const u8) bool {
@@ -154,6 +155,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.messagePortObject(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return;
     defer walker.deinit();

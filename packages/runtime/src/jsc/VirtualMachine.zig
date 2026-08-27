@@ -698,6 +698,16 @@ pub fn uncaughtException(this: *jsc.VirtualMachine, globalObject: *JSGlobalObjec
         return true;
     }
 
+    if (this.worker != null and (this.is_handling_uncaught_exception or this.exit_on_uncaught_exception)) {
+        // The main-thread shortcuts below call process.exit() as noreturn.
+        // A worker instead reports to its parent and requests termination;
+        // freeing its VM or panicking here would unwind through live JS.
+        this.unhandled_error_counter += 1;
+        this.exit_handler.exit_code = if (this.is_handling_uncaught_exception) 7 else 1;
+        this.onUnhandledRejection(this, globalObject, err);
+        return false;
+    }
+
     if (this.is_handling_uncaught_exception) {
         this.runErrorHandler(err, null);
         bun.api.node.process.exit(globalObject, 7);
@@ -871,9 +881,12 @@ pub fn onBeforeExit(this: *VirtualMachine) void {
     this.exit_handler.dispatchOnBeforeExit();
     var dispatch = false;
     while (true) {
+        if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
         while (this.isEventLoopAlive()) : (dispatch = true) {
             this.tick();
+            if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
             this.eventLoop().autoTickActive();
+            if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
         }
 
         if (dispatch) {
@@ -4195,6 +4208,17 @@ pub fn bustDirCache(vm: *VirtualMachine, path: []const u8) bool {
 
 pub const ExitHandler = struct {
     exit_code: u8 = 0,
+    did_dispatch_exit: bool = false,
+
+    /// A Worker owns a separate process object and exit lifecycle. This state
+    /// must belong to its VM, not a process-wide (or thread-local) C++ static.
+    /// Dispatch runs on the owning VM thread; set the guard before user code
+    /// can re-enter process.exit().
+    pub export fn Bun__Process__beginExitDispatch(vm: *VirtualMachine) bool {
+        if (vm.exit_handler.did_dispatch_exit) return false;
+        vm.exit_handler.did_dispatch_exit = true;
+        return true;
+    }
 
     pub export fn Bun__getExitCode(vm: *VirtualMachine) u8 {
         return vm.exit_handler.exit_code;

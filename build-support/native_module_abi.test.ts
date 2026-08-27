@@ -32,4 +32,16 @@ describe('incremental native module ABI', () => {
     expect(() => replaceModuleLiteral('', 'NodeUrl', '')).toThrow('exactly one')
     expect(() => replaceModuleLiteral(literal + literal, 'NodeUrl', '')).toThrow('exactly one')
   })
+  test('validates the complete C++ wrapper signature before resolving its dispatch', () => {
+    const wrapper = 'static ALWAYS_INLINE JSC::JSValue js2native_wrap_jsFunctionPostMessage(Zig::GlobalObject* globalObject) {\n  return JSC::JSFunction::create(globalObject->vm(), globalObject, 1, "jsFunctionPostMessage"_s, jsFunctionPostMessage, JSC::ImplementationVisibility::Public);\n}'
+    const header = '#include "ZigGlobalObject.h"\n' + wrapper + '\ncase 94: return js2native_wrap_jsFunctionPostMessage(global);'
+    const resolve = (source: string, length = 1) => nativeFunctionId(source, 'cpp', 'ZigGlobalObject.cpp', 'jsFunctionPostMessage', length)
+    expect(resolve(header)).toBe(94)
+    expect(() => resolve(header, 2)).toThrow('signature mismatch')
+    expect(() => resolve(header, -1)).toThrow('Invalid')
+    expect(() => resolve(header.replace(', jsFunctionPostMessage,', ', wrongFunction,'))).toThrow('signature mismatch')
+    expect(() => resolve(header.replace('Visibility::Public', 'Visibility::Private'))).toThrow('signature mismatch')
+    expect(() => resolve(header + '\n' + wrapper)).toThrow('signature mismatch')
+    expect(() => resolve(header + '\ncase 95: return js2native_wrap_jsFunctionPostMessage(global);')).toThrow('exactly one')
+  })
 })

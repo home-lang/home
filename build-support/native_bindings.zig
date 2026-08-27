@@ -9,6 +9,8 @@ const CompileCommand = struct {
 var cached_process_object: ?std.Build.LazyPath = null;
 var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
+var cached_message_port_object: ?std.Build.LazyPath = null;
+var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
 /// produced the rest of the linked Bun objects. Never silently use the stale
@@ -33,6 +35,22 @@ pub fn napiObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
 
 pub fn registryObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_registry_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-1.cpp", output.path(b, "HomeInternalModuleRegistry.cpp"));
+    cached_registry_object = object;
+    return object;
+}
+
+pub fn messagePortObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_message_port_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-3.cpp", output.path(b, "HomeMessagePort.cpp"));
+    cached_message_port_object = object;
+    return object;
+}
+
+fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
     const bundler = b.findProgram(.{ .names = &.{"bun"} }) orelse @panic("Home builtin generation requires Bun at build time");
     const generate = b.addSystemCommand(&.{bundler});
@@ -53,8 +71,10 @@ pub fn registryObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
         "packages/runtime/upstream/src/jsc/bindings/ErrorCode.ts",
         "packages/runtime/upstream/src/jsc/bindings/js_classes.ts",
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.cpp",
         "packages/runtime/upstream/src/jsc/modules/_NativeModule.h",
         "packages/runtime/upstream/src/js/node/url.ts",
+        "packages/runtime/upstream/src/js/node/worker_threads.ts",
         "packages/runtime/upstream/src/js/node/querystring.ts",
         "packages/runtime/upstream/src/js/internal/url.ts",
         "packages/runtime/upstream/src/js/internal/validators.ts",
@@ -65,10 +85,10 @@ pub fn registryObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
         "codegen/GeneratedJS2Native.h",
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
     }) |input| generate.addFileInput(.{ .cwd_relative = b.fmt("{s}/{s}", .{ build_root, input }) });
-    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-1.cpp", output.path(b, "HomeInternalModuleRegistry.cpp"));
-    cached_registry_object = object;
-    return object;
+    cached_native_modules = output;
+    return output;
 }
 
 fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, source: std.Build.LazyPath) std.Build.LazyPath {
