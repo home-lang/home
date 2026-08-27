@@ -207,7 +207,15 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, 
         try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
     }
     try excludes.append(gpa, "**/node_modules/**");
-    try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+    try expandProjectGlobs(
+        gpa,
+        project_dir,
+        effectiveIncludePatterns(cfg),
+        excludes.items,
+        cfg.compiler_options.allow_js orelse false,
+        &input_files,
+        &owned,
+    );
     return input_files.items.len > 0;
 }
 
@@ -421,7 +429,15 @@ fn buildOneProject(
             excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
         }
         excludes.append(gpa, "**/node_modules/**") catch return .errors;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .errors;
+        expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        ) catch return .errors;
     }
     if (input_files.items.len == 0) {
         if (verbose) std.debug.print("  (no input files)\n", .{});
@@ -591,7 +607,15 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
         }
         excludes.append(gpa, "**/node_modules/**") catch return .build;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .build;
+        expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        ) catch return .build;
     }
     if (input_files.items.len == 0) return .up_to_date;
 
@@ -1130,7 +1154,15 @@ fn appendProjectCleanOutputs(
             try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
         }
         try excludes.append(gpa, "**/node_modules/**");
-        try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+        try expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        );
     }
 
     const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
@@ -2821,6 +2853,7 @@ pub fn main(init: std.process.Init) !void {
                 project_dir,
                 include_patterns,
                 exclude_patterns,
+                c.compiler_options.allow_js orelse false,
                 &input_files,
                 &owned_paths,
             );
@@ -3002,7 +3035,7 @@ pub fn main(init: std.process.Init) !void {
     else
         .{};
     compile_opts.strict = opts.strict;
-    compile_opts.no_emit = opts.no_emit;
+    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{
@@ -3209,7 +3242,7 @@ pub fn main(init: std.process.Init) !void {
         for (blocked_outputs.items) |b| gpa.free(b);
         blocked_outputs.deinit(gpa);
     }
-    if (!opts.no_emit) {
+    if (!compile_opts.no_emit) {
         var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
         defer inputs.deinit(gpa);
         var outputs: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -3236,7 +3269,7 @@ pub fn main(init: std.process.Init) !void {
 
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
-        if (opts.no_emit) continue;
+        if (compile_opts.no_emit) continue;
         const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
         // Skip files whose output was blocked by the TS5055/5056 check.
@@ -3466,7 +3499,7 @@ pub fn main(init: std.process.Init) !void {
                 const file_id = program.lookupPath(path) orelse continue;
                 const f = program.fileById(file_id);
                 const c = f.compilation orelse continue;
-                if (opts.no_emit) continue;
+                if (compile_opts.no_emit) continue;
                 const out_path = computeOutPath(gpa, path, out_dir, ".js") catch continue;
                 defer gpa.free(out_path);
                 writeOrDie(gpa, out_path, c.js);
@@ -3684,13 +3717,14 @@ fn mapDriverRelated(
 /// `include` glob and no `exclude` glob. Owned paths are stored in
 /// `owned` so the caller can free them after compilation; borrowed
 /// `[]const u8` slices into those owned bytes are appended to
-/// `out`. Mirrors the file shapes tsc accepts by default (no
-/// `allowJs` yet).
+/// `out`. Mirrors the file shapes tsc accepts by default;
+/// JavaScript-family inputs participate only when `allowJs` is enabled.
 fn expandProjectGlobs(
     gpa: std.mem.Allocator,
     project_dir: []const u8,
     include: []const []const u8,
     exclude: []const []const u8,
+    allow_js: bool,
     out: *std.ArrayListUnmanaged([]const u8),
     owned: *std.ArrayListUnmanaged([]u8),
 ) !void {
@@ -3745,7 +3779,7 @@ fn expandProjectGlobs(
                 },
                 .file => {
                     defer gpa.free(child_rel);
-                    if (!isTsLikeExtension(child_rel)) continue;
+                    if (!isProjectInputExtension(child_rel, allow_js)) continue;
                     if (anyMatches(exclude, child_rel)) continue;
                     if (!anyMatches(include, child_rel)) continue;
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
@@ -3776,6 +3810,15 @@ fn isTsLikeExtension(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".hm")) return true;
     if (std.mem.endsWith(u8, path, ".home")) return true;
     return false;
+}
+
+fn isProjectInputExtension(path: []const u8, allow_js: bool) bool {
+    if (isTsLikeExtension(path)) return true;
+    if (!allow_js) return false;
+    return std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
 }
 
 fn effectiveIncludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
@@ -4170,6 +4213,20 @@ test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes
     // No extension -> left alone (matches tsc's HasExtension gate).
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("Makefile"));
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
+}
+
+test "tsc_main: project discovery admits JavaScript only with allowJs" {
+    try std.testing.expect(isProjectInputExtension("src/app.ts", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.js", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.jsx", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.mjs", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.cjs", false));
+
+    try std.testing.expect(isProjectInputExtension("src/app.js", true));
+    try std.testing.expect(isProjectInputExtension("src/app.jsx", true));
+    try std.testing.expect(isProjectInputExtension("src/app.mjs", true));
+    try std.testing.expect(isProjectInputExtension("src/app.cjs", true));
+    try std.testing.expect(!isProjectInputExtension("src/app.json", true));
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {

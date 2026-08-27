@@ -335,6 +335,10 @@ pub const CompileOptions = struct {
     /// `checkJs` is enabled. Callers that know the virtual file kind
     /// can set this directly.
     allow_js: bool = false,
+    /// Report semantic diagnostics for JavaScript files admitted by
+    /// `allowJs`. A file-level `// @ts-check` directive still enables
+    /// checking when this project option is false.
+    check_js: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
@@ -1792,6 +1796,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.skip_lib_check) |on| {
         opts.skip_lib_check = on;
     }
+    opts.allow_js = cfg.compiler_options.allow_js orelse false;
+    opts.check_js = cfg.compiler_options.check_js orelse false;
+    opts.no_emit = cfg.compiler_options.no_emit orelse false;
     if (cfg.compiler_options.types) |names| {
         opts.compiler_type_reference_names = names;
     }
@@ -2313,7 +2320,7 @@ pub fn compileSource(
             diagnostic_message = "'import type' declarations can only be used in TypeScript files.";
         }
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
-            sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js);
+            sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js, options.check_js);
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, diagnostic_message, source)) continue;
         if (has_syntactic_parse_diagnostics and
             d.code == ts_checker.check.TsCodes.destructuring_decl_must_have_initializer)
@@ -3437,12 +3444,13 @@ fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
 }
 
 fn sourceIsUncheckedJs(source: []const u8) bool {
-    return sourceIsUncheckedJsAtPos(source, 0, false);
+    return sourceIsUncheckedJsAtPos(source, 0, false, false);
 }
 
-fn sourceIsUncheckedJsAtPos(source: []const u8, pos: usize, allow_js_enabled: bool) bool {
+fn sourceIsUncheckedJsAtPos(source: []const u8, pos: usize, allow_js_enabled: bool, check_js_enabled: bool) bool {
     const allow_js = allow_js_enabled or (directiveBool(source, "allowJs") orelse false);
     if (!allow_js) return false;
+    if (check_js_enabled) return false;
     if (directiveBool(source, "checkJs") orelse false) return false;
     if (sourceHasTsCheck(source)) return false;
     const filename = virtualFilenameAtPos(source, pos) orelse return virtualFilenameIsJs(source);
@@ -6645,6 +6653,43 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(!opts.is_tsx);
+}
+
+test "driver: optionsFromConfig checks JavaScript and honors noEmit" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(opts.allow_js);
+    try T.expect(opts.check_js);
+    try T.expect(opts.no_emit);
+
+    var c = try compileSource(
+        T.allocator,
+        \\/** @type {number} */
+        \\const value = "wrong";
+    ,
+        blk: {
+            var checked_js_opts = opts;
+            checked_js_opts.importer_path = "/src/checked.js";
+            break :blk checked_js_opts;
+        },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == ts_checker.check.TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {
