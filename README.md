@@ -79,23 +79,23 @@ three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 69.9 ms | 41.5 ms | **3.9 ms** | **10.61× faster** |
-| 256 files | 248.3 ms | 62.5 ms | **36.2 ms** | **1.73× faster** |
-| Deep types | 143.9 ms | 57.0 ms | **15.9 ms** | **3.57× faster** |
-| 128-module import graph | 166.4 ms | 56.1 ms | **33.1 ms** | **1.70× faster** |
-| 64-leaf barrel graph | 120.5 ms | 50.0 ms | **34.1 ms** | **1.47× faster** |
-| 256 typed TSX components | 245.6 ms | 64.8 ms | **31.4 ms** | **2.07× faster** |
-| 256 generic call groups | 278.9 ms | 76.0 ms | **35.6 ms** | **2.13× faster** |
-| 256 exhaustive control-flow functions | 238.2 ms | 69.7 ms | **51.9 ms** | **1.34× faster** |
-| 256 type-predicate/assertion families | 276.4 ms | 82.3 ms | **78.1 ms** | **1.05× faster** |
-| 256 null-safe-access families | 253.6 ms | 69.8 ms | **55.0 ms** | **1.27× faster** |
-| 128 destructuring/rest/spread families | 186.2 ms | 63.4 ms | **47.8 ms** | **1.32× faster** |
-| 128 × 8 overload calls | 310.8 ms | 99.0 ms | **56.4 ms** | **1.76× faster** |
-| 128 generic class families | 232.4 ms | 61.5 ms | **40.7 ms** | **1.51× faster** |
-| 128 structural object families | 230.6 ms | 72.4 ms | **40.9 ms** | **1.77× faster** |
-| 128 interface/namespace families | 274.1 ms | 77.5 ms | **58.7 ms** | **1.32× faster** |
-| 256 variadic tuple families | 306.1 ms | 89.5 ms | **58.7 ms** | **1.52× faster** |
-| 128 checked-JavaScript/JSDoc families | 248.8 ms | 61.2 ms | **45.9 ms** | **1.33× faster** |
+| Startup | 69.6 ms | 42.1 ms | **3.6 ms** | **11.85× faster** |
+| 256 files | 236.8 ms | 63.9 ms | **35.8 ms** | **1.78× faster** |
+| Deep types | 158.3 ms | 58.1 ms | **16.6 ms** | **3.49× faster** |
+| 128-module import graph | 152.2 ms | 51.7 ms | **30.1 ms** | **1.72× faster** |
+| 64-leaf barrel graph | 107.1 ms | 46.7 ms | **31.6 ms** | **1.48× faster** |
+| 256 typed TSX components | 179.2 ms | 52.2 ms | **26.2 ms** | **1.99× faster** |
+| 256 generic call groups | 222.5 ms | 62.4 ms | **30.0 ms** | **2.08× faster** |
+| 256 exhaustive control-flow functions | 247.3 ms | 69.6 ms | **51.1 ms** | **1.36× faster** |
+| 256 type-predicate/assertion families | 345.3 ms | 93.4 ms | **87.7 ms** | **1.07× faster** |
+| 256 null-safe-access families | 273.6 ms | 73.3 ms | **65.8 ms** | **1.11× faster** |
+| 128 destructuring/rest/spread families | 191.0 ms | 61.9 ms | **45.9 ms** | **1.35× faster** |
+| 128 × 8 overload calls | 236.5 ms | 71.6 ms | **42.2 ms** | **1.70× faster** |
+| 128 generic class families | 217.7 ms | 60.5 ms | **40.2 ms** | **1.51× faster** |
+| 128 structural object families | 208.5 ms | 63.0 ms | **40.5 ms** | **1.56× faster** |
+| 128 interface/namespace families | 240.7 ms | 72.3 ms | **55.9 ms** | **1.29× faster** |
+| 256 variadic tuple families | 360.3 ms | 100.2 ms | **65.7 ms** | **1.52× faster** |
+| 128 checked-JavaScript/JSDoc families | 301.1 ms | 72.3 ms | **51.1 ms** | **1.41× faster** |
 
 These are local synthetic means, with substantial variance in several rows;
 they are not a claim of universal benchmark leadership.
