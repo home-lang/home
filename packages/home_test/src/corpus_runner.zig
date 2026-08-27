@@ -100108,6 +100108,15 @@ fn isNativeStreamIteratorCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-writer.js");
 }
 
+fn isNativeFsDisposableCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-mkdtempDisposable.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-mkdtempDisposableSync.js");
+}
+
+fn isNativeHomeCorpusFile(relative: []const u8) bool {
+    return isNativeStreamIteratorCorpusFile(relative) or isNativeFsDisposableCorpusFile(relative);
+}
+
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
     var result = OwnedFlags{};
     errdefer result.deinit(allocator);
@@ -100126,7 +100135,7 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
     return result;
 }
 
-fn buildNativeStreamIteratorArgs(
+fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
     flags: []const []const u8,
     absolute_fixture_path: []const u8,
@@ -100189,13 +100198,13 @@ fn runRelativeFile(
     const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(source);
 
-    if (isNativeStreamIteratorCorpusFile(relative)) {
+    if (isNativeHomeCorpusFile(relative)) {
         const absolute_fixture_path = try std.fs.path.resolve(allocator, &.{file_path});
         defer allocator.free(absolute_fixture_path);
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const args_tail = try buildNativeStreamIteratorArgs(allocator, flags.values.items, absolute_fixture_path);
+        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path);
         defer allocator.free(args_tail);
 
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
@@ -100300,7 +100309,7 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
     try std.testing.expectEqualStrings("--second", flags.values.items[1]);
 
-    const args = try buildNativeStreamIteratorArgs(allocator, flags.values.items, "/absolute/fixture.js");
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/absolute/fixture.js");
     defer allocator.free(args);
     try std.testing.expectEqual(@as(usize, 4), args.len);
     try std.testing.expectEqualStrings("run", args[0]);
@@ -100315,6 +100324,28 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     var late_flags = try parseNativeCorpusFlags(allocator, &late_source);
     defer late_flags.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), late_flags.values.items.len);
+}
+
+test "native fs disposable corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var native_count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeFsDisposableCorpusFile(relative)) count += 1;
+        if (isNativeHomeCorpusFile(relative)) native_count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 47), native_count);
+    try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
+    try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
+    try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
+    try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/nested/test-fs-mkdtempDisposableSync.js"));
 }
 
 test "native stream iterator process classification requires a clean exit" {

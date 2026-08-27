@@ -170,6 +170,16 @@ const exports = {
   lstat: asyncWrap(fs.lstat, "lstat"),
   mkdir: asyncWrap(fs.mkdir, "mkdir"),
   mkdtemp: asyncWrap(fs.mkdtemp, "mkdtemp"),
+  mkdtempDisposable: async function mkdtempDisposable(prefix, options) {
+    const path = await fs.mkdtemp(prefix, options);
+    // Stash the full path in case of process.chdir()
+    const fullPath = require("node:path").resolve(path);
+    async function remove() {
+      // force makes repeated removal a no-op; real failures (EACCES) still throw
+      await fs.rm(fullPath, { recursive: true, force: true });
+    }
+    return { path, remove, [Symbol.asyncDispose]: remove };
+  },
   statfs: asyncWrap(fs.statfs, "statfs"),
   open: async (path, flags = "r", mode = 0o666) => {
     return new private_symbols.FileHandle(await fs.open(path, flags, mode), flags);
