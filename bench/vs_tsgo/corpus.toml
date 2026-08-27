@@ -13,6 +13,7 @@ generic_calls = 256
 control_flow_functions = 256
 type_predicate_families = 256
 null_safe_access_families = 256
+destructuring_families = 128
 overload_call_groups = 128
 class_hierarchy_families = 128
 structural_object_families = 128
@@ -49,6 +50,9 @@ description = "One module with 256 user-defined type-predicate families covering
 
 [workloads.null_safe_access]
 description = "One module with 256 nullable object families covering optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption."
+
+[workloads.destructuring]
+description = "One module with 128 object families covering nested object and tuple bindings, defaults, object rest, spread reconstruction, and typed consumption."
 
 [workloads.overload_resolution]
 description = "One module with 128 call groups selecting among eight generic overloads with contextual arguments."

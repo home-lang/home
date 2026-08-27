@@ -8,10 +8,12 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -467,6 +469,47 @@ def generate_null_safe_access(directory: Path, families: int) -> None:
     write(directory / "src/null-safe-access.ts", "".join(blocks))
 
 
+def generate_destructuring(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "  active: false,\n" if index % 2 else ""
+        blocks.append(f"""interface BindingRecord{index} {{
+  readonly id: number;
+  readonly meta: {{ readonly label: string; readonly score: number }};
+  readonly slots: readonly [number, string];
+  readonly active?: boolean;
+}}
+
+interface BindingProjection{index} {{
+  readonly id: number;
+  readonly active: boolean;
+  readonly label: string;
+  readonly score: number;
+  readonly first: number;
+  readonly second: string;
+}}
+
+function projectBindings{index}(input: BindingRecord{index}): BindingProjection{index} {{
+  const {{ meta: {{ label, score }}, slots: [first, second], active = true, ...identity }} = input;
+  const spread = {{ ...identity, active, label, score, first, second }};
+  return spread;
+}}
+
+export const destructured{index}: BindingProjection{index} = projectBindings{index}({{
+  id: {index},
+  meta: {{ label: "item-{index}", score: {index} }},
+  slots: [{index}, "slot-{index}"],
+{active}}});
+export const consumedBindings{index}: readonly [number, string, boolean] = [
+  destructured{index}.id, destructured{index}.second, destructured{index}.active,
+];
+
+""")
+    write(directory / "src/destructuring.ts", "".join(blocks))
+
+
 def generate_overload_resolution(directory: Path, groups: int) -> None:
     write(directory / "tsconfig.json", shared_config())
     generate_minimal_lib(directory)
@@ -777,6 +820,7 @@ def cmd_corpus() -> None:
         CORPUS / "null_safe_access",
         cfg["null_safe_access_families"],
     )
+    generate_destructuring(CORPUS / "destructuring", cfg["destructuring_families"])
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
     generate_structural_objects(CORPUS / "structural_objects", cfg["structural_object_families"])
@@ -850,6 +894,42 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         if result.returncode != 0 or result.stdout or result.stderr:
             details = (result.stdout + result.stderr).strip()
             raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
+    if workload == "destructuring":
+        validate_destructuring_negatives(commands)
+
+
+def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
+    # Check the inferred bindings themselves so a checker cannot pass the
+    # positive workload by erasing projections to any or retaining removed keys.
+    with tempfile.TemporaryDirectory(prefix="home-bench-destructuring-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "destructuring", project)
+        source_path = project / "src/destructuring.ts"
+        source = source_path.read_text(encoding="utf-8")
+        anchor = (
+            "function projectBindings0(input: BindingRecord0): BindingProjection0 {\n"
+            "  const { meta: { label, score }, slots: [first, second], active = true, ...identity } = input;\n"
+        )
+        if source.count(anchor) != 1:
+            raise SystemExit("destructuring negative-control anchor is not unique")
+        invalid = (
+            "  const invalidLabel: number = label;\n"
+            "  const invalidTuple: number = second;\n"
+            "  const invalidRest: string = identity.id;\n"
+            "  const invalidDefault: string = active;\n"
+            "  const invalidOmitted = identity.meta;\n"
+        )
+        write(source_path, source.replace(anchor, anchor + invalid, 1))
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode == 0 or codes != ["2322"] * 4 + ["2339"]:
+                raise SystemExit(f"{name} failed destructuring negative controls:\n{details}")
 
 
 def cmd_cold(runs: int, warmup: int) -> Path:

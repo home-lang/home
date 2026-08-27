@@ -46,6 +46,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `control_flow` | 256 exhaustive functions | Discriminated-union narrowing, branch joins, definite assignment, and exhaustiveness |
 | `type_predicates` | 256 predicate families | User-defined predicates, assertion functions, call-driven narrowing, nested property reads, and typed consumption |
 | `null_safe_access` | 256 nullable object families | Optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption |
+| `destructuring` | 128 object families | Nested object and tuple bindings, defaults, object rest, spread reconstruction, and typed consumption |
 | `overload_resolution` | 128 groups × 8 calls | Overload candidate selection, generic literal inference, and contextual argument typing |
 | `class_hierarchy` | 128 generic class families | Inheritance, overrides, constructors, instance members, and structural interface checking |
 | `structural_objects` | 128 source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, and excess source members |
@@ -54,6 +55,11 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `checkjs_jsdoc` | 128 checked-JavaScript families | JSDoc typedefs, constrained templates, callbacks, classes, property reads, and typed result consumption |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
+The destructuring workload also runs five automatic negative controls before
+timing: nested property, tuple element, rest-field, default-value, and excluded
+rest-property checks must produce four TS2322 diagnostics and one TS2339 in
+every compiler. These controls run in a temporary copy and are never timed.
+
 They do not stand in for application-scale measurements; pinned real-world
 projects should be added only when all three compilers can validate the same
 configuration and dependency graph.
