@@ -104,6 +104,7 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/uv-posix-stubs.c.o",
     "src/jsc/bindings/napi.cpp.o",
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
+    "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
 };
 
 fn shouldLinkBunObject(path: []const u8) bool {
@@ -151,6 +152,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     defer dir.close(io);
 
     m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return;
     defer walker.deinit();

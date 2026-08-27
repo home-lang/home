@@ -30,6 +30,13 @@ type NativeCallType = "zig" | "cpp" | "bind";
 const nativeCalls: NativeCall[] = [];
 const wrapperCalls: WrapperCall[] = [];
 
+// Incremental native builds must use the dispatch table of the objects they
+// actually link, rather than renumbering calls from a subset of the sources.
+let nativeCallResolver: ((type: NativeCallType, filename: string, symbol: string, length: number | null) => number) | undefined;
+export function setNativeCallResolver(resolver: typeof nativeCallResolver) {
+  nativeCallResolver = resolver;
+}
+
 const sourceFiles = readdirRecursiveWithExclusionsAndExtensionsSync(
   path.join(import.meta.dir, "../"),
   ["deps", "node_modules", "WebKit"],
@@ -66,6 +73,7 @@ export function registerNativeCall(
   symbol: string,
   create_fn_len: null | number,
 ) {
+  if (nativeCallResolver) return nativeCallResolver(call_type, filename, symbol, create_fn_len);
   const resolved_filename = resolveNativeFileId(call_type, filename);
 
   const maybe_wrapped_symbol = create_fn_len != null ? "js2native_wrap_" + symbol.replace(/[^A-Za-z]/g, "_") : symbol;
