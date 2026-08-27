@@ -131979,7 +131979,19 @@ pub const Checker = struct {
         if (std.mem.eql(u8, s, "Iterator") or
             std.mem.eql(u8, s, "fetch") or
             std.mem.eql(u8, s, "Image")) return true;
-        const builtins = [_][]const u8{
+        return builtin_name_set.has(s);
+    }
+
+    const builtin_name_set = blk: {
+        @setEvalBranchQuota(100_000);
+        const names = builtinNames();
+        var entries: [names.len]struct { []const u8 } = undefined;
+        for (names, 0..) |name, i| entries[i] = .{name};
+        break :blk std.StaticStringMap(void).initComptime(entries);
+    };
+
+    fn builtinNames() []const []const u8 {
+        return &.{
             // Core globals / values.
             "console",                      "undefined",                  "NaN",
             "Infinity",                     "globalThis",                 "this",
@@ -132098,10 +132110,6 @@ pub const Checker = struct {
             // resolution wired up yet.
                                   "super",
         };
-        for (builtins) |b| {
-            if (std.mem.eql(u8, s, b)) return true;
-        }
-        return false;
     }
 
     /// Common type-only names from `lib.es5.d.ts` (and friends) that
@@ -201951,6 +201959,43 @@ test "checker: named shape member facts do not accept combined or obsolete facts
     try T.expect(s.checker.objectTypeHasNamedShape(combined, false) == null);
     try T.expect(s.checker.namedShapeMemberFactsAllow(original));
     try T.expect(s.checker.objectTypeHasNamedShape(original, false) == null);
+}
+
+test "checker: builtin name static index preserves all spellings and misses" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    for (Checker.builtinNames()) |name| {
+        try T.expect(s.checker.isBuiltinName(try s.sint.intern(name)));
+        var buffer: [256]u8 = undefined;
+        const prefix = try s.sint.intern(try std.fmt.bufPrint(&buffer, "!{s}", .{name}));
+        try T.expect(!s.checker.isBuiltinName(prefix));
+        const suffix = try s.sint.intern(try std.fmt.bufPrint(&buffer, "{s}!", .{name}));
+        try T.expect(!s.checker.isBuiltinName(suffix));
+    }
+    for ([_][]const u8{ "", "promise", "PROMISE", "ConSolE", "myValue", "\u{03c0}" }) |name| {
+        try T.expect(!s.checker.isBuiltinName(try s.sint.intern(name)));
+    }
+}
+
+test "checker: builtin name static index retains source dependent exceptions" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const writer = try s.sint.intern("ITextWriter");
+    s.checker.source = null;
+    try T.expect(s.checker.isBuiltinName(writer));
+    const cases = .{
+        .{ "const value = 1;", true },
+        .{ "// @lib: es5\nconst value = 1;", false },
+        .{ "// @lib: es5,scripthost\nconst value = 1;", true },
+        .{ "// @lib: dom\n// scripthost\nconst value = 1;", false },
+    };
+    inline for (cases) |case| {
+        s.checker.setSource(case[0]);
+        try T.expectEqual(case[1], s.checker.isBuiltinName(writer));
+        for ([_][]const u8{ "Iterator", "fetch", "Image" }) |name| {
+            try T.expect(s.checker.isBuiltinName(try s.sint.intern(name)));
+        }
+    }
 }
 
 test "checker: named shape candidate index preserves ambiguity rebinding and source lifetime" {
