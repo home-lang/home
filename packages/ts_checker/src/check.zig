@@ -4679,7 +4679,6 @@ pub const Checker = struct {
     /// diagnostics. Null for explicit return annotations.
     current_function_return_sig: ?TypeId = null,
     current_function_return_from_jsdoc: bool = false,
-    current_function_return_from_paired_setter: bool = false,
     current_async_function_return_check: bool = false,
     /// Instance type expected from an explicit `return <expr>` inside
     /// a constructor body. Set only while walking a constructor so
@@ -8996,17 +8995,9 @@ pub const Checker = struct {
                         r.value != hir_mod.none_node_id and
                         ret_t != types.Primitive.none and
                         ret_t != types.Primitive.any and
-                        ret_t != types.Primitive.unknown and
                         ret_t != types.Primitive.never and
                         (self.declaredReturnNeedsLiteralAssignabilityCheck(declared) or
-                            (self.strict_flags.no_unchecked_indexed_access and
-                                self.typeIncludesUndefined(ret_t) and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) or
-                            (self.current_function_return_node != hir_mod.none_node_id and
-                                self.hir.kindOf(self.current_function_return_node) == .type_predicate_type and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) or
-                            ((self.current_function_return_from_jsdoc or self.current_function_return_from_paired_setter) and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared))) and
+                            declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) and
                         !self.enumMemberExpressionMatchesReturnAnnotation(r.value, self.current_function_return_node) and
                         !self.enumLiteralAssignableToEnumUnion(ret_t, declared) and
                         !(try self.literalExpressionAssignableToTarget(r.value, declared)) and
@@ -19359,9 +19350,6 @@ pub const Checker = struct {
         const prev_function_return_from_jsdoc = self.current_function_return_from_jsdoc;
         defer self.current_function_return_from_jsdoc = prev_function_return_from_jsdoc;
         self.current_function_return_from_jsdoc = false;
-        const prev_function_return_from_paired_setter = self.current_function_return_from_paired_setter;
-        defer self.current_function_return_from_paired_setter = prev_function_return_from_paired_setter;
-        self.current_function_return_from_paired_setter = false;
         const prev_async_return_check = self.current_async_function_return_check;
         defer self.current_async_function_return_check = prev_async_return_check;
         self.current_async_function_return_check = f.flags.is_async and !f.flags.is_generator;
@@ -19412,7 +19400,6 @@ pub const Checker = struct {
             // `(x: number) => number` at the assignment.
             var contextual_sig: ?TypeId = null;
             var declared_from_jsdoc = false;
-            var declared_from_paired_setter = false;
             const is_predicate_return = f.return_type != hir_mod.none_node_id and
                 self.hir.kindOf(f.return_type) == .type_predicate_type;
             const declared = if (is_predicate_return)
@@ -19439,7 +19426,6 @@ pub const Checker = struct {
                     }
                 }
                 if (self.pairedSetterContextualReturnType(node)) |setter_t| {
-                    declared_from_paired_setter = true;
                     break :blk setter_t;
                 }
                 // Call arguments receive contextual parameter types while
@@ -19475,7 +19461,6 @@ pub const Checker = struct {
                 self.current_function_return_node = if (f.return_type != hir_mod.none_node_id) f.return_type else hir_mod.none_node_id;
                 self.current_function_return_sig = contextual_sig;
                 self.current_function_return_from_jsdoc = declared_from_jsdoc;
-                self.current_function_return_from_paired_setter = declared_from_paired_setter;
             }
         }
         if (self.hir.kindOf(f.body) == .block_stmt) {
@@ -19564,7 +19549,8 @@ pub const Checker = struct {
         }
         if (f.return_type == hir_mod.none_node_id and
             !self.current_function_return_from_jsdoc and
-            (!has_contextual_return_value_body or f.flags.is_generator))
+            (!has_contextual_return_value_body or f.flags.is_generator or
+                self.functionContextReturnDiagnosticOwnedByOuterExpression(node)))
         {
             if (f.flags.is_generator) {
                 const gen_t = try self.inferredGeneratorTypeForFunction(node, f, true);
@@ -30149,7 +30135,16 @@ pub const Checker = struct {
                 },
                 .call_expr, .new_expr => {
                     for (hir_mod.callArgs(self.hir, parent)) |argument| {
-                        if (argument == child) return self.contextualCallOwnsReturnDiagnostic(parent);
+                        if (argument == child) {
+                            // Block callbacks infer their actual returns;
+                            // the call then checks the complete signature.
+                            // An expression callback can instead report at
+                            // its body when a single signature supplies context.
+                            const function = hir_mod.fnDeclOf(self.hir, fn_node);
+                            if (function.body != hir_mod.none_node_id and
+                                self.hir.kindOf(function.body) == .block_stmt) return true;
+                            return self.contextualCallOwnsReturnDiagnostic(parent);
+                        }
                     }
                     return false;
                 },
@@ -232343,6 +232338,90 @@ test "checker: const tuple paths reduce recursive conditional aliases" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: primitive return contracts reject incompatible synchronous values" {
+    const b = try newBoundSetup(
+        \\function text(value: number): string { return value; }
+        \\function numeric(value: string): number { return value; }
+        \\function flag(value: string): boolean { return value; }
+        \\function integer(value: number): bigint { return value; }
+        \\function token(value: bigint): symbol { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts reject incompatible awaited values" {
+    const b = try newBoundSetup(
+        \\async function direct(value: number): Promise<string> { return value; }
+        \\async function promised(value: Promise<number>): Promise<string> { return value; }
+        \\async function awaited(value: PromiseLike<string>): Promise<number> { return await value; }
+        \\async function branch(value: string, flag: boolean): Promise<boolean> {
+        \\  if (flag) return value;
+        \\  return false;
+        \\}
+        \\const expression = async (value: number): Promise<string> => value;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts reject unknown and strict nullish values" {
+    const b = try newBoundSetup(
+        \\function text(value: unknown): string { return value; }
+        \\async function numeric(value: unknown): Promise<number> { return value; }
+        \\function nullText(): string { return null; }
+        \\function absentFlag(): boolean { return; }
+        \\function optionalText(value: string | undefined): string { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts preserve non-strict nullish and any values" {
+    const b = try newBoundSetup(
+        \\function text(): string { return null; }
+        \\function numeric(): number { return undefined; }
+        \\function anyText(value: any): string { return value; }
+        \\async function nullText(): Promise<string> { return null; }
+        \\async function anyNumber(value: any): Promise<number> { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts preserve valid values and callback ownership" {
+    const b = try newBoundSetup(
+        \\function text<T extends string>(value: T): string { return value; }
+        \\function numeric(value: number | string): number { if (typeof value === "number") return value; return 0; }
+        \\function flag(): boolean { return true; }
+        \\function integer(value: bigint): bigint { return value; }
+        \\function token(value: symbol): symbol { return value; }
+        \\async function direct(value: string): Promise<string> { return value; }
+        \\async function promised(value: Promise<string>): Promise<string> { return value; }
+        \\async function awaited(value: PromiseLike<number>): Promise<number> { return await value; }
+        \\async function nested(): Promise<string> { function inner(): number { return 1; } return "ok"; }
+        \\declare function consume(callback: () => string): void;
+        \\consume(() => { return 1; });
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: async expression-bodied arrows infer structural Promise returns" {
