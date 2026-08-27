@@ -27,7 +27,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp'].includes(basename)) {
         const header = basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -74,20 +74,24 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
-      const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => path.basename(relative) === basename
-        ? `#include ${JSON.stringify(basename)}`
+      const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp'] : [basename]
+      const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => ownedNames.includes(path.basename(relative))
+        ? `#include ${JSON.stringify(path.basename(relative))}`
         : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
       expect(generatedUnit).toBe(expectedUnit)
       const includes = [...generatedUnit.matchAll(/^#include "([^"]+)"$/gm)].map(match => match[1])
       expect(includes.filter(include => include === basename)).toHaveLength(1)
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
-      expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - 1)
-      const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', basename === 'BunWorkerGlobalScope.cpp' ? '' : 'webcore', basename)
-      expect(read(path.join(output, basename))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
+      expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
+      for (const name of ownedNames) {
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', name === 'BunWorkerGlobalScope.cpp' ? '' : 'webcore', name)
+        expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
+      }
     }
-    const privateHeader = 'HomeMessagePortLifecycle.h'
-    expect(readFileSync(path.join(output, privateHeader)))
-      .toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', privateHeader)))
+    for (const privateHeader of ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h']) {
+      expect(readFileSync(path.join(output, privateHeader)))
+        .toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', privateHeader)))
+    }
     expect(existsSync(path.join(output, 'MessagePort.h'))).toBe(false)
     expect(existsSync(path.join(output, 'MessagePortPipe.h'))).toBe(false)
     expect(existsSync(path.join(output, 'Worker.h'))).toBe(false)
@@ -143,7 +147,7 @@ nativeTest('rejects MessagePort and Worker class-header drift and invalid native
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
@@ -154,7 +158,7 @@ nativeTest('rejects MessagePort and Worker class-header drift and invalid native
       expect(existsSync(output)).toBe(false)
       writeFileSync(headerPath, original)
     }
-    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]]]) {
+    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]]]) {
       const unit = path.join(temporary, 'unified', unitName)
       const original = read(unit)
       const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`

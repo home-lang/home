@@ -978,6 +978,11 @@ pub fn onExit(this: *VirtualMachine) void {
 
     this.exit_handler.dispatchOnExit();
     this.is_shutting_down = true;
+    // Native worker snapshot handles belong to this VM. Clear them here on
+    // their owning thread, before Node-API cleanup hooks and JSC destruction.
+    // Workers and late notifications carry only request IDs, so they cannot
+    // free a parent HandleSet node after this point. Applies to main + workers.
+    Home__Worker__cancelSnapshotsForVM(this.global);
 
     const rare_data = this.rare_data orelse return;
     defer rare_data.cleanup_hooks.clearAndFree(bun.default_allocator);
@@ -993,6 +998,7 @@ pub fn onExit(this: *VirtualMachine) void {
 }
 
 extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
+extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
 
 pub fn globalExit(this: *VirtualMachine) noreturn {
     bun.assert(this.isShuttingDown());

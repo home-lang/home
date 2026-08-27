@@ -107,7 +107,7 @@ const native_skip_paths = [_][]const u8{
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
     "unified/UnifiedSource-src_jsc_bindings-0.cpp.o", // contains Home-owned WorkerGlobalScope
     "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp.o", // contains Home-owned JSMessagePort
-    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort
+    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort and JSWorker
     "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp.o", // contains Home-owned MessagePortPipe
     "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp.o", // contains Home-owned Worker
 };

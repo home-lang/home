@@ -45,6 +45,7 @@
 #include "CloseEvent.h"
 #include "JSMessagePort.h"
 #include "HomeMessagePortLifecycle.h"
+#include "HomeWorkerSnapshots.h"
 #include "JSBroadcastChannel.h"
 #include "EventLoopTask.h"
 #include <wtf/HashSet.h>
@@ -694,6 +695,7 @@ bool Worker::dispatchExit(int32_t exitCode)
         auto* task = new EventLoopTask([exitCode, marker = WTF::move(marker), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
             (void)marker; // lifetime removes the task from the private registry
             auto* globalObject = defaultGlobalObject(context.globalObject());
+            WorkerSnapshots::cancelForWorker(protectedThis.get(), context);
             if (!globalObject->isShuttingDown() && !context.isJSExecutionForbidden()
                 && Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) == ScriptExecutionStatus::Running
                 && protectedThis->hasEventListeners(eventNames().closeEvent)) {
@@ -739,7 +741,8 @@ bool Worker::dispatchExit(int32_t exitCode)
     return ScriptExecutionContext::postTaskTo(
         m_parentContextId,
         [this] { this->deref(); },
-        [exitCode, protectedThis = Ref { *this }](ScriptExecutionContext&) {
+        [exitCode, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
+            WorkerSnapshots::cancelForWorker(protectedThis.get(), context);
             // Closing was published when the stopped inbox was discarded.
             // Closing → dispatch 'close' → Closed lets 'close'/'exit'
             // handlers observe threadId == -1 and isOnline() == false while

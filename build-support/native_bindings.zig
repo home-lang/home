@@ -118,6 +118,9 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/webcore/Worker.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/Worker.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/HomeMessagePortLifecycle.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/HomeWorkerSnapshots.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSWorker.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSWorker.h",
         "packages/runtime/upstream/src/jsc/modules/_NativeModule.h",
         "packages/runtime/upstream/src/js/node/url.ts",
         "packages/runtime/upstream/src/js/node/worker_threads.ts",
@@ -144,6 +147,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "JSWorker.cpp", "JSWorker.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "MessagePortPipe.cpp", "MessagePortPipe.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "Worker.cpp", "Worker.h" },
         .{ "UnifiedSource-src_jsc_bindings-0.cpp", "BunWorkerGlobalScope.cpp", "BunWorkerGlobalScope.h" },

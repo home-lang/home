@@ -66,37 +66,42 @@ async function main() {
     return { module, name, input }
   })
   // Preflight native ownership and ABI layout before creating any output.
-  // Class headers remain external; only the private constants header is copied.
-  const privateHeader = 'HomeMessagePortLifecycle.h'
-  const privateHeaderBytes = readFileSync(path.join(homeSource, 'jsc/bindings/webcore', privateHeader))
+  // A unified object can contain several owned sources; replace all of them
+  // together and leave every other include on its external ABI-matched source.
+  const privateHeaders = ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h'].map(name => ({
+    name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings/webcore', name)),
+  }))
   const nativeUnits = ([
-    ['jsc/bindings/InternalModuleRegistry.cpp', 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp', null],
-    ['jsc/bindings/webcore/MessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp', 'MessagePort.h'],
-    ['jsc/bindings/webcore/MessagePortPipe.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp', 'MessagePortPipe.h'],
-    ['jsc/bindings/webcore/Worker.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp', 'Worker.h'],
-    ['jsc/bindings/BunWorkerGlobalScope.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'],
-    ['jsc/bindings/webcore/JSMessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp', 'JSMessagePort.h'],
-  ] as const).map(([relativeSource, unifiedName, outputName, abiHeader]) => {
-    const source = path.join(homeSource, relativeSource)
-    const basename = path.basename(source)
-    const body = read(source)
+    [[['jsc/bindings/InternalModuleRegistry.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
+    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
+    [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
+    [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
+    [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
+    [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
+  ] as const).map(([sources, unifiedName, outputName]) => {
+    const owned = sources.map(([relativeSource, abiHeader]) => {
+      const source = path.join(homeSource, relativeSource)
+      return { source, basename: path.basename(source), body: read(source), abiHeader, replacements: 0 }
+    })
     const unifiedPath = path.join(externalBuild, 'unified', unifiedName)
-    let replacements = 0
     const unified = read(unifiedPath).replace(/^[ \t]*#include "([^"\r\n]+)"[ \t]*\r?$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
-      if (path.basename(relative) === basename) {
-        replacements++
-        if (abiHeader) {
-          const homeHeader = path.join(path.dirname(source), abiHeader)
-          const externalHeader = path.join(path.dirname(externalSource), abiHeader)
-          assertClassHeaderAbi(readFileSync(homeHeader), readFileSync(externalHeader), abiHeader, externalHeader)
+      const selected = owned.find(item => item.basename === path.basename(relative))
+      if (selected) {
+        selected.replacements++
+        if (selected.abiHeader) {
+          const homeHeader = path.join(path.dirname(selected.source), selected.abiHeader)
+          const externalHeader = path.join(path.dirname(externalSource), selected.abiHeader)
+          assertClassHeaderAbi(readFileSync(homeHeader), readFileSync(externalHeader), selected.abiHeader, externalHeader)
         }
-        return `#include ${JSON.stringify(basename)}`
+        return `#include ${JSON.stringify(selected.basename)}`
       }
       return `#include ${JSON.stringify(externalSource)}`
     })
-    if (replacements !== 1) throw new Error(`Native unified source must contain exactly one ${basename}`)
-    return { source, basename, body, unified, outputName }
+    for (const selected of owned) {
+      if (selected.replacements !== 1) throw new Error(`Native unified source must contain exactly one ${selected.basename}`)
+    }
+    return { owned, unified, outputName }
   })
   mkdirSync(output, { recursive: true })
   for (const { module, name, input } of inputs) {
@@ -139,9 +144,11 @@ async function main() {
   // unified translation units ABI-matched to its external headers. Generate the
   // MessagePort, pipe lifecycle, Worker and worker builtin together: their private
   // contracts must never come from different builds.
-  writeFileSync(path.join(output, privateHeader), privateHeaderBytes)
-  for (const { source, basename, body, unified, outputName } of nativeUnits) {
-    writeFileSync(path.join(output, basename), `#line 1 ${JSON.stringify(source)}\n${body}`)
+  for (const { name, bytes } of privateHeaders) writeFileSync(path.join(output, name), bytes)
+  for (const { owned, unified, outputName } of nativeUnits) {
+    for (const { source, basename, body } of owned) {
+      writeFileSync(path.join(output, basename), `#line 1 ${JSON.stringify(source)}\n${body}`)
+    }
     writeFileSync(path.join(output, outputName), unified)
   }
   console.log(`Generated ${ownedModules.join(', ')} from Home with verified linked ABI mappings`)
