@@ -382,7 +382,7 @@ def generate_type_predicates(directory: Path, families: int) -> None:
         blocks.append(
             f"interface Ready{index} {{\n"
             '  readonly kind: "ready";\n'
-            f"  readonly id: {index};\n"
+            "  readonly id: number;\n"
             "  readonly payload: { readonly label: string; readonly score: number };\n"
             "  readonly meta: { readonly active: boolean };\n"
             "}\n\n"
@@ -425,6 +425,46 @@ def generate_type_predicates(directory: Path, families: int) -> None:
             "];\n\n"
         )
     write(directory / "src/type-predicates.ts", "".join(blocks))
+
+
+def generate_null_safe_access(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        metric_index = index % 2
+        blocks.append(
+            f"interface NullableRecord{index} {{\n"
+            f"  readonly id: {index};\n"
+            "  readonly fallback: string;\n"
+            "  readonly profile?: {\n"
+            "    readonly label?: string;\n"
+            "    readonly metrics?: readonly [number, number];\n"
+            "    readonly format?: (prefix: string) => string;\n"
+            "  };\n"
+            "}\n\n"
+            f"function readNullable{index}(\n"
+            f"  value: NullableRecord{index} | null | undefined,\n"
+            "): readonly [number, string, number, string, string] {\n"
+            f'  const label = value?.profile?.label ?? value?.fallback ?? "missing-{index}";\n'
+            f"  const score = value?.profile?.metrics?.[{metric_index}] ?? 0;\n"
+            "  const formatted = value?.profile?.format?.(label) ?? label;\n"
+            "  const fallback = value!.fallback;\n"
+            f"  return [value?.id ?? {index}, label, score, formatted, fallback];\n"
+            "}\n\n"
+            f"const nullableInput{index}: NullableRecord{index} = {{\n"
+            f"  id: {index},\n"
+            f'  fallback: "fallback-{index}",\n'
+            "  profile: {\n"
+            f'    label: "item-{index}",\n'
+            f"    metrics: [{index}, {index + 1}],\n"
+            "    format: (prefix) => prefix,\n"
+            "  },\n"
+            "};\n"
+            f"export const nullSafeResult{index}: readonly [number, string, number, string, string] =\n"
+            f"  readNullable{index}(nullableInput{index});\n\n"
+        )
+    write(directory / "src/null-safe-access.ts", "".join(blocks))
 
 
 def generate_overload_resolution(directory: Path, groups: int) -> None:
@@ -732,6 +772,10 @@ def cmd_corpus() -> None:
     generate_type_predicates(
         CORPUS / "type_predicates",
         cfg["type_predicate_families"],
+    )
+    generate_null_safe_access(
+        CORPUS / "null_safe_access",
+        cfg["null_safe_access_families"],
     )
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
