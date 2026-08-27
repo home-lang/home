@@ -11,6 +11,14 @@ test "basic string usage" {
     try t.expectEqualStrings(s.asUTF8().?, "hi");
 }
 
+test "generated Node error discriminants match the linked C++ ABI" {
+    const Error = home_rt.jsc.Error;
+    try t.expectEqual(@as(u16, 121), @intFromEnum(Error.INVALID_ARG_VALUE_RangeError));
+    try t.expectEqual(@as(u16, 159), @intFromEnum(Error.OPERATION_FAILED));
+    try t.expectEqual(@as(u16, 233), @intFromEnum(Error.STREAM_ITER_MISSING_FLAG));
+    try t.expectEqual(@as(u16, 327), @intFromEnum(Error.DIR_CONCURRENT_OPERATION));
+}
+
 const home_rt = @import("home");
 
 const std = @import("std");

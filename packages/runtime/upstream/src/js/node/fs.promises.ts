@@ -3,7 +3,7 @@ const types = require("node:util/types");
 const EventEmitter = require("node:events");
 const fs = $zig("node_fs_binding.zig", "createBinding") as $ZigGeneratedClasses.NodeJSFS;
 const { glob } = require("internal/fs/glob");
-const { validateInteger } = require("internal/validators");
+const { validateInteger, validateBoolean, validateObject, validateAbortSignal } = require("internal/validators");
 
 const constants = $processBindingConstants.fs;
 
@@ -23,6 +23,15 @@ const kTransferList = Symbol("kTransferList");
 const kDeserialize = Symbol("kDeserialize");
 const kEmptyObject = ObjectFreeze(Object.create(null));
 const kFlag = Symbol("kFlag");
+const kLocked = Symbol("kLocked");
+const kCloseSync = Symbol("kCloseSync");
+
+const SymbolDispose = Symbol.dispose;
+
+// Default chunk size for FileHandle.pull/pullSync/writer (matches Node.js).
+const kIterDefaultChunkSize = 131072;
+
+let nodeFsForIter; // lazy value for require("node:fs") (sync read/write/close for pull/writer).
 
 let Interface; // lazy value for require("node:readline").Interface.
 
@@ -583,6 +592,642 @@ function asyncWrap(fn: any, name: string) {
       });
     }
 
+    // Port of Node.js FileHandle.prototype.pull (lib/internal/fs/promises.js).
+    // Returns the file contents as an AsyncIterable<Uint8Array[]> using the
+    // iterable streams pull model. Optional transforms and options (including
+    // AbortSignal) may be provided as trailing arguments.
+    pull(...args) {
+      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
+      if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
+
+      const { parsePullArgs } = require("internal/streams/iter/utils");
+      const { transforms, options = kEmptyObject } = parsePullArgs(args);
+
+      const { autoClose = false, chunkSize: readSize = kIterDefaultChunkSize, signal } = options;
+      let { start: pos = -1, limit: remaining = -1 } = options;
+
+      const handle = this;
+      const fd = this[kFd];
+
+      validateBoolean(autoClose, "options.autoClose");
+
+      if (pos !== -1) {
+        validateInteger(pos, "options.start", 0);
+      }
+      if (remaining !== -1) {
+        validateInteger(remaining, "options.limit", 1);
+      }
+      if (readSize !== undefined) {
+        validateInteger(readSize, "options.chunkSize", 1);
+      }
+      if (signal !== undefined) {
+        validateAbortSignal(signal, "options.signal");
+      }
+
+      if (signal?.aborted) {
+        // Don't lock the handle: with transforms, the pull pipeline's
+        // pre-abort branch returns a rejecting iterator without ever
+        // consuming the source, so the unlock in its finally would never
+        // run. Reject on first next() like the source itself would.
+        return {
+          __proto__: null,
+          [Symbol.asyncIterator]() {
+            let done = false;
+            return {
+              __proto__: null,
+              async next() {
+                if (done) return { value: undefined, done: true };
+                done = true;
+                if (autoClose) await handle.close();
+                throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+              },
+              async return() {
+                if (!done) {
+                  done = true;
+                  if (autoClose) await handle.close();
+                }
+                return { value: undefined, done: true };
+              },
+            };
+          },
+        };
+      }
+
+      this[kLocked] = true;
+
+      const source = {
+        __proto__: null,
+        async *[Symbol.asyncIterator]() {
+          // The fd was captured when pull() was called; the handle may have
+          // been closed in between (an unstarted source doesn't hold a ref).
+          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          handle[kRef]();
+          try {
+            while (remaining !== 0) {
+              if (signal?.aborted) {
+                throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+              }
+              const toRead = remaining > 0 ? Math.min(readSize, remaining) : readSize;
+              const buf = Buffer.allocUnsafe(toRead);
+              const bytesRead = (await read(fd, buf, 0, toRead, pos >= 0 ? pos : null)) || 0;
+              if (bytesRead === 0) break;
+              if (pos >= 0) pos += bytesRead;
+              if (remaining > 0) remaining -= bytesRead;
+              yield [bytesRead < toRead ? buf.subarray(0, bytesRead) : buf];
+            }
+          } finally {
+            handle[kLocked] = false;
+            handle[kUnref]();
+            if (autoClose) {
+              await handle.close();
+            }
+          }
+        },
+      };
+
+      // If transforms provided, wrap with pull pipeline
+      if (transforms.length > 0) {
+        const pullArgs = [...transforms];
+        if (options) {
+          pullArgs.push(options);
+        }
+        return require("internal/streams/iter/pull").pull(source, ...pullArgs);
+      }
+      return source;
+    }
+
+    // Port of Node.js FileHandle.prototype.pullSync. Returns the file
+    // contents as an Iterable<Uint8Array[]> using synchronous reads.
+    pullSync(...args) {
+      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
+      if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
+
+      const { parsePullArgs } = require("internal/streams/iter/utils");
+      const { transforms, options = kEmptyObject } = parsePullArgs(args);
+
+      const { autoClose = false, chunkSize: readSize = kIterDefaultChunkSize } = options;
+      let { start: pos = -1, limit: remaining = -1 } = options;
+
+      const handle = this;
+      const fd = this[kFd];
+
+      validateBoolean(autoClose, "options.autoClose");
+
+      if (pos !== -1) {
+        validateInteger(pos, "options.start", 0);
+      }
+      if (remaining !== -1) {
+        validateInteger(remaining, "options.limit", 1);
+      }
+      if (readSize !== undefined) {
+        validateInteger(readSize, "options.chunkSize", 1);
+      }
+
+      this[kLocked] = true;
+
+      const fsSync = (nodeFsForIter ??= require("node:fs"));
+
+      const source = {
+        __proto__: null,
+        [Symbol.iterator]() {
+          // The fd was captured when pullSync() was called; the handle may
+          // have been closed in between (an unstarted source doesn't hold a
+          // ref).
+          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          // Acquire the ref per iteration (like pull()'s async generator), so
+          // an iterable that is never consumed doesn't pin the handle open;
+          // cleanup is idempotent so a stray next() after return() can't
+          // double-unref.
+          handle[kRef]();
+          let done = false;
+          let cleanedUp = false;
+          function cleanup() {
+            if (cleanedUp) return;
+            cleanedUp = true;
+            handle[kLocked] = false;
+            handle[kUnref]();
+            if (autoClose) {
+              handle[kCloseSync]();
+            }
+          }
+          return {
+            __proto__: null,
+            next() {
+              if (done || remaining === 0) {
+                if (!done) {
+                  done = true;
+                  cleanup();
+                }
+                return { value: undefined, done: true };
+              }
+              const toRead = remaining > 0 ? Math.min(readSize, remaining) : readSize;
+              const buf = Buffer.allocUnsafe(toRead);
+              let bytesRead;
+              try {
+                bytesRead = fsSync.readSync(fd, buf, 0, toRead, pos >= 0 ? pos : null) || 0;
+              } catch (err) {
+                done = true;
+                cleanup();
+                throw err;
+              }
+              if (bytesRead === 0) {
+                done = true;
+                cleanup();
+                return { value: undefined, done: true };
+              }
+              if (pos >= 0) pos += bytesRead;
+              if (remaining > 0) remaining -= bytesRead;
+              const chunk = bytesRead < toRead ? buf.subarray(0, bytesRead) : buf;
+              return { value: [chunk], done: false };
+            },
+            return() {
+              if (!done) {
+                done = true;
+                cleanup();
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
+
+      if (transforms.length > 0) {
+        return require("internal/streams/iter/pull").pullSync(source, ...transforms);
+      }
+      return source;
+    }
+
+    // Port of Node.js FileHandle.prototype.writer. Returns an iterable-streams
+    // Writer backed by this file handle. Supports writev() for batch writes,
+    // handles zero-byte writes with retry (up to 5 attempts).
+    writer(options = kEmptyObject) {
+      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
+      if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
+
+      const { toUint8Array, convertChunks } = require("internal/streams/iter/utils");
+
+      validateObject(options, "options");
+      const { autoClose = false, chunkSize: syncWriteThreshold = kIterDefaultChunkSize } = options;
+      let { start: pos = -1, limit: bytesRemaining = -1 } = options;
+
+      const handle = this;
+      const fd = this[kFd];
+      let totalBytesWritten = 0;
+      let closed = false;
+      let closing = false;
+      let pendingEndPromise = null;
+      let error = null;
+      // Count of in-flight async writes (write() doesn't serialize callers,
+      // so several can be on the threadpool at once).
+      let asyncPending = 0;
+      // Set when end()/fail() must tear down while an async write is still on
+      // the threadpool: writeAll/writevAll run it from their finally so the
+      // fd is never closed under an in-flight write.
+      let deferredTeardown: (() => void) | null = null;
+      function runDeferredTeardown() {
+        if (deferredTeardown !== null) {
+          const teardown = deferredTeardown;
+          deferredTeardown = null;
+          teardown();
+        }
+      }
+
+      validateBoolean(autoClose, "options.autoClose");
+
+      if (pos !== -1) {
+        validateInteger(pos, "options.start", 0);
+      }
+      if (bytesRemaining !== -1) {
+        validateInteger(bytesRemaining, "options.limit", 1);
+      }
+      if (syncWriteThreshold !== undefined) {
+        validateInteger(syncWriteThreshold, "options.chunkSize", 1);
+      }
+
+      this[kLocked] = true;
+      // Acquire the ref on first actual write (like pull/pullSync defer it to
+      // iteration) so an unused writer can't pin the handle and hang close().
+      let refAcquired = false;
+      function acquireRef() {
+        if (!refAcquired) {
+          refAcquired = true;
+          handle[kRef]();
+        }
+      }
+      function releaseRef() {
+        if (refAcquired) {
+          refAcquired = false;
+          handle[kUnref]();
+        }
+      }
+
+      const fsSync = (nodeFsForIter ??= require("node:fs"));
+
+      // Write a single buffer with retry on zero-byte writes (up to 5 retries).
+      async function writeAll(buf, offset, length, position, signal) {
+        asyncPending++;
+        try {
+          let retries = 0;
+          while (length > 0) {
+            const bytesWritten = (await write(fd, buf, offset, length, position >= 0 ? position : null)) || 0;
+
+            signal?.throwIfAborted();
+
+            if (bytesWritten === 0) {
+              if (++retries > 5) {
+                throw $ERR_OPERATION_FAILED("Operation failed: write failed after retries");
+              }
+            } else {
+              retries = 0;
+            }
+
+            totalBytesWritten += bytesWritten;
+            offset += bytesWritten;
+            length -= bytesWritten;
+            if (position >= 0) position += bytesWritten;
+          }
+        } catch (err) {
+          // A failed/aborted write may have hit the disk partially and the
+          // cursor/limit were advanced optimistically; the writer's state is
+          // no longer trustworthy, so poison it like fail() does.
+          if (!closed && !error) error = err;
+          throw err;
+        } finally {
+          if (--asyncPending === 0) {
+            runDeferredTeardown();
+          }
+        }
+      }
+
+      // Writev with retry. On partial write, concatenates remaining
+      // buffers and falls back to writeAll.
+      async function writevAll(buffers, position, signal) {
+        asyncPending++;
+        try {
+          let totalSize = 0;
+          for (let i = 0; i < buffers.length; i++) {
+            totalSize += buffers[i].byteLength;
+          }
+
+          let retries = 0;
+          while (totalSize > 0) {
+            const { bytesWritten } = await writev(fd, buffers, position >= 0 ? position : null);
+
+            signal?.throwIfAborted();
+
+            if (bytesWritten === 0) {
+              // Retry the writev as-is on a zero-byte write (up to 5 times)
+              // instead of degrading to the concat fallback below.
+              if (++retries > 5) {
+                throw $ERR_OPERATION_FAILED("Operation failed: writev failed after retries");
+              }
+              continue;
+            }
+            retries = 0;
+
+            totalBytesWritten += bytesWritten;
+            totalSize -= bytesWritten;
+            if (position >= 0) position += bytesWritten;
+
+            if (totalSize > 0) {
+              // Partial write - concatenate remaining and use writeAll.
+              const remaining = Buffer.concat(buffers);
+              const wrote = bytesWritten;
+              await writeAll(remaining, wrote, remaining.length - wrote, position, signal);
+              return;
+            }
+          }
+        } catch (err) {
+          // See writeAll: the optimistic cursor/limit accounting is invalid
+          // after a failure, so subsequent writes must reject.
+          if (!closed && !error) error = err;
+          throw err;
+        } finally {
+          if (--asyncPending === 0) {
+            runDeferredTeardown();
+          }
+        }
+      }
+
+      // Synchronous write with retry. Throws on I/O error.
+      function writeSyncAll(buf, offset, length, position) {
+        let retries = 0;
+        while (length > 0) {
+          const bytesWritten = fsSync.writeSync(fd, buf, offset, length, position >= 0 ? position : null) || 0;
+          if (bytesWritten === 0) {
+            if (++retries > 5) {
+              throw $ERR_OPERATION_FAILED("Operation failed: write failed after retries");
+            }
+          } else {
+            retries = 0;
+          }
+          totalBytesWritten += bytesWritten;
+          offset += bytesWritten;
+          length -= bytesWritten;
+          if (position >= 0) position += bytesWritten;
+        }
+      }
+
+      function returnTotalBytesWritten() {
+        return totalBytesWritten;
+      }
+
+      async function cleanup() {
+        if (closed) return;
+        closed = true;
+        handle[kLocked] = false;
+        if (asyncPending) {
+          const { promise, resolve, reject } = Promise.withResolvers();
+          deferredTeardown = function deferredCleanupTeardown() {
+            releaseRef();
+            if (autoClose) {
+              handle.close().$then(resolve, reject);
+            } else {
+              resolve(undefined);
+            }
+          };
+          return promise;
+        }
+        releaseRef();
+        if (autoClose) {
+          await handle.close();
+        }
+      }
+
+      return {
+        __proto__: null,
+        write(chunk, options = kEmptyObject) {
+          if (error) {
+            return Promise.$reject(error);
+          }
+          if (closed) {
+            return Promise.$reject($ERR_INVALID_STATE_TypeError("The writer is closed"));
+          }
+          if (handle[kFd] === -1) {
+            // The handle was closed before this writer took its ref.
+            return Promise.$reject($ERR_INVALID_STATE("The FileHandle is closed"));
+          }
+          validateObject(options, "options");
+          const { signal } = options;
+          if (signal !== undefined) {
+            validateAbortSignal(signal, "options.signal");
+            if (signal.aborted) {
+              return Promise.$reject(signal.reason);
+            }
+          }
+          chunk = toUint8Array(chunk);
+          let chunkByteLength;
+          if (bytesRemaining >= 0 && (chunkByteLength = chunk.byteLength) > bytesRemaining) {
+            return Promise.$reject($ERR_OUT_OF_RANGE("write", `<= ${bytesRemaining} bytes`, chunkByteLength));
+          }
+          if (bytesRemaining > 0) bytesRemaining -= chunkByteLength;
+          chunkByteLength ??= chunk.byteLength;
+          const position = pos;
+          if (pos >= 0) pos += chunkByteLength;
+          acquireRef();
+          return writeAll(chunk, 0, chunkByteLength, position, signal);
+        },
+
+        writev(chunks, options = kEmptyObject) {
+          if (error) {
+            return Promise.$reject(error);
+          }
+          if (closed) {
+            return Promise.$reject($ERR_INVALID_STATE_TypeError("The writer is closed"));
+          }
+          if (handle[kFd] === -1) {
+            return Promise.$reject($ERR_INVALID_STATE("The FileHandle is closed"));
+          }
+          validateObject(options, "options");
+          const { signal } = options;
+          if (signal !== undefined) {
+            validateAbortSignal(signal, "options.signal");
+            if (signal?.aborted) {
+              return Promise.$reject(signal.reason);
+            }
+          }
+          chunks = convertChunks(chunks);
+          let totalSize = 0;
+          for (let i = 0; i < chunks.length; i++) {
+            totalSize += chunks[i].byteLength;
+          }
+          if (bytesRemaining >= 0 && totalSize > bytesRemaining) {
+            return Promise.$reject($ERR_OUT_OF_RANGE("writev", `<= ${bytesRemaining} bytes`, totalSize));
+          }
+          if (bytesRemaining > 0) bytesRemaining -= totalSize;
+          const position = pos;
+          if (pos >= 0) pos += totalSize;
+          acquireRef();
+          return writevAll(chunks, position, signal);
+        },
+
+        writeSync(chunk) {
+          if (error || closed || asyncPending) return false;
+          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          chunk = toUint8Array(chunk);
+          const length = chunk.byteLength;
+          if (length > syncWriteThreshold) return false;
+          if (length === 0) return true;
+          if (bytesRemaining >= 0 && length > bytesRemaining) return false;
+          const position = pos;
+          // First attempt - if this fails, return false so pipeTo can
+          // fall back to async write().
+          let bytesWritten;
+          acquireRef();
+          try {
+            bytesWritten = fsSync.writeSync(fd, chunk, 0, length, position >= 0 ? position : null) || 0;
+          } catch {
+            return false;
+          }
+          totalBytesWritten += bytesWritten;
+          if (position >= 0) {
+            pos = position + bytesWritten;
+          }
+          if (bytesWritten === length) {
+            if (bytesRemaining > 0) bytesRemaining -= length;
+            return true;
+          }
+          // Partial write - bytes are on disk. Must complete or throw.
+          writeSyncAll(chunk, bytesWritten, length - bytesWritten, position >= 0 ? position + bytesWritten : -1);
+          // writeSyncAll only advances its local position; move the cursor
+          // past the whole chunk so the next write doesn't overwrite its tail.
+          if (position >= 0) {
+            pos = position + length;
+          }
+          if (bytesRemaining > 0) bytesRemaining -= length;
+          return true;
+        },
+
+        writevSync(chunks) {
+          if (error || closed || asyncPending) return false;
+          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          chunks = convertChunks(chunks);
+          let totalSize = 0;
+          for (let i = 0; i < chunks.length; i++) {
+            totalSize += chunks[i].byteLength;
+          }
+          if (totalSize > syncWriteThreshold) return false;
+          if (totalSize === 0) return true;
+          if (bytesRemaining >= 0 && totalSize > bytesRemaining) return false;
+          const position = pos;
+          let bytesWritten;
+          acquireRef();
+          try {
+            bytesWritten = fsSync.writevSync(fd, chunks, position >= 0 ? position : null) || 0;
+          } catch {
+            return false;
+          }
+          totalBytesWritten += bytesWritten;
+          if (position >= 0) {
+            pos = position + bytesWritten;
+          }
+          if (bytesWritten === totalSize) {
+            if (bytesRemaining > 0) bytesRemaining -= totalSize;
+            return true;
+          }
+          // Partial writev - bytes are on disk. Must complete or throw.
+          const rest = Buffer.concat(chunks);
+          writeSyncAll(
+            rest,
+            bytesWritten,
+            rest.byteLength - bytesWritten,
+            position >= 0 ? position + bytesWritten : -1,
+          );
+          // writeSyncAll only advances its local position; move the cursor
+          // past all chunks so the next write doesn't overwrite their tail.
+          if (position >= 0) {
+            pos = position + totalSize;
+          }
+          if (bytesRemaining > 0) bytesRemaining -= totalSize;
+          return true;
+        },
+
+        end(options = kEmptyObject) {
+          if (error) {
+            return Promise.$reject(error);
+          }
+          if (closed) {
+            return Promise.$resolve(totalBytesWritten);
+          }
+          if (closing) {
+            return pendingEndPromise;
+          }
+          validateObject(options, "options");
+          const { signal } = options;
+          if (signal !== undefined) {
+            validateAbortSignal(signal, "options.signal");
+            if (signal.aborted) {
+              return Promise.$reject(signal.reason);
+            }
+          }
+          closing = true;
+          pendingEndPromise = cleanup().$then(returnTotalBytesWritten);
+          return pendingEndPromise;
+        },
+
+        endSync() {
+          if (error) return -1;
+          if (closed) return totalBytesWritten;
+          if (asyncPending) return -1;
+          closed = true;
+          handle[kLocked] = false;
+          releaseRef();
+          if (autoClose) {
+            handle[kCloseSync]();
+          }
+          return totalBytesWritten;
+        },
+
+        fail(reason) {
+          if (closed || error) return;
+          error = reason ?? $ERR_INVALID_STATE("Failed");
+          closed = true;
+          handle[kLocked] = false;
+          function teardown() {
+            releaseRef();
+            if (autoClose) {
+              handle[kCloseSync]();
+            }
+          }
+          if (asyncPending) {
+            // an async write is still using the fd - tear down after it lands
+            deferredTeardown = teardown;
+            return;
+          }
+          teardown();
+        },
+
+        [SymbolAsyncDispose]() {
+          if (closing) {
+            return pendingEndPromise ?? Promise.$resolve();
+          }
+          if (!closed && !error) {
+            this.fail();
+          }
+          return Promise.$resolve();
+        },
+
+        [SymbolDispose]() {
+          this.fail();
+        },
+      };
+    }
+
+    // Synchronously close the FileHandle (used by pullSync/writer autoClose).
+    [kCloseSync]() {
+      if (this[kFd] === -1) return;
+      if (this[kClosePromise]) {
+        throw $ERR_INVALID_STATE("The FileHandle is closing");
+      }
+      const fd = this[kFd];
+      this[kFd] = -1;
+      (nodeFsForIter ??= require("node:fs")).closeSync(fd);
+      this.emit("close");
+    }
+
     [kTransfer]() {
       throw new Error("BUN TODO FileHandle.kTransfer");
     }
@@ -601,8 +1246,13 @@ function asyncWrap(fn: any, name: string) {
 
     [kUnref]() {
       if (--this[kRefs] === 0) {
+        // Close the captured fd directly: this.close() would see kFd === -1
+        // and short-circuit without ever closing the descriptor, leaking it
+        // on the deferred-close path (close() called while an op was still
+        // in flight).
+        const fd = this[kFd];
         this[kFd] = -1;
-        this.close().$then(this[kCloseResolve], this[kCloseReject]);
+        (fd !== -1 ? close(fd) : Promise.$resolve()).$then(this[kCloseResolve], this[kCloseReject]);
       }
     }
   }
