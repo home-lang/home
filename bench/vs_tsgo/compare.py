@@ -31,6 +31,17 @@ def format_time(result: dict | None) -> str:
     return f"{result['mean'] * 1000:.1f} ± {result['stddev'] * 1000:.1f} ms"
 
 
+def format_comparison(home_mean: float, competitor_mean: float) -> str:
+    speedup = competitor_mean / home_mean
+    factor = speedup if speedup >= 1 else 1 / speedup
+    rounded = f"{factor:.2f}"
+    # This is a display-resolution rule, not a statistical significance test.
+    # Do not present an equal or rounded-equal ratio as a directional win.
+    if rounded == "1.00":
+        return "1.00× (near tie)"
+    return f"**{rounded}× faster**" if speedup > 1 else f"{rounded}× slower"
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"usage: {Path(sys.argv[0]).name} <results-directory>", file=sys.stderr)
@@ -86,8 +97,7 @@ def main() -> int:
         home = compilers.get("home")
         competitors = [result["mean"] for result in (tsc, tsgo) if result]
         if home and competitors:
-            speedup = min(competitors) / home["mean"]
-            comparison = f"**{speedup:.2f}× faster**" if speedup >= 1 else f"{1 / speedup:.2f}× slower"
+            comparison = format_comparison(home["mean"], min(competitors))
         else:
             comparison = "—"
         print(
@@ -95,7 +105,8 @@ def main() -> int:
             f"{format_time(home)} | {comparison} |"
         )
     print()
-    print("Times are mean ± sample standard deviation. A Home win is measured against the faster of tsc and tsgo.")
+    print("Times are mean ± sample standard deviation. Comparisons use the faster of tsc and tsgo.")
+    print("Ratios rounding to 1.00× are labeled near ties; this is not a statistical significance test.")
     return 0
 
 
