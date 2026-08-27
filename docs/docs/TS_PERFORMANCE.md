@@ -10,25 +10,29 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `ca0b8dfb7` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `735ab4012` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T014124Z`.
+The local raw-result identifier is `20260827T085121Z`. All 13 workloads record
+a lower Home mean than the faster competitor. Background workstation activity
+was not suspended for this run, which increased absolute times and variance;
+the round-robin compiler order and unfiltered 30-sample result are retained.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 80.1 ± 1.6 ms | 47.6 ± 2.1 ms | **4.2 ± 0.8 ms** | **11.43× faster** |
-| `many_files` | 287.3 ± 17.6 ms | 73.9 ± 12.4 ms | **41.9 ± 7.0 ms** | **1.76× faster** |
-| `deep_types` | 162.4 ± 20.6 ms | 61.8 ± 3.5 ms | **20.3 ± 0.8 ms** | **3.05× faster** |
-| `import_graph` | 168.2 ± 21.4 ms | 56.1 ± 2.2 ms | **34.5 ± 2.5 ms** | **1.63× faster** |
-| `reexport_graph` | 127.7 ± 12.7 ms | 53.9 ± 7.9 ms | **36.6 ± 6.2 ms** | **1.47× faster** |
-| `tsx_components` | 247.5 ± 62.0 ms | 63.9 ± 6.5 ms | **33.1 ± 2.0 ms** | **1.93× faster** |
-| `generic_calls` | 273.3 ± 82.1 ms | 71.7 ± 3.0 ms | **42.2 ± 1.6 ms** | **1.70× faster** |
-| `control_flow` | 280.1 ± 30.7 ms | 77.4 ± 3.5 ms | **62.6 ± 3.3 ms** | **1.24× faster** |
-| `overload_resolution` | 292.4 ± 24.7 ms | 84.8 ± 5.3 ms | **64.5 ± 2.5 ms** | **1.31× faster** |
-| `class_hierarchy` | 248.2 ± 13.8 ms | 65.6 ± 3.0 ms | **60.3 ± 18.6 ms** | **1.09× faster** |
-| `structural_objects` | 234.8 ± 3.9 ms | 70.3 ± 5.3 ms | **56.7 ± 10.8 ms** | **1.24× faster** |
-| `interface_composition` | 294.9 ± 33.5 ms | 82.0 ± 2.3 ms | **74.6 ± 3.0 ms** | **1.10× faster** |
+| `startup` | 109.0 ± 18.1 ms | 60.2 ± 2.4 ms | **6.7 ± 7.3 ms** | **8.99× faster** |
+| `many_files` | 426.6 ± 20.6 ms | 93.6 ± 4.1 ms | **54.1 ± 3.3 ms** | **1.73× faster** |
+| `deep_types` | 260.0 ± 25.4 ms | 90.3 ± 4.4 ms | **28.9 ± 1.6 ms** | **3.12× faster** |
+| `import_graph` | 260.0 ± 21.8 ms | 79.3 ± 2.6 ms | **48.2 ± 3.7 ms** | **1.65× faster** |
+| `reexport_graph` | 195.6 ± 16.7 ms | 72.6 ± 5.0 ms | **57.9 ± 12.1 ms** | **1.25× faster** |
+| `tsx_components` | 364.1 ± 69.3 ms | 90.5 ± 25.7 ms | **44.5 ± 5.5 ms** | **2.03× faster** |
+| `generic_calls` | 360.5 ± 19.3 ms | 93.8 ± 3.9 ms | **51.7 ± 1.9 ms** | **1.81× faster** |
+| `control_flow` | 392.2 ± 33.9 ms | 100.3 ± 4.7 ms | **77.1 ± 3.5 ms** | **1.30× faster** |
+| `overload_resolution` | 491.2 ± 72.3 ms | 132.3 ± 33.7 ms | **88.5 ± 15.5 ms** | **1.49× faster** |
+| `class_hierarchy` | 406.5 ± 52.5 ms | 96.0 ± 10.5 ms | **83.7 ± 10.4 ms** | **1.15× faster** |
+| `structural_objects` | 361.8 ± 47.9 ms | 102.3 ± 22.8 ms | **69.4 ± 18.3 ms** | **1.47× faster** |
+| `interface_composition` | 532.6 ± 74.4 ms | 133.1 ± 15.8 ms | **122.8 ± 29.0 ms** | **1.08× faster** |
+| `variadic_tuples` | 634.1 ± 72.1 ms | 160.8 ± 14.0 ms | **153.5 ± 13.9 ms** | **1.05× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -69,6 +73,7 @@ not a claim that every real project or machine has the same speedup.
 | `class_hierarchy` | One module with 128 independent generic base/derived/interface families | Class heritage resolution, generic substitution, constructors, overrides, protected members, interface compatibility, and typed instance consumption |
 | `structural_objects` | One module with 128 independent source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, excess source members, assignments, and typed argument passing |
 | `interface_composition` | One module with 128 independent generic interface and namespace families | Multi-base interface heritage, repeated declaration merging, namespace/type/value merging, nested exported interfaces, generic functions, structural values, and typed consumption |
+| `variadic_tuples` | One module with 256 independent readonly tuple families | Variadic tuple concat, readonly inference, conditional head/tail extraction, generic rest and spread, indexed reads, and typed consumption |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -148,7 +153,16 @@ workload-specific shortcuts:
   syntax facts before performing root-level searches, while allocation failure
   retains the original semantic resolver; and
 - program-level declaration, namespace, interface, class, and CommonJS
-  collectors skip files whose source cannot contain the syntax they collect.
+  collectors skip files whose source cannot contain the syntax they collect;
+- generic-instantiation inference skips parameters without free type variables,
+  while the full recursive inference path remains active for inferable pairs;
+- visible same-name values are indexed by lexical container and virtual source
+  section, and anonymous type-name misses are negatively cached while name
+  registration invalidates affected misses;
+- function-expando and plain-import recovery stop before scope walks when HIR
+  or source facts prove the relevant syntax is absent; and
+- the lockless relation cache retains a 4,096-entry working set and inserts new
+  relations with one hash-table probe instead of two.
 
 The `control_flow` workload was deliberately added before these optimizations.
 Its five-run red baseline (`20260826T203831Z`) measured Home at
@@ -188,8 +202,19 @@ weakened.
 The `interface_composition` workload was frozen before optimization. Its
 five-run red baseline (`20260827T000848Z`) measured Home at 117.3 ± 3.0 ms
 versus native TypeScript 7 at 65.3 ± 0.8 ms. The unchanged workload now
-measures 74.6 ± 3.0 ms in the 30-run snapshot above: a 1.57× Home improvement
-and a 1.10× win over the fastest competitor. The improvement replaces repeated
+measures 122.8 ± 29.0 ms in the 30-run snapshot above and remains a 1.08× win
+over the fastest competitor despite the snapshot's elevated workstation load.
+The implementation replaces repeated
 namespace, declaration-merge, annotation, and type-name searches with validated
 indexes and conservative source facts. The generated source, compiler options,
 silent-success validity gate, and interleaved schedule remain unchanged.
+
+The `variadic_tuples` workload was frozen before optimization. Its five-run red
+baseline (`20260827T072451Z`) measured Home at 209.4 ± 4.8 ms versus native
+TypeScript 7 at 100.7 ± 3.3 ms. The exact same generated project now measures
+153.5 ± 13.9 ms in the 30-run snapshot above: a 1.36× Home improvement and a
+1.05× win over the fastest competitor. The general changes prune non-inferable
+generic pairs, index lexical value declarations, cache anonymous display-name
+misses, retain the relation working set, and skip syntax-inapplicable scans.
+The corpus, compiler options, silent-success validity gate, and interleaved
+schedule were not changed after the baseline was recorded.
