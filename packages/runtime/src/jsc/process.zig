@@ -366,8 +366,14 @@ const install_glue =
     \\    arch: info.arch,
     \\    version: info.version,
     \\    versions: { node: info.node },
+    \\    config: {
+    \\      variables: { v8_enable_i18n_support: 1, asan: 0 },
+    \\      target_defaults: { default_configuration: "Release" },
+    \\    },
+    \\    features: { debug: false },
     \\    pid: info.pid,
     \\    execPath: info.execPath,
+    \\    execArgv: [],
     \\    exitCode: undefined,
     \\    cwd: function() { return cwdFn(); },
     \\    exit: function(code) { return exitFn(code); },
@@ -403,6 +409,14 @@ const install_glue =
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
     \\    },
+    \\    umask: (function() {
+    \\      var current = 0o022;
+    \\      return function(mask) {
+    \\        var previous = current;
+    \\        if (mask !== undefined) current = Number(mask) & 0o777;
+    \\        return previous;
+    \\      };
+    \\    })(),
     \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false, fd: 1 },
     \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false, fd: 2 },
     \\  };
