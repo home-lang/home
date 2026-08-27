@@ -10,38 +10,43 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-27 at commit `332e22826` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `06baa9965` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T155812Z`. Home records a lower
-mean than the faster competitor on all 16 workloads. The round-robin compiler
+The local raw-result identifier is `20260827T162037Z`. Home records a lower
+mean than the faster competitor on all 17 workloads. The round-robin compiler
 order and complete, unfiltered 30-sample result are retained.
+Several workloads have substantial variance, and type predicates has only a
+1.05× mean lead; these point estimates do not establish universal superiority.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 68.2 ± 4.2 ms | 40.3 ± 2.0 ms | **3.5 ± 0.2 ms** | **11.43× faster** |
-| `many_files` | 220.2 ± 21.5 ms | 55.1 ± 4.2 ms | **34.7 ± 11.0 ms** | **1.59× faster** |
-| `deep_types` | 150.6 ± 39.6 ms | 61.1 ± 20.5 ms | **15.7 ± 1.2 ms** | **3.90× faster** |
-| `import_graph` | 135.6 ± 4.9 ms | 47.7 ± 3.0 ms | **30.2 ± 5.2 ms** | **1.58× faster** |
-| `reexport_graph` | 102.7 ± 14.2 ms | 42.9 ± 1.5 ms | **30.1 ± 3.0 ms** | **1.43× faster** |
-| `tsx_components` | 174.7 ± 13.5 ms | 50.2 ± 3.0 ms | **24.9 ± 1.0 ms** | **2.01× faster** |
-| `generic_calls` | 192.9 ± 16.3 ms | 57.2 ± 3.3 ms | **26.7 ± 1.8 ms** | **2.14× faster** |
-| `control_flow` | 208.0 ± 9.5 ms | 62.4 ± 2.4 ms | **45.4 ± 1.6 ms** | **1.37× faster** |
-| `type_predicates` | 268.2 ± 23.6 ms | 78.6 ± 9.7 ms | **74.6 ± 3.4 ms** | **1.05× faster** |
-| `null_safe_access` | 212.6 ± 28.0 ms | 61.3 ± 5.2 ms | **48.5 ± 7.4 ms** | **1.26× faster** |
-| `overload_resolution` | 209.9 ± 13.1 ms | 66.7 ± 6.2 ms | **38.0 ± 1.1 ms** | **1.76× faster** |
-| `class_hierarchy` | 191.8 ± 9.6 ms | 53.9 ± 3.2 ms | **37.1 ± 3.7 ms** | **1.45× faster** |
-| `structural_objects` | 185.2 ± 6.9 ms | 58.3 ± 2.2 ms | **36.7 ± 2.4 ms** | **1.59× faster** |
-| `interface_composition` | 197.6 ± 7.6 ms | 61.6 ± 2.7 ms | **48.1 ± 1.4 ms** | **1.28× faster** |
-| `variadic_tuples` | 244.5 ± 13.3 ms | 75.1 ± 3.0 ms | **50.0 ± 1.8 ms** | **1.50× faster** |
-| `checkjs_jsdoc` | 196.6 ± 4.1 ms | 51.7 ± 1.1 ms | **40.1 ± 0.9 ms** | **1.29× faster** |
+| `startup` | 69.9 ± 5.2 ms | 41.5 ± 1.9 ms | **3.9 ± 1.4 ms** | **10.61× faster** |
+| `many_files` | 248.3 ± 11.9 ms | 62.5 ± 9.5 ms | **36.2 ± 2.0 ms** | **1.73× faster** |
+| `deep_types` | 143.9 ± 7.8 ms | 57.0 ± 2.3 ms | **15.9 ± 0.8 ms** | **3.57× faster** |
+| `import_graph` | 166.4 ± 11.8 ms | 56.1 ± 2.4 ms | **33.1 ± 1.9 ms** | **1.70× faster** |
+| `reexport_graph` | 120.5 ± 4.2 ms | 50.0 ± 1.8 ms | **34.1 ± 2.3 ms** | **1.47× faster** |
+| `tsx_components` | 245.6 ± 34.9 ms | 64.8 ± 8.2 ms | **31.4 ± 4.8 ms** | **2.07× faster** |
+| `generic_calls` | 278.9 ± 49.3 ms | 76.0 ± 12.8 ms | **35.6 ± 6.9 ms** | **2.13× faster** |
+| `control_flow` | 238.2 ± 32.5 ms | 69.7 ± 8.7 ms | **51.9 ± 6.2 ms** | **1.34× faster** |
+| `type_predicates` | 276.4 ± 10.1 ms | 82.3 ± 7.4 ms | **78.1 ± 2.3 ms** | **1.05× faster** |
+| `null_safe_access` | 253.6 ± 135.8 ms | 69.8 ± 28.9 ms | **55.0 ± 21.7 ms** | **1.27× faster** |
+| `destructuring` | 186.2 ± 75.6 ms | 63.4 ± 25.2 ms | **47.8 ± 14.0 ms** | **1.32× faster** |
+| `overload_resolution` | 310.8 ± 82.8 ms | 99.0 ± 45.1 ms | **56.4 ± 24.9 ms** | **1.76× faster** |
+| `class_hierarchy` | 232.4 ± 11.5 ms | 61.5 ± 2.4 ms | **40.7 ± 1.0 ms** | **1.51× faster** |
+| `structural_objects` | 230.6 ± 18.1 ms | 72.4 ± 24.9 ms | **40.9 ± 1.6 ms** | **1.77× faster** |
+| `interface_composition` | 274.1 ± 35.1 ms | 77.5 ± 6.6 ms | **58.7 ± 4.7 ms** | **1.32× faster** |
+| `variadic_tuples` | 306.1 ± 13.7 ms | 89.5 ± 3.0 ms | **58.7 ± 2.4 ms** | **1.52× faster** |
+| `checkjs_jsdoc` | 248.8 ± 28.8 ms | 61.2 ± 3.1 ms | **45.9 ± 2.1 ms** | **1.33× faster** |
 
-The preceding snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
+The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
 Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
 234.3 ms Home sample (52.1 ms median). That unfiltered result remains part of
 the record. [Issue #452](https://github.com/home-lang/home/issues/452) addressed
 the narrow margin with the general function-containment index described below;
-the current snapshot follows that code change rather than discarding samples.
+snapshot `20260827T155812Z` then recorded 16/16 mean wins. The current
+17-workload snapshot additionally includes the destructuring optimization;
+no samples were discarded.
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -59,6 +64,10 @@ not a claim that every real project or machine has the same speedup.
   size and availability.
 - Before timing, every compiler must exit successfully without stdout or
   stderr. A compiler cannot win by rejecting or skipping the input.
+- Destructuring also has five automatic negative controls in an untimed
+  temporary project copy: nested properties, tuple elements, object-rest
+  fields, defaults, and omitted rest properties must produce exactly four
+  `TS2322` diagnostics and one `TS2339` in every compiler.
 - Measurements are process-cold and filesystem-cache-warm. Each timed sample
   launches a new compiler process after explicit warmups.
 - A measured round contains all three compilers. Their order rotates each round
@@ -80,6 +89,7 @@ not a claim that every real project or machine has the same speedup.
 | `control_flow` | One module with 256 exhaustive discriminated-union functions | Narrowing, branch joins, definite assignment, exhaustive switches, property reads, and typed object returns |
 | `type_predicates` | One module with 256 independent predicate families | User-defined type predicates, assertion functions, call-driven narrowing, nested property reads, and typed consumption |
 | `null_safe_access` | One module with 256 independent nullable object families | Optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption |
+| `destructuring` | One module with 128 independent object families | Nested object and tuple bindings, defaults, object rest, spread reconstruction, and typed consumption |
 | `overload_resolution` | One module with 128 groups of eight typed overload calls | Literal-discriminated overload selection, generic inference, object and tuple payloads, callbacks, and typed result consumption |
 | `class_hierarchy` | One module with 128 independent generic base/derived/interface families | Class heritage resolution, generic substitution, constructors, overrides, protected members, interface compatibility, and typed instance consumption |
 | `structural_objects` | One module with 128 independent source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, excess source members, assignments, and typed argument passing |
@@ -190,6 +200,9 @@ workload-specific shortcuts:
 - source-function ownership uses sorted nested function spans for first-time
   position queries, preserving the original full scan for malformed crossing
   ranges or allocation failure and the original NodeId tie-breaking; and
+- source-parameter recovery lazily caches immutable containment ranges per
+  annotation candidate instead of repeating raw source scans for each use,
+  with exhaustive position-pair equivalence and source-reset tests; and
 - the lockless relation cache retains a 4,096-entry working set and inserts new
   relations with one hash-table probe instead of two.
 
@@ -315,3 +328,31 @@ measures 40.1 ± 0.9 ms versus native TypeScript 7 at 51.7 ± 1.1 ms in snapshot
 `20260827T155812Z`, a 1.29× mean win. All three compilers still accept the
 valid project silently and reject the preserved string-to-number JSDoc variant
 with `TS2322`; the complete checker gate passes 4,193 tests.
+
+The `destructuring` workload was frozen at 4,032 lines and 122,226 bytes,
+with SHA-256
+`17049403e0a09a25e1f5ca78d730a7a683e78fd375681aaf1af92c460bbde673`.
+All three compilers accept the source silently and pass the five automatic
+negative controls described above. Its five-run baseline (`20260827T160641Z`)
+measured Home at 97.6 ± 0.4 ms versus native TypeScript 7 at 45.3 ± 2.1 ms:
+a 2.15× loss. The same baseline also recorded a type-predicate loss, Home
+71.4 ± 8.5 ms versus native TypeScript 7 at 68.2 ± 0.4 ms; those results
+remain part of the record.
+
+Profiling a 1,024-family same-shape copy found that source-annotation recovery
+repeated raw containment scans for each identifier use, including repeated
+rejection of object properties that resemble typed parameters. Commit
+`06baa9965` materializes each queried name's candidate ranges once and reuses
+them, without changing which candidates are accepted. The regression compares
+cached and original scan results at every declaration/use position pair in
+nested, default-parameter, object-literal, incomplete, and string-containing
+sources, and verifies invalidation when source facts change. The scaled
+diagnostic run fell from 34.44 seconds to 2.74 seconds; this single-run profile
+measurement is not a suite speedup claim. The complete checker gate passes
+4,194 tests and the ReleaseFast build passes. The accepted corpus, compiler
+configuration, and interleaved timing schedule are unchanged. In the complete
+30-run snapshot `20260827T162037Z`, the accepted destructuring project measures
+47.8 ± 14.0 ms for Home versus 63.4 ± 25.2 ms for native TypeScript 7: a
+1.32× mean win, with the substantial variance explicitly retained.
+This milestone is tracked in
+[issue #453](https://github.com/home-lang/home/issues/453).
