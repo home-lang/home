@@ -79,19 +79,20 @@ three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 109.0 ms | 60.2 ms | **6.7 ms** | **8.99× faster** |
-| 256 files | 426.6 ms | 93.6 ms | **54.1 ms** | **1.73× faster** |
-| Deep types | 260.0 ms | 90.3 ms | **28.9 ms** | **3.12× faster** |
-| 128-module import graph | 260.0 ms | 79.3 ms | **48.2 ms** | **1.65× faster** |
-| 64-leaf barrel graph | 195.6 ms | 72.6 ms | **57.9 ms** | **1.25× faster** |
-| 256 typed TSX components | 364.1 ms | 90.5 ms | **44.5 ms** | **2.03× faster** |
-| 256 generic call groups | 360.5 ms | 93.8 ms | **51.7 ms** | **1.81× faster** |
-| 256 exhaustive control-flow functions | 392.2 ms | 100.3 ms | **77.1 ms** | **1.30× faster** |
-| 128 × 8 overload calls | 491.2 ms | 132.3 ms | **88.5 ms** | **1.49× faster** |
-| 128 generic class families | 406.5 ms | 96.0 ms | **83.7 ms** | **1.15× faster** |
-| 128 structural object families | 361.8 ms | 102.3 ms | **69.4 ms** | **1.47× faster** |
-| 128 interface/namespace families | 532.6 ms | 133.1 ms | **122.8 ms** | **1.08× faster** |
-| 256 variadic tuple families | 634.1 ms | 160.8 ms | **153.5 ms** | **1.05× faster** |
+| Startup | 97.3 ms | 57.2 ms | **5.1 ms** | **11.22× faster** |
+| 256 files | 371.9 ms | 83.7 ms | **47.5 ms** | **1.76× faster** |
+| Deep types | 221.8 ms | 79.4 ms | **22.2 ms** | **3.58× faster** |
+| 128-module import graph | 221.5 ms | 74.0 ms | **44.7 ms** | **1.65× faster** |
+| 64-leaf barrel graph | 152.4 ms | 60.5 ms | **44.6 ms** | **1.35× faster** |
+| 256 typed TSX components | 280.3 ms | 72.9 ms | **34.6 ms** | **2.10× faster** |
+| 256 generic call groups | 313.7 ms | 82.2 ms | **41.7 ms** | **1.97× faster** |
+| 256 exhaustive control-flow functions | 341.1 ms | 86.5 ms | **65.5 ms** | **1.32× faster** |
+| 128 × 8 overload calls | 309.4 ms | 88.6 ms | **57.2 ms** | **1.55× faster** |
+| 128 generic class families | 294.1 ms | 74.6 ms | **56.9 ms** | **1.31× faster** |
+| 128 structural object families | 348.7 ms | 95.8 ms | **56.5 ms** | **1.70× faster** |
+| 128 interface/namespace families | 359.8 ms | 98.1 ms | **75.4 ms** | **1.30× faster** |
+| 256 variadic tuple families | 457.5 ms | 118.5 ms | **104.0 ms** | **1.14× faster** |
+| 128 checked-JavaScript/JSDoc families | 322.2 ms | 76.0 ms | **68.4 ms** | **1.11× faster** |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
