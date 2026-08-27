@@ -4690,6 +4690,10 @@ pub const Checker = struct {
         std.ArrayListUnmanaged(RecoveredParameterSyntax),
     ) = .empty,
     recovered_parameter_syntax_built: bool = false,
+    /// JSDoc lookup repeatedly asks which function owns the same comment
+    /// positions. Cache immutable HIR containment results so source scans do
+    /// not multiply a full node walk by every referenced typedef.
+    source_function_containing_pos_cache: std.AutoHashMapUnmanaged(u32, NodeId) = .empty,
     source_has_virtual_sections: bool = false,
     /// UMD globals require an `export as namespace` declaration. Cache a
     /// conservative keyword prefilter so ordinary type references do not
@@ -5054,6 +5058,7 @@ pub const Checker = struct {
             .return_annotation_in_progress = .empty,
             .generator_type_info = .empty,
             .recovered_parameter_syntax = .empty,
+            .source_function_containing_pos_cache = .empty,
             .current_generator_info = null,
             .current_async_function_return_check = false,
             .function_body_depth = 0,
@@ -5103,6 +5108,7 @@ pub const Checker = struct {
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.clearRetainingCapacity();
         self.recovered_parameter_syntax_built = false;
+        self.source_function_containing_pos_cache.clearRetainingCapacity();
         self.source_has_virtual_sections =
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
@@ -5595,6 +5601,7 @@ pub const Checker = struct {
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.deinit(self.gpa);
+        self.source_function_containing_pos_cache.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.ts_expect_error_directive_lines.deinit(self.gpa);
@@ -96751,6 +96758,9 @@ pub const Checker = struct {
 
     fn sourceFunctionContainingPos(self: *Checker, pos: usize) ?NodeId {
         const source_pos: u32 = @intCast(@min(pos, std.math.maxInt(u32)));
+        if (self.source_function_containing_pos_cache.get(source_pos)) |cached| {
+            return if (cached == hir_mod.none_node_id) null else cached;
+        }
         var best: ?NodeId = null;
         var best_len: u32 = std.math.maxInt(u32);
         var node: NodeId = 0;
@@ -96766,6 +96776,11 @@ pub const Checker = struct {
             best = node;
             best_len = span_len;
         }
+        self.source_function_containing_pos_cache.put(
+            self.gpa,
+            source_pos,
+            best orelse hir_mod.none_node_id,
+        ) catch {};
         return best;
     }
 
