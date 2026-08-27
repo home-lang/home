@@ -37,6 +37,9 @@ Run harness regression tests with
   changing workstation load cannot systematically favor one compiler.
 - Compiler versions, host details, timestamp, and run counts are saved beside
   the raw results.
+- Comparisons use the faster competitor. Ratios that round to `1.00×` are
+  labeled near ties in either direction; this display rule is not a statistical
+  significance test. Directional labels compare means, not certainty of a win.
 
 The workloads cover distinct costs rather than repeating one favorable shape:
 

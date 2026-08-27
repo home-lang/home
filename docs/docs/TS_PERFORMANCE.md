@@ -10,36 +10,37 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-27 at commit `b5b5bd938` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `dad87a665` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T191750Z`. Home records a lower
-mean than the faster competitor on 17 of 18 workloads. The new large predicate
-workload is 1.07× slower than native TypeScript 7, while the original smaller
-workload has a 1.47× mean lead. The round-robin compiler order and complete,
+The local raw-result identifier is `20260827T193257Z`. Home records a lower
+mean than the faster competitor on 18 of 18 workloads, but the large predicate
+case is a near tie: its 0.2% lower mean is small relative to the observed
+variation and does not establish a convincing lead. The original smaller
+workload has a 1.60× mean lead. The round-robin compiler order and complete,
 unfiltered 30-sample result are retained. Several workloads have substantial
 variance; these local results do not establish universal superiority.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 64.3 ± 14.5 ms | 38.5 ± 12.0 ms | **3.3 ± 0.5 ms** | **11.76× faster** |
-| `many_files` | 202.3 ± 13.2 ms | 52.0 ± 5.7 ms | **31.3 ± 6.9 ms** | **1.66× faster** |
-| `deep_types` | 128.1 ± 17.3 ms | 50.4 ± 1.3 ms | **14.0 ± 6.5 ms** | **3.61× faster** |
-| `import_graph` | 125.6 ± 1.5 ms | 43.3 ± 1.1 ms | **25.2 ± 0.5 ms** | **1.71× faster** |
-| `reexport_graph` | 91.4 ± 1.4 ms | 39.2 ± 1.2 ms | **26.8 ± 2.3 ms** | **1.46× faster** |
-| `tsx_components` | 160.7 ± 17.9 ms | 47.0 ± 8.8 ms | **21.4 ± 0.4 ms** | **2.19× faster** |
-| `generic_calls` | 176.8 ± 9.5 ms | 53.7 ± 2.1 ms | **22.6 ± 0.9 ms** | **2.37× faster** |
-| `control_flow` | 180.7 ± 2.2 ms | 55.8 ± 0.9 ms | **33.0 ± 0.7 ms** | **1.69× faster** |
-| `type_predicates` | 231.3 ± 12.5 ms | 69.5 ± 2.3 ms | **47.4 ± 0.9 ms** | **1.47× faster** |
-| `type_predicates_large` | 1012.4 ± 56.3 ms | 356.0 ± 20.1 ms | 379.3 ± 15.8 ms | 1.07× slower |
-| `null_safe_access` | 213.4 ± 52.8 ms | 63.6 ± 20.2 ms | **43.8 ± 9.8 ms** | **1.45× faster** |
-| `destructuring` | 140.4 ± 8.4 ms | 47.9 ± 1.6 ms | **36.2 ± 0.9 ms** | **1.32× faster** |
-| `overload_resolution` | 196.6 ± 3.4 ms | 63.4 ± 1.3 ms | **30.8 ± 0.4 ms** | **2.06× faster** |
-| `class_hierarchy` | 177.9 ± 5.5 ms | 52.2 ± 6.8 ms | **29.4 ± 0.6 ms** | **1.78× faster** |
-| `structural_objects` | 174.4 ± 2.5 ms | 54.9 ± 1.2 ms | **30.4 ± 0.3 ms** | **1.81× faster** |
-| `interface_composition` | 217.1 ± 23.4 ms | 69.6 ± 6.8 ms | **48.7 ± 4.5 ms** | **1.43× faster** |
-| `variadic_tuples` | 291.1 ± 24.8 ms | 87.3 ± 7.8 ms | **48.3 ± 4.5 ms** | **1.80× faster** |
-| `checkjs_jsdoc` | 232.8 ± 6.8 ms | 59.9 ± 1.7 ms | **41.4 ± 1.0 ms** | **1.45× faster** |
+| `startup` | 63.9 ± 10.2 ms | 42.8 ± 21.7 ms | **3.2 ± 0.6 ms** | **13.46× faster** |
+| `many_files` | 199.1 ± 7.1 ms | 50.9 ± 2.5 ms | **30.8 ± 3.0 ms** | **1.65× faster** |
+| `deep_types` | 121.9 ± 2.1 ms | 49.6 ± 1.1 ms | **12.7 ± 0.3 ms** | **3.91× faster** |
+| `import_graph` | 123.3 ± 1.0 ms | 44.0 ± 3.1 ms | **25.8 ± 5.5 ms** | **1.71× faster** |
+| `reexport_graph` | 100.2 ± 29.4 ms | 43.7 ± 14.1 ms | **31.2 ± 9.9 ms** | **1.40× faster** |
+| `tsx_components` | 156.1 ± 2.9 ms | 45.7 ± 1.3 ms | **21.3 ± 0.5 ms** | **2.14× faster** |
+| `generic_calls` | 169.3 ± 7.8 ms | 53.0 ± 7.2 ms | **22.0 ± 2.9 ms** | **2.41× faster** |
+| `control_flow` | 182.8 ± 18.1 ms | 55.3 ± 1.0 ms | **32.5 ± 0.6 ms** | **1.70× faster** |
+| `type_predicates` | 225.1 ± 7.8 ms | 68.4 ± 2.0 ms | **42.8 ± 1.7 ms** | **1.60× faster** |
+| `type_predicates_large` | 956.6 ± 37.9 ms | 326.6 ± 8.3 ms | 326.0 ± 10.0 ms | 1.00× (near tie) |
+| `null_safe_access` | 180.7 ± 1.7 ms | 54.9 ± 1.0 ms | **38.7 ± 0.5 ms** | **1.42× faster** |
+| `destructuring` | 132.1 ± 1.5 ms | 44.8 ± 0.9 ms | **33.9 ± 0.5 ms** | **1.32× faster** |
+| `overload_resolution` | 204.3 ± 43.8 ms | 73.6 ± 26.9 ms | **29.8 ± 3.2 ms** | **2.47× faster** |
+| `class_hierarchy` | 173.9 ± 2.3 ms | 52.6 ± 14.6 ms | **28.0 ± 1.3 ms** | **1.88× faster** |
+| `structural_objects` | 177.0 ± 2.4 ms | 56.4 ± 1.7 ms | **31.1 ± 0.5 ms** | **1.82× faster** |
+| `interface_composition` | 190.6 ± 3.2 ms | 60.4 ± 1.3 ms | **42.0 ± 0.6 ms** | **1.44× faster** |
+| `variadic_tuples` | 233.8 ± 2.6 ms | 73.1 ± 1.3 ms | **41.9 ± 0.7 ms** | **1.75× faster** |
+| `checkjs_jsdoc` | 194.2 ± 2.5 ms | 52.0 ± 1.4 ms | **36.2 ± 0.8 ms** | **1.44× faster** |
 
 The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
 Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
@@ -52,8 +53,9 @@ named-shape caching, function-declaration indexing, necessary member-fact
 filtering, local value-declaration indexing, registered-TypeId filtering,
 relation-cache tombstone maintenance, named-shape candidate indexing, static
 builtin-name lookup, shared exact source-marker searches, candidate directive-line
-iteration, shared builtin Function member construction, and the large predicate
-scaling case; no samples were discarded. The first 18-workload snapshot
+iteration, shared builtin Function member construction, exact conditional-assignment
+absence filters, and the large predicate scaling case; no samples were discarded.
+The first 18-workload snapshot
 `20260827T165255Z` recorded Home at 855.8 ± 42.1 ms against native TypeScript 7
 at 382.3 ± 25.1 ms on large predicates (2.24× slower); it remains part of the
 record. Snapshot `20260827T172600Z` recorded 592.0 ± 14.6 versus
@@ -62,15 +64,19 @@ record. Snapshot `20260827T172600Z` recorded 592.0 ± 14.6 versus
 `20260827T181303Z` recorded 549.4 ± 87.3 versus 460.4 ± 126.6 ms
 (1.19× slower). Snapshot `20260827T183613Z` recorded 491.0 ± 54.1 versus
 430.2 ± 40.9 ms (1.14× slower). Snapshot `20260827T185149Z` recorded
-399.7 ± 25.6 versus 338.0 ± 16.1 ms (1.18× slower). The current large row is
-379.3 ± 15.8 versus 356.0 ± 20.1 ms (1.07× slower). Unrelated concurrent
+399.7 ± 25.6 versus 338.0 ± 16.1 ms (1.18× slower). Snapshot `20260827T191750Z`
+recorded 379.3 ± 15.8 versus 356.0 ± 20.1 ms (1.07× slower). The current large
+row is 326.0 ± 10.0 versus 326.6 ± 8.3 ms (near tie). Unrelated concurrent
 workstation jobs were observed during this measurement session; several rows
 are noisy, and no samples were filtered or replaced. The different sessions
 do not by themselves isolate the effect of each optimization.
 
-The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
-beat both compilers to record a win. These are local synthetic measurements,
-not a claim that every real project or machine has the same speedup.
+The comparison column always uses the faster of `tsc` and `tsgo`. Ratios
+rounding to `1.00×` are labeled near ties in either direction, not directional
+wins. This is a display-resolution rule, not a statistical significance test;
+other directional labels also compare means, not certainty. These are local
+synthetic measurements, not a claim that every real project or machine has
+the same speedup.
 
 ## Fairness and measurement
 
@@ -827,3 +833,61 @@ These counts identify further investigation targets, not speedup estimates or
 an additional accepted benchmark. Next work should inspect repeated program
 collection and source-prefix scans while preserving declaration visibility,
 source-update lifetimes, and semantic checks.
+
+Commit `dad87a665` removes impossible direct self-conditional-assignment scans.
+The existing helper can only return true if the preceding semicolon-delimited
+segment contains `?` in the selected assignment's RHS. An exact source-level
+absence check now reuses the shared byte-marker index, and a segment-level
+absence check rejects other segments before searching for identifier text.
+The original assignment, identifier-boundary, and RHS checks still run for
+candidates. No tokenization or type-checking rule changes; question marks in
+comments and strings retain their original byte-scanning behavior.
+
+Two regressions compare against the original implementation at every source
+offset, including beyond EOF, with multiple names, generated bytes, CRLF,
+comments/strings, semicolons inside strings, assignment lookalikes, and repeated
+assignment candidates. They cover both cached and uncached marker lookup,
+positive matches, null source, and repeated source replacement. All 4,221
+checker tests, 173 driver tests, five harness tests, and the release build
+pass. All 18 shared projects and 13 negative controls pass per compiler;
+both predicate hashes remain unchanged. The release toolchain is
+Zig `0.17.0-dev.1441+d5181a9c9`, using `ReleaseFast`.
+
+Alternating preserved binaries after three warmups measured small predicates
+at 49.30 ± 0.32 ms before and 45.39 ± 0.37 ms after (30 samples each).
+Large predicates measured 415.61 ± 44.11 versus 375.56 ± 46.66 ms (10 each),
+with medians of 393.78 and 361.44 ms. All observations are retained, including
+the 500.35 ms candidate sample. Control flow measured 36.30 ± 2.84 versus
+35.45 ± 0.83 ms (30 each), with medians of 35.49 and 35.23 ms and a 50.46 ms
+baseline maximum; this does not establish a robust control-flow improvement.
+The small-predicate result is consistent, but the large-case variability and
+concurrent workstation activity limit the strength of that mean comparison.
+
+The full snapshot `20260827T193257Z` retains all 30 interleaved samples after
+three warmups across 18 workloads. Home has a lower mean on all 18, but large
+predicates are a near tie: Home 326.0 ± 10.0 ms versus native TypeScript 7.0.2
+326.6 ± 8.3 ms, with JavaScript TypeScript 6.0.3 at 956.6 ± 37.9 ms. Home's
+0.2% mean advantage is small relative to the observed variability; medians are
+323.18 and 324.02 ms. This does not establish a convincing lead, so
+[issue #457](https://github.com/home-lang/home/issues/457) remains open for a
+robust large-case margin. Small predicates measure 42.8 ± 1.7 versus
+68.4 ± 2.0 ms, a 1.60× mean lead. All 1,620 timed samples succeeded;
+540 complete rounds, balanced compiler order, exact versions, both tables,
+and frozen predicate hashes were verified. No samples were discarded.
+
+Commit `999258e16` makes the report's rounded-equal ratios explicitly say
+`1.00× (near tie)` instead of displaying a misleading directional win. Five
+regressions cover equality, either direction, and the symmetric two-decimal
+boundary; all ten harness/report tests pass. This only changes presentation,
+not measurements or their aggregation, and does not claim statistical
+significance for larger displayed ratios.
+
+A separate post-run 8,192-family diagnostic profile records only two
+inclusive samples in the filtered self-conditional-assignment helper.
+Repeated substring searches remain in program ambient-interface, namespace,
+class, and CommonJS collection, alongside checker/driver setup. These counts
+guide the next investigation, not a speedup claim or a new accepted benchmark.
+Next work should share exact program source facts while auditing source
+replacement, redirects, and declaration visibility. The broader #416 goal,
+the #457 narrow margin, #467 semantic discrepancy, and #464 unvalidated
+container harness all remain open.
