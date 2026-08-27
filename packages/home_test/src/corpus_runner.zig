@@ -100138,6 +100138,18 @@ fn isNativeModuleRegistryCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/node/test/parallel/test-module-isBuiltin.js");
 }
 
+fn isNativeBufferPrimitiveCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-isencoding.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js");
+}
+
+fn isNativeQuerystringCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-escape.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-multichar-separator.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-maxKeys-non-finite.js");
+}
+
 fn isNativeHomeCorpusFile(relative: []const u8) bool {
     return isNativeStreamIteratorCorpusFile(relative) or
         isNativeFsDisposableCorpusFile(relative) or
@@ -100145,7 +100157,9 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeBuiltinAliasCorpusFile(relative) or
         isNativeStreamConsumersCorpusFile(relative) or
         isNativeReadableFromCorpusFile(relative) or
-        isNativeModuleRegistryCorpusFile(relative);
+        isNativeModuleRegistryCorpusFile(relative) or
+        isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeQuerystringCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100372,7 +100386,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 57), native_count);
+    try std.testing.expectEqual(@as(usize, 63), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -100473,6 +100487,48 @@ test "native module registry corpus predicate covers the exact vendored matrix" 
     try std.testing.expect(isNativeModuleRegistryCorpusFile("js/node/test/parallel/test-module-isBuiltin.js"));
     try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/test-module-builtin.mjs"));
     try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/nested/test-module-isBuiltin.js"));
+}
+
+test "native buffer primitive corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeBufferPrimitiveCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.js"));
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-tojson.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.mjs"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/nested/test-buffer-tojson.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-encoding.js"));
+}
+
+test "native querystring corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeQuerystringCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-escape.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-multichar-separator.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-maxKeys-non-finite.js"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring.mjs"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/nested/test-querystring.js"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-unescape.js"));
 }
 
 test "native stream iterator process classification requires a clean exit" {
