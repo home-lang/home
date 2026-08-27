@@ -8,7 +8,7 @@ import { declareASCIILiteral, checkAscii } from '../packages/runtime/upstream/sr
 import { createInternalModuleRegistry } from '../packages/runtime/upstream/src/codegen/internal-module-registry-scanner'
 import { define } from '../packages/runtime/upstream/src/codegen/replacements'
 import NodeErrors from '../packages/runtime/upstream/src/jsc/bindings/ErrorCode'
-import { enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
+import { assertClassHeaderAbi, enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
 
 async function main() {
   const [externalBuildArg, outputArg] = process.argv.slice(2)
@@ -65,6 +65,36 @@ async function main() {
     if (input.includes('__intrinsic__inherits')) throw new Error(`Unvalidated class ABI in ${module}`)
     return { module, name, input }
   })
+  // Preflight native ownership and ABI layout before creating any output.
+  // Class headers remain external; only the private constants header is copied.
+  const privateHeader = 'HomeMessagePortLifecycle.h'
+  const privateHeaderBytes = readFileSync(path.join(homeSource, 'jsc/bindings/webcore', privateHeader))
+  const nativeUnits = ([
+    ['jsc/bindings/InternalModuleRegistry.cpp', 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp', null],
+    ['jsc/bindings/webcore/MessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp', 'MessagePort.h'],
+    ['jsc/bindings/webcore/MessagePortPipe.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp', 'MessagePortPipe.h'],
+  ] as const).map(([relativeSource, unifiedName, outputName, abiHeader]) => {
+    const source = path.join(homeSource, relativeSource)
+    const basename = path.basename(source)
+    const body = read(source)
+    const unifiedPath = path.join(externalBuild, 'unified', unifiedName)
+    let replacements = 0
+    const unified = read(unifiedPath).replace(/^[ \t]*#include "([^"\r\n]+)"[ \t]*\r?$/gm, (_, relative) => {
+      const externalSource = path.resolve(path.dirname(unifiedPath), relative)
+      if (path.basename(relative) === basename) {
+        replacements++
+        if (abiHeader) {
+          const homeHeader = path.join(path.dirname(source), abiHeader)
+          const externalHeader = path.join(path.dirname(externalSource), abiHeader)
+          assertClassHeaderAbi(readFileSync(homeHeader), readFileSync(externalHeader), abiHeader, externalHeader)
+        }
+        return `#include ${JSON.stringify(basename)}`
+      }
+      return `#include ${JSON.stringify(externalSource)}`
+    })
+    if (replacements !== 1) throw new Error(`Native unified source must contain exactly one ${basename}`)
+    return { source, basename, body, unified, outputName }
+  })
   mkdirSync(output, { recursive: true })
   for (const { module, name, input } of inputs) {
     // The cache lives under Home's type=commonjs package. Force ESM parsing so
@@ -104,25 +134,11 @@ async function main() {
 
   // Own only the selected implementations; keep every other source of their
   // unified translation units ABI-matched to its external headers. Generate the
-  // MessagePort binding and worker builtin together: their private return-value
-  // contract must never come from different builds.
-  for (const [relativeSource, unifiedName, outputName] of [
-    ['jsc/bindings/InternalModuleRegistry.cpp', 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
-    ['jsc/bindings/webcore/MessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
-  ]) {
-    const source = path.join(homeSource, relativeSource)
-    const basename = path.basename(source)
-    writeFileSync(path.join(output, basename), `#line 1 ${JSON.stringify(source)}\n${read(source)}`)
-    const unifiedPath = path.join(externalBuild, 'unified', unifiedName)
-    let replacements = 0
-    const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
-      if (path.basename(relative) === basename) {
-        replacements++
-        return `#include ${JSON.stringify(basename)}`
-      }
-      return `#include ${JSON.stringify(path.resolve(path.dirname(unifiedPath), relative))}`
-    })
-    if (replacements !== 1) throw new Error(`Native unified source must contain exactly one ${basename}`)
+  // MessagePort, pipe lifecycle and worker builtin together: their private
+  // contracts must never come from different builds.
+  writeFileSync(path.join(output, privateHeader), privateHeaderBytes)
+  for (const { source, basename, body, unified, outputName } of nativeUnits) {
+    writeFileSync(path.join(output, basename), `#line 1 ${JSON.stringify(source)}\n${body}`)
     writeFileSync(path.join(output, outputName), unified)
   }
   console.log(`Generated ${ownedModules.join(', ')} from Home with verified linked ABI mappings`)

@@ -10,6 +10,7 @@ var cached_process_object: ?std.Build.LazyPath = null;
 var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
+var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -49,6 +50,14 @@ pub fn messagePortObject(b: *std.Build, object_root: []const u8) std.Build.LazyP
     return object;
 }
 
+pub fn messagePortPipeObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_message_port_pipe_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-4.cpp", output.path(b, "HomeMessagePortPipe.cpp"));
+    cached_message_port_pipe_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -72,6 +81,10 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/js_classes.ts",
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePortPipe.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePortPipe.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/HomeMessagePortLifecycle.h",
         "packages/runtime/upstream/src/jsc/modules/_NativeModule.h",
         "packages/runtime/upstream/src/js/node/url.ts",
         "packages/runtime/upstream/src/js/node/worker_threads.ts",
@@ -86,9 +99,55 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp",
     }) |input| generate.addFileInput(.{ .cwd_relative = b.fmt("{s}/{s}", .{ build_root, input }) });
+    // Header comparisons are generation inputs, not merely clang inputs: a
+    // changed external ABI must invalidate generation before any owned object
+    // can be linked. Resolve against the selected unified source, including
+    // absolute includes used by isolated build fixtures.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    for ([_][3][]const u8{
+        .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "MessagePortPipe.cpp", "MessagePortPipe.h" },
+    }) |entry| {
+        const unified_path = b.fmt("{s}/unified/{s}", .{ build_root, entry[0] });
+        const unified = std.Io.Dir.cwd().readFileAlloc(io, unified_path, b.allocator, .limited(1024 * 1024)) catch |err|
+            std.debug.panic("cannot read native unified source {s}: {s}", .{ unified_path, @errorName(err) });
+        defer b.allocator.free(unified);
+        const source = unifiedSourcePath(b.allocator, unified, unified_path, entry[1]) catch |err|
+            std.debug.panic("invalid native unified source {s}: {s}", .{ unified_path, @errorName(err) });
+        defer b.allocator.free(source);
+        const header = b.fmt("{s}/{s}", .{ std.fs.path.dirname(source).?, entry[2] });
+        generate.addFileInput(.{ .cwd_relative = header });
+    }
     cached_native_modules = output;
     return output;
+}
+
+fn unifiedSourcePath(allocator: std.mem.Allocator, unified: []const u8, unified_path: []const u8, basename: []const u8) ![]const u8 {
+    var selected: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, unified, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, trimmed, "#include \"") or !std.mem.endsWith(u8, trimmed, "\"")) continue;
+        const included = trimmed[10 .. trimmed.len - 1];
+        if (!std.mem.eql(u8, std.fs.path.basename(included), basename)) continue;
+        if (selected != null) return error.DuplicateOwnedSource;
+        selected = included;
+    }
+    const included = selected orelse return error.MissingOwnedSource;
+    return std.fs.path.resolve(allocator, &.{ std.fs.path.dirname(unified_path) orelse return error.InvalidUnifiedPath, included });
+}
+
+test "owned unified source resolves selected relative and absolute header roots" {
+    const relative = try unifiedSourcePath(std.testing.allocator, "#include \"../../../src/OtherMessagePortPipe.cpp\"\n#include \"../../../src/webcore/MessagePortPipe.cpp\"\n", "/bun/build/release/unified/unit.cpp", "MessagePortPipe.cpp");
+    defer std.testing.allocator.free(relative);
+    try std.testing.expectEqualStrings("/bun/src/webcore/MessagePortPipe.cpp", relative);
+    const absolute = try unifiedSourcePath(std.testing.allocator, "#include \"/fixture/webcore/MessagePort.cpp\"\r\n", "/fixture/build/unified/unit.cpp", "MessagePort.cpp");
+    defer std.testing.allocator.free(absolute);
+    try std.testing.expectEqualStrings("/fixture/webcore/MessagePort.cpp", absolute);
+    try std.testing.expectError(error.MissingOwnedSource, unifiedSourcePath(std.testing.allocator, "#include \"OtherMessagePort.cpp\"\n", "/build/unit.cpp", "MessagePort.cpp"));
+    try std.testing.expectError(error.DuplicateOwnedSource, unifiedSourcePath(std.testing.allocator, "#include \"MessagePort.cpp\"\n#include \"other/MessagePort.cpp\"\n", "/build/unit.cpp", "MessagePort.cpp"));
 }
 
 fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, source: std.Build.LazyPath) std.Build.LazyPath {

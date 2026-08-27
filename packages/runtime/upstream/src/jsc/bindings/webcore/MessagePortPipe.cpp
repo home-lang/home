@@ -10,10 +10,27 @@
 #if BUN_MESSAGEPORT_USES_PIPE
 
 #include "MessagePortPipe.h"
+#include "Event.h"
+#include "EventNames.h"
+#include "HomeMessagePortLifecycle.h"
 #include "ScriptExecutionContext.h"
 #include <wtf/Locker.h>
 
 namespace WebCore {
+
+using namespace MessagePortLifecycle;
+
+static_assert(!((PeerClosed | CloseDispatched) & (MessagePortPipe::Closed | MessagePortPipe::DrainScheduled | MessagePortPipe::Attached)));
+static_assert((PeerClosed | CloseDispatched) < MessagePortPipe::QueuedOne);
+
+static bool homePortDrainReady(uint64_t state)
+{
+    if (state & CloseDispatched)
+        return false;
+    return (state & MessagePortPipe::Closed)
+        || ((state & PeerClosed) && !MessagePortPipe::queuedCount(state))
+        || ((state & MessagePortPipe::Attached) && MessagePortPipe::queuedCount(state));
+}
 
 MessagePortPipe::~MessagePortPipe() = default;
 
@@ -48,7 +65,7 @@ void MessagePortPipe::send(uint8_t fromSide, MessageWithMessagePorts&& message)
     {
         Locker locker { dst.lock };
         uint64_t s = dst.state.load(std::memory_order_relaxed);
-        if (s & Closed)
+        if (s & (Closed | PeerClosed))
             return;
 
         dst.inbox.append(WTF::move(message));
@@ -71,14 +88,62 @@ void MessagePortPipe::scheduleDrain(uint8_t side, ScriptExecutionContextIdentifi
     // while a wakeup is in flight. The task captures the ctxId it was posted
     // to so drainAndDispatch can detect if the side moved to a different
     // context before the task ran.
-    bool posted = ScriptExecutionContext::postTaskTo(ctxId, [pipe = Ref { *this }, side, ctxId](ScriptExecutionContext&) {
-        pipe->drainAndDispatch(side, ctxId);
+    ThreadSafeWeakPtr<MessagePort> expectedPort;
+    {
+        Locker locker { m_sides[side].lock };
+        if (m_sides[side].ctxId != ctxId)
+            return;
+        expectedPort = m_sides[side].port;
+    }
+    // Teardown GC can destroy ports before the context leaves the global map.
+    // Its event loop has already stopped: enqueueing here would strand the
+    // task's strong pipe ref. Inspect VM state only on the owning thread, and
+    // outside the contexts-map lock (releasing captures may itself close ports).
+    bool posted = ScriptExecutionContext::ensureOnContextThread(ctxId, [pipe = Ref { *this }, side, ctxId, expectedPort](ScriptExecutionContext& context) {
+        RefPtr<MessagePort> currentPort;
+        RefPtr<MessagePort> scheduledPort;
+        {
+            Locker locker { pipe->m_sides[side].lock };
+            if (pipe->m_sides[side].ctxId != ctxId)
+                return;
+            currentPort = pipe->m_sides[side].port.get();
+            scheduledPort = expectedPort.get();
+        }
+        if (currentPort != scheduledPort)
+            return;
+        auto* globalObject = context.globalObject() ? defaultGlobalObject(context.globalObject()) : nullptr;
+        if (!globalObject || context.isJSExecutionForbidden()
+            || Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) != ScriptExecutionStatus::Running) {
+            Locker locker { pipe->m_sides[side].lock };
+            if (pipe->m_sides[side].ctxId == ctxId)
+                pipe->m_sides[side].state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
+            return;
+        }
+        // ensureOnContextThread may run inline for a local close. Delivery
+        // must remain asynchronous, including when both endpoints are local.
+        context.postTask([pipe = pipe.copyRef(), side, ctxId, expectedPort](ScriptExecutionContext&) {
+            RefPtr<MessagePort> currentPort;
+            RefPtr<MessagePort> scheduledPort;
+            {
+                Locker locker { pipe->m_sides[side].lock };
+                if (pipe->m_sides[side].ctxId != ctxId)
+                    return;
+                currentPort = pipe->m_sides[side].port.get();
+                scheduledPort = expectedPort.get();
+            }
+            // A last strong ref can run MessagePort::~MessagePort -> close().
+            // Never release these snapshots while the pipe-side lock is held.
+            if (currentPort != scheduledPort)
+                return;
+            pipe->drainAndDispatch(side, ctxId);
+        });
     });
     if (!posted) {
         // Context already torn down. Drop DrainScheduled so a future
         // attach() to a new context can reschedule.
         Locker locker { m_sides[side].lock };
-        m_sides[side].state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
+        if (m_sides[side].ctxId == ctxId)
+            m_sides[side].state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
     }
 }
 
@@ -110,7 +175,7 @@ void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdent
             return;
         port = s.port.get();
         uint64_t st = s.state.load(std::memory_order_relaxed);
-        if (!port || s.inbox.isEmpty()) {
+        if (!port || !homePortDrainReady(st)) {
             s.state.store(st & ~DrainScheduled, std::memory_order_release);
             return;
         }
@@ -128,6 +193,8 @@ void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdent
     ScriptExecutionContextIdentifier rescheduleCtx = 0;
     while (true) {
         std::optional<MessageWithMessagePorts> message;
+        RefPtr<MessagePort> currentPort;
+        bool dispatchClose = false;
         {
             Locker locker { s.lock };
             // Re-check each iteration: the handler (or a concurrent thread)
@@ -137,21 +204,46 @@ void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdent
             // the stale (now m_isDetached) `port` would silently drop.
             // The new owner's attach() scheduled its own drain; leave the
             // inbox for that.
-            if (s.ctxId != expectedCtx || s.port.get() != port)
+            if (s.ctxId != expectedCtx)
+                break;
+            currentPort = s.port.get();
+            if (currentPort != port)
                 break;
             uint64_t st = s.state.load(std::memory_order_relaxed);
-            if (!(st & Attached) || s.inbox.isEmpty()) {
+            if (!homePortDrainReady(st)) {
                 s.state.store(st & ~DrainScheduled, std::memory_order_release);
                 break;
             }
-            if (limit-- == 0) {
-                // Yield to the rest of the event loop; DrainScheduled stays
-                // set so concurrent sends don't double-schedule.
-                rescheduleCtx = s.ctxId;
-                break;
+            if ((st & Closed) || ((st & PeerClosed) && s.inbox.isEmpty())) {
+                // A close is a control marker after the peer's accepted
+                // messages, not a reason to discard that inbox. Explicit
+                // local close has already discarded its own inbox.
+                dispatchClose = true;
+            } else {
+                if (limit-- == 0) {
+                    // Yield to the rest of the event loop; DrainScheduled stays
+                    // set so concurrent sends don't double-schedule.
+                    rescheduleCtx = s.ctxId;
+                    break;
+                }
+                message = s.inbox.takeFirst();
+                s.state.store(st - QueuedOne, std::memory_order_release);
             }
-            message = s.inbox.takeFirst();
-            s.state.store(st - QueuedOne, std::memory_order_release);
+        }
+
+        if (dispatchClose) {
+            // Keep the pipe's atomic pending protection until the wrapper
+            // has its own pending-close state. GC can run concurrently here,
+            // as well as during the subsequent Event allocation.
+            port->close();
+            {
+                Locker locker { s.lock };
+                const uint64_t st = s.state.load(std::memory_order_relaxed);
+                s.state.store((st | Closed | CloseDispatched) & ~(Attached | DrainScheduled), std::memory_order_release);
+            }
+            auto event = Event::create(eventNames().closeEvent, Event::CanBubble::No, Event::IsCancelable::No);
+            port->dispatchEvent(event);
+            break;
         }
 
         port->dispatchOneMessage(*context, WTF::move(*message));
@@ -171,25 +263,43 @@ std::optional<MessageWithMessagePorts> MessagePortPipe::takeOne(uint8_t side)
 {
     ASSERT(side < 2);
     auto& s = m_sides[side];
-    Locker locker { s.lock };
-    if (s.inbox.isEmpty())
-        return std::nullopt;
-    s.state.fetch_sub(QueuedOne, std::memory_order_acq_rel);
-    return s.inbox.takeFirst();
+    ScriptExecutionContextIdentifier wakeCtx = 0;
+    {
+        Locker locker { s.lock };
+        uint64_t st = s.state.load(std::memory_order_relaxed);
+        if (!s.inbox.isEmpty()) {
+            s.state.store(st - QueuedOne, std::memory_order_release);
+            return s.inbox.takeFirst();
+        }
+        // Like Node's close marker, a synchronous read beyond the final data
+        // message wakes closure even if this receiver has never started.
+        if (s.ctxId && homePortDrainReady(st) && !(st & DrainScheduled)) {
+            s.state.store(st | DrainScheduled, std::memory_order_release);
+            wakeCtx = s.ctxId;
+        }
+    }
+    if (wakeCtx)
+        scheduleDrain(side, wakeCtx);
+    return std::nullopt;
 }
 
 void MessagePortPipe::attach(uint8_t side, ScriptExecutionContextIdentifier ctxId, ThreadSafeWeakPtr<MessagePort> port)
 {
     ASSERT(side < 2);
     auto& s = m_sides[side];
+    // Called only on the receiver's thread. Registration exists before
+    // start(), but only a started port can consume ordinary queued messages.
+    auto protectedPort = port.get();
+    const bool started = protectedPort && protectedPort->started();
     ScriptExecutionContextIdentifier wakeCtx = 0;
     {
         Locker locker { s.lock };
         s.ctxId = ctxId;
         s.port = WTF::move(port);
         uint64_t st = s.state.load(std::memory_order_relaxed);
-        uint64_t ns = (st | Attached) & ~Closed;
-        if (queuedCount(st) > 0 && !(st & DrainScheduled)) {
+        uint64_t ns = started ? st | Attached : st & ~Attached;
+        // Closed is terminal; reattachment must never reopen an endpoint.
+        if ((homePortDrainReady(ns) || ((ns & PeerClosed) && !(ns & CloseDispatched))) && !(st & DrainScheduled)) {
             ns |= DrainScheduled;
             wakeCtx = ctxId;
         }
@@ -232,14 +342,43 @@ void MessagePortPipe::close(uint8_t side)
         auto& s = pipe->m_sides[sd];
 
         Deque<MessageWithMessagePorts> dropped;
+        ScriptExecutionContextIdentifier localWake = 0;
         {
             Locker locker { s.lock };
-            s.ctxId = 0;
-            s.port = nullptr;
-            // Closed is terminal; queued messages are dropped.
-            s.state.store(Closed, std::memory_order_release);
+            const uint64_t st = s.state.load(std::memory_order_relaxed);
+            if (st & Closed)
+                continue;
+            // Keep the endpoint identity for its asynchronous close event.
+            // Drop only this inbox, not messages already sent to the peer.
+            uint64_t ns = (st & (DrainScheduled | PeerClosed | CloseDispatched)) | Closed;
+            if (s.ctxId && !(ns & (DrainScheduled | CloseDispatched))) {
+                ns |= DrainScheduled;
+                localWake = s.ctxId;
+            }
+            s.state.store(ns, std::memory_order_release);
             dropped = std::exchange(s.inbox, {});
         }
+
+        auto& peer = pipe->m_sides[1 - sd];
+        ScriptExecutionContextIdentifier peerWake = 0;
+        {
+            Locker locker { peer.lock };
+            uint64_t ns = peer.state.load(std::memory_order_relaxed) | PeerClosed;
+            // Post the peer-close notification once even for an unstarted
+            // receiver with data. If data is still unread when that task
+            // arrives, it stalls; a later start/empty synchronous read wakes
+            // it again. A synchronous pop before arrival must not lose it.
+            if (peer.ctxId && !(ns & (DrainScheduled | CloseDispatched))) {
+                ns |= DrainScheduled;
+                peerWake = peer.ctxId;
+            }
+            peer.state.store(ns, std::memory_order_release);
+        }
+        if (localWake)
+            pipe->scheduleDrain(sd, localWake);
+
+        if (peerWake)
+            pipe->scheduleDrain(1 - sd, peerWake);
 
         // Harvest transferred pipes before `dropped` destructs so their
         // ~TransferredMessagePort sees pipe == nullptr and is a no-op.

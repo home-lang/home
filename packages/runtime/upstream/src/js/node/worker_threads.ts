@@ -28,6 +28,7 @@ const {
 } = $cpp("Worker.cpp", "createNodeWorkerThreadsBinding") as [
   unknown,
   number,
+  // eslint-disable-next-line pickier/no-unused-vars -- Parameter names describe the native ABI type.
   (port: unknown) => { message: unknown } | undefined,
   Map<unknown, unknown>,
 ];
@@ -59,6 +60,13 @@ function injectFakeEmitter(Class) {
 
   function functionForEventType(event, listener) {
     switch (event) {
+      case "close": {
+        const callback = function () {
+          return listener.$call(this);
+        };
+        listener[wrappedListener] = callback;
+        return callback;
+      }
       case "error":
       case "messageerror": {
         return wrapped(errorEventHandler, listener);
@@ -117,7 +125,16 @@ injectFakeEmitter(_MessagePort);
 
 const MessagePort = _MessagePort;
 
-let resourceLimits = {};
+// The native binding owns close delivery, including peer/transfer/teardown
+// paths. Node's optional close(callback) is an EventTarget listener: preserve
+// callback identity, this, and its Event argument (unlike .on("close")).
+const nativeMessagePortClose = MessagePort.prototype.close;
+MessagePort.prototype.close = function (callback) {
+  if (typeof callback === "function") this.addEventListener("close", callback, { once: true });
+  return nativeMessagePortClose.$call(this);
+};
+
+const resourceLimits = {};
 
 // Emulation of Node's JSTransferable protocol (kTransfer/kTransferList/kDeserialize) for
 // objects like FileHandle that are not natively transferable in Bun. On send, each such
@@ -353,8 +370,8 @@ function packJSTransferables(options: NodeWorkerOptions): NodeWorkerOptions {
   return packed;
 }
 
-let workerData = unpackJSTransferables(_workerData);
-let threadId = _threadId;
+const workerData = unpackJSTransferables(_workerData);
+const threadId = _threadId;
 function receiveMessageOnPort(port: MessagePort) {
   // The native queue returns an envelope even when the payload is undefined.
   // Only an empty queue returns undefined; payload truthiness is irrelevant.
@@ -435,7 +452,7 @@ function fakeParentPort() {
 
   return fake;
 }
-let parentPort: MessagePort | null = isMainThread ? null : fakeParentPort();
+const parentPort: MessagePort | null = isMainThread ? null : fakeParentPort();
 
 function getEnvironmentData(key: unknown): unknown {
   return environmentData.get(key);

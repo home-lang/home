@@ -8,7 +8,7 @@ Home's JSC-enabled build still links most C++ bindings and vendor libraries from
 
 Run `zig build debug -Denable_jsc=true`. The existing `HOME_BUN_OBJ_ROOT` and `HOME_BUN_WEBKIT_LIB` overrides still select the external native artifacts.
 
-For the Home-owned bindings, the build requires `compile_commands.json` next to the external `obj` directory and entries for `BunProcess.cpp`, `napi.cpp`, the registry's unified translation unit, and `UnifiedSource-src_jsc_bindings_webcore-3.cpp` (MessagePort). It uses each entry's compiler, ABI flags, generated headers, and dependency include paths. Missing metadata is an error, not a fallback to stale external objects.
+For the Home-owned bindings, the build requires `compile_commands.json` next to the external `obj` directory and entries for `BunProcess.cpp`, `napi.cpp`, the registry's unified translation unit, `UnifiedSource-src_jsc_bindings_webcore-3.cpp` (MessagePort), and `UnifiedSource-src_jsc_bindings_webcore-4.cpp` (MessagePortPipe). It uses each entry's compiler, ABI flags, generated headers, and dependency include paths. Missing metadata is an error, not a fallback to stale external objects.
 
 The source is copied into the build cache so quoted includes use the ABI-matched external headers. Saved precompiled headers are not reused: they may belong to another compiler version. The original `root-pch.h` is parsed instead. Clang's dependency file tracks all included headers, and Home's build cache tracks the implementation and compiler arguments. Source/header changes therefore rebuild the owned binding; unchanged builds reuse it.
 
@@ -16,7 +16,9 @@ This is incremental binding ownership, not an independent C++ runtime build. Mov
 
 ## Builtin module ownership
 
-The native build also compiles Home's `InternalModuleRegistry.cpp` and `webcore/MessagePort.cpp`, and regenerates the `node:url` and `node:worker_threads` builtins from Home's source. The corresponding external unified objects are excluded. Their other C++ implementations are rebuilt from their ABI-matched external sources; they are not yet Home-owned.
+The native build also compiles Home's `InternalModuleRegistry.cpp`, `webcore/MessagePort.cpp`, and `webcore/MessagePortPipe.cpp`, and regenerates the `node:url` and `node:worker_threads` builtins from Home's source. The corresponding external unified objects are excluded. Their other C++ implementations are rebuilt from their ABI-matched external sources; they are not yet Home-owned.
+
+MessagePort class headers must be byte-identical to the external headers selected by each unified source. Generation rejects drift, missing implementations, or duplicate owned includes before creating output. Class layouts and vtables remain unchanged; the private `HomeMessagePortLifecycle.h` contains only constants for reserved pipe-state bits. Both implementations and the worker builtin are generated together, and all selected headers are cache dependencies.
 
 `build-support/bundle-native-modules.ts` has an explicit ownership manifest. Only the listed module literals are replaced; all other builtin literal bytes remain those of the configured native build. Bun is currently a build-time TypeScript bundling dependency. The resulting private JSC builtin source is embedded in Home, not loaded from Bun or delegated to a Bun process at runtime.
 
@@ -30,7 +32,7 @@ The generator uses explicit ESM input files so Home's CommonJS package setting c
 
 - `zig build test -Dfilter=native-bindings` tests compile-command selection and argument normalization.
 - `bun test build-support/native_module_abi.test.ts` tests module/native ABI mapping and rejection of missing, ambiguous, or unsupported entries.
-- `bun test build-support/bundle-native-modules.test.ts` verifies actual generation inside Home's CommonJS package, complete function grammar, unchanged non-owned literals, paired MessagePort/worker generation, and rejection of deliberate error/wrapper-ABI drift. These integration checks skip explicitly when native build artifacts are unavailable.
+- `bun test build-support/bundle-native-modules.test.ts` verifies actual generation inside Home's CommonJS package, complete function grammar, unchanged non-owned literals, paired MessagePort/pipe/worker generation, preservation of external companion sources, and rejection of deliberate error/wrapper/class-header ABI drift. These integration checks skip explicitly when native build artifacts are unavailable.
 - `HOME_NATIVE_VM=1 zig-out/bin/home-debug run tests/runtime/native-url-contracts.test.mjs` exercises the embedded URL implementation, including option combinations, serialization delimiters, IDNA, and legacy IPv6 behavior. The exact upstream fixtures are tracked in [#458](https://github.com/home-lang/home/issues/458).
 - `HOME_NATIVE_VM=1 zig-out/bin/home-debug run tests/runtime/native-intl-capabilities.test.mjs` verifies capability metadata and real Intl/IDNA behavior in main, worker, and test-runner contexts.
 - Native corpus skips and commented-out test bodies remain unsupported coverage, never passing feature checks. Related follow-up: [#456](https://github.com/home-lang/home/issues/456).
@@ -73,7 +75,7 @@ At the Node-API/print-eval checkpoint, the native build and unchanged cached reb
 
 Home now generates the worker builtin together with its owned native MessagePort implementation. `receiveMessageOnPort()` distinguishes an empty queue from every payload, including `undefined`, `null`, `false`, `0`, `-0`, `NaN`, empty strings, and BigInts. Native deserialization returns an ordinary object with an own `message` data property; it does not invoke an inherited setter. Deserialization failures propagate instead of storing an empty internal JS value. The worker builtin consumes that envelope directly. This private contract must be rebuilt on both sides together.
 
-`tests/runtime/native-worker-message-presence.test.mjs` covers main and worker contexts, FIFO order, empty queues, descriptors, cyclic/shared clones, transferred buffers and ports, and interleaved synchronous/asynchronous consumption. It checks Home's immediate closed-port receive behavior separately from the unimplemented close-event lifecycle. That lifecycle has an intentionally failing executable regression at `tests/runtime/worker-close-events.pending.mjs`, tracked in [#462](https://github.com/home-lang/home/issues/462); it is neither skipped nor counted as passing coverage.
+`tests/runtime/native-worker-message-presence.test.mjs` covers main and worker contexts, FIFO order, empty queues, descriptors, cyclic/shared clones, transferred buffers and ports, and interleaved synchronous/asynchronous consumption. Close-event lifecycle coverage is now in `tests/runtime/native-worker-close-events.test.mjs`, tracked in [#462](https://github.com/home-lang/home/issues/462). The original pending regression passed and was replaced by that broader suite.
 
 The worker builtin now includes the current upstream transfer packing, rollback, and orphan-file-descriptor cleanup. Its `fs`/FileHandle, events, streams, and shared internal dependencies still use the configured external builtin literals. Owning `worker_threads.ts` does not mean those dependencies or all worker features have been ported. Full worker ownership and message coverage are tracked in [#461](https://github.com/home-lang/home/issues/461).
 
@@ -83,8 +85,30 @@ Standalone worker fixture exit-zero results from before this exit-dispatch fix a
 
 ### Worker/exit verification checkpoint
 
-The native build and unchanged cached rebuild both pass **12/12 steps**. All **14 native regression files** pass, including the eight subprocess scenarios in the exit-dispatch regression. Six generator/ABI tests (43 assertions) and three Zig binding-helper tests pass.
+At the worker/exit checkpoint, the native build and unchanged cached rebuild both passed **12/12 steps**. All **14 then-existing native regression files** passed, including the eight subprocess scenarios in the exit-dispatch regression. Six generator/ABI tests (43 assertions) and three Zig binding-helper tests passed.
 
-The bounded upstream worker rerun reports **30 passing native tests, 3 upstream skips, 0 failures** (552 assertions across five files), plus **11 passing standalone fixtures** with exit guards active. A deliberately missed `common.mustCall` fails with status 1 and its positive control succeeds. The FileHandle fixture's temporary file is genuinely removed by its exit hook. Skips are not passing feature coverage, and the close-event regression remains a known failure in #462.
+That bounded upstream worker rerun reported **30 passing native tests, 3 upstream skips, 0 failures** (552 assertions across five files), plus **11 passing standalone fixtures** with exit guards active. A deliberately missed `common.mustCall` failed with status 1 and its positive control succeeded. The FileHandle fixture's temporary file was genuinely removed by its exit hook. Skips are not passing feature coverage; close events were still a known failure at that checkpoint.
 
 Adjacent unchanged fixtures still pass: print/eval **33 tests / 70 assertions**, and the four-file FFI shard **14 passing tests, 11 upstream/platform skips, 0 failures / 23 assertions**. The full port is not complete. Test runs use bounded subprocess concurrency and per-run temporary directories; superseded owned build outputs are removed only after replacement binaries are verified.
+
+## Native MessagePort close lifecycle
+
+Close is now a native pipe control notification. Local closure discards only the local inbox; the peer receives accepted messages in FIFO order before its close event. Unstarted endpoints register for notifications without consuming data. A close notification that encounters unread data stalls until message delivery starts or a synchronous read reaches the empty queue. An immediate synchronous pop before the initial notification arrives preserves that already-queued wakeup.
+
+Transfers close the old wrapper asynchronously, not the transferred endpoint. Drains validate both context and wrapper identity, including same-context transfer inside a handler. Pending close events keep wrappers alive through GC; dispatch releases listeners and context ownership. Shutdown never executes close listeners in a stopped VM. Iterative disposal closes unread transferred endpoints without recursive teardown. Strong port snapshots are released outside pipe locks to avoid destructor reentrancy deadlocks.
+
+Teardown GC can destroy ports before their stopped context leaves the global registry. Scheduling new local drains then would strand pipe references in an event loop that cannot run. Scheduling first enters the owning context, checks its VM state outside the registry lock, and only then queues asynchronous delivery. This avoids reading another thread's VM state or releasing native captures under the registry lock. Live remote peers still receive notifications. General cancellation of already-queued remote C++ tasks is separate work in [#465](https://github.com/home-lang/home/issues/465).
+
+The worker builtin only adapts Node's optional `close(callback)` and zero-argument `.on('close')` convention; native code owns local, peer, transfer, and teardown delivery. Repeated close is idempotent, duplicate callback identity is preserved, and late callbacks do not replay an event.
+
+One timing difference remains explicit: Node can synchronously receive already-queued local data after `close()` returns but before its close event; Home currently discards that inbox immediately. The shared close regression checks disposal after notification. Pending-local-close receive parity is tracked separately in [#466](https://github.com/home-lang/home/issues/466), not counted as resolved by close-event delivery.
+
+### Close-lifecycle verification checkpoint
+
+The native build and unchanged rebuild pass **13/13 steps**. All **15 native regression files** pass. The close suite has **13 bounded cases**, also passing under Node 24.18.0 with only its executable guard removed. It checks pending-listener survival separately from collection: WeakRefs to 36 ordinary and 72 orphan/transfer wrappers clear, a strongly retained positive control survives, and the child exits naturally. This does not prove freedom from every native allocation leak.
+
+The pipe suite reports **10 passing tests, 3 upstream skips, 0 failures / 516 assertions**. This includes one explicit Home fixture correction: `js/web/workers/message-port-pipe.test.ts` retains its `FinalizationRegistry` through the report and then releases it. The pristine fixture reported zero callbacks because the registry itself became unreachable before deferred close made its targets collectable. Retaining only the registry produced all 200 finalizations; no target was retained and no assertion was weakened. The external Bun source tree remains unchanged. FileHandle and transfer/terminate standalone fixtures also pass, with real exit cleanup.
+
+The unchanged closed-port leak suite passes **4 tests / 10 assertions**, including 20,000 nested transferred endpoints. The unchanged worker context-destruction leak test passes **1 test / 3 assertions** on three isolated runs. Before the scheduling gate it failed consistently at +34.14, +34.58, and +34.16 MB RSS; the original 30 MB limit is unchanged. These three corpus files together report **15 passing tests, 3 upstream skips, 0 failures / 529 assertions**.
+
+Eight generator/ABI tests (69 assertions) and four Zig binding-helper tests pass. Five additional consecutive generator runs passed after one host Bun startup SIGTRAP; the macOS crash report identifies `pthread_jit_write_protect_np`, not a generator assertion. That host/tooling incident is not counted as a passing run or hidden by retries. Full worker ownership, skipped coverage, and the complete Bun port remain open in #461 and #66.

@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
+import { assertClassHeaderAbi, enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
 
 describe('incremental native module ABI', () => {
+  test('requires byte-identical class headers and reports the selected external ABI path', () => {
+    const original = new Uint8Array([0, 127, 255])
+    expect(() => assertClassHeaderAbi(original, original.slice(), 'MessagePort.h', '/external/MessagePort.h')).not.toThrow()
+    for (const changed of [new Uint8Array([0, 127, 254]), original.slice(0, 2), new Uint8Array([0, 127, 255, 0])]) {
+      expect(() => assertClassHeaderAbi(original, changed, 'MessagePort.h', '/external/MessagePort.h'))
+        .toThrow('Native class ABI mismatch: MessagePort.h differs from /external/MessagePort.h')
+    }
+  })
   test('uses external IDs, including zero, and rejects absent identities', () => {
     const values = enumValues('BunFFI = 0,\nNodeUrl = 144,\nInternalUrl = 81,')
     expect(requiredId(values, moduleEnum('bun/ffi.ts'))).toBe(0)

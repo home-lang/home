@@ -1,5 +1,11 @@
 // ABI checks for incrementally owning builtin modules while other bindings
 // still come from the configured external native build.
+export function assertClassHeaderAbi(home: Uint8Array, external: Uint8Array, name: string, externalPath: string): void {
+  if (home.length !== external.length || home.some((byte, index) => byte !== external[index])) {
+    throw new Error(`Native class ABI mismatch: ${name} differs from ${externalPath}`)
+  }
+}
+
 export function enumValues(header: string): Map<string, number> {
   const result = new Map<string, number>()
   for (const match of header.matchAll(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*(\d+),?\s*$/gm)) {

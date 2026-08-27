@@ -8,6 +8,43 @@ const nativeBuild = path.dirname(process.env.HOME_BUN_OBJ_ROOT || '/Users/chris/
 const available = existsSync(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
 const nativeTest = available ? test : test.skip
 const read = (file: string) => readFileSync(file, 'utf8')
+const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp']
+
+function createNativeFixture(temporary: string) {
+  const codegen = path.join(temporary, 'codegen')
+  const webcore = path.join(temporary, 'webcore')
+  mkdirSync(codegen)
+  mkdirSync(webcore)
+  mkdirSync(path.join(temporary, 'unified'))
+  for (const file of ['InternalModuleRegistry+enum.h', 'GeneratedJS2Native.h', 'ErrorCode+List.h', 'InternalModuleRegistryConstants.h']) {
+    writeFileSync(path.join(codegen, file), read(path.join(nativeBuild, 'codegen', file)))
+  }
+  for (const name of units) {
+    const unifiedPath = path.join(nativeBuild, 'unified', name)
+    // Relative includes belong to the original unified directory, not this
+    // temporary build root. Isolate just the selected sources and class headers
+    // so ABI-drift tests never modify the external tree.
+    const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
+      const externalSource = path.resolve(path.dirname(unifiedPath), relative)
+      const basename = path.basename(relative)
+      if (basename === 'MessagePort.cpp' || basename === 'MessagePortPipe.cpp') {
+        const header = basename.replace(/\.cpp$/, '.h')
+        writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
+        writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
+        return `#include ${JSON.stringify(path.join(webcore, basename))}`
+      }
+      return `#include ${JSON.stringify(externalSource)}`
+    })
+    writeFileSync(path.join(temporary, 'unified', name), unified)
+  }
+  return { codegen, webcore }
+}
+
+function generate(nativeRoot: string, output: string) {
+  return Bun.spawnSync([process.execPath, path.join(import.meta.dir, 'bundle-native-modules.ts'), nativeRoot, output], {
+    cwd: root, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15000,
+  })
+}
 
 nativeTest('generates script-only Home URL and workers and preserves other literals', () => {
   const cache = path.join(root, '.zig-cache/tmp')
@@ -34,13 +71,24 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
-    const portUnit = read(path.join(output, 'HomeMessagePort.cpp'))
-    expect(portUnit).toContain('#include "MessagePort.cpp"')
-    const externalUnit = read(path.join(nativeBuild, 'unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp'))
-    const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => path.basename(relative) === 'MessagePort.cpp'
-      ? '#include "MessagePort.cpp"'
-      : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
-    expect(portUnit).toBe(expectedUnit)
+    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]]]) {
+      const generatedUnit = read(path.join(output, 'Home' + basename))
+      const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
+      const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => path.basename(relative) === basename
+        ? `#include ${JSON.stringify(basename)}`
+        : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
+      expect(generatedUnit).toBe(expectedUnit)
+      const includes = [...generatedUnit.matchAll(/^#include "([^"]+)"$/gm)].map(match => match[1])
+      expect(includes.filter(include => include === basename)).toHaveLength(1)
+      expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(31)
+      const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', basename)
+      expect(read(path.join(output, basename))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
+    }
+    const privateHeader = 'HomeMessagePortLifecycle.h'
+    expect(readFileSync(path.join(output, privateHeader)))
+      .toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', privateHeader)))
+    expect(existsSync(path.join(output, 'MessagePort.h'))).toBe(false)
+    expect(existsSync(path.join(output, 'MessagePortPipe.h'))).toBe(false)
     expect(read(path.join(output, 'MessagePort.cpp'))).toContain('vm.propertyNames->message, value')
   } finally {
     rmSync(output, { recursive: true })
@@ -51,16 +99,8 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-builtin-abi-test-'))
-  const codegen = path.join(temporary, 'codegen')
-  mkdirSync(codegen)
-  mkdirSync(path.join(temporary, 'unified'))
   try {
-    for (const file of ['InternalModuleRegistry+enum.h', 'GeneratedJS2Native.h', 'ErrorCode+List.h', 'InternalModuleRegistryConstants.h']) {
-      writeFileSync(path.join(codegen, file), read(path.join(nativeBuild, 'codegen', file)))
-    }
-    for (const unified of ['unified/UnifiedSource-src_jsc_bindings-1.cpp', 'unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp']) {
-      writeFileSync(path.join(temporary, unified), read(path.join(nativeBuild, unified)))
-    }
+    const { codegen } = createNativeFixture(temporary)
     const baseline = Bun.spawnSync([process.execPath, path.join(import.meta.dir, 'bundle-native-modules.ts'), temporary, path.join(temporary, 'baseline')], {
       cwd: root, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 15000,
     })
@@ -90,6 +130,40 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
     expect(mismatch.signalCode).toBeUndefined()
     expect(mismatch.exitCode).toBe(1)
     expect(existsSync(wrapperOutput)).toBe(false)
+  } finally {
+    rmSync(temporary, { recursive: true })
+  }
+}, 20000)
+
+nativeTest('rejects MessagePort class-header drift and invalid pipe ownership before output', () => {
+  const cache = path.join(root, '.zig-cache/tmp')
+  mkdirSync(cache, { recursive: true })
+  const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
+  try {
+    const { webcore } = createNativeFixture(temporary)
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h']) {
+      const headerPath = path.join(webcore, header)
+      const original = readFileSync(headerPath)
+      writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
+      const output = path.join(temporary, header + '-output')
+      const result = generate(temporary, output)
+      expect(result.signalCode).toBeUndefined()
+      expect(result.exitCode).toBe(1)
+      expect(existsSync(output)).toBe(false)
+      writeFileSync(headerPath, original)
+    }
+    const pipeUnit = path.join(temporary, 'unified', units[2])
+    const original = read(pipeUnit)
+    const ownedInclude = `#include ${JSON.stringify(path.join(webcore, 'MessagePortPipe.cpp'))}`
+    expect(original).toContain(ownedInclude)
+    for (const [kind, invalid] of [['missing', original.replace(ownedInclude, '')], ['duplicate', original + ownedInclude + '\n']]) {
+      writeFileSync(pipeUnit, invalid)
+      const output = path.join(temporary, kind + '-output')
+      const result = generate(temporary, output)
+      expect(result.signalCode).toBeUndefined()
+      expect(result.exitCode).toBe(1)
+      expect(existsSync(output)).toBe(false)
+    }
   } finally {
     rmSync(temporary, { recursive: true })
   }
