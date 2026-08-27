@@ -4662,6 +4662,9 @@ pub const Checker = struct {
     /// pattern metadata must keep the binder symbolic while true-branch uses
     /// still substitute to the captured type.
     infer_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Active structural-inference pairs. Recursive generic aliases can
+    /// revisit the same pair without contributing a new candidate.
+    active_inference_pairs: std.AutoHashMapUnmanaged(u64, void) = .empty,
     /// Hard-coded `lib.d.ts` substitute ÃÂ¢ÃÂÃÂ `String.prototype`,
     /// `Array<T>.prototype`, `Object` global. Populated lazily on
     /// first member-access against the corresponding receiver.
@@ -5352,6 +5355,7 @@ pub const Checker = struct {
         while (symbolic_layout_it.next()) |layout| self.gpa.free(layout.*);
         self.symbolic_tuple_layouts.deinit(self.gpa);
         self.infer_type_parameters.deinit(self.gpa);
+        self.active_inference_pairs.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.synthetic_program_class_origins.deinit(self.gpa);
         self.module_augmentation_callback_signatures.deinit(self.gpa);
@@ -80431,28 +80435,39 @@ pub const Checker = struct {
                 variadic_index = segment_index;
             }
             if (variadic_index) |rest_index| {
-                if (rest_index + 1 < layout.len) {
-                    const fixed_count = layout.len - 1;
-                    if (check_len < fixed_count) return false;
-                    for (layout[0..rest_index], 0..) |segment, index| {
-                        if (!try self.matchInfer(self.tupleElementType(check, index), segment.type, subs)) return false;
-                    }
-                    const suffix = layout.len - rest_index - 1;
-                    for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
-                        const check_index = check_len - suffix + suffix_index;
-                        if (!try self.matchInfer(self.tupleElementType(check, check_index), segment.type, subs)) return false;
-                    }
-                    var middle: std.ArrayListUnmanaged(TypeId) = .empty;
-                    defer middle.deinit(self.gpa);
-                    for (rest_index..check_len - suffix) |index| {
-                        try middle.append(self.gpa, self.tupleElementType(check, index));
-                    }
-                    const middle_tuple = try self.internTupleFromTypes(
-                        middle.items,
-                        self.typeIsReadonlyArrayLike(check),
-                    );
-                    return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
+                const fixed_count = layout.len - 1;
+                if (check_len < fixed_count) return false;
+                for (layout[0..rest_index], 0..) |segment, index| {
+                    const check_element = self.tupleElementType(check, index);
+                    const matches = if (self.containsInferTypeParameter(segment.type))
+                        try self.matchInfer(check_element, segment.type, subs)
+                    else
+                        try self.conditionalExtendsRelation(check_element, segment.type);
+                    if (!matches) return false;
                 }
+                const suffix = layout.len - rest_index - 1;
+                for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
+                    const check_index = check_len - suffix + suffix_index;
+                    const check_element = self.tupleElementType(check, check_index);
+                    const matches = if (self.containsInferTypeParameter(segment.type))
+                        try self.matchInfer(check_element, segment.type, subs)
+                    else
+                        try self.conditionalExtendsRelation(check_element, segment.type);
+                    if (!matches) return false;
+                }
+                var middle: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer middle.deinit(self.gpa);
+                for (rest_index..check_len - suffix) |index| {
+                    try middle.append(self.gpa, self.tupleElementType(check, index));
+                }
+                const middle_tuple = try self.internTupleFromTypes(
+                    middle.items,
+                    self.typeIsReadonlyArrayLike(check),
+                );
+                if (!self.containsInferTypeParameter(layout[rest_index].type)) {
+                    return try self.conditionalExtendsRelation(middle_tuple, layout[rest_index].type);
+                }
+                return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
             }
         }
         const ext_prefix = self.tupleFixedPrefixCount(ext);
@@ -150747,8 +150762,13 @@ pub const Checker = struct {
             self.interner.objectSymbolIndex(target) != types.Primitive.none)
             return false;
 
+        // `objectMemberInfo` and recursive subtype checks may intern
+        // additional object shapes, so keep this iteration independent
+        // from `object_member_pool` reallocations.
+        const target_members = self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target)) catch return false;
+        defer self.gpa.free(target_members);
         var saw_callable_member = false;
-        for (self.interner.objectMembers(target)) |tm| {
+        for (target_members) |tm| {
             const sm = self.interner.objectMemberInfo(source, tm.name) orelse {
                 if (tm.is_optional) continue;
                 return false;
@@ -151823,6 +151843,10 @@ pub const Checker = struct {
         const param_name = (try self.genericInstanceBaseName(param_t)) orelse return false;
         const arg_name = (try self.genericInstanceBaseName(arg_t)) orelse return false;
         if (param_name != arg_name) return false;
+        const pair_key = (@as(u64, param_t) << 32) | @as(u64, arg_t);
+        const pair_entry = try self.active_inference_pairs.getOrPut(self.gpa, pair_key);
+        if (pair_entry.found_existing) return true;
+        defer _ = self.active_inference_pairs.remove(pair_key);
         for (param_args, arg_args) |param_arg, arg_arg| {
             try self.inferFromPair(param_arg, arg_arg, subs);
         }
@@ -155593,6 +155617,9 @@ pub const Checker = struct {
         }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
+            if (try self.materializeSubstitutedVariadicTuple(t, subs)) |materialized| {
+                return materialized;
+            }
             const orig = self.interner.objectMembers(t);
             const orig_snapshot = try self.gpa.dupe(types.ObjectMember, orig);
             defer self.gpa.free(orig_snapshot);
@@ -155665,7 +155692,10 @@ pub const Checker = struct {
                     errdefer self.gpa.free(next_layout);
                     for (layout, next_layout) |segment, *next| {
                         next.* = .{
-                            .type = try self.substituteType(segment.type, subs),
+                            .type = if (self.infer_type_parameters.contains(segment.type))
+                                segment.type
+                            else
+                                try self.substituteType(segment.type, subs),
                             .is_variadic = segment.is_variadic,
                         };
                     }
@@ -155882,6 +155912,34 @@ pub const Checker = struct {
             return substituted_param;
         }
         return t;
+    }
+
+    fn materializeSubstitutedVariadicTuple(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
+        const layout = self.symbolic_tuple_layouts.get(t) orelse return null;
+        if (layout.len == 0) return null;
+        for (layout) |segment| {
+            if (!segment.is_variadic) return null;
+        }
+
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        for (layout) |segment| {
+            const substituted = try self.substituteType(segment.type, subs);
+            if (!self.isActualTupleType(substituted)) return null;
+            const len: usize = @intCast(self.fixedTupleLength(substituted) orelse return null);
+            if (self.tupleRestMinRequiredCount(substituted) != len) return null;
+            if (elements.items.len + len >= max_tuple_representation_elements) return null;
+            for (0..len) |index| {
+                const element_t = self.tupleElementType(substituted, index);
+                if (element_t == types.Primitive.none) return null;
+                try elements.append(self.gpa, element_t);
+            }
+        }
+        return try self.internTupleFromTypes(elements.items, self.typeIsReadonlyArrayLike(t));
     }
 
     fn substituteThisTypeParametersInReturn(self: *Checker, ret: TypeId, receiver_t: TypeId) CheckError!TypeId {
@@ -208848,6 +208906,26 @@ test "checker: generic tuple spread return reconstructs variadic tuple" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: variadic tuple instantiation materializes concat and conditional slices" {
+    const s = try newSetup(
+        \\type Head<T extends readonly unknown[]> = T extends readonly [infer H, ...readonly unknown[]] ? H : never;
+        \\type Tail<T extends readonly unknown[]> = T extends readonly [unknown, ...infer R] ? readonly [...R] : readonly [];
+        \\declare function concat<A extends readonly unknown[], B extends readonly unknown[]>(left: A, right: B): readonly [...A, ...B];
+        \\declare function capture<T extends readonly unknown[]>(...values: T): T;
+        \\const left = [0, "item", { value: 0 }] as const;
+        \\const right = [true, [0, "tail"] as const] as const;
+        \\type Combined = readonly [0, "item", { readonly value: 0 }, true, readonly [0, "tail"]];
+        \\const combined: Combined = concat(left, right);
+        \\const captured: Combined = capture(...combined);
+        \\const head: Head<Combined> = 0;
+        \\const tail: Tail<Combined> = ["item", { value: 0 }, true, [0, "tail"]];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: keyof variadic tuple includes array prototype keys" {
