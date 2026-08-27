@@ -4712,11 +4712,18 @@ pub const Checker = struct {
     /// Enum member lookup walks enclosing statement lists. A class-only file
     /// cannot satisfy it even though the broader class/enum feature bit is set.
     source_may_have_enum_declaration: bool = false,
+    /// Type-alias compatibility lookups otherwise walk enclosing and root
+    /// statement lists for ordinary named types in alias-free sources.
+    source_may_have_type_alias_declaration: bool = false,
     /// Checked-JS computed prototype replacement requires a computed access to
     /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
     source_may_have_computed_prototype_assignment: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    visible_namespace_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_namespace_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    containers_with_dotted_namespace_decls: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    interface_merge_predecessor: std.AutoHashMapUnmanaged(NodeId, NodeId) = .empty,
     /// First simple variable declaration per lexical statement container.
     /// Annotation lookup uses source order, so indexing that first binding
     /// avoids rescanning large blocks for every later identifier read.
@@ -5112,6 +5119,7 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "class") != null or
             std.mem.indexOf(u8, source, "enum") != null;
         self.source_may_have_enum_declaration = std.mem.indexOf(u8, source, "enum") != null;
+        self.source_may_have_type_alias_declaration = std.mem.indexOf(u8, source, "type") != null;
         self.source_may_have_computed_prototype_assignment =
             std.mem.indexOf(u8, source, "prototype") != null and
             std.mem.indexOfScalar(u8, source, '[') != null and
@@ -5120,6 +5128,10 @@ pub const Checker = struct {
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
+        self.visible_namespace_decls.clearRetainingCapacity();
+        self.indexed_namespace_containers.clearRetainingCapacity();
+        self.containers_with_dotted_namespace_decls.clearRetainingCapacity();
+        self.interface_merge_predecessor.clearRetainingCapacity();
         self.visible_annotated_value_decls.clearRetainingCapacity();
         self.indexed_annotated_value_containers.clearRetainingCapacity();
         self.class_extends_instance_type_cache.clearRetainingCapacity();
@@ -5553,6 +5565,10 @@ pub const Checker = struct {
         self.virtual_section_start_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
+        self.visible_namespace_decls.deinit(self.gpa);
+        self.indexed_namespace_containers.deinit(self.gpa);
+        self.containers_with_dotted_namespace_decls.deinit(self.gpa);
+        self.interface_merge_predecessor.deinit(self.gpa);
         self.visible_annotated_value_decls.deinit(self.gpa);
         self.indexed_annotated_value_containers.deinit(self.gpa);
         self.class_extends_instance_type_cache.deinit(self.gpa);
@@ -12165,9 +12181,10 @@ pub const Checker = struct {
 
     fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
         if (self.hir.kindOf(node) != .namespace_decl) return;
-        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
+        if (!self.namespaceNameIsStringLiteral(ns.name)) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
         const module_name = self.string_interner.get(module_name_id);
         if (module_name.len == 0 or std.mem.indexOfScalar(u8, module_name, '.') != null) return;
@@ -12226,10 +12243,10 @@ pub const Checker = struct {
     fn checkMissingModuleAugmentationTarget(self: *Checker, node: NodeId) CheckError!void {
         if (self.hir.kindOf(node) != .namespace_decl) return;
         if (self.virtualSectionIsDeclarationFile(node)) return;
-        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
         if (!self.namespaceNameIsStringLiteral(ns.name)) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
         const module_name = self.string_interner.get(module_name_id);
         if (module_name.len == 0) return;
@@ -23901,7 +23918,19 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const section = self.virtualSectionStartForNode(ident_node);
         const use_start = self.hir.spanOf(ident_node).start;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleAnnotatedValueDecls(root, stmts);
+        if (self.indexed_annotated_value_containers.contains(root)) {
+            const decl = self.visible_annotated_value_decls.get(.{
+                .container = root,
+                .name = ident.name,
+                .virtual_section_start = section,
+            }) orelse return false;
+            if (self.hir.spanOf(decl).start >= use_start) return false;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            return self.typeAnnotationRootIsUnresolved(variable.type_annotation);
+        }
+        for (stmts) |raw| {
             if (self.virtualSectionStartForNode(raw) != section or self.hir.spanOf(raw).start >= use_start) continue;
             const decl = self.unwrapExportDecl(raw);
             const kind = self.hir.kindOf(decl);
@@ -24899,6 +24928,7 @@ pub const Checker = struct {
     }
 
     fn interfaceMergesWithClass(self: *Checker, interface_node: NodeId) bool {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return false;
         if (self.hir.kindOf(interface_node) != .interface_decl) return false;
         const it = hir_mod.interfaceOf(self.hir, interface_node);
         if (it.name == hir_mod.none_node_id or self.hir.kindOf(it.name) != .identifier) return false;
@@ -44928,10 +44958,14 @@ pub const Checker = struct {
                 break :blk self.hir.typeOf(member_node);
             },
             .fn_decl, .fn_expr => blk: {
+                const existing_t = self.hir.typeOf(member_node);
+                if (existing_t != types.Primitive.none) break :blk existing_t;
                 try self.checkFnDeclWithFlowBoundary(member_node);
                 break :blk self.hir.typeOf(member_node);
             },
             .var_decl, .let_decl, .const_decl => blk: {
+                const existing_t = self.hir.typeOf(member_node);
+                if (existing_t != types.Primitive.none) break :blk existing_t;
                 try self.checkNamespaceValueDecl(member_node);
                 break :blk self.hir.typeOf(member_node);
             },
@@ -44993,6 +45027,11 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
     ) CheckError!?TypeId {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        if (self.indexed_namespace_containers.contains(root) and
+            !self.containers_with_dotted_namespace_decls.contains(root))
+        {
+            return null;
+        }
         var found: NodeId = hir_mod.none_node_id;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             const ns_node = self.unwrapExportDecl(raw);
@@ -64330,6 +64369,9 @@ pub const Checker = struct {
                             self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, unified_t) catch unified_t
                         else
                             self.mergeInterfaceDeclarationType(existing_t, unified_t) catch unified_t;
+                        if (prev_decl != hir_mod.none_node_id and prev_decl != node) {
+                            try self.interface_merge_predecessor.put(self.gpa, node, prev_decl);
+                        }
                         // Back-patch EVERY prior same-scope same-named
                         // interface_decl's HIR type to the merged
                         // shape ÃÂ¢ÃÂÃÂ `resolveUnqualifiedNamespaceTypeRef`
@@ -64408,7 +64450,10 @@ pub const Checker = struct {
                     });
                 }
                 const merged_info = self.generic_aliases.get(id.name).?;
-                try self.backPatchSameScopeGenericInterfaces(node, id.name, merged_info.params, final_t);
+                try self.recordGenericInterfaceDecl(node, merged_info.params, final_t);
+                if (final_t != iface_t) {
+                    try self.backPatchSameScopeGenericInterfaces(node, id.name, merged_info.params, final_t);
+                }
             }
             self.hir.setType(it.name, final_t);
         }
@@ -64445,20 +64490,13 @@ pub const Checker = struct {
         params: []const TypeId,
         merged_t: TypeId,
     ) CheckError!void {
-        var target_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer target_path.deinit(self.gpa);
-        self.collectEnclosingNamespacePathNoFail(iface_decl, &target_path);
-        const root = self.rootBlockFor(iface_decl);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        try self.backPatchGenericInterfacesInStmts(
-            hir_mod.blockStmts(self.hir, root),
-            target_path.items,
-            0,
-            iface_decl,
-            name,
-            params,
-            merged_t,
-        );
+        _ = name;
+        var current = self.interface_merge_predecessor.get(iface_decl) orelse return;
+        var guard: usize = 0;
+        while (current != hir_mod.none_node_id and guard < self.hir.nodeCount()) : (guard += 1) {
+            try self.recordGenericInterfaceDecl(current, params, merged_t);
+            current = self.interface_merge_predecessor.get(current) orelse break;
+        }
     }
 
     fn backPatchGenericInterfacesInStmts(
@@ -64800,19 +64838,16 @@ pub const Checker = struct {
     /// `namespace M2 { ... }` blocks where interfaces declared in
     /// different bodies still merge into one (`mergeTwoInterfaces2`).
     fn backPatchSameScopeInterfaces(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId, merged_t: TypeId) void {
-        var target_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer target_path.deinit(self.gpa);
-        self.collectEnclosingNamespacePathNoFail(iface_decl, &target_path);
-        const root = self.rootBlockFor(iface_decl);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        self.backPatchInterfacesInStmts(
-            hir_mod.blockStmts(self.hir, root),
-            target_path.items,
-            0,
-            iface_decl,
-            name,
-            merged_t,
-        );
+        _ = name;
+        var current = self.interface_merge_predecessor.get(iface_decl) orelse return;
+        var guard: usize = 0;
+        while (current != hir_mod.none_node_id and guard < self.hir.nodeCount()) : (guard += 1) {
+            if (self.hir.kindOf(current) != .interface_decl) break;
+            const iface = hir_mod.interfaceOf(self.hir, current);
+            self.hir.setType(current, merged_t);
+            if (iface.name != hir_mod.none_node_id) self.hir.setType(iface.name, merged_t);
+            current = self.interface_merge_predecessor.get(current) orelse break;
+        }
     }
 
     fn ensureSameScopeInterfaceMergeComplete(
@@ -64926,10 +64961,7 @@ pub const Checker = struct {
     fn declarationIsRootStatement(self: *Checker, node: NodeId) bool {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
-            if (self.unwrapExportDecl(raw) == node) return true;
-        }
-        return false;
+        return self.declarationContainer(node) == root;
     }
 
     /// Combine the members of two interface types for declaration
@@ -66213,6 +66245,7 @@ pub const Checker = struct {
         extends_node: NodeId,
         child_members: []const types.ObjectMember,
     ) CheckError!void {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return;
         const class_name = self.unqualifiedTypeRefName(extends_node) orelse return;
         const root = self.rootBlockFor(iface_node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
@@ -71350,6 +71383,7 @@ pub const Checker = struct {
     }
 
     fn findTypeAliasDeclInScope(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
@@ -78399,6 +78433,8 @@ pub const Checker = struct {
         anchor: NodeId,
         path: []const hir_mod.StringId,
     ) ?NodeId {
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur = anchor;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -78407,6 +78443,20 @@ pub const Checker = struct {
                 break :blk &[_]NodeId{};
             };
             if (stmts.len > 0) {
+                if (path.len == 1) {
+                    self.indexVisibleNamespaceDecls(cur, stmts, has_virtual_sections);
+                    if (self.indexed_namespace_containers.contains(cur)) {
+                        if (self.visible_namespace_decls.get(.{
+                            .container = cur,
+                            .name = path[0],
+                            .virtual_section_start = anchor_section,
+                        })) |ns_node| return ns_node;
+                        const parent = self.hir.parentOf(cur);
+                        if (parent == cur or parent == hir_mod.none_node_id) break;
+                        cur = parent;
+                        continue;
+                    }
+                }
                 if (self.findNamespaceByPath(stmts, path)) |ns_node| return ns_node;
             }
             const parent = self.hir.parentOf(cur);
@@ -78414,6 +78464,31 @@ pub const Checker = struct {
             cur = parent;
         }
         return null;
+    }
+
+    fn indexVisibleNamespaceDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_namespace_containers.contains(container)) return;
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .namespace_decl) continue;
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (std.mem.indexOfScalar(u8, self.string_interner.get(decl_name), '.') != null) {
+                self.containers_with_dotted_namespace_decls.put(self.gpa, container, {}) catch {};
+            }
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_namespace_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+        }
+        self.indexed_namespace_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn findGlobalAugmentedNamespaceByPath(
@@ -78818,6 +78893,11 @@ pub const Checker = struct {
     ) ?bool {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        if (self.indexed_namespace_containers.contains(root) and
+            !self.containers_with_dotted_namespace_decls.contains(root))
+        {
+            return null;
+        }
         const root_text = self.string_interner.get(root_name);
         const member_text = self.string_interner.get(member_name);
         var found_root = false;
@@ -115695,11 +115775,20 @@ pub const Checker = struct {
 
     fn clearCachedTypesWithin(self: *Checker, root: NodeId) void {
         if (root == hir_mod.none_node_id) return;
+        const root_span = self.hir.spanOf(root);
+        const root_span_is_reliable = root_span.end > root_span.start;
         var node: NodeId = 0;
         while (node < self.hir.nodeCount()) : (node += 1) {
-            if (node == root or self.nodeIsAncestorOf(root, node)) {
+            if (node == root) {
                 self.hir.setType(node, types.Primitive.none);
+                continue;
             }
+            if (root_span_is_reliable) {
+                const candidate_span = self.hir.spanOf(node);
+                if (candidate_span.end > candidate_span.start and
+                    (candidate_span.start < root_span.start or candidate_span.end > root_span.end)) continue;
+            }
+            if (self.nodeIsAncestorOf(root, node)) self.hir.setType(node, types.Primitive.none);
         }
     }
 
@@ -120137,6 +120226,7 @@ pub const Checker = struct {
     }
 
     fn localTypeAliasDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         if (anchor == hir_mod.none_node_id) return null;
         var cur: NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -120157,6 +120247,7 @@ pub const Checker = struct {
     }
 
     fn typeAliasDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         if (self.localTypeAliasDeclForNameAt(name, anchor)) |decl| return decl;
         if (self.module) |module| {
             if (module.root.lookup(name)) |sym| {
