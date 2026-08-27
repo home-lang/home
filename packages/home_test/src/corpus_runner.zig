@@ -40912,7 +40912,7 @@ const harness_prelude =
     \\    });
     \\    return undefined;
     \\  };
-    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; __home_http2_clear_session_timeout(this); if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { __home_http2_unbind_session_socket(this); this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
+    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; __home_http2_clear_session_timeout(this); if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { __home_http2_unbind_session_socket(this); this.emit("close"); if (Number(client.__home_active_streams || 0) === 0 && !client.destroyed) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
     \\  client.__home_server_session.destroy = function(codeOrError) {
     \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; if (codeOrError) Promise.resolve().then(() => this.emit("error", codeOrError)); return this.close(); }
     \\    if (this.destroyed) return this;
@@ -40985,11 +40985,13 @@ const harness_prelude =
     \\  client.__home_terminate = function(kind, cause, fromSocket) {
     \\    if (this.__home_termination_scheduled) return this;
     \\    this.__home_termination_scheduled = true;
-    \\    this.closed = true;
-    \\    if (kind === "destroy") this.destroyed = true;
+    \\    this.connecting = false;
+    \\    if (kind === "close") this.closed = true;
+    \\    else this.destroyed = true;
     \\    if (!fromSocket && !transportSocket.destroyed && typeof transportSocket.destroy === "function") { transportSocket.__home_suppress_h2_session_error = true; transportSocket.destroy(cause || undefined); }
     \\    Promise.resolve().then(() => {
     \\      if (cause) this.emit("error", cause);
+    \\      if (kind === "close") this.destroyed = true;
     \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
     \\      __home_http2_clear_session_timeout(this);
     \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
@@ -41169,7 +41171,7 @@ const harness_prelude =
     \\    this.state.nextStreamID = this.__home_next_stream_id;
     \\    stream.id = streamId;
     \\    stream.session = this;
-    \\    stream.pending = this.connecting;
+    \\    stream.pending = false;
     \\    stream.closed = false;
     \\    stream.destroyed = false;
     \\    stream.aborted = false;
@@ -156484,6 +156486,28 @@ test "bootstrap HTTP2 public and binding constants logical contracts" {
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 constants logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 session public lifecycle logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const captureRequestError = session => { try { const request = session.request({ ":path": "/" }); return new Promise(resolve => request.once("error", resolve)); } catch (error) { return Promise.resolve(error); } };
+        \\test("close before connect finalizes once before its callback", async () => { const server = http2.createServer(); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); let closeEvents = 0; let callbacks = 0; client.on("error", () => {}); client.on("close", () => closeEvents++); await new Promise(resolve => client.close(() => { callbacks++; assert.strictEqual(client.connecting, false); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, true); assert.strictEqual(closeEvents, 1); resolve(); })); assert.strictEqual(callbacks, 1); assert.strictEqual(closeEvents, 1); await new Promise(resolve => server.close(resolve)); });
+        \\test("assigned streams and session terminal states stay distinct", async () => { let finishHangingStream; const server = http2.createServer(); server.on("stream", (stream, headers) => { stream.respond({ ":status": 200 }); if (headers[":path"] === "/hang") finishHangingStream = () => stream.end("done"); else stream.end("ok"); }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const inflight = client.request({ ":path": "/hang" }); assert.strictEqual(typeof inflight.id, "number"); assert.strictEqual(inflight.pending, false); inflight.on("error", () => {}); inflight.resume(); inflight.end(); await new Promise(resolve => inflight.once("response", resolve)); const clientClosed = new Promise(resolve => client.once("close", resolve)); client.close(); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, false); const goawayError = await captureRequestError(client); assert.strictEqual(goawayError.code, "ERR_HTTP2_GOAWAY_SESSION"); assert.strictEqual(goawayError.message, "New streams cannot be created after receiving a GOAWAY"); finishHangingStream(); await new Promise(resolve => inflight.once("close", resolve)); await clientClosed; assert.strictEqual(inflight.closed, true); assert.strictEqual(inflight.destroyed, true); assert.strictEqual(inflight.rstCode, 0); assert.strictEqual(client.destroyed, true); const destroyed = http2.connect("http://localhost:" + server.address().port); destroyed.on("error", () => {}); await new Promise(resolve => destroyed.once("connect", resolve)); const destroyedClosed = new Promise(resolve => destroyed.once("close", resolve)); destroyed.destroy(); assert.strictEqual(destroyed.connecting, false); assert.strictEqual(destroyed.destroyed, true); assert.strictEqual(destroyed.closed, false); const invalidError = await captureRequestError(destroyed); assert.strictEqual(invalidError.code, "ERR_HTTP2_INVALID_SESSION"); assert.strictEqual(invalidError.message, "The session has been destroyed"); await destroyedClosed; assert.strictEqual(destroyed.closed, false); await new Promise(resolve => server.close(resolve)); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-session-public-lifecycle-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 session public lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
