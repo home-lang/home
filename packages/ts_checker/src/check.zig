@@ -3669,6 +3669,13 @@ const RecoveredParameterSyntax = struct {
     declaration_end: u32,
     type_name: hir_mod.StringId,
     optional: bool,
+    use_spans_start: u32 = 0,
+    use_spans_len: u32 = std.math.maxInt(u32),
+};
+
+const RecoveredParameterUseSpan = struct {
+    body_open: u32,
+    last_use: u32,
 };
 
 const SourceFunctionSpan = struct {
@@ -4728,6 +4735,7 @@ pub const Checker = struct {
         std.ArrayListUnmanaged(RecoveredParameterSyntax),
     ) = .empty,
     recovered_parameter_syntax_built: bool = false,
+    recovered_parameter_use_spans: std.ArrayListUnmanaged(RecoveredParameterUseSpan) = .empty,
     /// JSDoc lookup repeatedly asks which function owns the same comment
     /// positions. Cache immutable HIR containment results so source scans do
     /// not multiply a full node walk by every referenced typedef.
@@ -5187,6 +5195,7 @@ pub const Checker = struct {
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.clearRetainingCapacity();
         self.recovered_parameter_syntax_built = false;
+        self.recovered_parameter_use_spans.clearRetainingCapacity();
         self.source_function_containing_pos_cache.clearRetainingCapacity();
         self.source_function_spans.clearRetainingCapacity();
         self.source_function_spans_indexed = false;
@@ -5702,6 +5711,7 @@ pub const Checker = struct {
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.deinit(self.gpa);
+        self.recovered_parameter_use_spans.deinit(self.gpa);
         self.source_function_containing_pos_cache.deinit(self.gpa);
         self.source_function_spans.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
@@ -120314,7 +120324,11 @@ pub const Checker = struct {
             index -= 1;
             const entry = entries[index];
             if (entry.declaration_start >= use_start or entry.declaration_end >= use_start) continue;
-            if (!sourceParameterDeclarationContainsUse(source, entry.declaration_start, use_start)) continue;
+            const use_spans = self.recovered_parameter_use_spans.items[entry.use_spans_start .. entry.use_spans_start + entry.use_spans_len];
+            const contains_use = for (use_spans) |span| {
+                if (use_start > span.body_open and use_start <= span.last_use) break true;
+            } else false;
+            if (!contains_use) continue;
             const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, entry.type_name) orelse
                 self.recoveredNamedTypeAt(node, entry.type_name) orelse continue;
             return if (entry.optional) self.unionWithUndefined(base) catch base else base;
@@ -120366,6 +120380,23 @@ pub const Checker = struct {
     ) ?[]const RecoveredParameterSyntax {
         if (!self.recovered_parameter_syntax_built and !self.buildRecoveredParameterSyntaxIndex()) return null;
         const cached = self.recovered_parameter_syntax.getPtr(name) orelse return &.{};
+        // Materialize immutable containment ranges only for names that reach
+        // recovery. Most parsed annotations never need the source fallback.
+        for (cached.items) |*entry| {
+            if (entry.use_spans_len != std.math.maxInt(u32)) continue;
+            const start = self.recovered_parameter_use_spans.items.len;
+            appendSourceParameterUseSpans(
+                self.source orelse return null,
+                entry.declaration_start,
+                self.gpa,
+                &self.recovered_parameter_use_spans,
+            ) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return null;
+            };
+            entry.use_spans_start = @intCast(start);
+            entry.use_spans_len = @intCast(self.recovered_parameter_use_spans.items.len - start);
+        }
         return cached.items;
     }
 
@@ -120432,6 +120463,8 @@ pub const Checker = struct {
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.clearRetainingCapacity();
+        self.recovered_parameter_use_spans.clearRetainingCapacity();
+        self.recovered_parameter_syntax_built = false;
     }
 
     fn contextualCallParameterTypeForRecoveredAnnotation(
@@ -120526,6 +120559,39 @@ pub const Checker = struct {
             if (declaration_t != types.Primitive.none) return declaration_t;
         }
         return self.type_names.get(name);
+    }
+
+    fn appendSourceParameterUseSpans(
+        source: []const u8,
+        name_start: usize,
+        gpa: std.mem.Allocator,
+        spans: *std.ArrayListUnmanaged(RecoveredParameterUseSpan),
+    ) !void {
+        var open_search_end = name_start;
+        while (std.mem.lastIndexOfScalar(u8, source[0..open_search_end], '(')) |open_paren| {
+            open_search_end = open_paren;
+            var depth: usize = 1;
+            var cursor = open_paren + 1;
+            while (cursor < source.len and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '(') depth += 1;
+                if (source[cursor] == ')') depth -= 1;
+            }
+            if (depth != 0) continue;
+            const close_paren = cursor - 1;
+            if (close_paren < name_start) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, close_paren + 1, '{') orelse continue;
+            if (std.mem.indexOfScalar(u8, source[close_paren + 1 .. body_open], ';') != null) continue;
+            depth = 1;
+            cursor = body_open + 1;
+            while (cursor < source.len and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '{') depth += 1;
+                if (source[cursor] == '}') depth -= 1;
+            }
+            try spans.append(gpa, .{
+                .body_open = @intCast(body_open),
+                .last_use = @intCast(if (depth == 0) cursor - 1 else source.len),
+            });
+        }
     }
 
     fn sourceParameterDeclarationContainsUse(source: []const u8, name_start: usize, use_start: usize) bool {
@@ -201233,10 +201299,41 @@ test "checker: parameter annotation index resets with source facts" {
     try T.expect(annotation != hir_mod.none_node_id);
     try T.expect(s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 1), s.checker.parameter_annotation_index.items.len);
+    _ = s.checker.recoveredParameterSyntaxForName(value_name);
+    try T.expect(s.checker.recovered_parameter_use_spans.items.len > 0);
 
     s.checker.setSource("const value = 1;");
     try T.expect(!s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
+    try T.expectEqual(@as(usize, 0), s.checker.recovered_parameter_use_spans.items.len);
+}
+
+test "checker: recovered parameter use ranges match source scanning" {
+    const sources = [_][]const u8{
+        "function outer(value: T) { function inner(other: U) { value; } value; }",
+        "call({ active: false, }); function later(value: T) { value; }",
+        "function outer(cb = function (value: T) { value; }) { cb(); }",
+        "function pending(value: T) { value",
+        "((value: T",
+        "function read(value: T) { const text = '{(x)}'; value; }",
+    };
+    for (sources) |source| {
+        var spans: std.ArrayListUnmanaged(RecoveredParameterUseSpan) = .empty;
+        defer spans.deinit(T.allocator);
+        for (0..source.len + 1) |name_start| {
+            spans.clearRetainingCapacity();
+            try Checker.appendSourceParameterUseSpans(source, name_start, T.allocator, &spans);
+            for (0..source.len + 1) |use_start| {
+                const indexed = for (spans.items) |span| {
+                    if (use_start > span.body_open and use_start <= span.last_use) break true;
+                } else false;
+                try T.expectEqual(
+                    Checker.sourceParameterDeclarationContainsUse(source, name_start, use_start),
+                    indexed,
+                );
+            }
+        }
+    }
 }
 
 test "checker: indexed source function containment matches the full scan" {
