@@ -79,28 +79,28 @@ three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 82.5 ms | 52.1 ms | **5.4 ms** | **9.58× faster** |
-| 256 files | 217.9 ms | 57.7 ms | **32.8 ms** | **1.76× faster** |
-| Deep types | 127.5 ms | 51.9 ms | **13.7 ms** | **3.79× faster** |
-| 128-module import graph | 130.2 ms | 45.7 ms | **25.9 ms** | **1.76× faster** |
-| 64-leaf barrel graph | 97.3 ms | 42.1 ms | **28.1 ms** | **1.50× faster** |
-| 256 typed TSX components | 167.1 ms | 49.6 ms | **22.6 ms** | **2.20× faster** |
-| 256 generic call groups | 187.1 ms | 57.9 ms | **24.0 ms** | **2.41× faster** |
-| 256 exhaustive control-flow functions | 204.3 ms | 62.8 ms | **40.6 ms** | **1.55× faster** |
-| 256 type-predicate/assertion families | 248.0 ms | 74.6 ms | **53.3 ms** | **1.40× faster** |
-| 2,048 type-predicate/assertion families | 969.2 ms | 338.0 ms | 399.7 ms | 1.18× slower |
-| 256 null-safe-access families | 193.1 ms | 60.2 ms | **38.8 ms** | **1.55× faster** |
-| 128 destructuring/rest/spread families | 131.1 ms | 44.3 ms | **33.9 ms** | **1.30× faster** |
-| 128 × 8 overload calls | 195.9 ms | 60.9 ms | **29.6 ms** | **2.06× faster** |
-| 128 generic class families | 175.4 ms | 49.2 ms | **28.8 ms** | **1.71× faster** |
-| 128 structural object families | 180.1 ms | 55.0 ms | **30.6 ms** | **1.80× faster** |
-| 128 interface/namespace families | 189.8 ms | 59.1 ms | **42.5 ms** | **1.39× faster** |
-| 256 variadic tuple families | 230.1 ms | 71.8 ms | **41.9 ms** | **1.71× faster** |
-| 128 checked-JavaScript/JSDoc families | 192.7 ms | 51.2 ms | **37.0 ms** | **1.38× faster** |
+| Startup | 64.3 ms | 38.5 ms | **3.3 ms** | **11.76× faster** |
+| 256 files | 202.3 ms | 52.0 ms | **31.3 ms** | **1.66× faster** |
+| Deep types | 128.1 ms | 50.4 ms | **14.0 ms** | **3.61× faster** |
+| 128-module import graph | 125.6 ms | 43.3 ms | **25.2 ms** | **1.71× faster** |
+| 64-leaf barrel graph | 91.4 ms | 39.2 ms | **26.8 ms** | **1.46× faster** |
+| 256 typed TSX components | 160.7 ms | 47.0 ms | **21.4 ms** | **2.19× faster** |
+| 256 generic call groups | 176.8 ms | 53.7 ms | **22.6 ms** | **2.37× faster** |
+| 256 exhaustive control-flow functions | 180.7 ms | 55.8 ms | **33.0 ms** | **1.69× faster** |
+| 256 type-predicate/assertion families | 231.3 ms | 69.5 ms | **47.4 ms** | **1.47× faster** |
+| 2,048 type-predicate/assertion families | 1012.4 ms | 356.0 ms | 379.3 ms | 1.07× slower |
+| 256 null-safe-access families | 213.4 ms | 63.6 ms | **43.8 ms** | **1.45× faster** |
+| 128 destructuring/rest/spread families | 140.4 ms | 47.9 ms | **36.2 ms** | **1.32× faster** |
+| 128 × 8 overload calls | 196.6 ms | 63.4 ms | **30.8 ms** | **2.06× faster** |
+| 128 generic class families | 177.9 ms | 52.2 ms | **29.4 ms** | **1.78× faster** |
+| 128 structural object families | 174.4 ms | 54.9 ms | **30.4 ms** | **1.81× faster** |
+| 128 interface/namespace families | 217.1 ms | 69.6 ms | **48.7 ms** | **1.43× faster** |
+| 256 variadic tuple families | 291.1 ms | 87.3 ms | **48.3 ms** | **1.80× faster** |
+| 128 checked-JavaScript/JSDoc families | 232.8 ms | 59.9 ms | **41.4 ms** | **1.45× faster** |
 
 These are local synthetic means, with substantial variance in several rows;
 they are not a claim of universal benchmark leadership.
-The large predicate workload remains **1.18× slower** than native TypeScript 7.
+The large predicate workload remains **1.07× slower** than native TypeScript 7.
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
 reproduction commands. Expansion and optimization work is tracked in
