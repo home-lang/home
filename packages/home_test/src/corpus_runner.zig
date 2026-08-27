@@ -275,7 +275,7 @@ const harness_prelude =
     \\  if (typeof __home_http2_Http2Session === "function") __home_http2_Http2Session.prototype.request = function() { return 0; };
     \\  if (typeof __home_http2_Http2Stream === "function") { __home_http2_Http2Stream.prototype.respond = function() { return 0; }; __home_http2_Http2Stream.prototype.pushPromise = function() { return 0; }; __home_http2_Http2Stream.prototype.info = function() { return 0; }; }
     \\  if (typeof globalThis.__home_reset_node_fs === "function") globalThis.__home_reset_node_fs();
-    \\  for (const registryName of ["__home_net_servers", "__home_tls_servers", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
+    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
     \\    const registry = globalThis[registryName];
     \\    if (registry) for (const key of Object.keys(registry)) delete registry[key];
     \\  }
@@ -63374,6 +63374,7 @@ const harness_prelude =
     \\  unlinkSync(path) {
     \\    const normalized = __home_fs_path(path);
     \\    const hadSymlinkOverlay = __home_fs_is_symlink(normalized);
+    \\    const existedBefore = hadSymlinkOverlay || __home_build_file_exists(normalized);
     \\    __home_fs_mark_deleted(normalized);
     \\    if (hadSymlinkOverlay && globalThis.__home_symlinks) delete globalThis.__home_symlinks[__home_fs_normalize_path(normalized)];
     \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
@@ -63388,6 +63389,7 @@ const harness_prelude =
     \\      return result;
     \\    } catch (error) {
     \\      if (hadWrittenOverlay || hadSymlinkOverlay) { __home_fs_notify_watchers(normalized, false); return undefined; }
+    \\      if (!existedBefore) throw __home_fs_dir_error("ENOENT", "no such file or directory", "unlink", normalized);
     \\      throw error;
     \\    }
     \\  },
@@ -64152,6 +64154,7 @@ const harness_prelude =
     \\}
     \\function __home_net_connect(portOrOptions, host) {
     \\  const pipePath = typeof portOrOptions === "string" && !/^\d+$/.test(portOrOptions) ? String(portOrOptions) : (portOrOptions && typeof portOrOptions === "object" && portOrOptions.path ? String(portOrOptions.path) : null);
+    \\  const normalizedPipePath = pipePath === null ? null : __home_fs_normalize_path(pipePath);
     \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
     \\  const connectOptions = typeof portOrOptions === "object" && portOrOptions !== null ? portOrOptions : {};
     \\  let hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
@@ -64191,7 +64194,22 @@ const harness_prelude =
     \\      }
     \\    }
     \\  }
-    \\  const inMemoryServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  const inMemoryServer = normalizedPipePath !== null
+    \\    ? (typeof __home_net_servers_by_path === "object" ? __home_net_servers_by_path[normalizedPipePath] : null)
+    \\    : (typeof __home_net_servers === "object" ? __home_net_servers[port] : null);
+    \\  if (inMemoryServer && normalizedPipePath !== null && process.platform !== "win32") {
+    \\    try {
+    \\      if ((__home_node_fs.statSync(pipePath).mode & 0o777) === 0) {
+    \\        const denied = Object.assign(__home_http_event_target(), { destroyed: false, connecting: true, readable: true, writable: true });
+    \\        Promise.resolve().then(() => {
+    \\          const error = __home_bun_socket_system_error("EACCES", "connect", pipePath);
+    \\          denied.connecting = false; denied.destroyed = true; denied.readable = false; denied.writable = false;
+    \\          denied.emit("error", error); denied.emit("close", true);
+    \\        });
+    \\        return denied;
+    \\      }
+    \\    } catch (error) {}
+    \\  }
     \\  if (inMemoryServer) {
     \\    const client = __home_http_event_target();
     \\    const peer = __home_http_event_target();
@@ -64199,6 +64217,11 @@ const harness_prelude =
     \\    peer._handle = { fd: __home_alloc_virtual_fd("tcp-server:" + String(port), "r") };
     \\    client.destroyed = false;
     \\    peer.destroyed = false;
+    \\    client.readable = peer.readable = true;
+    \\    client.writable = peer.writable = true;
+    \\    client.readableEnded = peer.readableEnded = false;
+    \\    client.writableEnded = peer.writableEnded = false;
+    \\    client.bufferSize = peer.bufferSize = 0;
     \\    client.connecting = false;
     \\    peer.connecting = false;
     \\    client.readableHighWaterMark = peer.readableHighWaterMark = readableHighWaterMark;
@@ -64253,6 +64276,8 @@ const harness_prelude =
     \\      for (const endpoint of [first, second]) {
     \\        if (endpoint.destroyed) continue;
     \\        endpoint.destroyed = true;
+    \\        endpoint.readable = false;
+    \\        endpoint.writable = false;
     \\        __home_net_clear_idle_timeout(endpoint);
     \\        endpoint.emit("close", false);
     \\      }
@@ -64261,13 +64286,16 @@ const harness_prelude =
     \\      if (chunk !== undefined) this.write(chunk);
     \\      if (this.writableEnded || this.destroyed) return this;
     \\      this.writableEnded = true;
+    \\      this.writable = false;
     \\      __home_net_clear_idle_timeout(this);
     \\      const other = this.__home_peer;
     \\      Promise.resolve().then(() => {
     \\        if (!other || other.__home_end_received) return;
     \\        other.__home_end_received = true;
     \\        other.readableEnded = true;
+    \\        other.readable = false;
     \\        other.emit("end");
+    \\        if (!other.allowHalfOpen && !other.writableEnded) other.end();
     \\        closeEndedPair(this, other);
     \\      });
     \\      return this;
@@ -64277,6 +64305,8 @@ const harness_prelude =
     \\    function destroyPairEndpoint(error) {
     \\      if (this.destroyed) return this;
     \\      this.destroyed = true;
+    \\      this.readable = false;
+    \\      this.writable = false;
     \\      __home_net_clear_idle_timeout(this);
     \\      if (error) this.emit("error", error);
     \\      this.emit("close", !!error);
@@ -64285,6 +64315,8 @@ const harness_prelude =
     \\        if (!other || other.destroyed) return;
     \\        other.__home_end_received = true;
     \\        other.readableEnded = true;
+    \\        other.readable = false;
+    \\        other.writable = false;
     \\        other.emit("end");
     \\        other.destroyed = true;
     \\        __home_net_clear_idle_timeout(other);
@@ -64299,6 +64331,10 @@ const harness_prelude =
     \\    const acceptConnection = () => {
     \\      if (client.__home_connection_accepted) return;
     \\      client.__home_connection_accepted = true;
+    \\      peer.server = inMemoryServer;
+    \\      peer.allowHalfOpen = !!inMemoryServer.allowHalfOpen;
+    \\      inMemoryServer.__home_connections.add(peer);
+    \\      peer.once("close", () => inMemoryServer.__home_connections.delete(peer));
     \\      inMemoryServer.emit("connection", peer);
     \\    };
     \\    if (connectOptions.__home_sync_accept) acceptConnection();
@@ -64309,6 +64345,17 @@ const harness_prelude =
     \\      __home_net_refresh_idle_timeout(client);
     \\    });
     \\    return client;
+    \\  }
+    \\  if (normalizedPipePath !== null) {
+    \\    const socket = Object.assign(__home_http_event_target(), { destroyed: false, connecting: true, readable: true, writable: true });
+    \\    socket.end = socket.destroy = function() { this.destroyed = true; this.connecting = false; this.readable = false; this.writable = false; return this; };
+    \\    Promise.resolve().then(() => {
+    \\      const exists = __home_build_file_exists(pipePath);
+    \\      const error = __home_bun_socket_system_error(exists ? "ENOTSOCK" : "ENOENT", "connect", pipePath);
+    \\      socket.connecting = false; socket.destroyed = true; socket.readable = false; socket.writable = false;
+    \\      socket.emit("error", error); socket.emit("close", true);
+    \\    });
+    \\    return socket;
     \\  }
     \\  const nodeTlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
     \\  if (nodeTlsServer && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-upgrade.test.ts")) {
@@ -65283,44 +65330,57 @@ const harness_prelude =
     \\}
     \\let __home_net_next_server_port = 44200;
     \\const __home_net_servers = globalThis.__home_net_servers || (globalThis.__home_net_servers = Object.create(null));
+    \\const __home_net_servers_by_path = globalThis.__home_net_servers_by_path || (globalThis.__home_net_servers_by_path = Object.create(null));
     \\function __home_net_create_server(options, handler) {
     \\  if (typeof options === "function") handler = options;
     \\  else options = options && typeof options === "object" ? options : {};
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
+    \\  server.__home_connections = new Set();
+    \\  server.listening = false;
     \\  server.__home_net_handler = typeof handler === "function" ? handler : null;
     \\  if (server.__home_net_handler) server.on("connection", server.__home_net_handler);
     \\  server.allowHalfOpen = !!options.allowHalfOpen;
     \\  server.listen = function(port, host, callback) {
-    \\    const isUnix = typeof port === "string" && !/^\\d+$/.test(port);
+    \\    const listenOptions = port && typeof port === "object" ? port : null;
+    \\    const requestedPath = typeof port === "string" && !/^\d+$/.test(port) ? String(port) : (listenOptions && listenOptions.path !== undefined ? String(listenOptions.path) : null);
+    \\    const isUnix = requestedPath !== null;
     \\    if (isUnix) {
-    \\      this.__home_path = String(port);
-    \\      if (__home_build_file_exists(this.__home_path)) {
+    \\      this.__home_path = requestedPath;
+    \\      const normalizedPath = __home_fs_normalize_path(this.__home_path);
+    \\      if (__home_net_servers_by_path[normalizedPath] || __home_build_file_exists(this.__home_path)) {
     \\        const error = __home_bun_socket_system_error("EADDRINUSE", "listen", this.__home_path);
+    \\        error.message = "listen EADDRINUSE: address already in use " + this.__home_path;
     \\        Promise.resolve().then(() => this.emit("error", error));
     \\        return this;
     \\      }
-    \\      __home_build_write_text(this.__home_path, "");
-    \\      globalThis.__home_socket_paths[__home_fs_normalize_path(this.__home_path)] = true;
+    \\      __home_net_servers_by_path[normalizedPath] = this;
+    \\      __home_bun_create_unix_socket_file(this.__home_path);
+    \\      globalThis.__home_socket_paths[normalizedPath] = true;
     \\    } else {
-    \\      this.__home_port = Number(port) || __home_net_next_server_port++;
+    \\      this.__home_port = Number(listenOptions ? listenOptions.port : port) || __home_net_next_server_port++;
     \\      __home_net_servers[this.__home_port] = this;
     \\    }
     \\    if (typeof host === "function") callback = host;
     \\    else if (typeof callback !== "function" && typeof arguments[3] === "function") callback = arguments[3];
     \\    if (typeof callback === "function") this.on("listening", callback);
+    \\    this.listening = true;
     \\    Promise.resolve().then(() => this.emit("listening"));
     \\    return this;
     \\  };
-    \\  server.address = function() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.address = function() { return this.__home_path || { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.getConnections = function(callback) { if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_connections.size)); return this; };
     \\  server.ref = function() { return this; };
     \\  server.unref = function() { return this; };
     \\  server.close = function(callback) {
     \\    if (this.__home_path) {
-    \\      delete globalThis.__home_socket_paths[__home_fs_normalize_path(this.__home_path)];
+    \\      const normalizedPath = __home_fs_normalize_path(this.__home_path);
+    \\      delete __home_net_servers_by_path[normalizedPath];
+    \\      delete globalThis.__home_socket_paths[normalizedPath];
     \\      __home_bun_remove_unix_socket_file(this.__home_path);
     \\    }
     \\    else delete __home_net_servers[this.__home_port];
+    \\    this.listening = false;
     \\    if (typeof callback === "function") this.on("close", callback);
     \\    Promise.resolve().then(() => this.emit("close"));
     \\    return this;
@@ -124887,6 +124947,84 @@ test "bootstrap runner mirrors issue 22481 net Uint8Array writes" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "net path compatibility bootstrap named-pipe registration half-close and errors are host independent" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\const net = require("node:net");
+        \\
+        \\test("Windows named-pipe spelling uses the generic path transport", async () => {
+        \\  const slash = String.fromCharCode(92);
+        \\  const pipe = slash + slash + "." + slash + "pipe" + slash + "home-net-logical";
+        \\  const drain = async (turns = 8) => { while (turns-- > 0) await Promise.resolve(); };
+        \\  const server = net.createServer({ allowHalfOpen: true }, socket => {
+        \\    expect(socket.server).toBe(server);
+        \\    socket.on("data", chunk => socket.write(chunk));
+        \\    socket.on("end", () => {
+        \\      expect(socket.readable).toBe(false);
+        \\      expect(socket.writable).toBe(true);
+        \\      socket.end();
+        \\    });
+        \\  });
+        \\  let listened = false;
+        \\  server.listen({ path: pipe }, () => listened = true);
+        \\  await drain();
+        \\  expect(listened).toBe(true);
+        \\  expect(server.address()).toBe(pipe);
+        \\  const duplicate = net.createServer();
+        \\  let duplicateCode = null;
+        \\  duplicate.once("error", error => duplicateCode = error.code);
+        \\  duplicate.listen(pipe, () => expect.unreachable("duplicate pipe listen callback"));
+        \\  await drain();
+        \\  expect(duplicateCode).toBe("EADDRINUSE");
+        \\  let body = "";
+        \\  let connected = false;
+        \\  let closed = false;
+        \\  const client = net.createConnection({ path: pipe });
+        \\  client.setEncoding("utf8");
+        \\  client.on("data", chunk => body += chunk);
+        \\  client.once("connect", () => connected = true);
+        \\  client.once("error", error => { throw error; });
+        \\  client.once("close", () => closed = true);
+        \\  await drain();
+        \\  expect(connected).toBe(true);
+        \\  let activeConnections = null;
+        \\  expect(server.getConnections((error, count) => { if (error) throw error; activeConnections = count; })).toBe(server);
+        \\  await drain();
+        \\  expect(activeConnections).toBe(1);
+        \\  client.end("PING");
+        \\  await drain(16);
+        \\  expect(closed).toBe(true);
+        \\  expect(body).toBe("PING");
+        \\  server.getConnections((error, count) => { if (error) throw error; activeConnections = count; });
+        \\  await drain();
+        \\  expect(activeConnections).toBe(0);
+        \\  let serverClosed = false;
+        \\  server.close(() => serverClosed = true);
+        \\  await drain();
+        \\  expect(serverClosed).toBe(true);
+        \\  const missing = net.createConnection({ path: pipe });
+        \\  let missingCode = null;
+        \\  missing.once("error", error => missingCode = error.code);
+        \\  await drain();
+        \\  expect(missingCode).toBe("ENOENT");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-home-net-named-pipe.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("named-pipe logical contract failed: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
