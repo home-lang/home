@@ -39031,6 +39031,21 @@ const harness_prelude =
     \\const __home_http2_ServerHttp2Stream = function ServerHttp2Stream() {};
     \\__home_http2_ServerHttp2Stream.prototype = Object.create(__home_http2_Http2Stream.prototype);
     \\Object.defineProperty(__home_http2_ServerHttp2Stream.prototype, "constructor", { configurable: true, writable: true, value: __home_http2_ServerHttp2Stream });
+    \\let __home_http2_task_queue = [];
+    \\let __home_http2_task_scheduled = false;
+    \\let __home_http2_task_draining = false;
+    \\function __home_http2_schedule(task) {
+    \\  __home_http2_task_queue.push(task);
+    \\  if (__home_http2_task_scheduled || __home_http2_task_draining) return;
+    \\  __home_http2_task_scheduled = true;
+    \\  Promise.resolve().then(() => {
+    \\    __home_http2_task_scheduled = false;
+    \\    __home_http2_task_draining = true;
+    \\    let index = 0;
+    \\    try { while (index < __home_http2_task_queue.length) __home_http2_task_queue[index++](); }
+    \\    finally { __home_http2_task_queue.splice(0, index); __home_http2_task_draining = false; if (__home_http2_task_queue.length > 0) __home_http2_schedule(() => {}); }
+    \\  });
+    \\}
     \\let __home_http2_diagnostics_channel_cache = null;
     \\let __home_http2_diagnostics_seen = new WeakMap();
     \\function __home_http2_reset_diagnostics_channel_cache() { __home_http2_diagnostics_channel_cache = null; __home_http2_diagnostics_seen = new WeakMap(); }
@@ -39094,7 +39109,7 @@ const harness_prelude =
     \\function __home_http2_validate_stream_close(code, callback) {
     \\  const resetCode = code === undefined ? 0 : code;
     \\  if (typeof resetCode !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_http2_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
-    \\  if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 && <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\  if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\  if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\  return resetCode;
     \\}
@@ -39104,9 +39119,12 @@ const harness_prelude =
     \\}
     \\function __home_http2_transport_server(socket) {
     \\  if (!socket) return null;
-    \\  return socket.__home_http2_server ||
+    \\  const direct = socket.__home_http2_server ||
     \\    socket.__home_server_stream && socket.__home_server_stream.__home_http2_server ||
     \\    socket.__home_client_stream && socket.__home_client_stream.__home_http2_server || null;
+    \\  if (direct) return direct;
+    \\  const wrappedSocket = socket.socket;
+    \\  return wrappedSocket && wrappedSocket !== socket ? __home_http2_transport_server(wrappedSocket) : null;
     \\}
     \\function __home_http2_terminalize_peer(peer, code, cause) {
     \\  if (!peer || peer.__home_close_emitted) return;
@@ -39176,7 +39194,13 @@ const harness_prelude =
     \\  if (payload === undefined) payload = Buffer.alloc(8);
     \\  if (!ArrayBuffer.isView(payload)) { const error = new TypeError('The "payload" argument must be an instance of Buffer, TypedArray, or DataView.' + __home_http2_invalid_arg_type_suffix(payload)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\  const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
-    \\  if (bytes.length !== 8) { const error = new RangeError("HTTP2 ping payload must be 8 bytes"); error.code = "ERR_HTTP2_PING_LENGTH"; throw error; }
+    \\  if (bytes.length !== 8) {
+    \\    const error = new RangeError("HTTP2 ping payload must be 8 bytes");
+    \\    error.code = "ERR_HTTP2_PING_LENGTH";
+    \\    if (typeof callback !== "function") throw error;
+    \\    Promise.resolve().then(() => callback.call(owner, error));
+    \\    return false;
+    \\  }
     \\  const resource = typeof __home_AsyncResource === "function" ? new __home_AsyncResource("HTTP2PING") : null;
     \\  const limit = Number.isFinite(Number(maxOutstanding)) ? Number(maxOutstanding) : 10;
     \\  if (Number(owner.__home_outstanding_pings || 0) >= limit) {
@@ -39398,6 +39422,7 @@ const harness_prelude =
     \\  const pseudo = Object.create(null);
     \\  let offset = 0;
     \\  let malformed = false;
+    \\  let protocolError = false;
     \\  function readString() {
     \\    if (offset >= payload.length) { malformed = true; return ""; }
     \\    const first = payload[offset++];
@@ -39410,10 +39435,10 @@ const harness_prelude =
     \\  function add(name, value) {
     \\    const key = String(name).toLowerCase();
     \\    if (key.startsWith(":")) {
-    \\      if (pseudo[key]) malformed = true;
+    \\      if (pseudo[key]) protocolError = true;
     \\      pseudo[key] = true;
     \\    }
-    \\    if (/\0|\r|\n/.test(String(value)) || ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(key)) malformed = true;
+    \\    if (/\0|\r|\n/.test(String(value)) || ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(key)) protocolError = true;
     \\    headers[key] = value;
     \\  }
     \\  while (offset < payload.length && !malformed) {
@@ -39425,7 +39450,7 @@ const harness_prelude =
     \\    else if (byte === 0x00) { const name = readString(); const value = readString(); add(name, value); }
     \\    else malformed = true;
     \\  }
-    \\  return { headers, malformed };
+    \\  return { headers, malformed, protocolError };
     \\}
     \\function __home_net_connect_http2_server(server, port, hostname, connectCallback) {
     \\  const socket = __home_http_event_target();
@@ -39574,7 +39599,7 @@ const harness_prelude =
     \\        } else if (session.__home_streams[streamId]) {
     \\          failRawSession(__home_http2_nghttp_error(-510), session.__home_streams[streamId]);
     \\          return;
-    \\        } else if (decoded.malformed && payload.length < 8) sendRst(streamId, 1);
+    \\        } else if (decoded.protocolError || decoded.malformed && payload.length < 8) sendRst(streamId, 1);
     \\        else createRawStream(streamId, flags);
     \\      } else if (type === 0 && streamId !== 0) {
     \\        const stream = session.__home_streams[streamId];
@@ -41579,7 +41604,7 @@ const harness_prelude =
     \\    stream.__home_pending_read = [];
     \\    stream.__home_event_on = stream.on;
     \\    stream.__home_event_emit = stream.emit;
-    \\    stream.__home_schedule_read = function() { if (this.__home_read_scheduled) return; this.__home_read_scheduled = true; Promise.resolve().then(() => { this.__home_read_scheduled = false; this.__home_drain_read(); }); };
+    \\    stream.__home_schedule_read = function() { if (this.__home_read_scheduled) return; this.__home_read_scheduled = true; __home_http2_schedule(() => { this.__home_read_scheduled = false; this.__home_drain_read(); }); };
     \\    stream.__home_drain_read = function() {
     \\      const hasData = this.__home_pending_read.some(entry => entry[0] === "data");
     \\      if (!this.__home_resumed && !this.__home_flowing && (hasData || this.listenerCount("end") === 0)) return;
@@ -41592,7 +41617,12 @@ const harness_prelude =
     \\      if (typeof entry[2] === "function") entry[2]();
     \\      if (this.__home_pending_read.length > 0) this.__home_schedule_read();
     \\    };
-    \\    stream.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
+    \\    stream.__home_receive = function(name, value, consumed) {
+    \\      const eventName = String(name);
+    \\      if (eventName === "trailers" || eventName === "close") { __home_http2_schedule(() => { this.__home_event_emit.call(this, eventName, value); if (typeof consumed === "function") consumed(); }); return; }
+    \\      this.__home_pending_read.push([eventName, value, consumed]);
+    \\      this.__home_schedule_read();
+    \\    };
     \\    stream.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "close", "trailers"].includes(String(name))) this.__home_schedule_read(); return this; };
     \\    stream.addListener = stream.on;
     \\    stream.setEncoding = function(encoding) { this.__home_encoding = encoding; this.__home_schedule_read(); return this; };
@@ -41607,9 +41637,9 @@ const harness_prelude =
     \\      if (signal && abortListener && typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abortListener);
     \\      abortListener = null;
     \\    };
-    \\    const abort = () => {
+    \\    const abort = preAborted => {
     \\      if (stream.destroyed) return;
-    \\      const pendingAbort = stream.pending || client.connecting;
+    \\      stream.aborted = true;
     \\      stream.destroyed = true;
     \\      stream.rstCode = __home_http2_constants.NGHTTP2_CANCEL;
     \\      stream.__home_suppress_dispatch = true;
@@ -41620,14 +41650,14 @@ const harness_prelude =
     \\      error.code = "ABORT_ERR";
     \\      Promise.resolve().then(() => {
     \\        __home_http2_publish_terminal_diagnostics("client", stream, true, __home_http2_constants.NGHTTP2_CANCEL, error);
+    \\        if (!preAborted) stream.emit("aborted");
     \\        stream.emit("error", error);
     \\        stream.emit("close");
     \\      });
-    \\      if (pendingAbort) client.__home_terminate("destroy", error, false);
-    \\      else __home_http2_terminalize_peer(stream.__home_server_stream, __home_http2_constants.NGHTTP2_CANCEL);
+    \\      __home_http2_terminalize_peer(stream.__home_server_stream, __home_http2_constants.NGHTTP2_CANCEL);
     \\    };
-    \\    if (signal && signal.aborted) abort();
-    \\    else if (signal && typeof signal.addEventListener === "function") { abortListener = abort; signal.addEventListener("abort", abortListener, { once: true }); }
+    \\    if (signal && signal.aborted) abort(true);
+    \\    else if (signal && typeof signal.addEventListener === "function") { abortListener = () => abort(false); signal.addEventListener("abort", abortListener, { once: true }); }
     \\    const requestPath = requestHeaders[":path"];
     \\    if (requestPath !== undefined && /[\u0000-\u0020]/.test(String(requestPath))) {
     \\      stream.__home_suppress_dispatch = true;
@@ -41723,14 +41753,11 @@ const harness_prelude =
     \\      stream.end = function() { return this; };
     \\      stream.close = function() { return this; };
     \\      Promise.resolve().then(() => {
-    \\        const error = new Error("Session closed with error code 9");
-    \\        error.code = "ERR_HTTP2_SESSION_ERROR";
+    \\        const error = __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_COMPRESSION_ERROR");
+    \\        stream.rstCode = __home_http2_constants.NGHTTP2_COMPRESSION_ERROR;
     \\        stream.closed = true; stream.destroyed = true;
     \\        stream.emit("error", error);
     \\        stream.emit("close");
-    \\        client.closed = true; client.destroyed = true;
-    \\        client.emit("error", error);
-    \\        if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\        delete client.__home_streams[stream.id];
     \\        client.__home_active_streams = Math.max(0, Number(client.__home_active_streams || 0) - 1);
     \\      });
@@ -41974,7 +42001,12 @@ const harness_prelude =
     \\      if (typeof entry[2] === "function") entry[2]();
     \\      if (this.__home_pending_read.length > 0) this.__home_schedule_read();
     \\    };
-    \\    serverStream.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
+    \\    serverStream.__home_receive = function(name, value, consumed) {
+    \\      const eventName = String(name);
+    \\      if (eventName === "trailers" || eventName === "close") { __home_http2_schedule(() => { this.__home_event_emit.call(this, eventName, value); if (typeof consumed === "function") consumed(); }); return; }
+    \\      this.__home_pending_read.push([eventName, value, consumed]);
+    \\      this.__home_schedule_read();
+    \\    };
     \\    serverStream.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "trailers"].includes(String(name))) this.__home_schedule_read(); return this; };
     \\    serverStream.addListener = serverStream.on;
     \\    serverStream.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); this.__home_schedule_read(); return this; };
@@ -42049,14 +42081,14 @@ const harness_prelude =
     \\        this.writableFinished = true;
     \\        stream.__home_response_ended = true;
     \\        stream.__home_receive("end");
-    \\        Promise.resolve().then(maybeFinishStreamPair);
+    \\        __home_http2_schedule(maybeFinishStreamPair);
     \\        return this;
     \\      }
-    \\      if (responseOptions && responseOptions.endStream && !stream.aborted) Promise.resolve().then(() => {
+    \\      if (responseOptions && responseOptions.endStream && !stream.aborted) __home_http2_schedule(() => {
     \\        if (stream.__home_response_ended) return;
     \\        stream.__home_response_ended = true;
     \\        stream.__home_receive("end");
-    \\        Promise.resolve().then(maybeFinishStreamPair);
+    \\        __home_http2_schedule(maybeFinishStreamPair);
     \\      });
     \\      this.__home_wait_for_trailers = !!(responseOptions && responseOptions.waitForTrailers);
     \\      return this;
@@ -42323,7 +42355,7 @@ const harness_prelude =
     \\      if (code === undefined) code = 0;
     \\      if (typeof code !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_crypto_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\      if (!Number.isInteger(code)) { const error = new RangeError('The value of "code" is out of range. It must be an integer. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
-    \\      if (code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 && <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\      if (code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\      stream.rstCode = code;
     \\      if (this.__home_close_requested) return this;
     \\      this.__home_close_requested = true;
@@ -42360,7 +42392,7 @@ const harness_prelude =
     \\      delete client.__home_streams[stream.id];
     \\      return this;
     \\    };
-    \\    Promise.resolve().then(() => {
+    \\    __home_http2_schedule(() => {
     \\      if (!server) server = __home_http2_transport_server(serverTransportSocket) || __home_http2_transport_server(transportSocket);
     \\      if (!server) return;
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
@@ -42396,6 +42428,7 @@ const harness_prelude =
     \\    function completeRequestInput() {
     \\      if (stream.__home_end_completion_done) return;
     \\      stream.__home_end_completion_done = true;
+    \\      if (requestOptions && requestOptions.waitForTrailers && !stream.aborted && !stream.__home_want_trailers_emitted) { stream.__home_want_trailers_emitted = true; stream.emit("wantTrailers"); }
     \\      const endCallbacks = stream.__home_end_callbacks.splice(0);
     \\      for (const endCallback of endCallbacks) endCallback();
     \\      if (stream.__home_close_after_flush) {
@@ -42410,8 +42443,8 @@ const harness_prelude =
     \\      if (!serverStream.__home_request_ended) {
     \\        serverStream.__home_request_ended = true;
     \\        const waitsForDelivery = serverStream.__home_resumed || serverStream.__home_flowing || serverStream.listenerCount("end") > 0;
-    \\        serverStream.__home_receive("end", undefined, () => { Promise.resolve().then(maybeFinishStreamPair); if (requestOptions && requestOptions.waitForTrailers && !stream.aborted) stream.emit("wantTrailers"); completeRequestInput(); });
-    \\        if (!waitsForDelivery) Promise.resolve().then(completeRequestInput);
+    \\        serverStream.__home_receive("end", undefined, () => { __home_http2_schedule(maybeFinishStreamPair); completeRequestInput(); });
+    \\        if (!waitsForDelivery) __home_http2_schedule(completeRequestInput);
     \\        return;
     \\      }
     \\      completeRequestInput();
@@ -42437,7 +42470,7 @@ const harness_prelude =
     \\      if (wasBackpressured && stream.bufferSize < Number(stream._writableState.highWaterMark || 16384)) Promise.resolve().then(() => stream.emit("drain"));
     \\      if (stream.__home_end_requested) { __home_http2_publish_diagnostics("client", "bodySent", stream); finishRequestInput(); }
     \\    }
-    \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; Promise.resolve().then(flushOutbound); }
+    \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; __home_http2_schedule(flushOutbound); }
     \\    stream.write = function(chunk, encoding, callback) {
     \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (chunk !== undefined && chunk !== null) {
@@ -42834,8 +42867,7 @@ const harness_prelude =
     \\  get kFakeResponseHeaders() { return Buffer.from("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d", "hex"); },
     \\};
     \\async function __home_http2_node_echo_server(paddingStrategy) {
-    \\  const server = __home_http2_create_server({ paddingStrategy });
-    \\  server.__home_secure = true;
+    \\  const server = __home_http2_create_secure_server({ paddingStrategy });
     \\  let baseurl = "";
     \\  server.on("stream", (stream, headers) => {
     \\    if (headers["x-wait-trailer"]) {
@@ -68040,8 +68072,9 @@ const harness_prelude =
     \\    let selectedContext = selectedSniContext || server.__home_options || {};
     \\    let sniContextMatched = false;
     \\    const requestedServername = String(options.servername || "");
-    \\    for (let index = selectedSniContext ? -1 : server.__home_contexts.length - 1; index >= 0; index--) {
-    \\      const entry = server.__home_contexts[index];
+    \\    const serverContexts = Array.isArray(server.__home_contexts) ? server.__home_contexts : [];
+    \\    for (let index = selectedSniContext ? -1 : serverContexts.length - 1; index >= 0; index--) {
+    \\      const entry = serverContexts[index];
     \\      const pattern = entry.servername;
     \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\      if (matches) { selectedContext = entry.context || {}; sniContextMatched = true; break; }
