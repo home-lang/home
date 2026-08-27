@@ -4707,6 +4707,10 @@ pub const Checker = struct {
     source: ?[]const u8 = null,
     source_facts: SourceFacts = .{},
     parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
+    parameter_annotations_by_name: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(NodeId),
+    ) = .empty,
     parameter_annotation_index_built: bool = false,
     /// Source-level parameter annotations grouped by identifier name. Some
     /// parser-recovery compatibility paths need the original spelling, but
@@ -4791,6 +4795,7 @@ pub const Checker = struct {
     /// `protected` spelling.
     source_may_have_protected_member: bool = false,
     visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    visible_type_alias_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_same_name_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
@@ -4809,6 +4814,8 @@ pub const Checker = struct {
     class_extends_instance_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     class_extends_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     class_extends_call_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    named_shape_non_class_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    named_shape_any_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -5165,8 +5172,7 @@ pub const Checker = struct {
         self.jsx_namespace_decl_scanned = false;
         self.jsx_namespace_decl = false;
         self.jsx_local_factory_namespace_type_cache.clearRetainingCapacity();
-        self.parameter_annotation_index.clearRetainingCapacity();
-        self.parameter_annotation_index_built = false;
+        self.clearParameterAnnotationIndex();
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.clearRetainingCapacity();
@@ -5197,7 +5203,7 @@ pub const Checker = struct {
             std.mem.indexOfScalar(u8, source, '=') != null;
         self.source_may_have_import_declaration = std.mem.indexOf(u8, source, "import") != null;
         self.source_may_have_jsdoc_import_tag = std.mem.indexOf(u8, source, "@import") != null;
-        self.source_may_have_require_binding = std.mem.indexOf(u8, source, "require") != null;
+        self.source_may_have_require_binding = self.sourceSliceMentionsIdentifier(source, "require");
         self.source_may_have_namespace_declaration =
             std.mem.indexOf(u8, source, "namespace") != null or
             std.mem.indexOf(u8, source, "module") != null or
@@ -5217,6 +5223,7 @@ pub const Checker = struct {
         self.may_have_expando_property_assignments = null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
+        self.visible_type_alias_decls.clearRetainingCapacity();
         self.indexed_named_type_containers.clearRetainingCapacity();
         self.visible_same_name_value_decls.clearRetainingCapacity();
         self.indexed_same_name_value_containers.clearRetainingCapacity();
@@ -5229,6 +5236,8 @@ pub const Checker = struct {
         self.class_extends_instance_type_cache.clearRetainingCapacity();
         self.class_extends_static_type_cache.clearRetainingCapacity();
         self.class_extends_call_static_type_cache.clearRetainingCapacity();
+        self.named_shape_non_class_cache.clearRetainingCapacity();
+        self.named_shape_any_cache.clearRetainingCapacity();
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5657,6 +5666,7 @@ pub const Checker = struct {
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
+        self.visible_type_alias_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
         self.visible_same_name_value_decls.deinit(self.gpa);
         self.indexed_same_name_value_containers.deinit(self.gpa);
@@ -5669,7 +5679,12 @@ pub const Checker = struct {
         self.class_extends_instance_type_cache.deinit(self.gpa);
         self.class_extends_static_type_cache.deinit(self.gpa);
         self.class_extends_call_static_type_cache.deinit(self.gpa);
+        self.named_shape_non_class_cache.deinit(self.gpa);
+        self.named_shape_any_cache.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
+        var parameter_annotations_it = self.parameter_annotations_by_name.valueIterator();
+        while (parameter_annotations_it.next()) |items| items.deinit(self.gpa);
+        self.parameter_annotations_by_name.deinit(self.gpa);
         self.jsx_local_factory_namespace_type_cache.deinit(self.gpa);
         var recovered_it = self.recovered_parameter_syntax.valueIterator();
         while (recovered_it.next()) |items| items.deinit(self.gpa);
@@ -52997,8 +53012,16 @@ pub const Checker = struct {
 
     fn knownTypeDisplayName(self: *Checker, t: TypeId) ?[]const u8 {
         if (self.alias_display_names.get(t)) |display| return display;
+        // Directly named non-class types already have their authoritative
+        // reverse mapping. Only class instances need the structural pre-pass:
+        // an interface with the same shape may be the preferred diagnostic
+        // display name for those values.
+        const direct_name = self.namedTypeForId(t);
+        if (direct_name) |name| {
+            if (!self.class_instance_types.contains(name)) return self.string_interner.get(name);
+        }
         if (self.objectTypeHasNamedShape(t, true)) |name| return self.string_interner.get(name);
-        if (self.namedTypeForId(t)) |name| return self.string_interner.get(name);
+        if (direct_name) |name| return self.string_interner.get(name);
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* == t) return self.string_interner.get(entry.key_ptr.*);
@@ -53012,6 +53035,11 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type) return null;
         if (self.interner.objectMembers(t).len == 0) return null;
+        const cache = if (prefer_non_class)
+            &self.named_shape_non_class_cache
+        else
+            &self.named_shape_any_cache;
+        if (cache.get(t)) |name| return name;
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (prefer_non_class and self.class_instance_types.contains(entry.key_ptr.*)) continue;
@@ -53019,7 +53047,10 @@ pub const Checker = struct {
             if (named_t == t or named_t >= self.interner.pool.typeCount()) continue;
             const named_flags = self.interner.pool.flagsOf(named_t);
             if (!named_flags.is_object_type) continue;
-            if (self.objectTypesSameDisplayShape(t, named_t)) return entry.key_ptr.*;
+            if (self.objectTypesSameDisplayShape(t, named_t)) {
+                cache.put(self.gpa, t, entry.key_ptr.*) catch {};
+                return entry.key_ptr.*;
+            }
         }
         return null;
     }
@@ -71552,7 +71583,16 @@ pub const Checker = struct {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+        const statements = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleNamedTypeDecls(root, statements, self.sourceHasVirtualFilenameSections());
+        if (self.indexed_named_type_containers.contains(root)) {
+            return self.visible_type_alias_decls.get(.{
+                .container = root,
+                .name = name,
+                .virtual_section_start = anchor_section,
+            });
+        }
+        for (statements) |raw| {
             const decl = self.unwrapExportDecl(raw);
             if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
             if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
@@ -71565,6 +71605,7 @@ pub const Checker = struct {
 
     fn resolveForwardClassInstanceType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (self.class_instance_types.get(name)) |t| return t;
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
         // A namespace-local class lives in the namespace body, not the
         // file-root block, so the root scan below misses it — a namespace
         // *function*'s parameter/return annotation then collapses the
@@ -73516,6 +73557,14 @@ pub const Checker = struct {
                 .virtual_section_start = section,
             }) catch return;
             if (!gop.found_existing) gop.value_ptr.* = decl;
+            if (decl_kind == .type_alias_decl) {
+                const alias_gop = self.visible_type_alias_decls.getOrPut(self.gpa, .{
+                    .container = container,
+                    .name = decl_name,
+                    .virtual_section_start = section,
+                }) catch return;
+                if (!alias_gop.found_existing) alias_gop.value_ptr.* = decl;
+            }
         }
         self.indexed_named_type_containers.put(self.gpa, container, {}) catch {};
     }
@@ -73798,6 +73847,12 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) bool {
         if (self.findVisibleNamedTypeDecl(anchor, name) != null) return true;
+        if (self.source != null and
+            !self.source_may_have_enum_declaration and
+            !self.source_may_have_namespace_declaration)
+        {
+            return false;
+        }
         const anchor_section = self.virtualSectionStartForNode(anchor);
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -103164,6 +103219,7 @@ pub const Checker = struct {
     }
 
     fn namespaceImportDeclForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -120046,6 +120102,7 @@ pub const Checker = struct {
                             return self.adjustAmbientUnresolvedBareTypeAnnotation(variable.is_ambient, variable.type_annotation, active_t) catch types.Primitive.any;
                         }
                     }
+                    continue;
                 }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
@@ -120068,6 +120125,7 @@ pub const Checker = struct {
                 }
             }
         }
+        if (self.findVisibleSameNameValueBinding(node, id.name) != null) return null;
         const nearest_annotation = self.nearestPriorParameterAnnotation(id.name, use_start);
         if (nearest_annotation != hir_mod.none_node_id) {
             return self.lowerActiveValueTypeAnnotation(id.name, nearest_annotation) catch types.Primitive.any;
@@ -120098,9 +120156,17 @@ pub const Checker = struct {
         return null;
     }
 
+    fn clearParameterAnnotationIndex(self: *Checker) void {
+        self.parameter_annotation_index.clearRetainingCapacity();
+        var it = self.parameter_annotations_by_name.valueIterator();
+        while (it.next()) |items| items.deinit(self.gpa);
+        self.parameter_annotations_by_name.clearRetainingCapacity();
+        self.parameter_annotation_index_built = false;
+    }
+
     fn nearestPriorParameterAnnotation(self: *Checker, name: hir_mod.StringId, use_start: u32) NodeId {
         if (!self.parameter_annotation_index_built) {
-            self.parameter_annotation_index.clearRetainingCapacity();
+            self.clearParameterAnnotationIndex();
             var candidate: NodeId = 1;
             while (candidate < self.hir.nodeCount()) : (candidate += 1) {
                 if (self.hir.kindOf(candidate) != .parameter) continue;
@@ -120112,7 +120178,17 @@ pub const Checker = struct {
                     continue;
                 }
                 self.parameter_annotation_index.append(self.gpa, candidate) catch {
-                    self.parameter_annotation_index.clearRetainingCapacity();
+                    self.clearParameterAnnotationIndex();
+                    return hir_mod.none_node_id;
+                };
+                const name_id = hir_mod.identifierOf(self.hir, parameter.name).name;
+                const gop = self.parameter_annotations_by_name.getOrPut(self.gpa, name_id) catch {
+                    self.clearParameterAnnotationIndex();
+                    return hir_mod.none_node_id;
+                };
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                gop.value_ptr.append(self.gpa, candidate) catch {
+                    self.clearParameterAnnotationIndex();
                     return hir_mod.none_node_id;
                 };
             }
@@ -120121,11 +120197,11 @@ pub const Checker = struct {
 
         var nearest_annotation = hir_mod.none_node_id;
         var nearest_start: u32 = 0;
-        for (self.parameter_annotation_index.items) |candidate| {
+        const candidates = self.parameter_annotations_by_name.getPtr(name) orelse return hir_mod.none_node_id;
+        for (candidates.items) |candidate| {
             const span = self.hir.spanOf(candidate);
             if (span.start > use_start) continue;
             const parameter = hir_mod.parameterOf(self.hir, candidate);
-            if (hir_mod.identifierOf(self.hir, parameter.name).name != name) continue;
             if (nearest_annotation == hir_mod.none_node_id or span.start >= nearest_start) {
                 nearest_start = span.start;
                 nearest_annotation = parameter.type_annotation;
@@ -120531,6 +120607,28 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                if (k == .block_stmt and cur == self.rootBlockFor(node)) {
+                    if (self.module) |module| {
+                        if (module.root.lookup(id.name)) |symbol| {
+                            const has_sections = self.sourceHasVirtualFilenameSections();
+                            const section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
+                            for (symbol.decls.items) |decl| {
+                                const dk = self.hir.kindOf(decl);
+                                if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                                if (has_sections and self.virtualSectionStartForNode(decl) != section) continue;
+                                if (self.hir.spanOf(decl).start > use_start) continue;
+                                const variable = hir_mod.varDeclOf(self.hir, decl);
+                                if (variable.type_annotation == hir_mod.none_node_id and
+                                    !self.varDeclHasJsDocTypeTag(decl))
+                                {
+                                    return variable.name;
+                                }
+                                return null;
+                            }
+                            return null;
+                        }
+                    }
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = self.unwrapExportDecl(stmt);
