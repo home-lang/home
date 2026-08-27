@@ -3218,6 +3218,17 @@ const VisibleAnnotatedValueKey = struct {
     virtual_section_start: usize,
 };
 
+const NamedShapeCandidateBucket = struct {
+    head: usize = std.math.maxInt(usize),
+    count: usize = 0,
+};
+
+const NamedShapeCandidate = struct {
+    name: hir_mod.StringId,
+    type: TypeId,
+    next: usize,
+};
+
 const LocalValueContainerIndex = struct {
     const Entry = struct { declaration: NodeId, ordinal: usize };
     const StatementKey = struct { node: NodeId, virtual_section_start: usize };
@@ -4864,10 +4875,11 @@ pub const Checker = struct {
     /// cannot turn a miss into a match. Keep both preference modes distinct.
     named_shape_misses: std.AutoHashMapUnmanaged(u64, u64) = .empty,
     type_names_generation: u64 = 0,
-    /// Necessary member facts for all registered named object shapes. Facts
-    /// remain with the type-name table across source resets and rebinding;
-    /// obsolete facts or hash collisions only cause extra full comparisons.
-    named_shape_member_facts: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// Every matching named shape must occur in each queried member's bucket.
+    /// Candidates remain with the type-name table across resets and rebinding;
+    /// current bindings and full shape equality are checked before acceptance.
+    named_shape_member_facts: std.AutoHashMapUnmanaged(u64, NamedShapeCandidateBucket) = .empty,
+    named_shape_candidates: std.ArrayListUnmanaged(NamedShapeCandidate) = .empty,
     named_shape_member_facts_complete: bool = true,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
@@ -5748,6 +5760,7 @@ pub const Checker = struct {
         self.named_shape_any_cache.deinit(self.gpa);
         self.named_shape_misses.deinit(self.gpa);
         self.named_shape_member_facts.deinit(self.gpa);
+        self.named_shape_candidates.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
         var parameter_annotations_it = self.parameter_annotations_by_name.valueIterator();
         while (parameter_annotations_it.next()) |items| items.deinit(self.gpa);
@@ -53125,10 +53138,41 @@ pub const Checker = struct {
         if (cache.get(t)) |name| return name;
         const miss_key = (@as(u64, t) << 1) | @intFromBool(prefer_non_class);
         if (self.named_shape_misses.get(miss_key) == self.type_names_generation) return null;
-        if (!self.namedShapeMemberFactsAllow(t)) {
-            self.named_shape_misses.put(self.gpa, miss_key, self.type_names_generation) catch {};
-            return null;
+        if (self.findNamedShapeCandidate(t, prefer_non_class)) |name| {
+            cache.put(self.gpa, t, name) catch {};
+            return name;
         }
+        self.named_shape_misses.put(self.gpa, miss_key, self.type_names_generation) catch {};
+        return null;
+    }
+
+    fn findNamedShapeCandidate(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
+        if (!self.named_shape_member_facts_complete) return self.findNamedShapeSlow(t, prefer_non_class);
+        var smallest: NamedShapeCandidateBucket = .{};
+        for (self.interner.objectMembers(t)) |member| {
+            const bucket = self.named_shape_member_facts.get(self.namedShapeMemberFact(t, member)) orelse return null;
+            if (smallest.count == 0 or bucket.count < smallest.count) smallest = bucket;
+        }
+        var match: ?hir_mod.StringId = null;
+        var cursor = smallest.head;
+        while (cursor != std.math.maxInt(usize)) {
+            const candidate = self.named_shape_candidates.items[cursor];
+            cursor = candidate.next;
+            if (candidate.type == t or self.type_names.get(candidate.name) != candidate.type) continue;
+            if (prefer_non_class and self.class_instance_types.contains(candidate.name)) continue;
+            if (candidate.type >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(candidate.type).is_object_type) continue;
+            if (!self.objectTypesSameDisplayShape(t, candidate.type)) continue;
+            // Duplicate facts or re-registrations can repeat the same name.
+            // Only distinct matching names require the original scan order.
+            if (match) |name| {
+                if (name != candidate.name) return self.findNamedShapeSlow(t, prefer_non_class);
+            }
+            match = candidate.name;
+        }
+        return match;
+    }
+
+    fn findNamedShapeSlow(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (prefer_non_class and self.class_instance_types.contains(entry.key_ptr.*)) continue;
@@ -53137,11 +53181,9 @@ pub const Checker = struct {
             const named_flags = self.interner.pool.flagsOf(named_t);
             if (!named_flags.is_object_type) continue;
             if (self.objectTypesSameDisplayShape(t, named_t)) {
-                cache.put(self.gpa, t, entry.key_ptr.*) catch {};
                 return entry.key_ptr.*;
             }
         }
-        self.named_shape_misses.put(self.gpa, miss_key, self.type_names_generation) catch {};
         return null;
     }
 
@@ -53161,7 +53203,7 @@ pub const Checker = struct {
         return std.hash.Wyhash.hash(0, std.mem.asBytes(&fields));
     }
 
-    fn recordNamedShapeMemberFacts(self: *Checker, t: TypeId) void {
+    fn recordNamedShapeMemberFacts(self: *Checker, name: hir_mod.StringId, t: TypeId) void {
         if (!self.named_shape_member_facts_complete) return;
         if (t >= self.interner.pool.typeCount()) {
             self.named_shape_member_facts_complete = false;
@@ -53169,12 +53211,21 @@ pub const Checker = struct {
         }
         if (!self.interner.pool.flagsOf(t).is_object_type) return;
         for (self.interner.objectMembers(t)) |member| {
-            self.named_shape_member_facts.put(self.gpa, self.namedShapeMemberFact(t, member), {}) catch {
+            self.appendNamedShapeCandidate(self.namedShapeMemberFact(t, member), name, t) catch {
                 // An incomplete index cannot prove that a shape is absent.
                 self.named_shape_member_facts_complete = false;
                 return;
             };
         }
+    }
+
+    fn appendNamedShapeCandidate(self: *Checker, fact: u64, name: hir_mod.StringId, t: TypeId) !void {
+        const entry = try self.named_shape_member_facts.getOrPut(self.gpa, fact);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        const index = self.named_shape_candidates.items.len;
+        try self.named_shape_candidates.append(self.gpa, .{ .name = name, .type = t, .next = entry.value_ptr.head });
+        entry.value_ptr.head = index;
+        entry.value_ptr.count += 1;
     }
 
     fn namedShapeMemberFactsAllow(self: *Checker, t: TypeId) bool {
@@ -183113,7 +183164,7 @@ pub const Checker = struct {
         try self.type_names.put(self.gpa, name, t);
         if (previous != t) {
             self.type_names_generation += 1;
-            self.recordNamedShapeMemberFacts(t);
+            self.recordNamedShapeMemberFacts(name, t);
             if (self.registered_named_type_ids_complete) {
                 self.registered_named_type_ids.put(self.gpa, t, {}) catch {
                     // A partial index cannot prove that an ID is absent.
@@ -201902,10 +201953,60 @@ test "checker: named shape member facts do not accept combined or obsolete facts
     try T.expect(s.checker.objectTypeHasNamedShape(original, false) == null);
 }
 
-test "checker: named shape member facts fall back after allocation failure" {
+test "checker: named shape candidate index preserves ambiguity rebinding and source lifetime" {
     const s = try newSetup("const value = 1;");
     defer destroySetup(s);
-    const name = try s.sint.intern("Named");
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    const c = try s.sint.intern("C");
+    const members = [_]types.ObjectMember{
+        .{ .name = try s.sint.intern("x"), .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try s.sint.intern("y"), .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    const first = try s.ti.internObjectType(&members);
+    const second = try s.ti.internObjectType(&members);
+    var changed = members;
+    changed[0].type = types.Primitive.string_t;
+    const mismatch = try s.ti.internObjectType(&changed);
+    const queries = [_]TypeId{
+        try s.ti.internObjectType(&members),
+        try s.ti.internObjectType(&.{ members[1], members[0] }),
+        try s.ti.internObjectType(&.{ members[0], members[0] }),
+        first,
+        second,
+        mismatch,
+    };
+    try s.checker.putTypeName(a, first);
+    try s.checker.putTypeName(b, second);
+    try s.checker.putTypeName(c, mismatch);
+    for (0..24) |stage| {
+        switch (stage) {
+            0 => {},
+            1 => try s.checker.class_instance_types.put(s.checker.gpa, b, second),
+            2 => try s.checker.putTypeName(b, mismatch),
+            3 => try s.checker.putTypeName(a, mismatch),
+            4 => try s.checker.putTypeName(c, first),
+            5 => try s.checker.putTypeName(a, first),
+            6 => s.checker.setSource("const next = 2;"),
+            else => {
+                var buffer: [32]u8 = undefined;
+                const name = try s.sint.intern(try std.fmt.bufPrint(&buffer, "Extra{d}", .{stage}));
+                try s.checker.putTypeName(name, if (stage % 2 == 0) first else mismatch);
+            },
+        }
+        for (queries) |query| {
+            for ([_]bool{ false, true }) |prefer_non_class| {
+                try T.expectEqual(s.checker.findNamedShapeSlow(query, prefer_non_class), s.checker.findNamedShapeCandidate(query, prefer_non_class));
+            }
+        }
+    }
+}
+
+test "checker: named shape candidate index rejects hash collision candidates" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const good_name = try s.sint.intern("Good");
+    const wrong_name = try s.sint.intern("Wrong");
     const member = types.ObjectMember{
         .name = try s.sint.intern("value"),
         .type = types.Primitive.number_t,
@@ -201915,17 +202016,48 @@ test "checker: named shape member facts fall back after allocation failure" {
     };
     const named = try s.ti.internObjectType(&.{member});
     const query = try s.ti.internObjectType(&.{member});
-    const allocator = s.checker.gpa;
-    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
-    {
-        s.checker.gpa = failing.allocator();
-        defer s.checker.gpa = allocator;
-        s.checker.recordNamedShapeMemberFacts(named);
+    var wrong_member = member;
+    wrong_member.type = types.Primitive.string_t;
+    const wrong = try s.ti.internObjectType(&.{wrong_member});
+    try s.checker.putTypeName(good_name, named);
+    try s.checker.putTypeName(wrong_name, wrong);
+    // Force a collision into the queried bucket. It must remain a candidate,
+    // never an accepted shape without the original complete comparison.
+    try s.checker.appendNamedShapeCandidate(s.checker.namedShapeMemberFact(query, member), wrong_name, wrong);
+    try s.checker.appendNamedShapeCandidate(s.checker.namedShapeMemberFact(query, member), good_name, named);
+    for ([_]bool{ false, true }) |prefer_non_class| {
+        try T.expectEqual(good_name, s.checker.findNamedShapeCandidate(query, prefer_non_class).?);
     }
-    try T.expect(failing.has_induced_failure);
-    try T.expect(!s.checker.named_shape_member_facts_complete);
-    try s.checker.putTypeName(name, named);
-    try T.expectEqual(name, s.checker.objectTypeHasNamedShape(query, true).?);
+    try s.checker.putTypeName(good_name, wrong);
+    try T.expect(s.checker.findNamedShapeCandidate(query, false) == null);
+}
+
+test "checker: named shape member facts fall back after allocation failure" {
+    for (0..2) |fail_index| {
+        const s = try newSetup("const value = 1;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("Named");
+        const member = types.ObjectMember{
+            .name = try s.sint.intern("value"),
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+        const named = try s.ti.internObjectType(&.{member});
+        const query = try s.ti.internObjectType(&.{member});
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            s.checker.recordNamedShapeMemberFacts(name, named);
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expect(!s.checker.named_shape_member_facts_complete);
+        try s.checker.putTypeName(name, named);
+        try T.expectEqual(name, s.checker.objectTypeHasNamedShape(query, true).?);
+    }
 }
 
 test "checker: source recovery skips an unannotated lexical parameter" {
