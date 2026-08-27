@@ -1861,7 +1861,12 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
             // consumed its source, later flags are script arguments in Node.
             if (code == null) experimental_stream_iter = true;
         } else if (std.mem.startsWith(u8, a, "-")) {
-            // Other leading runtime flags are accepted and ignored.
+            // Do not mistake an option value (for example the `module` in
+            // `--input-type module --eval ...`) for a script entrypoint.
+            if (code == null and runtimeFlagTakesValue(a)) {
+                if (i + 1 >= args.len) return false;
+                i += 1;
+            }
         } else if (code == null) {
             // A bare positional before any eval flag isn't ours (let the file
             // path / command handlers deal with it).
@@ -1926,6 +1931,9 @@ var g_user_preloads: []const []const u8 = &.{};
 /// runFileViaVMOpts so `package.json` "exports"/"imports" match them.
 var g_user_conditions: []const []const u8 = &.{};
 
+/// Preserve the lexical path of imported modules instead of resolving symlinks.
+var g_user_preserve_symlinks = false;
+
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     return runFileViaVMOpts(allocator, file_path, extra_args, false, null);
 }
@@ -1966,6 +1974,7 @@ fn runFileViaVMOpts(
     var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
     args.disable_hmr = true;
     args.target = home_rt.schema.api.Target.bun;
+    args.preserve_symlinks = g_user_preserve_symlinks;
     args.absolute_working_dir = home_rt.dupeZ(allocator, u8, cwd) catch null;
 
     // Build the preload list and WRITE any temp preload file to disk BEFORE the
@@ -2244,6 +2253,10 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
             }
             continue;
         }
+        if (std.mem.eql(u8, a, "--preserve-symlinks")) {
+            ctx.args.preserve_symlinks = true;
+            continue;
+        }
         if (a.len > 0 and a[0] == '-') continue; // skip other flags (not parsed yet)
         try positionals.append(allocator, a);
     }
@@ -2483,7 +2496,9 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
     }
 
     // Route JS / TS files through the runtime delegation shim (Phase 12).
-    if (fileExtIsJsLike(file_path)) {
+    if (fileExtIsJsLike(file_path) or
+        (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and !isHomeSourceFile(file_path)))
+    {
         return runJsLikeFile(allocator, file_path, extra_args);
     }
 
@@ -4699,9 +4714,9 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4756,9 +4771,9 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Gate: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4807,9 +4822,9 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native File: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4879,7 +4894,7 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
         }
     }
 
-    const tests_observed = passed + failed_tests + todo;
+    const tests_observed = passed + failed_tests + unsupported + todo;
     const no_tests = tests_observed == 0 and allowed_empty == 0;
     const failed = blocked or failed_tests != 0 or unsupported != 0 or files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Files: {s}{s}\n", .{
@@ -4929,9 +4944,9 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Directory: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5542,6 +5557,10 @@ pub fn main(init: std.process.Init) !void {
                 experimental_stream_iter = true;
                 continue;
             }
+            if (std.mem.eql(u8, a, "--preserve-symlinks")) {
+                g_user_preserve_symlinks = true;
+                continue;
+            }
             // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
             if (std.mem.eql(u8, a, "-")) break;
             // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
@@ -5770,6 +5789,19 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Runtime flags may precede the test command. Node's common harness uses
+    // this form when it re-execs a fixture with its declared runtime flags.
+    if (build_options.enable_jsc) {
+        if (leadingRuntimeTestIndex(args)) |test_index| {
+            var forwarded: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            defer forwarded.deinit(allocator);
+            try forwarded.appendSlice(allocator, args[1..test_index]);
+            try forwarded.appendSlice(allocator, args[test_index + 1 ..]);
+            try testCommand(allocator, forwarded.items);
+            return;
+        }
+    }
+
     if (std.mem.eql(u8, command, "pkg")) {
         if (args.len < 3) {
             std.debug.print("{s}Error:{s} 'pkg' command requires a subcommand\n\n", .{ Color.Red.code(), Color.Reset.code() });
@@ -5794,14 +5826,15 @@ pub fn main(init: std.process.Init) !void {
     // unaffected. Leading runtime flags (e.g. --expose-gc) are accepted and
     // skipped here; the native run path doesn't need them to execute.
     {
-        var has_file = false;
+        const native_vm = build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM");
+        var has_file = native_vm;
         for (args[1..]) |a| {
             if (looksLikeRunnableFile(a)) {
                 has_file = true;
                 break;
             }
         }
-        if (has_file and (std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
+        if (has_file and (native_vm or std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
             // `--require`/`-r`/`--preload <file>` (and `--require=<file>`) name
             // PRELOAD modules, not the entry. Collect them and skip them when
             // choosing the entry (otherwise the first one is picked as the file
@@ -5854,7 +5887,16 @@ pub fn main(init: std.process.Init) !void {
                     experimental_stream_iter = true;
                     continue;
                 }
-                if (looksLikeRunnableFile(a)) {
+                if (std.mem.eql(u8, a, "--preserve-symlinks")) {
+                    g_user_preserve_symlinks = true;
+                    continue;
+                }
+                if (runtimeFlagTakesValue(a)) {
+                    if (i + 1 < args.len) i += 1;
+                    continue;
+                }
+                if (a.len > 0 and a[0] == '-') continue;
+                if (looksLikeRunnableFile(a) or native_vm) {
                     if (experimental_stream_iter) {
                         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
                     }
@@ -5880,6 +5922,51 @@ fn looksLikeRunnableFile(s: []const u8) bool {
         if (std.mem.endsWith(u8, s, e)) return true;
     }
     return false;
+}
+
+fn runtimeFlagTakesValue(flag: []const u8) bool {
+    // Node corpus children use this compatibility flag, which is not in
+    // Bun\'s auto_params. Home\'s eval module supports both CJS and ESM syntax.
+    if (std.mem.eql(u8, flag, "--input-type")) return true;
+    inline for (home_rt.cli.Arguments.auto_params) |param| {
+        if (comptime param.takes_value != .none) {
+            if (comptime param.names.long) |name| {
+                if (std.mem.eql(u8, flag, "--" ++ name)) return true;
+            }
+            if (comptime param.names.short) |name| {
+                if (std.mem.eql(u8, flag, &[_]u8{ '-', name })) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) return null;
+        if (arg.len > 0 and arg[0] == '-') {
+            if (runtimeFlagTakesValue(arg)) {
+                if (i + 1 >= args.len) return null;
+                i += 1;
+            }
+            continue;
+        }
+        if (i > 1 and (std.mem.eql(u8, arg, "test") or std.mem.eql(u8, arg, "t"))) return i;
+        return null;
+    }
+    return null;
+}
+
+test "runtime flags before test preserve command dispatch boundaries" {
+    try std.testing.expect(runtimeFlagTakesValue("--input-type"));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--input-type", "module", "--eval", "test" }));
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeTestIndex(&.{ "home", "--no-warnings", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, 3), leadingRuntimeTestIndex(&.{ "home", "--require", "preload.js", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--eval", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "fixture.js", "test" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--", "test", "fixture.js" }));
 }
 
 fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {

@@ -85,7 +85,7 @@ pub const Summary = struct {
     pub fn addFileResult(self: *Summary, file: test_result.FileResult) void {
         self.files += 1;
         self.passed += file.passed;
-        self.failed += file.failed + file.unsupported;
+        self.failed += file.failed;
         self.todo += file.todo;
         self.unsupported += file.unsupported;
     }
@@ -100150,6 +100150,36 @@ fn isNativeQuerystringCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-maxKeys-non-finite.js");
 }
 
+fn isNativeNodeCoreCorpusFile(relative: []const u8) bool {
+    const prefix = "js/node/test/parallel/";
+    if (!std.mem.startsWith(u8, relative, prefix) or !std.mem.endsWith(u8, relative, ".js")) return false;
+    const basename = relative[prefix.len..];
+    if (std.mem.indexOfScalar(u8, basename, '/') != null) return false;
+    inline for (.{ "assert", "buffer", "module", "path", "querystring" }) |family| {
+        if (std.mem.eql(u8, basename, "test-" ++ family ++ ".js") or
+            std.mem.startsWith(u8, basename, "test-" ++ family ++ "-")) return true;
+    }
+    return false;
+}
+
+fn isNativeNodeTestCorpusFile(relative: []const u8) bool {
+    inline for (.{
+        "test-assert-calltracker-getCalls.js",
+        "test-assert-checktag.js",
+        "test-assert-deep-with-error.js",
+        "test-assert-esm-cjs-message-verify.js",
+        "test-assert-fail-deprecation.js",
+        "test-assert-fail.js",
+        "test-assert-if-error.js",
+        "test-assert-typedarray-deepequal.js",
+        "test-assert.js",
+        "test-buffer-resizable.js",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return true;
+    }
+    return false;
+}
+
 fn isNativeHomeCorpusFile(relative: []const u8) bool {
     return isNativeStreamIteratorCorpusFile(relative) or
         isNativeFsDisposableCorpusFile(relative) or
@@ -100159,7 +100189,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeReadableFromCorpusFile(relative) or
         isNativeModuleRegistryCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
-        isNativeQuerystringCorpusFile(relative);
+        isNativeQuerystringCorpusFile(relative) or
+        isNativeNodeCoreCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100180,13 +100211,16 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
     return result;
 }
 
+const NativeCorpusMode = enum { script, test_runner };
+
 fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
     flags: []const []const u8,
     absolute_fixture_path: []const u8,
+    mode: NativeCorpusMode,
 ) ![][]const u8 {
     const args = try allocator.alloc([]const u8, flags.len + 2);
-    args[0] = "run";
+    args[0] = if (mode == .test_runner) "test" else "run";
     @memcpy(args[1 .. 1 + flags.len], flags);
     args[args.len - 1] = absolute_fixture_path;
     return args;
@@ -100194,6 +100228,53 @@ fn buildNativeCorpusArgs(
 
 fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
     return !timed_out and term.success();
+}
+
+fn nativeCorpusSkipReason(stdout: []const u8, stderr: []const u8) ?[]const u8 {
+    for ([_][]const u8{ stdout, stderr }) |output| {
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "1..0 # Skipped:") or
+                std.mem.startsWith(u8, line, "1..0 # SKIP "))
+            {
+                return line;
+            }
+        }
+    }
+    return null;
+}
+
+const NativeTestCounts = struct {
+    passed: usize = 0,
+    failed: usize = 0,
+    skipped: usize = 0,
+    todo: usize = 0,
+    observed: bool = false,
+};
+
+fn nativeCorpusTestCounts(stdout: []const u8, stderr: []const u8) NativeTestCounts {
+    var counts = NativeTestCounts{};
+    for ([_][]const u8{ stdout, stderr }) |output| {
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "Ran ") and
+                std.mem.indexOf(u8, line, " across ") != null and
+                (std.mem.indexOf(u8, line, " test ") != null or std.mem.indexOf(u8, line, " tests ") != null))
+            {
+                counts.observed = true;
+            }
+            const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+            const count = std.fmt.parseUnsigned(usize, line[0..space], 10) catch continue;
+            const label = std.mem.trim(u8, line[space + 1 ..], " ");
+            if (std.mem.eql(u8, label, "pass")) counts.passed += count;
+            if (std.mem.eql(u8, label, "fail")) counts.failed += count;
+            if (std.mem.eql(u8, label, "skip")) counts.skipped += count;
+            if (std.mem.eql(u8, label, "todo")) counts.todo += count;
+        }
+    }
+    return counts;
 }
 
 fn nativeCorpusFailureDiagnostic(
@@ -100244,12 +100325,13 @@ fn runRelativeFile(
     defer allocator.free(source);
 
     if (isNativeHomeCorpusFile(relative)) {
-        const absolute_fixture_path = try std.fs.path.resolve(allocator, &.{file_path});
+        const absolute_fixture_path = try Io.Dir.cwd().realPathFileAlloc(io, file_path, allocator);
         defer allocator.free(absolute_fixture_path);
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path);
+        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative)) .test_runner else .script;
+        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path, mode);
         defer allocator.free(args_tail);
 
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
@@ -100260,7 +100342,28 @@ fn runRelativeFile(
         try appendSummaryStdout(allocator, summary, native_run.stdout);
 
         if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
-            file_result.passed = 1;
+            if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr)) |reason| {
+                file_result.unsupported = 1;
+                const diagnostic = try std.fmt.allocPrint(allocator, "native Home corpus fixture skipped: {s}", .{reason});
+                defer allocator.free(diagnostic);
+                try recordFailure(allocator, summary, relative, diagnostic);
+            } else if (mode == .test_runner) {
+                const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
+                if (!counts.observed or counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+                    file_result.unsupported = 1;
+                    try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
+                } else {
+                    file_result.passed = counts.passed;
+                    file_result.failed = counts.failed;
+                    file_result.unsupported = counts.skipped;
+                    file_result.todo = counts.todo;
+                    if (counts.failed > 0 or counts.skipped > 0) {
+                        try recordFailure(allocator, summary, relative, "native Home test runner reported failed or skipped tests");
+                    }
+                }
+            } else {
+                file_result.passed = 1;
+            }
         } else {
             file_result.failed = 1;
             const diagnostic = try nativeCorpusFailureDiagnostic(
@@ -100354,13 +100457,19 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
     try std.testing.expectEqualStrings("--second", flags.values.items[1]);
 
-    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/absolute/fixture.js");
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/absolute/fixture.js", .script);
     defer allocator.free(args);
     try std.testing.expectEqual(@as(usize, 4), args.len);
     try std.testing.expectEqualStrings("run", args[0]);
     try std.testing.expectEqualStrings("--experimental-stream-iter", args[1]);
     try std.testing.expectEqualStrings("--second", args[2]);
     try std.testing.expectEqualStrings("/absolute/fixture.js", args[3]);
+
+    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, "/absolute/test-assert.js", .test_runner);
+    defer allocator.free(test_args);
+    try std.testing.expectEqualStrings("test", test_args[0]);
+    try std.testing.expectEqualStrings("--no-warnings", test_args[1]);
+    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[2]);
 
     var late_source: [1540]u8 = undefined;
     @memset(&late_source, ' ');
@@ -100386,7 +100495,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 63), native_count);
+    try std.testing.expectEqual(@as(usize, 176), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -100529,6 +100638,54 @@ test "native querystring corpus predicate covers the exact vendored matrix" {
     try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring.mjs"));
     try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/nested/test-querystring.js"));
     try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-unescape.js"));
+}
+
+test "native node core corpus predicates cover the audited inventory" {
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, "packages/runtime/test/bun-corpus/js/node/test/parallel");
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+    var core_count: usize = 0;
+    var node_test_count: usize = 0;
+    var scratch: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&scratch, "js/node/test/parallel/{s}", .{file});
+        if (isNativeNodeCoreCorpusFile(relative)) core_count += 1;
+        if (isNativeNodeTestCorpusFile(relative)) node_test_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 124), core_count);
+    try std.testing.expectEqual(@as(usize, 10), node_test_count);
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/nested/test-buffer-from.js"));
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-buffer-from.mjs"));
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-modules.js"));
+    try std.testing.expect(!isNativeNodeTestCorpusFile("js/node/test/parallel/test-assert-strict-exists.js"));
+}
+
+test "native corpus summary does not double count unsupported tests" {
+    var summary = Summary{};
+    summary.addFileResult(.{ .path = "fixture.js", .passed = 3, .failed = 1, .unsupported = 2, .todo = 4 });
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 1), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 4), summary.todo);
+}
+
+test "native test runner counts require observed tests and retain skips" {
+    const counts = nativeCorpusTestCounts("", " 7 pass\n 0 fail\n 2 skip\n 1 todo\nRan 10 tests across 1 file. [1ms]\n");
+    try std.testing.expect(counts.observed);
+    try std.testing.expectEqual(@as(usize, 7), counts.passed);
+    try std.testing.expectEqual(@as(usize, 2), counts.skipped);
+    try std.testing.expectEqual(@as(usize, 1), counts.todo);
+    try std.testing.expect(!nativeCorpusTestCounts("7 pass\n", "").observed);
+    try std.testing.expect(!nativeCorpusTestCounts("", "").observed);
+    try std.testing.expect(nativeCorpusTestCounts("", "1 pass\n0 fail\nRan 1 test across 1 file. [1ms]").observed);
+}
+
+test "native corpus skip markers are not accepted as passing coverage" {
+    try std.testing.expectEqualStrings("1..0 # Skipped: platform", nativeCorpusSkipReason("1..0 # Skipped: platform\n", "").?);
+    try std.testing.expectEqualStrings("1..0 # SKIP unavailable", nativeCorpusSkipReason("", "1..0 # SKIP unavailable\r\n").?);
+    try std.testing.expect(nativeCorpusSkipReason("", "") == null);
+    try std.testing.expect(nativeCorpusSkipReason("completed\n", "") == null);
+    try std.testing.expect(nativeCorpusSkipReason("diagnostic contains 1..0 # Skipped: text\n", "") == null);
 }
 
 test "native stream iterator process classification requires a clean exit" {

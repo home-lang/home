@@ -5616,7 +5616,7 @@ const HomeCapturedInvocation = struct {
 /// Run one prepared corpus fixture through the native Home executable.
 ///
 /// `args_tail` is appended verbatim after the executable and must already be
-/// ordered as `run`, flags..., absolute fixture path. The returned output is
+/// ordered as `run` or `test`, flags..., absolute fixture path. The returned output is
 /// owned by `allocator` and must be released with `HomeCapturedResult.deinit`.
 pub fn runHomeCaptured(
     allocator: std.mem.Allocator,
@@ -5677,6 +5677,11 @@ fn prepareHomeCapturedInvocation(
     var environ_map = try inherited_env.clone(allocator);
     errdefer environ_map.deinit();
     try environ_map.put("HOME_NATIVE_VM", "1");
+    if (args_tail.len > 0 and std.mem.eql(u8, args_tail[0], "test")) {
+        // Native node:test fixtures must reach TestCommand.exec, not recurse
+        // through the corpus adapter that launched this child.
+        try environ_map.put("HOME_CORPUS_FULL_VM", "1");
+    }
     try environ_map.put("NO_COLOR", "1");
     try environ_map.put("TEST_THREAD_ID", test_thread_id);
 
@@ -6532,6 +6537,19 @@ test "native Home corpus invocation preserves argv and inherits required environ
     try std.testing.expectEqualStrings("0", inherited_env.get("NO_COLOR").?);
     try std.testing.expect(inherited_env.get("HOME_NATIVE_VM") == null);
     try std.testing.expect(inherited_env.get("TEST_THREAD_ID") == null);
+}
+
+test "native Home node:test invocation selects the full VM runner" {
+    const allocator = std.testing.allocator;
+    var inherited_env = std.process.Environ.Map.init(allocator);
+    defer inherited_env.deinit();
+    try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
+    try inherited_env.put("HOME_CORPUS_FULL_VM", "0");
+    var invocation = try prepareHomeCapturedInvocation(allocator, &inherited_env, "node-test", &.{ "test", "/absolute/test-assert.js" });
+    defer invocation.deinit(allocator);
+    try std.testing.expectEqualStrings("test", invocation.argv[1]);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("HOME_CORPUS_FULL_VM").?);
+    try std.testing.expectEqualStrings("0", inherited_env.get("HOME_CORPUS_FULL_VM").?);
 }
 
 test "absoluteCorpusPathAlloc joins corpus-relative stat paths under the corpus root" {
