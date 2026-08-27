@@ -3671,6 +3671,13 @@ const RecoveredParameterSyntax = struct {
     optional: bool,
 };
 
+const SourceFunctionSpan = struct {
+    node: NodeId,
+    start: u32,
+    end: u32,
+    parent: u32 = std.math.maxInt(u32),
+};
+
 const JsDocNamedDeclarationKind = enum {
     typedef,
     callback,
@@ -4725,6 +4732,9 @@ pub const Checker = struct {
     /// positions. Cache immutable HIR containment results so source scans do
     /// not multiply a full node walk by every referenced typedef.
     source_function_containing_pos_cache: std.AutoHashMapUnmanaged(u32, NodeId) = .empty,
+    source_function_spans: std.ArrayListUnmanaged(SourceFunctionSpan) = .empty,
+    source_function_spans_indexed: bool = false,
+    source_function_spans_valid: bool = false,
     /// Named `@typedef` and `@callback` blocks in a physical JS source.
     /// JSDoc lowering probes several declaration categories per reference;
     /// indexing once avoids repeated whole-source negative scans.
@@ -5178,6 +5188,9 @@ pub const Checker = struct {
         self.recovered_parameter_syntax.clearRetainingCapacity();
         self.recovered_parameter_syntax_built = false;
         self.source_function_containing_pos_cache.clearRetainingCapacity();
+        self.source_function_spans.clearRetainingCapacity();
+        self.source_function_spans_indexed = false;
+        self.source_function_spans_valid = false;
         self.jsdoc_named_declarations.clearRetainingCapacity();
         self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
         self.jsdoc_named_declarations_built = false;
@@ -5690,6 +5703,7 @@ pub const Checker = struct {
         while (recovered_it.next()) |items| items.deinit(self.gpa);
         self.recovered_parameter_syntax.deinit(self.gpa);
         self.source_function_containing_pos_cache.deinit(self.gpa);
+        self.source_function_spans.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
         self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
         self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
@@ -97241,6 +97255,83 @@ pub const Checker = struct {
         if (self.source_function_containing_pos_cache.get(source_pos)) |cached| {
             return if (cached == hir_mod.none_node_id) null else cached;
         }
+        const best = if (self.buildSourceFunctionSpanIndex())
+            self.indexedSourceFunctionContainingPos(source_pos)
+        else
+            self.sourceFunctionContainingPosSlow(source_pos);
+        self.source_function_containing_pos_cache.put(
+            self.gpa,
+            source_pos,
+            best orelse hir_mod.none_node_id,
+        ) catch {};
+        return best;
+    }
+
+    fn buildSourceFunctionSpanIndex(self: *Checker) bool {
+        if (self.source_function_spans_indexed) return self.source_function_spans_valid;
+        self.source_function_spans_indexed = true;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const span = self.hir.spanOf(node);
+            if (span.end <= span.start) continue;
+            self.source_function_spans.append(self.gpa, .{
+                .node = node,
+                .start = span.start,
+                .end = span.end,
+            }) catch return false;
+        }
+        std.mem.sort(SourceFunctionSpan, self.source_function_spans.items, {}, struct {
+            fn lessThan(_: void, a: SourceFunctionSpan, b: SourceFunctionSpan) bool {
+                if (a.start != b.start) return a.start < b.start;
+                if (a.end != b.end) return a.end > b.end;
+                // The old node-order scan picks the lowest NodeId on ties.
+                return a.node > b.node;
+            }
+        }.lessThan);
+        const no_parent = std.math.maxInt(u32);
+        var parent: u32 = no_parent;
+        for (self.source_function_spans.items, 0..) |*span, index| {
+            while (parent != no_parent and
+                self.source_function_spans.items[parent].end <= span.start)
+            {
+                parent = self.source_function_spans.items[parent].parent;
+            }
+            // Normal function ranges are disjoint or nested. Preserve the
+            // original minimum-span scan for malformed crossing ranges.
+            if (parent != no_parent and span.end > self.source_function_spans.items[parent].end) return false;
+            span.parent = parent;
+            parent = @intCast(index);
+        }
+        self.source_function_spans_valid = true;
+        return true;
+    }
+
+    fn indexedSourceFunctionContainingPos(self: *Checker, source_pos: u32) ?NodeId {
+        const spans = self.source_function_spans.items;
+        var low: usize = 0;
+        var high = spans.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (spans[middle].start <= source_pos) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if (low == 0) return null;
+        var index: u32 = @intCast(low - 1);
+        while (spans[index].end <= source_pos) {
+            index = spans[index].parent;
+            if (index == std.math.maxInt(u32)) return null;
+        }
+        return spans[index].node;
+    }
+
+    fn sourceFunctionContainingPosSlow(self: *Checker, source_pos: u32) ?NodeId {
         var best: ?NodeId = null;
         var best_len: u32 = std.math.maxInt(u32);
         var node: NodeId = 0;
@@ -97256,11 +97347,6 @@ pub const Checker = struct {
             best = node;
             best_len = span_len;
         }
-        self.source_function_containing_pos_cache.put(
-            self.gpa,
-            source_pos,
-            best orelse hir_mod.none_node_id,
-        ) catch {};
         return best;
     }
 
@@ -201151,6 +201237,34 @@ test "checker: parameter annotation index resets with source facts" {
     s.checker.setSource("const value = 1;");
     try T.expect(!s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
+}
+
+test "checker: indexed source function containment matches the full scan" {
+    const s = try newSetup(
+        \\const before = 1;
+        \\function outer(value: number) {
+        \\  const first = () => value;
+        \\  function inner() { return () => value; }
+        \\  return function tail() { return value; };
+        \\}
+        \\const second = () => 1;
+    );
+    defer destroySetup(s);
+
+    var pos: u32 = 0;
+    while (pos <= s.checker.source.?.len) : (pos += 1) {
+        try T.expectEqual(
+            s.checker.sourceFunctionContainingPosSlow(pos),
+            s.checker.sourceFunctionContainingPos(pos),
+        );
+    }
+    try T.expect(s.checker.source_function_spans_valid);
+    try T.expect(s.checker.source_function_spans.items.len > 0);
+    s.checker.setSource("const after = 2;");
+    try T.expect(!s.checker.source_function_spans_indexed);
+    try T.expect(!s.checker.source_function_spans_valid);
+    try T.expectEqual(@as(usize, 0), s.checker.source_function_spans.items.len);
+    try T.expectEqual(@as(u32, 0), s.checker.source_function_containing_pos_cache.count());
 }
 
 test "checker: source recovery skips an unannotated lexical parameter" {
