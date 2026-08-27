@@ -41855,8 +41855,8 @@ const harness_prelude =
     \\      const nativeResult = Number(__home_http2_Http2Stream.prototype.pushPromise.call(this, normalizedPushHeaders)) || 0;
     \\      if (nativeResult < 0) {
     \\        let error;
-    \\        if (nativeResult === __home_http2_constants.NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE) error = __home_http2_error_with_code("ERR_HTTP2_OUT_OF_STREAMS", "No stream ID is available because maximum stream ID has been reached");
-    \\        else if (nativeResult === __home_http2_constants.NGHTTP2_ERR_STREAM_CLOSED) error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed");
+    \\        if (nativeResult === __home_http2_binding_constants.NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE) error = __home_http2_error_with_code("ERR_HTTP2_OUT_OF_STREAMS", "No stream ID is available because maximum stream ID has been reached");
+    \\        else if (nativeResult === __home_http2_binding_constants.NGHTTP2_ERR_STREAM_CLOSED) error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed");
     \\        else error = __home_http2_nghttp_error(nativeResult);
     \\        Promise.resolve().then(() => callback(error));
     \\        return undefined;
@@ -42272,13 +42272,10 @@ const harness_prelude =
     \\  });
     \\};
     \\const __home_http2_constants = {
-    \\  NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_FRAME_SIZE_ERROR: -522, NGHTTP2_ERR_STREAM_CLOSED: -510,
-    \\  NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509, NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501,
+    \\  NGHTTP2_ERR_FRAME_SIZE_ERROR: -522,
     \\  NGHTTP2_SESSION_SERVER: 0, NGHTTP2_SESSION_CLIENT: 1,
     \\  NGHTTP2_STREAM_STATE_IDLE: 1, NGHTTP2_STREAM_STATE_OPEN: 2, NGHTTP2_STREAM_STATE_RESERVED_LOCAL: 3, NGHTTP2_STREAM_STATE_RESERVED_REMOTE: 4,
     \\  NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL: 5, NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE: 6, NGHTTP2_STREAM_STATE_CLOSED: 7,
-    \\  NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3,
-    \\  NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1,
     \\  NGHTTP2_FLAG_NONE: 0, NGHTTP2_FLAG_END_STREAM: 1, NGHTTP2_FLAG_END_HEADERS: 4, NGHTTP2_FLAG_ACK: 1, NGHTTP2_FLAG_PADDED: 8, NGHTTP2_FLAG_PRIORITY: 32,
     \\  DEFAULT_SETTINGS_HEADER_TABLE_SIZE: 4096, DEFAULT_SETTINGS_ENABLE_PUSH: 1, DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS: 0xffffffff,
     \\  DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE: 65535, DEFAULT_SETTINGS_MAX_FRAME_SIZE: 16384, DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: 65535, DEFAULT_SETTINGS_ENABLE_CONNECT_PROTOCOL: 0,
@@ -42301,6 +42298,13 @@ const harness_prelude =
     \\  const parts = entry.split("=");
     \\  __home_http2_constants["HTTP_STATUS_" + parts[0]] = Number(parts[1]);
     \\}
+    \\const __home_http2_binding_constants = {
+    \\  ...__home_http2_constants,
+    \\  NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_STREAM_CLOSED: -510, NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509,
+    \\  NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501,
+    \\  NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3,
+    \\  NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1,
+    \\};
     \\function __home_http2_default_settings() {
     \\  return { enableConnectProtocol: false, headerTableSize: 4096, enablePush: true, initialWindowSize: 65535, maxFrameSize: 16384, maxConcurrentStreams: 0xffffffff, maxHeaderListSize: 65535, maxHeaderSize: 65535 };
     \\}
@@ -42423,7 +42427,7 @@ const harness_prelude =
     \\  __home_http2_options_buffer[13] = flags;
     \\  return undefined;
     \\}
-    \\const __home_http2_binding = { constants: __home_http2_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string, optionsBuffer: __home_http2_options_buffer };
+    \\const __home_http2_binding = { constants: __home_http2_binding_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string, optionsBuffer: __home_http2_options_buffer };
     \\const __home_internal_test_binding = { internalBinding(name) { if (String(name) === "http2") return __home_http2_binding; throw new Error("No such internal binding: " + String(name)); } };
     \\globalThis.__home_modules["internal/test/binding"] = __home_internal_test_binding;
     \\globalThis.__home_modules["internal/http2/util"] = { kSocket: __home_http2_k_socket, NghttpError: __home_http2_NghttpError, sessionName: __home_http2_session_name, assertWithinRange: __home_http2_assert_within_range, assertIsObject: __home_http2_assert_is_object, assertIsArray: __home_http2_assert_is_array, assertValidPseudoHeader: __home_http2_assert_valid_pseudo_header, getAuthority: __home_http2_get_authority, buildNgHeaderString: __home_http2_build_ng_header_string, toHeaderObject: __home_http2_to_header_object, updateOptionsBuffer: __home_http2_update_options_buffer };
@@ -156460,6 +156464,26 @@ test "bootstrap HTTP2 remote settings materialization logical contracts" {
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 remote settings materialization logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 public and binding constants logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const { internalBinding } = require("internal/test/binding");
+        \\test("public constants exclude binding-only nghttp2 internals", () => { const publicConstants = http2.constants; const bindingConstants = internalBinding("http2").constants; const internalOnly = { NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_STREAM_CLOSED: -510, NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509, NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501, NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3, NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1 }; assert.strictEqual(Object.keys(publicConstants).length, 240); assert.strictEqual(Object.keys(bindingConstants).length, 251); assert.notStrictEqual(publicConstants, bindingConstants); for (const [name, value] of Object.entries(internalOnly)) { assert.strictEqual(Object.prototype.hasOwnProperty.call(publicConstants, name), false); assert.strictEqual(bindingConstants[name], value); } assert.strictEqual(publicConstants.NGHTTP2_ERR_FRAME_SIZE_ERROR, -522); const original = publicConstants.NGHTTP2_NO_ERROR; publicConstants.NGHTTP2_NO_ERROR = 42; assert.strictEqual(bindingConstants.NGHTTP2_NO_ERROR, 0); publicConstants.NGHTTP2_NO_ERROR = original; });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-constants-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 constants logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
