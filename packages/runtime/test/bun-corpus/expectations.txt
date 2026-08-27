@@ -115,22 +115,6 @@
 # known follow-up in the PR description; quarantined here until the Windows
 # teardown path is reworked.
 
-# Pre-existing on main (flagged [pre-existing] by ci:errors, e.g. build 61989 on
-# darwin-14-aarch64 and build 62204 on darwin-26-aarch64, both at the
-# `expect(e.name).toBe("TimeoutError")` assertions). The two connect-race cases
-# assume connect() to TEST-NET-1 (192.0.2.1) stays in EINPROGRESS so the
-# AbortSignal.timeout wins; that only holds when the host has a default route that
-# silently blackholes the SYN. The darwin CI agents have no route to 192.0.2.1 and
-# return an immediate ENETUNREACH/EHOSTUNREACH, so the connect error wins the race
-# and fetch rejects with a generic "Error" instead of "TimeoutError" (verified: a
-# fast-failing connect to 127.0.0.1:1 reproduces the same connect-error-beats-timeout
-# outcome locally — correct behavior, not a bun abort bug). Consistently fails on
-# darwin-26 (no route), intermittently on darwin-14 (routing varies per agent).
-# Quarantined on darwin; still runs on Linux/Windows where the route blackholes
-# reliably. Follow-up: rewrite without the external-IP dependence (repo rule forbids
-# contacting external hosts) using a deterministic local hanging connect.
-[ DARWIN ] test/js/bun/io/fetch/fetch-abort-slow-connect.test.ts [ FLAKY ] # connect-during-abort race depends on host routing of 192.0.2.1; darwin CI agents return an immediate routing error
-
 # AddressSanitizer findings under investigation on the HTTP/2 inbound path
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js [ SKIP ] # ASan report under investigation
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-error.js [ SKIP ] # ASan report under investigation
