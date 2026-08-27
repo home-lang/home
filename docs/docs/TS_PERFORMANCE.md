@@ -10,23 +10,24 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `71833644d` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `617d29ead` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260826T234231Z`.
+The local raw-result identifier is `20260827T000322Z`.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 69.5 ± 6.9 ms | 43.1 ± 11.0 ms | **4.2 ± 3.7 ms** | **10.36× faster** |
-| `many_files` | 224.0 ± 10.0 ms | 57.5 ± 2.4 ms | **33.8 ± 1.8 ms** | **1.70× faster** |
-| `deep_types` | 134.1 ± 7.7 ms | 53.7 ± 1.3 ms | **18.4 ± 0.3 ms** | **2.92× faster** |
-| `import_graph` | 128.1 ± 2.5 ms | 44.9 ± 1.6 ms | **25.6 ± 1.0 ms** | **1.76× faster** |
-| `reexport_graph` | 101.7 ± 8.3 ms | 42.7 ± 1.3 ms | **29.3 ± 1.7 ms** | **1.46× faster** |
-| `tsx_components` | 165.6 ± 16.2 ms | 50.3 ± 9.3 ms | **28.2 ± 0.9 ms** | **1.79× faster** |
-| `generic_calls` | 180.3 ± 8.7 ms | 54.5 ± 1.7 ms | **35.7 ± 1.0 ms** | **1.53× faster** |
-| `control_flow` | 187.2 ± 8.6 ms | 57.5 ± 1.3 ms | **49.1 ± 0.8 ms** | **1.17× faster** |
-| `overload_resolution` | 200.3 ± 7.8 ms | 63.4 ± 1.2 ms | **54.4 ± 0.8 ms** | **1.17× faster** |
-| `class_hierarchy` | 194.1 ± 57.8 ms | 53.6 ± 9.8 ms | **50.7 ± 15.9 ms** | **1.06× faster** |
+| `startup` | 95.0 ± 86.4 ms | 55.4 ± 51.1 ms | **5.0 ± 6.3 ms** | **11.11× faster** |
+| `many_files` | 269.4 ± 73.2 ms | 64.7 ± 15.2 ms | **40.1 ± 12.1 ms** | **1.61× faster** |
+| `deep_types` | 127.3 ± 2.1 ms | 52.0 ± 1.5 ms | **17.9 ± 0.4 ms** | **2.91× faster** |
+| `import_graph` | 128.2 ± 1.8 ms | 44.9 ± 1.0 ms | **25.6 ± 1.0 ms** | **1.75× faster** |
+| `reexport_graph` | 95.0 ± 5.6 ms | 40.4 ± 1.0 ms | **27.1 ± 1.4 ms** | **1.49× faster** |
+| `tsx_components` | 158.1 ± 1.6 ms | 46.2 ± 0.9 ms | **27.6 ± 0.4 ms** | **1.67× faster** |
+| `generic_calls` | 173.8 ± 1.8 ms | 53.0 ± 0.8 ms | **35.9 ± 5.8 ms** | **1.48× faster** |
+| `control_flow` | 185.6 ± 3.2 ms | 57.4 ± 1.2 ms | **49.3 ± 0.5 ms** | **1.17× faster** |
+| `overload_resolution` | 195.7 ± 0.8 ms | 63.3 ± 1.1 ms | **54.2 ± 0.6 ms** | **1.17× faster** |
+| `class_hierarchy` | 199.6 ± 68.5 ms | 54.1 ± 13.5 ms | **47.6 ± 0.9 ms** | **1.14× faster** |
+| `structural_objects` | 180.6 ± 2.5 ms | 57.0 ± 1.1 ms | **47.5 ± 0.8 ms** | **1.20× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -65,6 +66,7 @@ not a claim that every real project or machine has the same speedup.
 | `control_flow` | One module with 256 exhaustive discriminated-union functions | Narrowing, branch joins, definite assignment, exhaustive switches, property reads, and typed object returns |
 | `overload_resolution` | One module with 128 groups of eight typed overload calls | Literal-discriminated overload selection, generic inference, object and tuple payloads, callbacks, and typed result consumption |
 | `class_hierarchy` | One module with 128 independent generic base/derived/interface families | Class heritage resolution, generic substitution, constructors, overrides, protected members, interface compatibility, and typed instance consumption |
+| `structural_objects` | One module with 128 independent source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, excess source members, assignments, and typed argument passing |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -130,6 +132,9 @@ workload-specific shortcuts:
   searches, `this` and `super` member assignments avoid irrelevant function
   expando discovery, and top-level annotation lookup reuses the existing
   virtual-section-aware declaration index; and
+- DOM library availability is computed once per source and reused while
+  lowering annotations, preserving `@noLib`, `reference lib`, and explicit
+  `@lib` semantics without repeatedly scanning the entire file; and
 - program-level declaration, namespace, interface, class, and CommonJS
   collectors skip files whose source cannot contain the syntax they collect.
 
@@ -157,3 +162,13 @@ improvement and a 1.06× win over the fastest competitor. The optimization
 caches successful general-purpose heritage resolutions and removes source or
 HIR scans only when conservative facts prove the searched construct cannot
 apply; the source, compiler options, validity gate, and schedule are unchanged.
+
+The `structural_objects` workload was frozen before optimization. Its five-run
+red baseline (`20260826T234904Z`) measured Home at 160.9 ± 4.5 ms versus
+native TypeScript 7 at 62.7 ± 2.7 ms. The unchanged workload now measures
+47.5 ± 0.8 ms in the 30-run snapshot above: a 3.39× Home improvement and
+a 1.20× win over the fastest competitor. Profiling found that DOM library
+availability was rescanning the complete source for every relevant annotation;
+the result now uses the checker's existing per-source fact lifecycle. The
+corpus, compiler options, validity gate, and measurement schedule were not
+weakened.
