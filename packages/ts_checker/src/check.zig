@@ -30043,6 +30043,11 @@ pub const Checker = struct {
         if (parent == hir_mod.none_node_id) return null;
         var target_t: TypeId = types.Primitive.none;
         switch (self.hir.kindOf(parent)) {
+            .arrow_fn => {
+                if (hir_mod.fnDeclOf(self.hir, parent).body != fn_node) return null;
+                const contextual_t = self.declaredOrContextualReturnTypeForFunction(parent) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
+            },
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, parent);
                 if (b.op != .comma or b.rhs != fn_node) return null;
@@ -30180,7 +30185,8 @@ pub const Checker = struct {
 
     fn contextualCallOwnsReturnDiagnostic(self: *Checker, call_node: NodeId) bool {
         const call = hir_mod.callOf(self.hir, call_node);
-        if (self.hir.kindOf(call.callee) == .identifier) {
+        const inferring_type_arguments = hir_mod.callTypeArgs(self.hir, call_node).len == 0;
+        if (inferring_type_arguments and self.hir.kindOf(call.callee) == .identifier) {
             const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
             if (self.generic_fns.contains(callee_name)) return true;
             if (self.findFunctionDeclForNameNearNode(call.callee, callee_name)) |decl| {
@@ -30192,7 +30198,7 @@ pub const Checker = struct {
             if (self.resolving_function_signatures.contains(call.callee)) return false;
             callee_t = self.checkExpression(call.callee) catch return false;
         }
-        if (self.contextualCallableTypeIsGeneric(callee_t)) return true;
+        if (inferring_type_arguments and self.contextualCallableTypeIsGeneric(callee_t)) return true;
         return self.callableSignatureCount(callee_t) > 1;
     }
 
@@ -30290,6 +30296,20 @@ pub const Checker = struct {
         arg_index: usize,
     ) CheckError!?TypeId {
         const effective_sig = blk: {
+            const call_node = self.hir.parentOf(callee_node);
+            if (call_node != hir_mod.none_node_id and
+                (self.hir.kindOf(call_node) == .call_expr or self.hir.kindOf(call_node) == .new_expr))
+            {
+                const type_args = hir_mod.callTypeArgs(self.hir, call_node);
+                if (self.generic_signature_params.get(sig)) |type_params| {
+                    // Context uses supplied arguments immediately. The call
+                    // itself owns arity and constraint diagnostics.
+                    if (type_args.len != 0 and type_args.len == type_params.len) {
+                        var used_explicit = false;
+                        break :blk try self.instantiateSignatureWithExplicitTypeArgsUnchecked(call_node, sig, type_args, &used_explicit);
+                    }
+                }
+            }
             if (arg_index == 0 or
                 self.hir.kindOf(callee_node) != .member_access or
                 self.generic_signature_params.get(sig) == null) break :blk sig;
@@ -31158,6 +31178,11 @@ pub const Checker = struct {
                     return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
                 },
                 .return_stmt => return self.returnedFunctionContextualParameterType(cur, fn_node, param_node) != null,
+                .arrow_fn => {
+                    if (hir_mod.fnDeclOf(self.hir, cur).body != prev) return false;
+                    const target_t = self.contextualTargetTypeForFunction(fn_node) orelse return false;
+                    return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
+                },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, cur);
                     if (op.value == prev and !op.is_computed) {
@@ -35828,7 +35853,7 @@ pub const Checker = struct {
                 var object_context_claimed = false;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
-                    .call_expr, .new_expr, .conditional, .binary_op => {},
+                    .call_expr, .new_expr, .conditional, .binary_op, .arrow_fn => {},
                     .object_property => {
                         const property = hir_mod.objectPropertyOf(self.hir, parent);
                         if (property.value != node) break :blk null;
@@ -35854,8 +35879,12 @@ pub const Checker = struct {
                 else
                     self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
-                if (self.containsEscapingContextualTypeParameter(target_t)) break :blk null;
-                break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
+                const parameter_t = self.contextualParameterTypeForFunctionParam(node, p, target_t) orelse break :blk null;
+                // An unresolved return type does not prevent contextual typing
+                // of a parameter whose type is already known.
+                if (self.containsEscapingContextualTypeParameter(target_t) and
+                    self.containsEscapingContextualTypeParameter(parameter_t)) break :blk null;
+                break :blk parameter_t;
             } else null;
             const contextual_default_param_t: ?TypeId = if (!has_anno and !has_jsdoc_param_type and !is_this_param and
                 pp.default_value != hir_mod.none_node_id)
@@ -76587,6 +76616,24 @@ pub const Checker = struct {
                         }
                     }
                 }
+                // A constrained key still represents the eventual argument,
+                // not every key admitted by its constraint. Preserve that
+                // dependency so signature substitution can select the member.
+                if (self.containsFreeTypeParameter(idx)) {
+                    const object_flags = self.interner.pool.flagsOf(obj);
+                    if (object_flags.is_object_type and !object_flags.is_union and !object_flags.is_intersection and
+                        self.interner.objectMembers(obj).len == 0)
+                    {
+                        // A uniform dictionary has no key-dependent member
+                        // types; every permitted string key selects this value.
+                        const string_index = self.interner.objectStringIndex(obj);
+                        const number_index = self.interner.objectNumberIndex(obj);
+                        if (string_index != types.Primitive.none and
+                            (number_index == types.Primitive.none or number_index == string_index) and
+                            (self.engine.isAssignableTo(idx, types.Primitive.string_t) catch false)) return string_index;
+                    }
+                    return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                }
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
                 return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
             },
@@ -116502,6 +116549,26 @@ pub const Checker = struct {
         try self.checkFunctionWithContextualSignatureMode(fn_node, sig, true, null);
     }
 
+    fn functionSignatureMatchesContext(self: *Checker, fn_node: NodeId, target_sig: TypeId) bool {
+        const source_sig = self.hir.typeOf(fn_node);
+        if (!self.interner.isSignature(source_sig) or !self.interner.isSignature(target_sig)) return false;
+        if (self.interner.signatureReturn(source_sig) != self.interner.signatureReturn(target_sig) or
+            self.signatureThisParam(source_sig) != self.signatureThisParam(target_sig)) return false;
+        const source_param_count = self.interner.signatureParams(source_sig).len;
+        var index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            if (index >= source_param_count) return false;
+            const source_param = self.interner.signatureParams(source_sig)[index];
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            const target_param = self.contextualParameterTypeForSignature(target_sig, index, param.flags.is_rest) orelse return false;
+            if (source_param != target_param and
+                !(self.engine.isIdenticalTo(source_param, target_param) catch false)) return false;
+            index += 1;
+        }
+        return index == source_param_count;
+    }
+
     fn checkFunctionWithContextualSignatureMode(
         self: *Checker,
         fn_node: NodeId,
@@ -116630,12 +116697,14 @@ pub const Checker = struct {
                     else
                         body_start;
                 } else null;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = f.body,
-                    .pos = diagnostic_pos,
-                    .code = TsCodes.type_not_assignable,
-                    .message = msg,
-                });
+                if (!self.diagnosticExistsWithMessage(f.body, TsCodes.type_not_assignable, msg)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = f.body,
+                        .pos = diagnostic_pos,
+                        .code = TsCodes.type_not_assignable,
+                        .message = msg,
+                    });
+                }
             }
         }
     }
@@ -154732,7 +154801,6 @@ pub const Checker = struct {
         if (!self.interner.isSignature(sig) or subs.count() == 0) return sig;
         const old_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(sig));
         defer self.gpa.free(old_params);
-        const param_nodes = self.signature_param_nodes.get(sig);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         var subs_it = subs.iterator();
@@ -154750,19 +154818,11 @@ pub const Checker = struct {
         var params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer params.deinit(self.gpa);
         var changed = false;
-        for (old_params, 0..) |param, param_index| {
-            var refreshed = param;
-            if (param_nodes) |nodes| {
-                if (param_index < nodes.len and self.hir.kindOf(nodes[param_index]) == .parameter) {
-                    const annotation = hir_mod.parameterOf(self.hir, nodes[param_index]).type_annotation;
-                    if (annotation != hir_mod.none_node_id and
-                        self.firstSignatureType(param) != null)
-                    {
-                        refreshed = self.lowererLowerWithTypeParams(annotation) catch refreshed;
-                    }
-                }
-            }
-            refreshed = try self.relowerObjectTypeMembersWithInferences(refreshed, subs);
+        for (old_params) |param| {
+            // Apply call inference to the instantiated type graph. Re-lowering
+            // the declaration here discards the receiver's substitutions.
+            const substituted = try self.substituteType(param, subs);
+            const refreshed = try self.relowerObjectTypeMembersWithInferences(substituted, subs);
             if (refreshed != param) changed = true;
             try params.append(self.gpa, refreshed);
         }
@@ -158188,8 +158248,13 @@ pub const Checker = struct {
                 self.functionExpressionHasContextSensitiveParameters(args[i]))
             {
                 if (self.firstSignatureType(param_t)) |contextual_sig| {
-                    self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
-                    try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                    // Recheck only when inference changes the callback's
+                    // context; an identical context already has body types
+                    // and diagnostics from its first check.
+                    if (!self.functionSignatureMatchesContext(args[i], contextual_sig)) {
+                        self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
+                        try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                    }
                 }
             }
             const inferred_instantiation_boundary = inferred_generic_callback and
@@ -232338,6 +232403,136 @@ test "checker: const tuple paths reduce recursive conditional aliases" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: generic interface callbacks retain instantiated receiver parameters" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const result = mapper.project(value => value.label);
+        \\const good: string = result;
+        \\const bad: number = result;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve block and explicit results" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const block = mapper.project(value => { return value.label; });
+        \\const expression = mapper.project(function(value) { return value.label; });
+        \\const explicit = mapper.project<string>(value => value.label);
+        \\const goodBlock: string = block;
+        \\const goodExpression: string = expression;
+        \\const goodExplicit: string = explicit;
+        \\const badBlock: number = block;
+        \\const badExpression: number = expression;
+        \\const badExplicit: number = explicit;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve nested and separate receiver types" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> {
+        \\  project<U>(callback: (value: T) => U): U;
+        \\  nested<U>(callback: (value: T) => (suffix: string) => U): U;
+        \\}
+        \\declare const text: Mapper<{ label: string }>;
+        \\declare const numeric: Mapper<{ label: number }>;
+        \\const textResult = text.project(value => value.label);
+        \\const numericResult = numeric.project(value => value.label);
+        \\const nestedResult = text.nested(value => suffix => value.label + suffix);
+        \\const goodText: string = textResult;
+        \\const goodNumeric: number = numericResult;
+        \\const goodNested: string = nestedResult;
+        \\const badText: number = textResult;
+        \\const badNumeric: string = numericResult;
+        \\const badNested: number = nestedResult;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks retain constraints defaults and shadowing" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> {
+        \\  project<U extends string>(callback: (value: T) => U): U;
+        \\  defaulted<U = T>(callback?: (value: T) => U): U;
+        \\  shadow<T>(value: T, callback: (value: T) => T): T;
+        \\}
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const projected = mapper.project(value => value.label);
+        \\const defaulted = mapper.defaulted();
+        \\const inferred = mapper.defaulted(value => value.label);
+        \\const shadowed = mapper.shadow(1, value => value);
+        \\const goodProjected: string = projected;
+        \\const goodDefaulted: { label: string } = defaulted;
+        \\const goodInferred: string = inferred;
+        \\const goodShadowed: number = shadowed;
+        \\const badProjected: number = projected;
+        \\const badDefaulted: number = defaulted;
+        \\const badInferred: number = inferred;
+        \\const badShadowed: string = shadowed;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 4), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks reject incompatible arguments" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\mapper.project((value: { count: number }) => value.count);
+        \\mapper.project<number>(value => value.label);
+        \\mapper.project(value => value.missing);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve inferred indexed rest arguments" {
+    const b = try newBoundSetup(
+        \\interface Emitter<Events extends { [K in keyof Events]: unknown[] }> {
+        \\  on<K extends keyof Events>(event: K, listener: (...args: Events[K]) => void): void;
+        \\}
+        \\declare const emitter: Emitter<{ warn: [string]; disconnect: [{ code: number }, number] }>;
+        \\emitter.on("disconnect", (event, index) => {
+        \\  const goodCode: number = event.code;
+        \\  const goodIndex: number = index;
+        \\  const badCode: string = event.code;
+        \\  const badIndex: string = index;
+        \\});
+        \\emitter.on("warn", message => {
+        \\  const goodMessage: string = message;
+        \\  const badMessage: number = message;
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: primitive return contracts reject incompatible synchronous values" {
