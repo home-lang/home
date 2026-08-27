@@ -5574,6 +5574,7 @@ const SpawnSyncCapturedOptions = struct {
     cwd: std.process.Child.Cwd,
     environ_map: ?*const std.process.Environ.Map,
     timeout_ms: ?i64,
+    kill_process_group: bool = false,
 };
 
 const SpawnSyncCapturedResult = struct {
@@ -5583,11 +5584,132 @@ const SpawnSyncCapturedResult = struct {
     timed_out: bool,
 };
 
+pub const HomeCapturedResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+    timed_out: bool,
+
+    pub fn deinit(self: *HomeCapturedResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+        self.* = undefined;
+    }
+};
+
+const home_corpus_child_timeout_ms: i64 = 120_000;
+const spawn_sync_termination_grace_ms: i64 = 1_000;
+
+const HomeCapturedInvocation = struct {
+    executable: []u8,
+    argv: [][]const u8,
+    environ_map: std.process.Environ.Map,
+
+    fn deinit(self: *HomeCapturedInvocation, allocator: std.mem.Allocator) void {
+        self.environ_map.deinit();
+        allocator.free(self.argv);
+        allocator.free(self.executable);
+        self.* = undefined;
+    }
+};
+
+/// Run one prepared corpus fixture through the native Home executable.
+///
+/// `args_tail` is appended verbatim after the executable and must already be
+/// ordered as `run`, flags..., absolute fixture path. The returned output is
+/// owned by `allocator` and must be released with `HomeCapturedResult.deinit`.
+pub fn runHomeCaptured(
+    allocator: std.mem.Allocator,
+    test_thread_id: []const u8,
+    args_tail: []const []const u8,
+) !HomeCapturedResult {
+    var inherited_env = try inheritedEnvironmentMap(allocator);
+    defer inherited_env.deinit();
+
+    var invocation = try prepareHomeCapturedInvocation(
+        allocator,
+        &inherited_env,
+        test_thread_id,
+        args_tail,
+    );
+    defer invocation.deinit(allocator);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const captured = try runSpawnSyncCaptured(allocator, threaded.io(), .{
+        .argv = invocation.argv,
+        .cwd = .inherit,
+        .environ_map = &invocation.environ_map,
+        .timeout_ms = home_corpus_child_timeout_ms,
+        .kill_process_group = true,
+    });
+    return .{
+        .term = captured.term,
+        .stdout = captured.stdout,
+        .stderr = captured.stderr,
+        .timed_out = captured.timed_out,
+    };
+}
+
+fn inheritedEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    if (comptime @import("builtin").os.tag == .windows) {
+        return std.process.Environ.createMap(.{ .block = .global }, allocator);
+    }
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    errdefer env_map.deinit();
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry| : (index += 1) {
+        const pair = std.mem.span(entry);
+        const equals = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (equals == 0) continue;
+        try env_map.put(pair[0..equals], pair[equals + 1 ..]);
+    }
+    return env_map;
+}
+
+fn prepareHomeCapturedInvocation(
+    allocator: std.mem.Allocator,
+    inherited_env: *const std.process.Environ.Map,
+    test_thread_id: []const u8,
+    args_tail: []const []const u8,
+) !HomeCapturedInvocation {
+    var environ_map = try inherited_env.clone(allocator);
+    errdefer environ_map.deinit();
+    try environ_map.put("HOME_NATIVE_VM", "1");
+    try environ_map.put("NO_COLOR", "1");
+    try environ_map.put("TEST_THREAD_ID", test_thread_id);
+
+    const executable = if (inherited_env.get("HOME_BUN_TEST_EXECUTABLE")) |override|
+        if (override.len > 0)
+            try allocator.dupe(u8, override)
+        else
+            try preferredHomeExecutablePathAlloc(allocator)
+    else
+        try preferredHomeExecutablePathAlloc(allocator);
+    errdefer allocator.free(executable);
+
+    const argv = try allocator.alloc([]const u8, args_tail.len + 1);
+    errdefer allocator.free(argv);
+    argv[0] = executable;
+    @memcpy(argv[1..], args_tail);
+
+    return .{
+        .executable = executable,
+        .argv = argv,
+        .environ_map = environ_map,
+    };
+}
+
 fn runSpawnSyncCaptured(
     allocator: std.mem.Allocator,
     io: Io,
     options: SpawnSyncCapturedOptions,
 ) !SpawnSyncCapturedResult {
+    const use_process_group = if (comptime @import("builtin").os.tag == .windows)
+        false
+    else
+        options.kill_process_group;
     var child = try std.process.spawn(io, .{
         .argv = options.argv,
         .cwd = options.cwd,
@@ -5595,8 +5717,14 @@ fn runSpawnSyncCaptured(
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        // A separate POSIX process group lets timeout cleanup reach fixture
+        // grandchildren that inherited the captured stdout/stderr pipes.
+        .pgid = if (comptime @import("builtin").os.tag == .windows) null else if (use_process_group) 0 else null,
     });
-    defer child.kill(io);
+    defer if (child.id != null) {
+        forceTerminateSpawnSyncChild(&child, use_process_group);
+        child.kill(io);
+    };
 
     var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: Io.File.MultiReader = undefined;
@@ -5608,21 +5736,35 @@ fn runSpawnSyncCaptured(
     else
         .none;
     var timed_out = false;
+    var pipes_fully_drained = true;
 
     while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
         error.EndOfStream => {},
         error.Timeout => {
             timed_out = true;
-            terminateSpawnSyncChild(&child, io);
-            while (multi_reader.fill(64, .none)) |_| {} else |drain_err| switch (drain_err) {
-                error.EndOfStream => {},
-                else => |e| return e,
-            }
+            terminateSpawnSyncChild(&child, use_process_group);
+            _ = drainSpawnSyncPipesFor(&multi_reader, io, spawn_sync_termination_grace_ms) catch |drain_err| {
+                forceTerminateSpawnSyncChild(&child, use_process_group);
+                return drain_err;
+            };
+            forceTerminateSpawnSyncChild(&child, use_process_group);
+            // A grandchild can retain copies of the pipe handles even after
+            // the direct child has been killed. Never wait indefinitely for
+            // EOF in that case; retain whatever output arrives in this final
+            // bounded drain and then reap the direct child below.
+            pipes_fully_drained = try drainSpawnSyncPipesFor(&multi_reader, io, spawn_sync_termination_grace_ms);
         },
         else => |e| return e,
     }
 
-    try multi_reader.checkAnyError();
+    if (pipes_fully_drained) {
+        try multi_reader.checkAnyError();
+    } else {
+        // The final deadline expired because a descendant retained a pipe.
+        // Cancel pending reads before `child.wait` closes the direct child's
+        // handles; this also makes `toOwnedSlice` safe below.
+        multi_reader.batch.cancel(io);
+    }
     const term = try child.wait(io);
     const stdout = try multi_reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
@@ -5637,13 +5779,44 @@ fn runSpawnSyncCaptured(
     };
 }
 
-fn terminateSpawnSyncChild(child: *std.process.Child, io: Io) void {
+fn drainSpawnSyncPipesFor(multi_reader: *Io.File.MultiReader, io: Io, milliseconds: i64) !bool {
+    const deadline = (Io.Timeout{
+        .duration = .{ .raw = .fromMilliseconds(milliseconds), .clock = .awake },
+    }).toDeadline(io);
+    while (multi_reader.fill(64, deadline)) |_| {} else |err| switch (err) {
+        error.EndOfStream => return true,
+        error.Timeout => return false,
+        else => |e| return e,
+    }
+}
+
+fn terminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
     if (comptime @import("builtin").os.tag == .windows) {
-        child.kill(io);
+        forceTerminateSpawnSyncChild(child, process_group);
         return;
     }
     const pid = child.id orelse return;
-    std.posix.kill(pid, .TERM) catch child.kill(io);
+    if (process_group) {
+        std.posix.kill(-pid, .TERM) catch std.posix.kill(pid, .TERM) catch {};
+    } else {
+        std.posix.kill(pid, .TERM) catch {};
+    }
+}
+
+fn forceTerminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
+    const id = child.id orelse return;
+    if (comptime @import("builtin").os.tag == .windows) {
+        _ = std.os.windows.ntdll.NtTerminateProcess(
+            id,
+            @fromBackingInt(@intCast(@as(u32, 1))),
+        );
+        return;
+    }
+    if (process_group) {
+        std.posix.kill(-id, .KILL) catch std.posix.kill(id, .KILL) catch {};
+    } else {
+        std.posix.kill(id, .KILL) catch {};
+    }
 }
 
 const StdioConfig = struct {
@@ -6309,6 +6482,56 @@ fn unsupportedExceptionReason(message: ?[]const u8) ?[]const u8 {
 
 test "adapter label is stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "captured spawn process-group cleanup is opt-in and bounded" {
+    const generic_options = SpawnSyncCapturedOptions{
+        .argv = &.{},
+        .cwd = .inherit,
+        .environ_map = null,
+        .timeout_ms = 1,
+    };
+    try std.testing.expect(!generic_options.kill_process_group);
+    try std.testing.expect(spawn_sync_termination_grace_ms > 0);
+    try std.testing.expect(spawn_sync_termination_grace_ms <= 1_000);
+}
+
+test "native Home corpus invocation preserves argv and inherits required environment" {
+    const allocator = std.testing.allocator;
+    var inherited_env = std.process.Environ.Map.init(allocator);
+    defer inherited_env.deinit();
+    try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
+    try inherited_env.put("PATH", "/opt/tools/bin");
+    try inherited_env.put("NO_COLOR", "0");
+
+    const args_tail = [_][]const u8{
+        "run",
+        "--experimental-stream-iter",
+        "/absolute/test-stream-iter.js",
+    };
+    var invocation = try prepareHomeCapturedInvocation(
+        allocator,
+        &inherited_env,
+        "worker-7",
+        &args_tail,
+    );
+    defer invocation.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, args_tail.len + 1), invocation.argv.len);
+    try std.testing.expectEqualStrings("/opt/home-test/bin/home", invocation.executable);
+    try std.testing.expectEqualStrings(invocation.executable, invocation.argv[0]);
+    for (args_tail, invocation.argv[1..]) |expected, actual| {
+        try std.testing.expectEqualStrings(expected, actual);
+    }
+    try std.testing.expectEqualStrings("/opt/tools/bin", invocation.environ_map.get("PATH").?);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("HOME_NATIVE_VM").?);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("NO_COLOR").?);
+    try std.testing.expectEqualStrings("worker-7", invocation.environ_map.get("TEST_THREAD_ID").?);
+
+    // Construction must not mutate the caller's inherited environment map.
+    try std.testing.expectEqualStrings("0", inherited_env.get("NO_COLOR").?);
+    try std.testing.expect(inherited_env.get("HOME_NATIVE_VM") == null);
+    try std.testing.expect(inherited_env.get("TEST_THREAD_ID") == null);
 }
 
 test "absoluteCorpusPathAlloc joins corpus-relative stat paths under the corpus root" {

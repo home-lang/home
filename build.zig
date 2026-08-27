@@ -1334,11 +1334,21 @@ pub fn build(b: *std.Build) void {
 
     // Home Runtime substrate tests
     const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
+    const home_rt_test_launcher = b.addExecutable(.{
+        .name = "home-rt-test-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/home_test/src/home_rt_test_launcher.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
     // Pantry Zig's server-mode test runner deadlocks for the native-linked
-    // home_rt binary before it sends the metadata query. Run this one artifact
-    // in terminal mode while preserving the compiled test dependency.
-    const run_home_rt_tests = b.addSystemCommand(&.{"/usr/bin/env"});
-    run_home_rt_tests.setName("run test home_rt");
+    // home_rt binary before it sends the metadata query. A tiny host launcher
+    // keeps terminal mode cross-platform while passing the emitted Home path to
+    // native corpus children without relying on the install prefix.
+    const run_home_rt_tests = std.Build.Step.Run.create(b, "run test home_rt");
+    run_home_rt_tests.addFileArg(home_rt_test_launcher.getEmittedBin());
+    run_home_rt_tests.addFileArg(exe.getEmittedBin());
     run_home_rt_tests.addFileArg(home_rt_tests.getEmittedBin());
     // NOTE: `b.graph.random_seed` is no longer exposed to build.zig's configure
     // phase in this toolchain (the random seed is now a make-phase-only concept

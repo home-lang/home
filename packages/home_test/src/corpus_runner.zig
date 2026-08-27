@@ -61248,56 +61248,6 @@ const harness_prelude =
     \\  for await (const batch of iterable) chunks.push(__home_stream_iter_batch_bytes(batch));
     \\  return Buffer.concat(chunks);
     \\}
-    \\function __home_stream_iter_bytes_sync(iterable) {
-    \\  const chunks = [];
-    \\  for (const batch of iterable) chunks.push(__home_stream_iter_batch_bytes(batch));
-    \\  return Buffer.concat(chunks);
-    \\}
-    \\function __home_stream_iter_pull(iterable) {
-    \\  const transforms = Array.from(arguments).slice(1).filter(value => typeof value === "function");
-    \\  return {
-    \\    async *[Symbol.asyncIterator]() {
-    \\      for await (let batch of iterable) {
-    \\        for (const transform of transforms) batch = transform(batch);
-    \\        if (batch !== null && batch !== undefined) yield batch;
-    \\      }
-    \\    },
-    \\  };
-    \\}
-    \\function __home_stream_iter_pull_sync(iterable) {
-    \\  const transforms = Array.from(arguments).slice(1).filter(value => typeof value === "function");
-    \\  return {
-    \\    *[Symbol.iterator]() {
-    \\      for (let batch of iterable) {
-    \\        for (const transform of transforms) batch = transform(batch);
-    \\        if (batch !== null && batch !== undefined) yield batch;
-    \\      }
-    \\    },
-    \\  };
-    \\}
-    \\const __home_stream_iter_module = {
-    \\  bytes: __home_stream_iter_bytes,
-    \\  text(iterable) { return __home_stream_iter_bytes(iterable).then(bytes => bytes.toString()); },
-    \\  bytesSync: __home_stream_iter_bytes_sync,
-    \\  textSync(iterable) { return __home_stream_iter_bytes_sync(iterable).toString(); },
-    \\  pull: __home_stream_iter_pull,
-    \\  pullSync: __home_stream_iter_pull_sync,
-    \\  async pipeTo(iterable) {
-    \\    const args = Array.from(arguments).slice(1);
-    \\    const writer = args.pop();
-    \\    const transforms = args.filter(value => typeof value === "function");
-    \\    for await (let batch of iterable) {
-    \\      for (const transform of transforms) batch = transform(batch);
-    \\      if (batch === null || batch === undefined) continue;
-    \\      for (const chunk of (Array.isArray(batch) ? batch : [batch])) await writer.write(chunk);
-    \\    }
-    \\    return writer.end();
-    \\  },
-    \\  pipeToSync(iterable, writer) { for (const batch of iterable) for (const chunk of (Array.isArray(batch) ? batch : [batch])) writer.writeSync(chunk); if (writer && typeof writer.end === "function") writer.end(); },
-    \\};
-    \\__home_stream_iter_module.default = __home_stream_iter_module;
-    \\globalThis.__home_modules["stream/iter"] = __home_stream_iter_module;
-    \\globalThis.__home_modules["node:stream/iter"] = __home_stream_iter_module;
     \\const __home_stream_promises_module = {
     \\  pipeline() {
     \\    const streams = Array.from(arguments);
@@ -61341,18 +61291,6 @@ const harness_prelude =
     \\__home_stream_consumers_module.default = __home_stream_consumers_module;
     \\globalThis.__home_modules["stream/consumers"] = __home_stream_consumers_module;
     \\globalThis.__home_modules["node:stream/consumers"] = __home_stream_consumers_module;
-    \\function __home_zlib_iter_transform(method) {
-    \\  return chunks => chunks === null ? null : [__home_zlib_module[method](__home_stream_iter_batch_bytes(chunks))];
-    \\}
-    \\const __home_zlib_iter_module = {
-    \\  compressGzip() { return __home_zlib_iter_transform("gzipSync"); },
-    \\  decompressGzip() { return __home_zlib_iter_transform("gunzipSync"); },
-    \\  compressGzipSync() { return __home_zlib_iter_transform("gzipSync"); },
-    \\  decompressGzipSync() { return __home_zlib_iter_transform("gunzipSync"); },
-    \\};
-    \\__home_zlib_iter_module.default = __home_zlib_iter_module;
-    \\globalThis.__home_modules["zlib/iter"] = __home_zlib_iter_module;
-    \\globalThis.__home_modules["node:zlib/iter"] = __home_zlib_iter_module;
     \\globalThis.__home_modules["peechy"] = {
     \\  ByteBuffer: function ByteBuffer(bytes) {
     \\    this.bytes = bytes;
@@ -90724,9 +90662,6 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
             try out.appendSlice(allocator, ");\n");
         }
     }
-    if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-fs-promises-file-handle-writer.js")) {
-        try out.appendSlice(allocator, "if (!process.execArgv.includes(\"--experimental-stream-iter\")) process.execArgv.push(\"--experimental-stream-iter\");\n");
-    }
     if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv4.js")) {
         try out.appendSlice(allocator, "process.execArgv.push(\"--dns-result-order=ipv4first\"); __home_dns_default_result_order = \"ipv4first\";\n");
     } else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv6.js")) {
@@ -100148,6 +100083,97 @@ pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, re
     return summary;
 }
 
+const stream_iter_corpus_prefix = "js/node/test/parallel/test-stream-iter-";
+
+const OwnedFlags = struct {
+    values: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *OwnedFlags, allocator: std.mem.Allocator) void {
+        for (self.values.items) |flag| allocator.free(flag);
+        self.values.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+fn isNativeStreamIteratorCorpusFile(relative: []const u8) bool {
+    if (std.mem.startsWith(u8, relative, stream_iter_corpus_prefix) and
+        std.mem.endsWith(u8, relative, ".js"))
+    {
+        const basename_tail = relative[stream_iter_corpus_prefix.len..];
+        if (basename_tail.len > ".js".len and std.mem.indexOfScalar(u8, basename_tail, '/') == null) return true;
+    }
+
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-pull.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-pullsync.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-writer.js");
+}
+
+fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
+    var result = OwnedFlags{};
+    errdefer result.deinit(allocator);
+
+    const scan = source[0..@min(source.len, 1500)];
+    const flags_index = std.mem.indexOf(u8, scan, "// Flags:") orelse return result;
+    const flags_tail = scan[flags_index + "// Flags:".len ..];
+    const flags_line = flags_tail[0 .. std.mem.indexOfScalar(u8, flags_tail, '\n') orelse flags_tail.len];
+    var flags = std.mem.tokenizeAny(u8, flags_line, " \t\r");
+    while (flags.next()) |flag| {
+        if (!std.mem.startsWith(u8, flag, "--")) continue;
+        const owned_flag = try allocator.dupe(u8, flag);
+        errdefer allocator.free(owned_flag);
+        try result.values.append(allocator, owned_flag);
+    }
+    return result;
+}
+
+fn buildNativeStreamIteratorArgs(
+    allocator: std.mem.Allocator,
+    flags: []const []const u8,
+    absolute_fixture_path: []const u8,
+) ![][]const u8 {
+    const args = try allocator.alloc([]const u8, flags.len + 2);
+    args[0] = "run";
+    @memcpy(args[1 .. 1 + flags.len], flags);
+    args[args.len - 1] = absolute_fixture_path;
+    return args;
+}
+
+fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
+    return !timed_out and term.success();
+}
+
+fn nativeCorpusFailureDiagnostic(
+    allocator: std.mem.Allocator,
+    term: std.process.Child.Term,
+    timed_out: bool,
+    stdout: []const u8,
+    stderr: []const u8,
+) ![]u8 {
+    const outcome = if (timed_out)
+        try allocator.dupe(u8, "timed out after 120 seconds")
+    else switch (term) {
+        .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
+        .signal => |signal| try std.fmt.allocPrint(allocator, "terminated by SIG{s}", .{@tagName(signal)}),
+        .stopped => |signal| try std.fmt.allocPrint(allocator, "stopped by SIG{s}", .{@tagName(signal)}),
+        .unknown => |code| try std.fmt.allocPrint(allocator, "terminated with unknown status {d}", .{code}),
+    };
+    defer allocator.free(outcome);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "native Home corpus process {s}\nstderr:\n{s}\nstdout:\n{s}",
+        .{ outcome, stderr, stdout },
+    );
+}
+
+fn appendSummaryStdout(allocator: std.mem.Allocator, summary: *Summary, stdout: []const u8) !void {
+    if (stdout.len == 0) return;
+    const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, stdout });
+    if (summary.stdout_owned) allocator.free(summary.stdout);
+    summary.stdout = combined;
+    summary.stdout_owned = true;
+}
+
 fn runRelativeFile(
     io: Io,
     allocator: std.mem.Allocator,
@@ -100162,6 +100188,40 @@ fn runRelativeFile(
 
     const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(source);
+
+    if (isNativeStreamIteratorCorpusFile(relative)) {
+        const absolute_fixture_path = try std.fs.path.resolve(allocator, &.{file_path});
+        defer allocator.free(absolute_fixture_path);
+
+        var flags = try parseNativeCorpusFlags(allocator, source);
+        defer flags.deinit(allocator);
+        const args_tail = try buildNativeStreamIteratorArgs(allocator, flags.values.items, absolute_fixture_path);
+        defer allocator.free(args_tail);
+
+        const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
+        defer allocator.free(test_thread_id);
+
+        var native_run = try jsc_bootstrap.runHomeCaptured(allocator, test_thread_id, args_tail);
+        defer native_run.deinit(allocator);
+        try appendSummaryStdout(allocator, summary, native_run.stdout);
+
+        if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
+            file_result.passed = 1;
+        } else {
+            file_result.failed = 1;
+            const diagnostic = try nativeCorpusFailureDiagnostic(
+                allocator,
+                native_run.term,
+                native_run.timed_out,
+                native_run.stdout,
+                native_run.stderr,
+            );
+            defer allocator.free(diagnostic);
+            try recordFailure(allocator, summary, relative, diagnostic);
+        }
+        summary.addFileResult(file_result);
+        return;
+    }
 
     var prepared = try prepareCorpusModule(allocator, source, relative);
     defer prepared.deinit(allocator);
@@ -100178,12 +100238,7 @@ fn runRelativeFile(
 
     const r = file_run.result;
     summary.addFileResult(r);
-    if (file_run.stdout.len != 0) {
-        const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, file_run.stdout });
-        if (summary.stdout_owned) allocator.free(summary.stdout);
-        summary.stdout = combined;
-        summary.stdout_owned = true;
-    }
+    try appendSummaryStdout(allocator, summary, file_run.stdout);
     if (prepared.allow_no_tests and r.passed + r.failed + r.todo + r.unsupported == 0) {
         summary.allowed_empty_files += 1;
     }
@@ -100210,6 +100265,73 @@ fn recordFailure(
         summary.first_failure_message_owned = false;
         summary.first_failure_message = "JSEvaluateScript returned null without an exception";
     }
+}
+
+test "native stream iterator corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeStreamIteratorCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 45), count);
+    try std.testing.expect(isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-stream-iter-disabled.js"));
+    try std.testing.expect(isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-fs-promises-file-handle-writer.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-stream-iter-.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/nested/test-stream-iter-basic.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-fs-promises-file-handle-read.js"));
+}
+
+test "native stream iterator flags are owned and ordered before the fixture" {
+    const allocator = std.testing.allocator;
+    const source = try allocator.dupe(u8, "// Flags: ignored --experimental-stream-iter --second\nthrow new Error();");
+    defer allocator.free(source);
+
+    var flags = try parseNativeCorpusFlags(allocator, source);
+    defer flags.deinit(allocator);
+    @memset(source, 'x');
+
+    try std.testing.expectEqual(@as(usize, 2), flags.values.items.len);
+    try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
+    try std.testing.expectEqualStrings("--second", flags.values.items[1]);
+
+    const args = try buildNativeStreamIteratorArgs(allocator, flags.values.items, "/absolute/fixture.js");
+    defer allocator.free(args);
+    try std.testing.expectEqual(@as(usize, 4), args.len);
+    try std.testing.expectEqualStrings("run", args[0]);
+    try std.testing.expectEqualStrings("--experimental-stream-iter", args[1]);
+    try std.testing.expectEqualStrings("--second", args[2]);
+    try std.testing.expectEqualStrings("/absolute/fixture.js", args[3]);
+
+    var late_source: [1540]u8 = undefined;
+    @memset(&late_source, ' ');
+    const late_directive = "// Flags: --too-late\n";
+    @memcpy(late_source[1500 .. 1500 + late_directive.len], late_directive);
+    var late_flags = try parseNativeCorpusFlags(allocator, &late_source);
+    defer late_flags.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), late_flags.values.items.len);
+}
+
+test "native stream iterator process classification requires a clean exit" {
+    try std.testing.expect(nativeCorpusProcessSucceeded(.{ .exited = 0 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 1 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .unknown = 0 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 0 }, true));
+}
+
+test "bootstrap harness has no fake experimental stream iterator registrations" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"stream/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:stream/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"zlib/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:zlib/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_iter_module") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_zlib_iter_module") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_consumers_module") != null);
 }
 
 test "subset flag parser recognizes the bootstrap subset" {
