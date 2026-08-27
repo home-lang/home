@@ -120217,6 +120217,7 @@ pub const Checker = struct {
         // cannot declare parameters with TS annotations, and JSDoc supplies
         // their types through the dedicated parameter-tag path.
         if (self.sourcePositionIsJsLike(self.hir.spanOf(node).start)) return null;
+        if (self.identifierIsBoundBySourceUnannotatedParameter(node, name)) return null;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const name_text = self.string_interner.get(name);
@@ -120233,6 +120234,44 @@ pub const Checker = struct {
             return if (entry.optional) self.unionWithUndefined(base) catch base else base;
         }
         return null;
+    }
+
+    fn identifierIsBoundBySourceUnannotatedParameter(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const source = self.source orelse return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, cur)) |parameter_node| {
+                if (self.hir.kindOf(parameter_node) != .parameter) continue;
+                const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+                if (parameter.name == hir_mod.none_node_id or
+                    self.hir.kindOf(parameter.name) != .identifier or
+                    hir_mod.identifierOf(self.hir, parameter.name).name != name)
+                {
+                    continue;
+                }
+                if (parameter.type_annotation != hir_mod.none_node_id) return false;
+                const name_span = self.hir.spanOf(parameter.name);
+                var cursor = @min(@as(usize, name_span.end), source.len);
+                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+                if (cursor < source.len and source[cursor] == '?') {
+                    cursor += 1;
+                    while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+                }
+                // Do not rely on the recovered parameter's span covering a
+                // missing annotation. A delimiter/default/arrow token proves
+                // there is no `: Type`; comments and other ambiguous syntax
+                // conservatively retain the full recovery path.
+                return cursor < source.len and
+                    (source[cursor] == ',' or source[cursor] == ')' or source[cursor] == '=');
+            }
+        }
+        return false;
     }
 
     fn recoveredParameterSyntaxForName(
@@ -201112,6 +201151,27 @@ test "checker: parameter annotation index resets with source facts" {
     s.checker.setSource("const value = 1;");
     try T.expect(!s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
+}
+
+test "checker: source recovery skips an unannotated lexical parameter" {
+    const s = try newSetup(
+        \\interface Formatter { format?: (prefix: string) => string; }
+        \\const formatter: Formatter = { format: (prefix) => prefix };
+    );
+    defer destroySetup(s);
+
+    const prefix_name = try s.checker.string_interner.intern("prefix");
+    var use_node = hir_mod.none_node_id;
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        if (s.hir.kindOf(node) != .identifier) continue;
+        if (hir_mod.identifierOf(&s.hir, node).name != prefix_name) continue;
+        if (s.checker.isDeclNameSlot(node)) continue;
+        use_node = node;
+    }
+    try T.expect(use_node != hir_mod.none_node_id);
+    try T.expect(s.checker.identifierIsBoundBySourceUnannotatedParameter(use_node, prefix_name));
+    try T.expect(s.checker.recoveredSourceParameterAnnotationType(use_node, prefix_name) == null);
 }
 
 test "checker: strict false directive suppresses typed let TS2454" {
