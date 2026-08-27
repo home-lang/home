@@ -981,7 +981,22 @@ def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
                 raise SystemExit(f"{name} failed destructuring negative controls:\n{details}")
 
 
-def cmd_cold(runs: int, warmup: int) -> Path:
+def selected_workloads(requested: list[str] | None) -> list[str]:
+    available = manifest()["workloads"]
+    if requested is None:
+        return list(available)
+    if not requested:
+        raise SystemExit("select at least one workload")
+    if len(set(requested)) != len(requested):
+        raise SystemExit("duplicate workloads would overwrite measured rounds")
+    unknown = [name for name in requested if name not in available]
+    if unknown:
+        raise SystemExit(f"unknown workload: {', '.join(unknown)}")
+    return list(requested)
+
+
+def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path:
+    workloads = selected_workloads(workloads)
     if not shutil.which("hyperfine"):
         raise SystemExit("hyperfine is required (brew install hyperfine)")
     if not CORPUS.is_dir():
@@ -999,10 +1014,11 @@ def cmd_cold(runs: int, warmup: int) -> Path:
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
+        "workloads": workloads,
         "compilers": versions,
     }
     write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
-    for workload in manifest()["workloads"]:
+    for workload in workloads:
         validate(commands, workload)
         config = CORPUS / workload / "tsconfig.json"
         benchmarks = {
@@ -1072,6 +1088,7 @@ def main() -> int:
     cold = sub.add_parser("cold", help="run validated cold frontend benchmarks")
     cold.add_argument("--runs", type=int, default=10)
     cold.add_argument("--warmup", type=int, default=3)
+    cold.add_argument("--workload", action="append", help="select a workload; repeat for several (default: all)")
     report = sub.add_parser("report", help="render a Markdown report")
     report.add_argument("results", nargs="?", type=Path)
     sub.add_parser("all", help="generate corpus, set up tools, benchmark, and report")
@@ -1081,7 +1098,7 @@ def main() -> int:
     elif args.command == "setup":
         cmd_setup()
     elif args.command == "cold":
-        cmd_cold(args.runs, args.warmup)
+        cmd_cold(args.runs, args.warmup, args.workload)
     elif args.command == "report":
         cmd_report(args.results)
     else:

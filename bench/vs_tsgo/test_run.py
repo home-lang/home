@@ -49,5 +49,45 @@ class CompilerVersionTests(unittest.TestCase):
             validate.assert_not_called()
 
 
+class WorkloadSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.config = {"workloads": {"first": {}, "second": {}}}
+
+    def select(self, requested):
+        with mock.patch.object(run, "manifest", return_value=self.config):
+            return run.selected_workloads(requested)
+
+    def test_default_preserves_full_manifest_order(self):
+        self.assertEqual(["first", "second"], self.select(None))
+
+    def test_subset_preserves_requested_order(self):
+        self.assertEqual(["second", "first"], self.select(["second", "first"]))
+        self.assertEqual(["second"], self.select(["second"]))
+
+    def test_empty_selection_is_rejected(self):
+        with self.assertRaisesRegex(SystemExit, "at least one"):
+            self.select([])
+
+    def test_duplicate_selection_cannot_overwrite_rounds(self):
+        with self.assertRaisesRegex(SystemExit, "duplicate"):
+            self.select(["first", "first"])
+
+    def test_unknown_selection_is_rejected(self):
+        with self.assertRaisesRegex(SystemExit, "unknown workload: missing"):
+            self.select(["missing"])
+
+    def test_invalid_selection_stops_before_results_or_validation(self):
+        with mock.patch.object(run, "manifest", return_value=self.config), mock.patch.object(
+            run, "RESULTS"
+        ) as results, mock.patch.object(run, "validate") as validate, mock.patch.object(
+            run, "compiler_commands"
+        ) as commands:
+            with self.assertRaisesRegex(SystemExit, "duplicate"):
+                run.cmd_cold(30, 3, ["first", "first"])
+            self.assertEqual([], results.mock_calls)
+            validate.assert_not_called()
+            commands.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
