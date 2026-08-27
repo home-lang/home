@@ -15,6 +15,7 @@ overload_call_groups = 128
 class_hierarchy_families = 128
 structural_object_families = 128
 interface_composition_families = 128
+variadic_tuple_families = 256
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -51,6 +52,9 @@ description = "One module with 128 plain-object families covering nested structu
 
 [workloads.interface_composition]
 description = "One module with 128 generic interface families covering multi-base inheritance, declaration merging, namespace merging, and structural consumption."
+
+[workloads.variadic_tuples]
+description = "One module with 256 readonly variadic-tuple families covering inference, concat, conditional head/tail extraction, rest, spread, indexing, and typed consumption."
 
 [compilers.tsc]
 version = "6.0.3"

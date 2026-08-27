@@ -540,6 +540,49 @@ def generate_interface_composition(directory: Path, families: int) -> None:
     write(directory / "src/interface-composition.ts", "".join(blocks))
 
 
+def generate_variadic_tuples(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "type Head<T extends readonly unknown[]> = "
+        "T extends readonly [infer H, ...readonly unknown[]] ? H : never;\n"
+        "type Tail<T extends readonly unknown[]> = "
+        "T extends readonly [unknown, ...infer R] ? readonly [...R] : readonly [];\n\n"
+        "declare function concat<A extends readonly unknown[], B extends readonly unknown[]>(\n"
+        "  left: A,\n"
+        "  right: B,\n"
+        "): readonly [...A, ...B];\n\n"
+        "declare function capture<T extends readonly unknown[]>(...values: T): T;\n\n"
+    ]
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f'const left{index} = [{index}, "item-{index}", {{ value: {index} }}] as const;\n'
+            f'const right{index} = [{active}, [{index}, "tail-{index}"] as const] as const;\n'
+            f"const combined{index} = concat(left{index}, right{index});\n"
+            f"type Tuple{index} = readonly [\n"
+            f"  {index},\n"
+            f'  "item-{index}",\n'
+            f"  {{ readonly value: {index} }},\n"
+            f"  {active},\n"
+            f'  readonly [{index}, "tail-{index}"],\n'
+            "];\n"
+            f"const checked{index}: Tuple{index} = combined{index};\n"
+            f"const head{index}: Head<Tuple{index}> = {index};\n"
+            f"const tail{index}: Tail<Tuple{index}> = [\n"
+            f'  "item-{index}", {{ value: {index} }}, {active}, [{index}, "tail-{index}"],\n'
+            "];\n"
+            f"const captured{index} = capture(...checked{index});\n"
+            f"function consumeTuple{index}(value: Tuple{index}): readonly [{index}, \"item-{index}\", {active}, number] {{\n"
+            "  return [value[0], value[1], value[3], value.length];\n"
+            "}\n"
+            f"export const tupleResult{index} = {{\n"
+            f"  head: head{index}, tail: tail{index}, result: consumeTuple{index}(captured{index}),\n"
+            "};\n\n"
+        )
+    write(directory / "src/variadic-tuples.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -561,6 +604,10 @@ def cmd_corpus() -> None:
     generate_interface_composition(
         CORPUS / "interface_composition",
         cfg["interface_composition_families"],
+    )
+    generate_variadic_tuples(
+        CORPUS / "variadic_tuples",
+        cfg["variadic_tuple_families"],
     )
     print(f"Generated deterministic corpus in {CORPUS}")
 
