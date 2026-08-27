@@ -10,36 +10,36 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-27 at commit `932797b67` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `3c6f4e69e` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T165255Z`. Home records a lower
+The local raw-result identifier is `20260827T172600Z`. Home records a lower
 mean than the faster competitor on 17 of 18 workloads. The new large predicate
-workload is 2.24× slower than native TypeScript 7, while the original smaller
-workload has a 1.11× mean lead. The round-robin compiler order and complete,
+workload is 1.57× slower than native TypeScript 7, while the original smaller
+workload has a 1.24× mean lead. The round-robin compiler order and complete,
 unfiltered 30-sample result are retained. Several workloads have substantial
 variance; these local results do not establish universal superiority.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 65.3 ± 4.9 ms | 38.3 ± 1.3 ms | **3.3 ± 0.2 ms** | **11.68× faster** |
-| `many_files` | 221.1 ± 5.9 ms | 55.0 ± 1.5 ms | **33.1 ± 1.2 ms** | **1.66× faster** |
-| `deep_types` | 134.6 ± 4.5 ms | 54.9 ± 7.6 ms | **15.0 ± 0.5 ms** | **3.65× faster** |
-| `import_graph` | 137.5 ± 10.7 ms | 46.9 ± 2.2 ms | **29.0 ± 5.6 ms** | **1.62× faster** |
-| `reexport_graph` | 102.6 ± 4.5 ms | 43.3 ± 1.7 ms | **30.0 ± 1.8 ms** | **1.45× faster** |
-| `tsx_components` | 169.9 ± 10.3 ms | 49.6 ± 8.4 ms | **27.7 ± 18.4 ms** | **1.79× faster** |
-| `generic_calls` | 195.9 ± 14.9 ms | 56.8 ± 2.5 ms | **26.8 ± 1.5 ms** | **2.12× faster** |
-| `control_flow` | 205.8 ± 24.9 ms | 62.1 ± 7.2 ms | **45.8 ± 5.1 ms** | **1.36× faster** |
-| `type_predicates` | 256.4 ± 27.9 ms | 74.7 ± 6.0 ms | **67.6 ± 2.6 ms** | **1.11× faster** |
-| `type_predicates_large` | 1125.6 ± 54.6 ms | 382.3 ± 25.1 ms | 855.8 ± 42.1 ms | 2.24× slower |
-| `null_safe_access` | 215.9 ± 9.9 ms | 63.3 ± 2.1 ms | **50.5 ± 6.4 ms** | **1.25× faster** |
-| `destructuring` | 163.8 ± 21.5 ms | 53.0 ± 4.1 ms | **43.3 ± 8.5 ms** | **1.22× faster** |
-| `overload_resolution` | 275.4 ± 24.0 ms | 78.8 ± 4.2 ms | **45.7 ± 3.3 ms** | **1.72× faster** |
-| `class_hierarchy` | 240.0 ± 21.0 ms | 63.1 ± 3.2 ms | **41.7 ± 2.6 ms** | **1.51× faster** |
-| `structural_objects` | 246.8 ± 38.0 ms | 69.8 ± 3.0 ms | **42.8 ± 3.0 ms** | **1.63× faster** |
-| `interface_composition` | 286.6 ± 46.8 ms | 84.2 ± 11.2 ms | **61.3 ± 7.5 ms** | **1.37× faster** |
-| `variadic_tuples` | 382.4 ± 37.3 ms | 114.5 ± 11.5 ms | **69.0 ± 7.7 ms** | **1.66× faster** |
-| `checkjs_jsdoc` | 318.2 ± 128.7 ms | 74.0 ± 3.8 ms | **51.5 ± 4.5 ms** | **1.44× faster** |
+| `startup` | 81.9 ± 15.6 ms | 49.0 ± 11.1 ms | **3.9 ± 0.6 ms** | **12.50× faster** |
+| `many_files` | 247.0 ± 11.2 ms | 65.9 ± 7.2 ms | **37.1 ± 3.4 ms** | **1.77× faster** |
+| `deep_types` | 152.7 ± 11.1 ms | 59.9 ± 2.3 ms | **17.2 ± 4.1 ms** | **3.48× faster** |
+| `import_graph` | 150.4 ± 6.3 ms | 53.4 ± 2.8 ms | **31.9 ± 2.9 ms** | **1.67× faster** |
+| `reexport_graph` | 109.8 ± 3.9 ms | 48.4 ± 6.3 ms | **31.5 ± 2.0 ms** | **1.54× faster** |
+| `tsx_components` | 193.9 ± 16.5 ms | 54.8 ± 3.5 ms | **27.4 ± 2.0 ms** | **2.00× faster** |
+| `generic_calls` | 235.1 ± 47.4 ms | 65.0 ± 7.6 ms | **29.2 ± 1.9 ms** | **2.23× faster** |
+| `control_flow` | 207.8 ± 13.2 ms | 64.1 ± 1.9 ms | **46.7 ± 1.2 ms** | **1.37× faster** |
+| `type_predicates` | 328.8 ± 184.9 ms | 91.7 ± 47.2 ms | **74.1 ± 27.2 ms** | **1.24× faster** |
+| `type_predicates_large` | 1105.1 ± 100.4 ms | 377.6 ± 18.3 ms | 592.0 ± 14.6 ms | 1.57× slower |
+| `null_safe_access` | 194.2 ± 7.2 ms | 58.5 ± 4.3 ms | **46.3 ± 1.9 ms** | **1.26× faster** |
+| `destructuring` | 138.6 ± 2.7 ms | 46.7 ± 1.4 ms | **37.8 ± 0.6 ms** | **1.24× faster** |
+| `overload_resolution` | 204.6 ± 22.1 ms | 64.0 ± 1.5 ms | **35.8 ± 0.9 ms** | **1.79× faster** |
+| `class_hierarchy` | 185.5 ± 5.8 ms | 53.9 ± 6.7 ms | **34.0 ± 0.8 ms** | **1.58× faster** |
+| `structural_objects` | 184.1 ± 2.5 ms | 57.4 ± 1.4 ms | **35.5 ± 0.6 ms** | **1.62× faster** |
+| `interface_composition` | 200.2 ± 7.2 ms | 62.0 ± 1.0 ms | **47.7 ± 0.5 ms** | **1.30× faster** |
+| `variadic_tuples` | 264.3 ± 101.9 ms | 75.1 ± 1.6 ms | **49.7 ± 0.6 ms** | **1.51× faster** |
+| `checkjs_jsdoc` | 212.0 ± 21.5 ms | 55.3 ± 5.5 ms | **42.6 ± 11.1 ms** | **1.30× faster** |
 
 The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
 Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
@@ -48,8 +48,15 @@ the record. [Issue #452](https://github.com/home-lang/home/issues/452) addressed
 the narrow margin with the general function-containment index described below;
 snapshot `20260827T155812Z` then recorded 16/16 mean wins. The current
 18-workload snapshot additionally includes destructuring, negative
-named-shape caching, function-declaration indexing, and the large predicate
-scaling case; no samples were discarded.
+named-shape caching, function-declaration indexing, necessary member-fact
+filtering, local value-declaration indexing, and the large predicate scaling
+case; no samples were discarded. The first 18-workload snapshot
+`20260827T165255Z` recorded Home at 855.8 ± 42.1 ms against native TypeScript 7
+at 382.3 ± 25.1 ms on large predicates (2.24× slower); it remains part of the
+record. The current large row is 592.0 ± 14.6 versus 377.6 ± 18.3 ms
+(1.57× slower). Unrelated concurrent workstation jobs were observed around
+this measurement session; the original-size predicate row is particularly
+noisy, and no samples were filtered or replaced.
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -216,7 +223,13 @@ workload-specific shortcuts:
   a type name is inserted or rebound; and
 - function-declaration lookup indexes the first eligible binding per statement
   container, preserving caller scope walks and binder precedence and retaining
-  the original scanner on allocation failure; and
+  the original scanner on allocation failure;
+- named-shape lookup indexes necessary member facts at type-name registration,
+  rejecting impossible searches while retaining the original full comparison
+  for possible matches, stale facts, and hash collisions;
+- local value-declaration lookup indexes first bindings and exact statement
+  boundaries per container and virtual section, preserving the original scan
+  on allocation failure; and
 - the lockless relation cache retains a 4,096-entry working set and inserts new
   relations with one hash-table probe instead of two.
 
@@ -440,3 +453,55 @@ The smaller predicate workload measures 67.6 ± 2.6 ms versus 74.7 ± 6.0 ms,
 a 1.11× mean lead. All 18 projects pass the shared positive gate, and all 13
 automatic negative controls pass in every compiler. Issues #455 and #457
 remain open for the remaining general lookup and scaling costs.
+
+Commit `0494dc6b6` for #457 indexes necessary named-shape member facts. Each
+fact includes member count, string/number/symbol index-signature types, member
+name/type, and optional/readonly/method flags. A missing fact proves that no
+registered named object can satisfy the original shape comparison. Present
+facts never accept a shape: the full comparison still handles combinations
+from different objects, obsolete bindings, and hash collisions. This preserves
+the original duplicate-member behavior without adding a quadratic uniqueness
+scan. Facts follow the type-name table lifetime across source resets; an
+allocation failure disables the filter. Regressions cover member order,
+duplicates, modifiers, index signatures, ignored display metadata, rebinding,
+false positives, source reset, and allocation failure.
+The full checker suite passes 4,201 tests; the release build, all 18 shared
+projects, and all 13 automatic negative controls pass for every compiler.
+Alternating preserved before/after release binaries gives 67.73 ± 2.85 ms
+versus 66.13 ± 6.46 ms on the small workload (30 samples per binary), and
+800.16 ± 62.91 ms versus 645.06 ± 13.10 ms on the large workload (10 samples
+per binary), each after three warmups. These development comparisons retain
+every sample and are separate from the complete competitor snapshot.
+
+Commit `3c6f4e69e` for #457 indexes local value declarations. A fresh profile on an
+8,192-family diagnostic copy of the same generator identified local declaration
+scans as the largest sampled leaf (357 samples); this diagnostic copy does not
+replace either frozen benchmark. The index records first eligible declarations
+and exact statement ordinals per container and virtual section. Lookups retain
+the nearest-container rule, export-wrapper boundaries, and declaration-order
+checks rather than comparing source spans. Empty and singleton containers keep
+the original constant-sized scan. Failed index construction releases partial
+state and falls back to the original scanner. Differential tests compare both
+paths for every syntax node across nested blocks, namespaces, exports, multiple
+virtual files, declaration kinds, shadowing, and missing names; allocation
+failure tests cover each construction allocation and retry.
+All 4,203 checker tests, the release build, 18 shared projects, and 13 negative
+controls per compiler pass. Alternating preserved member-fact-only and
+local-index binaries after three warmups measured 83.09 ± 20.83 versus
+84.58 ± 26.97 ms for the small workload (30 samples each), and 740.15 ± 51.21
+versus 632.05 ± 22.70 ms for the large workload (10 samples each). The small
+comparison is noisy and does not show an improvement; all samples, including
+the 206.09 ms new-binary observation, are retained. Concurrent unrelated
+workstation jobs were observed during this development comparison.
+
+The complete post-index snapshot `20260827T172600Z` retains all 30 interleaved
+samples after three warmups across all 18 workloads. Home has lower means on
+17 of 18; large predicates are 592.0 ± 14.6 ms versus native TypeScript 7 at
+377.6 ± 18.3 ms and JavaScript TypeScript 6 at 1105.1 ± 100.4 ms, a 1.57×
+loss to native TS 7. Small predicates are 74.1 ± 27.2 versus 91.7 ± 47.2 ms,
+a noisy 1.24× mean lead. The full checker suite passes 4,203 tests, all 18
+shared projects pass, and all 13 automatic negative controls pass in every
+compiler. All 1,620 timed samples exit successfully. Issues #455 and #457
+remain open: general type-display-name scans and relation-cache pressure
+remain profiling targets, and this snapshot does not establish an everywhere
+win or a reliable small-predicate margin.
