@@ -61626,8 +61626,13 @@ const harness_prelude =
     \\  };
     \\};
     \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) {
-    \\  this.on("data", chunk => { if (destination && typeof destination.write === "function") destination.write(chunk); });
-    \\  this.on("end", () => { if (destination && typeof destination.end === "function") destination.end(); });
+    \\  this.on("data", chunk => {
+    \\    if (destination && typeof destination.write === "function" && destination.write(chunk) === false) {
+    \\      this.pause();
+    \\      if (typeof destination.once === "function") destination.once("drain", () => this.resume());
+    \\    }
+    \\  });
+    \\  this.once("end", () => { if (destination && typeof destination.end === "function") destination.end(); });
     \\  this.resume();
     \\  return destination;
     \\};

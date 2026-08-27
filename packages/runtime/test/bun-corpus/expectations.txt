@@ -31,9 +31,6 @@
 # investigation; the #29854 resolved_path fix covers only the ~path-length
 # portion.
 
-# Tests that are flaky
-test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
-
 # Tests skipped due to different log/line outputs
 [ ASAN ] test/js/bun/util/reportError.test.ts [ SKIP ] # log line mismatch
 [ ASAN ] test/js/node/child_process/child_process.test.ts [ SKIP ] # Unexpected identifier "WARNING"
@@ -152,9 +149,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 [ ASAN ] test/js/node/test/parallel/test-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/http2/ [ SKIP ] # socket-layer connect-race lifetime under investigation
-
-# localhost dual-stack resolution makes this flap across platforms (passes on retry)
-test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 
 # node:http servers cannot listen on Windows named pipes yet (ENOENT from
 # uv_pipe bind), so common.PIPE-based http tests cannot run there.
