@@ -27,6 +27,11 @@ const binder = @import("binder");
 
 pub const FileId = u32;
 
+const program_source_markers = &[_][]const u8{
+    "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
+};
+const ProgramSourceMarkerIndex = ts_driver.SourceMarkerMatcher(program_source_markers);
+
 /// Why a file is part of the program — mirrors tsgo's
 /// `FileIncludeReason` (the subset Home can determine today). Drives the
 /// `--explainFiles` line for each file. Root-file provenance is supplied
@@ -135,6 +140,9 @@ pub const File = struct {
     /// Source text. NOT owned — caller manages lifetime via the
     /// FileSystem implementation.
     source: []const u8,
+    /// Exact byte facts for the current collection pass only. Cleared on
+    /// every compilation exit; redirects never receive a source snapshot.
+    source_markers: ?ProgramSourceMarkerIndex = null,
     /// Compiled artefact. `null` until `compileAll` runs.
     compilation: ?*ts_driver.Compilation,
     /// Outgoing import edges — file ids this file imports from.
@@ -154,6 +162,11 @@ pub const File = struct {
     /// first source file as canonical and records later paths as redirect
     /// files for explainFiles (TS1429).
     redirect_target: ?FileId = null,
+
+    fn sourceContains(self: *const File, comptime marker: []const u8) bool {
+        if (self.source_markers) |*markers| return markers.contains(marker);
+        return std.mem.indexOf(u8, self.source, marker) != null;
+    }
 };
 
 pub const ProgramError = error{
@@ -332,6 +345,7 @@ pub const Program = struct {
         const skey = try self.gpa.dupe(u8, path);
         try self.sources.put(self.gpa, skey, new_dupe);
         f.source = new_dupe;
+        f.source_markers = null;
         f.imports.clearRetainingCapacity();
         return id;
     }
@@ -340,11 +354,26 @@ pub const Program = struct {
         return self.by_path.get(path);
     }
 
+    fn prepareSourceMarkers(self: *Program) void {
+        for (self.files.items) |file| {
+            file.source_markers = if (file.redirect_target == null)
+                ProgramSourceMarkerIndex.scan(file.source)
+            else
+                null;
+        }
+    }
+
+    fn clearSourceMarkers(self: *Program) void {
+        for (self.files.items) |file| file.source_markers = null;
+    }
+
     /// Compile every file. Two passes:
     ///   1. Lex/parse/bind/emit each file in isolation.
     ///   2. Walk imports and resolve specifiers — populating the
     ///      `imports` adjacency list.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        self.prepareSourceMarkers();
+        defer self.clearSourceMarkers();
         self.deduplicate_packages = options.deduplicate_packages;
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
@@ -509,6 +538,8 @@ pub const Program = struct {
         ctx: anytype,
         comptime callback: fn (ctx_t: @TypeOf(ctx), file_path: []const u8, diags: []const ts_driver.Diagnostic) void,
     ) ProgramError!void {
+        self.prepareSourceMarkers();
+        defer self.clearSourceMarkers();
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
@@ -578,9 +609,9 @@ pub const Program = struct {
         errdefer freeStringSlice(self.gpa, out.items);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "namespace") == null and
-                std.mem.indexOf(u8, f.source, "module") == null and
-                std.mem.indexOf(u8, f.source, "global") == null) continue;
+            if (!f.sourceContains("namespace") and
+                !f.sourceContains("module") and
+                !f.sourceContains("global")) continue;
             try appendTopLevelNamespaceRootsFromSource(self.gpa, f.source, &out);
             try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
         }
@@ -594,8 +625,8 @@ pub const Program = struct {
         defer namespace_roots.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "namespace") == null and
-                std.mem.indexOf(u8, f.source, "module") == null) continue;
+            if (!f.sourceContains("namespace") and
+                !f.sourceContains("module")) continue;
             try collectTopLevelNamespaceRootSlices(self.gpa, f.source, &namespace_roots);
         }
         for (self.files.items) |f| {
@@ -644,9 +675,9 @@ pub const Program = struct {
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "declare") == null or
-                std.mem.indexOf(u8, f.source, "module") == null or
-                std.mem.indexOf(u8, f.source, "interface") == null) continue;
+            if (!f.sourceContains("declare") or
+                !f.sourceContains("module") or
+                !f.sourceContains("interface")) continue;
             try self.collectRelativeModuleInterfaceAugmentationsFromSource(f.path, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
@@ -657,7 +688,7 @@ pub const Program = struct {
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "class") == null) continue;
+            if (!f.sourceContains("class")) continue;
             try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
         }
         var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
@@ -670,9 +701,9 @@ pub const Program = struct {
         }
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "declare") == null or
-                std.mem.indexOf(u8, f.source, "module") == null or
-                std.mem.indexOf(u8, f.source, "namespace") == null) continue;
+            if (!f.sourceContains("declare") or
+                !f.sourceContains("module") or
+                !f.sourceContains("namespace")) continue;
             try collectRelativeModuleNamespaceStaticAugmentationsFromSource(self.gpa, f.path, f.source, &namespace_augmentations);
         }
         for (out.items) |*class| {
@@ -845,10 +876,10 @@ pub const Program = struct {
         }
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, f.source, "declare") == null or
-                std.mem.indexOf(u8, f.source, "interface") == null or
-                (std.mem.indexOf(u8, f.source, "module") == null and
-                    std.mem.indexOf(u8, f.source, "global") == null)) continue;
+            if (!f.sourceContains("declare") or
+                !f.sourceContains("interface") or
+                (!f.sourceContains("module") and
+                    !f.sourceContains("global"))) continue;
             try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
         }
         try self.collectExportedNamespaceInterfaces(&out);
@@ -1238,8 +1269,8 @@ pub const Program = struct {
                 // Avoid reparsing ordinary library declarations when either
                 // required token is absent; false positives still take the
                 // full syntax-aware path below.
-                if (std.mem.indexOf(u8, f.source, "export") == null or
-                    std.mem.indexOfScalar(u8, f.source, '=') == null) continue;
+                if (!f.sourceContains("export") or
+                    !f.sourceContains("=")) continue;
                 const info = moduleExportAssignmentInfo(self.gpa, f.source, f.is_tsx) orelse continue;
                 const private_name = info.private_type_name orelse "";
                 if (private_name.len == 0 and !info.target_is_any) continue;
@@ -1262,7 +1293,7 @@ pub const Program = struct {
                 });
                 continue;
             }
-            if (std.mem.indexOf(u8, f.source, "exports") == null) continue;
+            if (!f.sourceContains("exports")) continue;
             var compilation = ts_driver.compileSource(self.gpa, f.source, .{
                 .is_tsx = f.is_tsx,
                 .allow_js = true,
@@ -2935,6 +2966,8 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        self.prepareSourceMarkers();
+        defer self.clearSourceMarkers();
         self.deduplicate_packages = options.deduplicate_packages;
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
@@ -7742,6 +7775,171 @@ test "Program: compileAllParallel produces same output as serial" {
     // Interface + type alias erase to empty JS; the rest emit
     // non-empty output. We expect at least 6 of 8.
     try T.expect(emitted >= 6);
+}
+
+test "Program: source markers match exact byte searches" {
+    const Reference = struct {
+        fn compare(source: []const u8) !void {
+            const index = ProgramSourceMarkerIndex.scan(source);
+            inline for (program_source_markers) |marker| {
+                try T.expectEqual(std.mem.indexOf(u8, source, marker), index.indexOf(marker));
+            }
+        }
+    };
+    for ([_][]const u8{
+        "",                                                   "namespace module global declare interface class export exports =",
+        "// namespace\n'export' /* module */ exports=global", "namespaceTail xdeclare xinterface className exportsexport",
+        "\x00\xffinterface\r\nmodule\x00exports=",
+    }) |source| try Reference.compare(source);
+    var seed: u32 = 0x1234abcd;
+    var buffer: [256]u8 = undefined;
+    for (0..512) |round| {
+        const len = round % buffer.len;
+        for (buffer[0..len]) |*byte| {
+            seed = seed *% 1664525 +% 1013904223;
+            byte.* = @truncate(seed >> 24);
+        }
+        const marker = program_source_markers[round % program_source_markers.len];
+        if (len >= marker.len) {
+            const offset = seed % (len - marker.len + 1);
+            @memcpy(buffer[offset..][0..marker.len], marker);
+        }
+        try Reference.compare(buffer[0..len]);
+    }
+}
+
+test "Program: source markers preserve collection metadata" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const Fixture = struct { path: []const u8, source: []const u8 };
+    for ([_]Fixture{
+        .{ .path = "/class.ts", .source = "export class Box { value: string; }" },
+        .{ .path = "/augment.ts", .source = "import './class'; declare module './class' { interface Box { extra(): string; } namespace Box { const version: number; } }" },
+        .{ .path = "/ambient.d.ts", .source = "declare module 'ambient' { interface Named { value: string; } } declare global { namespace Shared { interface Member { value: string; } } }" },
+        .{ .path = "/script.js", .source = "var Tools = {}; Tools.make = function() { return 1; }; exports.answer = 42;" },
+        .{ .path = "/globals.ts", .source = "namespace Shared { export let value = 1; }" },
+        .{ .path = "/export.d.ts", .source = "declare class Service { private secret: string; } export = Service;" },
+        .{ .path = "/plain.ts", .source = "const text = 'namespace module global declare interface class export exports =';" },
+    }) |fixture| {
+        try vfs.addFile(fixture.path, fixture.source);
+        _ = try p.add(fixture.path, fixture.source);
+    }
+    const before_roots = try p.collectAmbientGlobalNamespaceRoots();
+    defer Program.freeStringSlice(T.allocator, before_roots);
+    const before_expandos = try p.collectScriptObjectExpandos();
+    defer T.allocator.free(before_expandos);
+    const before_augmentations = try p.collectRelativeModuleInterfaceAugmentations();
+    defer T.allocator.free(before_augmentations);
+    const before_classes = try p.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, before_classes);
+    const before_interfaces = try p.collectAmbientModuleInterfaceExports();
+    defer Program.freeProgramAmbientModuleInterfaceExports(T.allocator, before_interfaces);
+    const before_commonjs = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, before_commonjs);
+    try T.expect(before_roots.len > 0);
+    try T.expect(before_expandos.len > 0);
+    try T.expect(before_augmentations.len > 0);
+    try T.expect(before_classes.len > 0);
+    try T.expect(before_interfaces.len > 0);
+    try T.expect(before_commonjs.len > 0);
+
+    p.prepareSourceMarkers();
+    defer p.clearSourceMarkers();
+    const after_roots = try p.collectAmbientGlobalNamespaceRoots();
+    defer Program.freeStringSlice(T.allocator, after_roots);
+    const after_expandos = try p.collectScriptObjectExpandos();
+    defer T.allocator.free(after_expandos);
+    const after_augmentations = try p.collectRelativeModuleInterfaceAugmentations();
+    defer T.allocator.free(after_augmentations);
+    const after_classes = try p.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, after_classes);
+    const after_interfaces = try p.collectAmbientModuleInterfaceExports();
+    defer Program.freeProgramAmbientModuleInterfaceExports(T.allocator, after_interfaces);
+    const after_commonjs = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, after_commonjs);
+    try T.expectEqualDeep(before_roots, after_roots);
+    try T.expectEqualDeep(before_expandos, after_expandos);
+    try T.expectEqualDeep(before_augmentations, after_augmentations);
+    try T.expectEqualDeep(before_classes, after_classes);
+    try T.expectEqualDeep(before_interfaces, after_interfaces);
+    try T.expectEqualDeep(before_commonjs, after_commonjs);
+}
+
+test "Program: source markers reset on updates and exclude redirects" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const canonical = try p.add("/canonical.ts", "namespace Real {}");
+    const redirected = try p.addRedirectFile("/redirect.ts", canonical);
+    // A redirect's source is not consulted, even when its bytes differ.
+    p.fileById(redirected).source = "namespace Ghost {}";
+    p.prepareSourceMarkers();
+    try T.expect(p.fileById(canonical).source_markers != null);
+    try T.expect(p.fileById(redirected).source_markers == null);
+    const roots = try p.collectAmbientGlobalNamespaceRoots();
+    defer Program.freeStringSlice(T.allocator, roots);
+    try T.expectEqual(@as(usize, 1), roots.len);
+    try T.expectEqualStrings("Real", roots[0]);
+    _ = try p.updateSource("/canonical.ts", "export class Next {}");
+    const file = p.fileById(canonical);
+    try T.expect(file.source_markers == null);
+    try T.expect(file.sourceContains("class") and !file.sourceContains("namespace"));
+    p.prepareSourceMarkers();
+    try T.expect(file.sourceContains("class") and !file.sourceContains("namespace"));
+    p.clearSourceMarkers();
+    // Public source replacement between passes must not reuse old facts.
+    file.source = "declare module 'changed' {}";
+    try T.expect(file.sourceContains("module") and !file.sourceContains("class"));
+    p.prepareSourceMarkers();
+    try T.expect(file.sourceContains("module") and !file.sourceContains("class"));
+    p.clearSourceMarkers();
+}
+
+test "Program: source markers clear on every compilation entry and error exit" {
+    const Callback = struct {
+        fn receive(count: *usize, path: []const u8, diags: []const ts_driver.Diagnostic) void {
+            _ = path;
+            _ = diags;
+            count.* += 1;
+        }
+    };
+    for (0..3) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/a.ts", "namespace Root {}");
+        var count: usize = 0;
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+        p.gpa = failing.allocator();
+        {
+            defer p.gpa = T.allocator;
+            const result = switch (mode) {
+                0 => p.compileAll(.{ .no_emit = true }),
+                1 => p.compileAllStreaming(.{ .no_emit = true }, &count, Callback.receive),
+                else => p.compileAllParallel(.{ .no_emit = true }, 2),
+            };
+            try T.expectError(error.OutOfMemory, result);
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expect(p.fileById(0).source_markers == null);
+        switch (mode) {
+            0 => try p.compileAll(.{ .no_emit = true }),
+            1 => try p.compileAllStreaming(.{ .no_emit = true }, &count, Callback.receive),
+            else => try p.compileAllParallel(.{ .no_emit = true }, 2),
+        }
+        try T.expect(p.fileById(0).source_markers == null);
+        if (mode == 1) try T.expectEqual(@as(usize, 1), count);
+    }
 }
 
 test "Program: updateSource replaces a file's source bytes" {

@@ -24,6 +24,7 @@ pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
+pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
