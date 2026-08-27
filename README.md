@@ -102,8 +102,10 @@ These are local synthetic means, with substantial variance in several rows;
 they are not a claim of universal benchmark leadership.
 The large-predicate lead was independently confirmed at **1.08×**
 in an additional 30-round run.
-This snapshot includes stronger return-type checks; async/await coverage is
-still undergoing correctness validation and is not included in these timings.
+This snapshot is from `9e45e105d` and includes stronger return-type checks.
+Later [generic-callback fixes](./docs/docs/TS_PERFORMANCE.md#generic-receiver-callback-validation-untimed)
+have passed correctness checks but have not yet been retimed. Async/await
+coverage is still undergoing validation and is not included in these timings.
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
 reproduction commands. Expansion and optimization work is tracked in

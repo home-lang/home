@@ -1086,3 +1086,71 @@ is 127.9 ms, and Home's small-predicate standard deviation is 19.5 ms.
 Both runs, including every outlier, remain in the record. These local synthetic
 results do not establish leadership on real projects or other platforms.
 Issues #473, #475, #476, and #478 remain open before async coverage can be accepted.
+
+### Generic receiver callback validation (untimed)
+
+Commit [`0612a9071`](https://github.com/home-lang/home/commit/0612a9071fd4231f0fce1f3e15c948ec2a3d503d)
+fixes [#479](https://github.com/home-lang/home/issues/479), an underlying
+generic-call failure found during the async admission audit. A callback such
+as `mapper.project(value => value.label)` now retains the instantiated receiver
+parameter and infers its actual return type. Previously, an unresolved method
+return parameter prevented contextual parameter typing, and later re-lowering
+of the declaration discarded the receiver's substitutions.
+
+The fix operates on instantiated types, carries context into nested arrows and
+explicit generic calls, and retains key-dependent indexed accesses until their
+keys are inferred. Uniform string dictionaries still reduce to their
+key-independent value type. Already-checked callbacks with identical contextual
+types are reused; repeated checks do not duplicate an identical return error.
+
+The six [regression sources](https://github.com/home-lang/home/blob/0612a9071fd4231f0fce1f3e15c948ec2a3d503d/packages/ts_checker/src/check.zig#L232408)
+were checked with TS 6.0.3, native TS 7.0.2, and Home, each as both a global
+script and an export-marked module. Every compiler receives identical
+strict/noEmit/noLib/skipLibCheck/ES2022 inputs, the shared minimal library, and
+unchanged Promise declarations from TS 6.0.3's `lib.es5.d.ts` and
+`lib.es2015.promise.d.ts`. These declarations also prevent missing-global-type
+errors during callback compatibility checks; they are not simplified facades.
+
+| Untimed regression family | Expected diagnostics per invalid project | TS 6 / TS 7 / Home |
+|---|---|---|
+| Inferred receiver callback result | 1 × TS2322 | All match |
+| Block, function-expression, and explicit callbacks | 3 × TS2322 | All match |
+| Nested callbacks and distinct receiver types | 3 × TS2322 | All match |
+| Constraints, defaults, and shadowed type parameters | 4 × TS2322 | All match |
+| Incompatible callback arguments and missing properties | TS2322, TS2345, TS2339 | All match |
+| Inferred indexed rest payloads | 3 × TS2322 | All match |
+
+Removing only the deliberately invalid statements produces twelve valid
+projects per compiler; all are accepted. Each compiler also reports the
+expected diagnostic-code multisets for all twelve invalid projects, totaling
+72 CLI checks across the three compilers. This verifies acceptance and
+diagnostic codes, not byte-for-byte diagnostic parity. The local audit directory
+is `bench/vs_tsgo/results/receiver-audit.eg3jPC`.
+
+All 4,232 checker tests, 99 program tests, 173 driver tests, and 16 benchmark
+harness/report tests pass. The final ReleaseFast binary also passes validation
+of all 18 existing workloads and all 13 existing negative controls per compiler.
+Both frozen predicate source hashes are unchanged. The focused checker cases
+can be reproduced with:
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker -Dts-checker-test-filter='generic interface callbacks'
+```
+
+No new timings were collected during the concurrent workstation build/test
+activity. The main table and README therefore remain the measured
+`9e45e105d` snapshot, not measurements of `0612a9071`. Removing redundant
+callback checks is not, by itself, evidence of an end-to-end speedup.
+
+The post-fix async audit still finds that Home accepts the invalid Promise
+chain and `Promise.all` result controls rejected by both baselines
+([#475](https://github.com/home-lang/home/issues/475)), and rejects the valid
+generic async projection accepted by both
+([#476](https://github.com/home-lang/home/issues/476)). A separate ordinary
+interface/static-method probe confirms that global-script declarations are
+erased to `any` while module declarations retain their types; this is tracked in
+[#480](https://github.com/home-lang/home/issues/480), without Promise-specific
+exceptions. Those issues and the async diagnostic-text issue
+[#478](https://github.com/home-lang/home/issues/478) remain open under
+[#473](https://github.com/home-lang/home/issues/473). Async remains untimed, and
+the accepted workload count remains 18.
