@@ -1528,6 +1528,7 @@ const harness_prelude =
     \\  globalThis.__home_native_node_modules_by_path[addonPath] = addon;
     \\}
     \\function __home_require_native_node_module(path) {
+    \\  __home_unsupported("Native Node-API addons require the full Home runtime");
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) {
     \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
@@ -100181,6 +100182,18 @@ fn isNativeNodeTestCorpusFile(relative: []const u8) bool {
     return false;
 }
 
+fn isNativeAddonTestCorpusFile(relative: []const u8) bool {
+    if (!std.mem.startsWith(u8, relative, "napi/") and
+        !std.mem.startsWith(u8, relative, "js/bun/ffi/")) return false;
+    // These families use bun:test. Helper scripts and C sources must not be
+    // promoted to successful test files just because they share a directory.
+    const basename = std.fs.path.basename(relative);
+    inline for (.{ ".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".test.mjs", ".test.cjs", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".spec.mjs", ".spec.cjs" }) |suffix| {
+        if (std.mem.endsWith(u8, basename, suffix)) return true;
+    }
+    return false;
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100198,7 +100211,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeModuleRegistryCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
         isNativeQuerystringCorpusFile(relative) or
-        isNativeNodeCoreCorpusFile(relative);
+        isNativeNodeCoreCorpusFile(relative) or
+        isNativeAddonTestCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100341,7 +100355,7 @@ fn runRelativeFile(
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative)) .test_runner else .script;
+        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or isNativeAddonTestCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path, mode);
         defer allocator.free(args_tail);
 
@@ -100671,6 +100685,39 @@ test "native node core corpus predicates cover the audited inventory" {
     try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-buffer-from.mjs"));
     try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-modules.js"));
     try std.testing.expect(!isNativeNodeTestCorpusFile("js/node/test/parallel/test-assert-strict-exists.js"));
+}
+
+test "native addon corpus routing excludes helpers and uses real test files" {
+    inline for (.{
+        "napi/napi.test.ts",
+        "napi/napi-value-ffi.test.ts",
+        "napi/node-napi-tests/test/js-native-api/2_function_arguments/do.test.ts",
+        "js/bun/ffi/ffi.test.js",
+        "js/bun/ffi/cc.test.ts",
+        "js/bun/ffi/ffi-error-messages.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeAddonTestCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+    inline for (.{
+        "napi/node-napi-tests/harness.ts",
+        "napi/napi-app/test_cleanup_hook_order.c",
+        "napi/napi-app/main.js",
+        "js/bun/ffi/cc-fixture.js",
+        "js/bun/ffi/ffi.test.fixture.callback.c",
+        "js/bun/ffi-other/cc.test.ts",
+        "napi-other/napi.test.ts",
+    }) |relative| try std.testing.expect(!isNativeAddonTestCorpusFile(relative));
+}
+
+test "bootstrap addon guard precedes cached or fabricated module exports" {
+    const start = std.mem.indexOf(u8, harness_prelude, "function __home_require_native_node_module(path) {") orelse return error.TestExpectedEqual;
+    const body = harness_prelude[start..];
+    const guard = std.mem.indexOf(u8, body, "__home_unsupported(\"Native Node-API addons require the full Home runtime\")") orelse return error.TestExpectedEqual;
+    const cache = std.mem.indexOf(u8, body, "__home_native_node_modules_by_path[resolved]") orelse return error.TestExpectedEqual;
+    const native_load = std.mem.indexOf(u8, body, "globalThis.__home_loadNativeNodeModule(resolved)") orelse return error.TestExpectedEqual;
+    try std.testing.expect(guard < cache);
+    try std.testing.expect(guard < native_load);
 }
 
 test "native corpus disabled body remains visible and contains no active test" {

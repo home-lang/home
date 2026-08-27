@@ -754,6 +754,7 @@ fn shutdown(this: *WebWorker) void {
     // ---- 3. JSC VM teardown ----------------------------------------------
     if (globalObject) |global| {
         WebWorker__teardownJSCVM(global);
+        if (vm_to_deinit.?.rare_data) |rare| rare.runPostHeapCleanupHooks();
     }
 
     // JSC is down; no more resolver/module-loader access past this point.

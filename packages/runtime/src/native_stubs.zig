@@ -90,8 +90,8 @@ comptime {
         // dns.zig (the noop left hostname HTTP/3 connects hanging).
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
         "Bun__Secrets__scheduleJob",
-        "Bun__onRejectEntryPointResult",
-        "Bun__onResolveEntryPointResult",
+        // Entry-point result handlers are real VirtualMachine exports. Native
+        // promiseHandlerID compares their addresses against its fixed table.
         "BlockList__onStructuredCloneDestroy",
         "CrashHandler__setDlOpenAction",
         "CrashHandler__setInsideNativePlugin",

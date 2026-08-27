@@ -33,6 +33,28 @@ const napi_status = c_uint;
 const napi_callback = ?*const fn (napi_env, napi_callback_info) callconv(.c) napi_value;
 const napi_finalize = ?*const fn (napi_env, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 
+// A plain JSContext's adapter environment is not a native NapiEnv. Keep the
+// pointer identities separate and dispatch native calls before reading any
+// adapter fields. Other threads (including native workers) have no such envs.
+threadlocal var bootstrap_napi_envs: std.AutoHashMapUnmanaged(usize, *NativeNapiEnv) = .empty;
+threadlocal var registering_bootstrap_napi_module = false;
+
+fn isBootstrapNapiEnv(env: napi_env) bool {
+    return if (env) |value| bootstrap_napi_envs.contains(@intFromPtr(value)) else false;
+}
+
+const NativeNapi = struct {
+    extern fn HomeNative_napi_module_register(module: ?*NativeNapiModule) void;
+    extern fn HomeNative_napi_create_function(env: napi_env, name: ?[*:0]const u8, length: usize, callback: napi_callback, data: ?*anyopaque, result: ?*napi_value) napi_status;
+    extern fn HomeNative_napi_get_cb_info(env: napi_env, info: napi_callback_info, argc: ?*usize, argv: [*c]napi_value, this_arg: ?*napi_value, data: ?*?*anyopaque) napi_status;
+    extern fn HomeNative_napi_set_named_property(env: napi_env, object: napi_value, name: ?[*:0]const u8, value: napi_value) napi_status;
+    extern fn HomeNative_napi_create_external(env: napi_env, data: ?*anyopaque, callback: napi_finalize, hint: ?*anyopaque, result: ?*napi_value) napi_status;
+    extern fn HomeNative_napi_get_value_external(env: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status;
+    extern fn HomeNative_napi_get_value_bool(env: napi_env, value: napi_value, result: ?*bool) napi_status;
+    extern fn HomeNative_napi_throw_error(env: napi_env, code: ?[*:0]const u8, message: ?[*:0]const u8) napi_status;
+    extern fn HomeNative_napi_create_object(env: napi_env, result: ?*napi_value) napi_status;
+};
+
 const NativeNapiEnv = struct {
     ctx: *JSContextRef,
     exception: extern_fns.ExceptionRef,
@@ -3628,109 +3650,33 @@ fn loadNativeNodeModule(
 ) callconv(.c) ?*JSValue {
     _ = function;
     _ = this;
+    _ = argument_count;
+    _ = arguments;
     const actual_ctx = ctx.?;
-    const allocator = std.heap.smp_allocator;
-    const NapiRegisterFn = *const fn (napi_env, napi_value) callconv(.c) napi_value;
-
-    if (argument_count < 1 or arguments[0] == null) {
-        setException(actual_ctx, exception, "require(.node) requires a native module path");
-        return null;
-    }
-
-    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) path failed: {s}", .{@errorName(err)});
+    // A plain JSContext has neither a native NapiEnv nor native napi_value
+    // handles. Reject before dlopen: legacy constructors may register callbacks
+    // while the library is opening, before its entry point can be inspected.
+    const ErrorConstructor = struct {
+        extern "c" fn JSObjectMakeError(context: ?*JSContextRef, count: usize, values: [*c]const ?*JSValue, error_out: extern_fns.ExceptionRef) ?*JSObject;
+    };
+    const message = "__home_unsupported__:Native Node-API addons require the full Home runtime";
+    const message_string = makeJSString(message) catch {
+        setException(actual_ctx, exception, message);
         return null;
     };
-    defer allocator.free(path);
-
-    const pending_start = pending_napi_modules.items.len;
-    var lib = std.DynLib.open(path) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "ERR_DLOPEN_FAILED: {s}", .{@errorName(err)});
+    defer extern_fns.JSStringRelease(message_string);
+    const error_arguments = [_]?*JSValue{extern_fns.JSValueMakeString(actual_ctx, message_string)};
+    var construction_exception: ?*JSValue = null;
+    // A real Error preserves name/message when the outer evaluator serializes
+    // an uncaught exception; an object literal only becomes [object Object].
+    const error_object = ErrorConstructor.JSObjectMakeError(actual_ctx, error_arguments.len, &error_arguments, &construction_exception) orelse {
+        setException(actual_ctx, exception, "__home_unsupported__:Native Node-API addons require the full Home runtime");
         return null;
     };
-    errdefer lib.close();
-
-    const has_napi_register = lib.lookup(*const anyopaque, "napi_register_module_v1") != null;
-    const has_node_api_version = lib.lookup(*const anyopaque, "node_api_module_get_api_version_v1") != null;
-    const has_plugin_impl = lib.lookup(*const anyopaque, "plugin_impl") != null;
-    const has_plugin_impl_bar = lib.lookup(*const anyopaque, "plugin_impl_bar") != null;
-    const has_plugin_impl_baz = lib.lookup(*const anyopaque, "plugin_impl_baz") != null;
-    const has_incompatible_version = lib.lookup(*const anyopaque, "incompatible_version_plugin_impl") != null;
-    const has_bad_free_pointer = lib.lookup(*const anyopaque, "plugin_impl_bad_free_function_pointer") != null;
-    const plugin_name = readNativePluginName(&lib);
-    const napi_register = lib.lookup(NapiRegisterFn, "napi_register_module_v1");
-    const registered_module = if (pending_napi_modules.items.len > pending_start)
-        pending_napi_modules.items[pending_start]
-    else
-        null;
-
-    if (napi_register == null and registered_module == null) {
-        lib.close();
-        setException(actual_ctx, exception, "symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
-        return null;
-    }
-
-    const exports_object = extern_fns.JSObjectMake(actual_ctx, null, null) orelse {
-        setException(actual_ctx, exception, "require(.node) failed to create exports object");
-        return null;
-    };
-    const env = allocator.create(NativeNapiEnv) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) env allocation failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    env.* = .{ .ctx = actual_ctx, .exception = exception };
-
-    const registration_result = if (registered_module) |module|
-        module.nm_register_func(env, @ptrCast(exports_object))
-    else
-        napi_register.?(env, @ptrCast(exports_object));
-    if (exception.* != null or env.last_error == .pending_exception) return null;
-    const module_value = registration_result orelse @as(*JSValue, @ptrCast(exports_object));
-    if (!extern_fns.JSValueIsObject(actual_ctx, module_value)) {
-        setException(actual_ctx, exception, "Expected Node-API module to return an exports object");
-        return null;
-    }
-    const module_object = extern_fns.JSValueToObject(actual_ctx, module_value, exception) orelse return null;
-
-    loaded_native_node_modules.append(allocator, lib) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) handle retention failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    errdefer _ = loaded_native_node_modules.pop();
-    const lib_index = loaded_native_node_modules.items.len - 1;
-
-    setBoolProperty(actual_ctx, module_object, "__home_napi_module", true);
-    setStringProperty(actual_ctx, module_object, "__home_native_path", path) catch {};
-    setStringProperty(actual_ctx, module_object, "__home_native_plugin_name", plugin_name orelse "") catch {};
-    setBoolProperty(actual_ctx, module_object, "__home_has_napi_register", has_napi_register);
-    setBoolProperty(actual_ctx, module_object, "__home_has_node_api_version", has_node_api_version);
-    const symbols = makeNativeSymbolObject(actual_ctx, .{
-        .plugin_impl = has_plugin_impl,
-        .plugin_impl_bar = has_plugin_impl_bar,
-        .plugin_impl_baz = has_plugin_impl_baz,
-        .incompatible_version_plugin_impl = has_incompatible_version,
-        .plugin_impl_bad_free_function_pointer = has_bad_free_pointer,
-    }) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) metadata failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    setProperty(actual_ctx, module_object, "__home_native_symbols", @ptrCast(symbols));
-
-    native_module_meta.put(allocator, @intFromPtr(module_object), .{
-        .lib_index = lib_index,
-        .plugin_name = plugin_name orelse "",
-    }) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) private metadata failed: {s}", .{@errorName(err)});
-        return null;
-    };
-
-    if (plugin_name) |name| {
-        if (std.mem.eql(u8, name, "native_plugin_test")) {
-            installNativePluginFixtureShims(actual_ctx, module_object);
-        }
-    }
-
-    return @ptrCast(module_object);
+    setStringProperty(actual_ctx, error_object, "name", "HomeUnsupportedError") catch {};
+    setBoolProperty(actual_ctx, error_object, "__home_unsupported", true);
+    exception.* = @ptrCast(error_object);
+    return null;
 }
 
 fn readNativePluginName(lib: *std.DynLib) ?[]const u8 {
@@ -4263,6 +4209,7 @@ fn nativePluginFixtureNativeCounter(data: ?*anyopaque, property: []const u8) ?us
 }
 
 pub export fn napi_module_register(module: ?*NativeNapiModule) void {
+    if (!registering_bootstrap_napi_module) return NativeNapi.HomeNative_napi_module_register(module);
     const actual = module orelse return;
     pending_napi_modules.append(std.heap.smp_allocator, actual.*) catch {};
 }
@@ -4275,6 +4222,7 @@ pub export fn napi_create_function(
     data: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_function(env_, utf8name, length, cb, data, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const callback = cb orelse return setNapiLastError(env, .invalid_arg);
@@ -4303,6 +4251,7 @@ pub export fn napi_get_cb_info(
     this_arg: ?*napi_value,
     data: ?*?*anyopaque,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_cb_info(env_, info, argc, argv, this_arg, data);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const frame = info orelse return setNapiLastError(env, .invalid_arg);
     if (argc) |argc_ptr| {
@@ -4318,6 +4267,7 @@ pub export fn napi_get_cb_info(
 }
 
 pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8name: ?[*:0]const u8, value: napi_value) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_set_named_property(env_, object, utf8name, value);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const name = utf8name orelse return setNapiLastError(env, .invalid_arg);
     const object_value = object orelse return setNapiLastError(env, .invalid_arg);
@@ -4334,6 +4284,7 @@ pub export fn napi_create_external(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_external(env_, data, finalize_cb, finalize_hint, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object = extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure);
@@ -4353,6 +4304,7 @@ pub export fn napi_create_external(
 }
 
 pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_value_external(env_, value, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object_value = value orelse return setNapiLastError(env, .invalid_arg);
@@ -4379,6 +4331,7 @@ fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, res
 }
 
 pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*bool) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_value_bool(env_, value, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const js_value = value orelse return setNapiLastError(env, .invalid_arg);
@@ -4386,13 +4339,15 @@ pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*b
     return setNapiLastError(env, .ok);
 }
 
-pub export fn napi_throw_error(env_: napi_env, _: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
+pub export fn napi_throw_error(env_: napi_env, code: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_throw_error(env_, code, message);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     setException(env.ctx, env.exception, if (message) |ptr| std.mem.span(ptr) else "napi error");
     return setNapiLastError(env, .pending_exception);
 }
 
 pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_object(env_, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     out.* = @ptrCast(extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure));
@@ -4421,6 +4376,10 @@ fn cleanupNativeBridge() void {
     loaded_native_node_modules = .empty;
     pending_napi_modules.deinit(allocator);
     pending_napi_modules = .empty;
+    var envs = bootstrap_napi_envs.valueIterator();
+    while (envs.next()) |env| allocator.destroy(env.*);
+    bootstrap_napi_envs.deinit(allocator);
+    bootstrap_napi_envs = .empty;
 }
 
 /// Keep corpus label canonicalization on Home's production WHATWG alias map.

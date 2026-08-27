@@ -153,6 +153,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
 
     m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return;
     defer walker.deinit();

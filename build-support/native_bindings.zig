@@ -8,6 +8,7 @@ const CompileCommand = struct {
 
 var cached_process_object: ?std.Build.LazyPath = null;
 var cached_registry_object: ?std.Build.LazyPath = null;
+var cached_napi_object: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
 /// produced the rest of the linked Bun objects. Never silently use the stale
@@ -18,6 +19,15 @@ pub fn processObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath 
     const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/BunProcess.cpp"), "BunProcess.cpp");
     const object = compileObject(b, object_root, "BunProcess.cpp", source);
     cached_process_object = object;
+    return object;
+}
+
+pub fn napiObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_napi_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/napi.cpp"), "napi.cpp");
+    const object = compileObject(b, object_root, "napi.cpp", source);
+    cached_napi_object = object;
     return object;
 }
 
@@ -91,6 +101,16 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     compile.setName(b.fmt("compile Home {s} binding", .{basename}));
     compile.setCwd(.{ .cwd_relative = command.directory });
     compile.addFileInput(.{ .cwd_relative = database_path });
+    if (std.mem.eql(u8, basename, "napi.cpp")) {
+        // The plain-context corpus adapter has a separate environment ABI.
+        // Its public entry points dispatch real NapiEnv values here before
+        // touching the adapter layout. Do not weaken either implementation.
+        for ([_][]const u8{
+            "napi_create_external", "napi_create_function",    "napi_create_object",
+            "napi_get_cb_info",     "napi_get_value_bool",     "napi_get_value_external",
+            "napi_module_register", "napi_set_named_property", "napi_throw_error",
+        }) |symbol| compile.addArg(b.fmt("-D{s}=HomeNative_{s}", .{ symbol, symbol }));
+    }
 
     var i: usize = 1;
     while (i < command.arguments.len) : (i += 1) {

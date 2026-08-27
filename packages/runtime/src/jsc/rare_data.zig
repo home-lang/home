@@ -18,6 +18,9 @@ cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .empty,
 // TODO: make this per JSGlobalObject instead of global
 // This does not handle ShadowRealm correctly!
 cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .empty,
+// Native executable code may be referenced by GC finalizers after onExit's
+// environment cleanup. Release it only once the JSC heap has been destroyed.
+post_heap_cleanup_hooks: std.ArrayListUnmanaged(PostHeapCleanupHook) = .empty,
 
 file_polls_: ?*Async.FilePoll.Store = null,
 
@@ -542,6 +545,24 @@ pub fn pushCleanupHook(
     bun.handleOom(this.cleanup_hooks.append(bun.default_allocator, CleanupHook.init(globalThis, ctx, func)));
 }
 
+const PostHeapCleanupHook = struct {
+    ctx: ?*anyopaque,
+    func: CleanupHook.Function,
+};
+
+/// Callbacks must not access JSC. Ordinary process exit without heap destruction
+/// lets the OS reclaim this code instead of releasing it before finalizers.
+pub fn pushPostHeapCleanupHook(this: *RareData, ctx: ?*anyopaque, func: CleanupHook.Function) void {
+    bun.handleOom(this.post_heap_cleanup_hooks.append(bun.default_allocator, .{ .ctx = ctx, .func = func }));
+}
+
+/// Invoke only after a successful JSC heap destruction, not generic VM deinit:
+/// build-only VM paths may deinit Zig state without destroying their JSC heap.
+pub fn runPostHeapCleanupHooks(this: *RareData) void {
+    for (this.post_heap_cleanup_hooks.items) |hook| hook.func(hook.ctx);
+    this.post_heap_cleanup_hooks.clearAndFree(bun.default_allocator);
+}
+
 pub fn boringEngine(rare: *RareData) *BoringSSL.ENGINE {
     return rare.boring_ssl_engine orelse brk: {
         rare.boring_ssl_engine = BoringSSL.ENGINE_new();
@@ -831,6 +852,9 @@ pub fn defaultCSRFSecret(this: *RareData) []const u8 {
 }
 
 pub fn deinit(this: *RareData) void {
+    // Any undrained native code remains valid for a surviving JSC heap. The
+    // process-exit path will reclaim it; deinit alone cannot prove GC is done.
+    this.post_heap_cleanup_hooks.clearAndFree(bun.default_allocator);
     if (this.temp_pipe_read_buffer) |pipe| {
         this.temp_pipe_read_buffer = null;
         bun.default_allocator.destroy(pipe);

@@ -18,6 +18,8 @@ comptime {
     @export(&scriptExecutionStatus, .{ .name = "Bun__VM__scriptExecutionStatus" });
     @export(&setEntryPointEvalResultESM, .{ .name = "Bun__VM__setEntryPointEvalResultESM" });
     @export(&setEntryPointEvalResultCJS, .{ .name = "Bun__VM__setEntryPointEvalResultCJS" });
+    @export(&onResolveEntryPointResult, .{ .name = "Bun__onResolveEntryPointResult" });
+    @export(&onRejectEntryPointResult, .{ .name = "Bun__onRejectEntryPointResult" });
     @export(&specifierIsEvalEntryPoint, .{ .name = "Bun__VM__specifierIsEvalEntryPoint" });
     @export(&string_allocation_limit, .{ .name = "Bun__stringSyntheticAllocationLimit" });
     @export(&allowAddons, .{ .name = "Bun__VM__allowAddons" });
@@ -923,6 +925,25 @@ pub fn setEntryPointEvalResultCJS(this: *VirtualMachine, value: JSValue) callcon
     }
 }
 
+/// These names are part of GlobalObject::promiseHandlerID's fixed callback
+/// table. Keep the CLI's pending completion handlers on the registered symbols
+/// rather than passing an arbitrary function pointer to JSValue.then2.
+pub fn onResolveEntryPointResult(global: *JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+    const result = callframe.arguments_old(1).slice()[0];
+    result.print(global, .Log, .Log);
+    Output.flush();
+    Global.exit(global.bunVM().exit_handler.exit_code);
+}
+
+pub fn onRejectEntryPointResult(global: *JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+    // Match Bun's CLI: both callbacks display the settled completion and exit
+    // with the VM's chosen status; unhandled-error accounting sets that status.
+    const result = callframe.arguments_old(1).slice()[0];
+    result.print(global, .Log, .Log);
+    Output.flush();
+    Global.exit(global.bunVM().exit_handler.exit_code);
+}
+
 pub fn onExit(this: *VirtualMachine) void {
     // Write CPU profile if profiling was enabled - do this FIRST before any shutdown begins
     // Grab the config and null it out to make this idempotent
@@ -982,7 +1003,11 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // / postgres / etc. socket is an LSAN leak under
         // BUN_DESTRUCT_VM_ON_EXIT.
         if (this.rare_data) |rare| rare.closeAllSocketGroups(this);
+        // Match worker teardown: last-chance Node-API finalizers must run now,
+        // not enqueue tasks on an event loop that is about to be destroyed.
+        this.global.requestTermination();
         Zig__GlobalObject__destructOnExit(this.global);
+        if (this.rare_data) |rare| rare.runPostHeapCleanupHooks();
         // lastChanceToFinalize() above runs Listener/Server finalize → their
         // own embedded group.closeAll() → sockets land in loop.closed_head.
         // The pre-JSC drain in closeAllSocketGroups() can't see those (the

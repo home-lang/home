@@ -1757,6 +1757,8 @@ fn envFlagSet(name: [*:0]const u8) bool {
 const VmRunState = struct {
     vm: *home_rt.jsc.VirtualMachine,
     entry_path: []const u8,
+    print_result: bool = false,
+    owned_preload_path: ?[]const u8 = null,
 
     var instance: VmRunState = undefined;
 
@@ -1778,10 +1780,49 @@ const VmRunState = struct {
         home_rt.Output.flush();
     }
 
+    fn cleanupOwnedPreload(this: *VmRunState) void {
+        if (this.owned_preload_path) |path| {
+            Io.Dir.cwd().deleteFile(g_io, path) catch {};
+            this.owned_preload_path = null;
+        }
+    }
+
+    fn cleanupOwnedPreloadAtExit() callconv(.c) void {
+        // Explicit process.exit() during entry evaluation never returns from
+        // loadEntryPoint, so its generated preload needs a process-exit hook.
+        instance.cleanupOwnedPreload();
+    }
+
+    /// Use JSC's actual module completion value, including statements, imports,
+    /// and TypeScript. A console.log(expression) wrapper cannot preserve it.
+    fn printEntryPointResult(vm: *home_rt.jsc.VirtualMachine) void {
+        const result = vm.entry_point_result.value.get() orelse .js_undefined;
+        const to_print = completion: {
+            if (result.asAnyPromise()) |promise| {
+                if (promise.status() != .pending) break :completion promise.result(vm.jsc_vm);
+                // Match Run.start: a pending result does not itself keep the
+                // event loop alive, but a later settlement is printed if work
+                // scheduled by promise reactions makes progress.
+                result.then2(vm.global, .js_undefined, home_rt.jsc.VirtualMachine.onResolveEntryPointResult, home_rt.jsc.VirtualMachine.onRejectEntryPointResult) catch {};
+                vm.tick();
+                vm.eventLoop().autoTickActive();
+                while (vm.isEventLoopAlive()) {
+                    vm.tick();
+                    vm.eventLoop().autoTickActive();
+                }
+            }
+            break :completion result;
+        };
+        to_print.print(vm.global, .Log, .Log);
+    }
+
     fn start(this: *VmRunState) void {
         const vm = this.vm;
 
         if (vm.loadEntryPoint(this.entry_path)) |promise| {
+            // Preloads have finished loading. Remove only our generated file,
+            // including rejected-entry paths which exit without running defers.
+            this.cleanupOwnedPreload();
             if (promise.status() == .rejected) {
                 const handled = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
                 promise.setHandled();
@@ -1798,6 +1839,7 @@ const VmRunState = struct {
             }
             _ = promise.result(vm.global.vm());
         } else |err| {
+            this.cleanupOwnedPreload();
             std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), this.entry_path, @errorName(err) });
             vm.exit_handler.exit_code = 1;
             home_rt.Output.flush();
@@ -1810,6 +1852,7 @@ const VmRunState = struct {
             vm.tick();
             vm.eventLoop().autoTickActive();
         }
+        if (this.print_result) printEntryPointResult(vm);
         vm.onBeforeExit();
 
         vm.global.handleRejectedPromises();
@@ -1845,15 +1888,19 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     var print_mode = false;
     var expose_gc = false;
     var experimental_stream_iter = false;
+    var extra: std.ArrayListUnmanaged([:0]const u8) = .empty;
+    defer extra.deinit(allocator);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
         if (std.mem.eql(u8, a, "--print") or std.mem.eql(u8, a, "-p")) {
             print_mode = true;
-            if (i + 1 < args.len) {
+            if (code == null and i + 1 < args.len) {
                 code = args[i + 1];
                 i += 1;
             }
+        } else if (code != null) {
+            try extra.append(allocator, a);
         } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--eval")) {
             if (i + 1 < args.len) {
                 code = args[i + 1];
@@ -1883,24 +1930,16 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
     }
 
-    // Assemble the module source: optional gc alias, then either the raw code
-    // (`-e`) or a `console.log(<expr>)` wrapper (`--print`).
+    // Preserve the raw module source for native completion-value evaluation.
     var src: std.ArrayListUnmanaged(u8) = .empty;
     defer src.deinit(allocator);
     if (expose_gc) try src.appendSlice(allocator, "try { globalThis.gc = Bun.gc; } catch {}\n");
-    if (print_mode) {
-        try src.appendSlice(allocator, "console.log(");
-        try src.appendSlice(allocator, code.?);
-        try src.appendSlice(allocator, ");\n");
-    } else {
-        try src.appendSlice(allocator, code.?);
-        try src.appendSlice(allocator, "\n");
-    }
+    try src.appendSlice(allocator, code.?);
 
     // Bun evaluates inline code as a virtual `<cwd>/[eval]` TypeScript module.
     // Keeping that synthetic path is important: relative imports in `-e`
     // resolve from the caller's cwd, not from an implementation temp directory.
-    runFileViaVMOpts(allocator, "[eval]", &.{}, true, src.items) catch |err| {
+    runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra.items), true, src.items, print_mode) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
@@ -1917,14 +1956,19 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
 /// `error: <message>` line. `extra_args` become `process.argv[2..]`.
 /// globalExits on success (noreturn via runFileViaVM), so it never returns true.
 fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8) !void {
+    return runInlineEvalModeViaVM(allocator, code, extra_args, false);
+}
+
+fn inlineEvalArguments(args: []const [:0]const u8) []const [:0]const u8 {
+    // A leading end-of-options separator is CLI syntax, not a script arg.
+    // Later separators are ordinary user data and must remain untouched.
+    return if (args.len > 0 and std.mem.eql(u8, args[0], "--")) args[1..] else args;
+}
+
+fn runInlineEvalModeViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8, print_result: bool) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
-
-    var src: std.ArrayListUnmanaged(u8) = .empty;
-    defer src.deinit(allocator);
-    try src.appendSlice(allocator, code);
-    try src.appendSlice(allocator, "\n");
-
-    try runFileViaVMOpts(allocator, "[eval]", extra_args, true, src.items);
+    // Keep the caller's exact text: process._eval exposes this source verbatim.
+    try runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra_args), true, code, print_result);
 }
 
 /// Preload modules named via `--require`/`-r`/`--preload` on the implicit-run
@@ -1940,7 +1984,7 @@ var g_user_conditions: []const []const u8 = &.{};
 var g_user_preserve_symlinks = false;
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
-    return runFileViaVMOpts(allocator, file_path, extra_args, false, null);
+    return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false);
 }
 
 fn runFileViaVMOpts(
@@ -1949,6 +1993,7 @@ fn runFileViaVMOpts(
     extra_args: []const [:0]const u8,
     inject_node_globals: bool,
     eval_source_text: ?[]const u8,
+    print_result: bool,
 ) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
@@ -1963,7 +2008,7 @@ fn runFileViaVMOpts(
     // Faithful to Run.boot: JSC (WTF + Options + heap size-class tables) must be
     // initialized exactly once before any VM is created. Skipping this makes
     // JSC::VM::tryCreate crash in MarkedSpace::sizeClasses().
-    home_rt.jsc.initialize(false);
+    home_rt.jsc.initialize(print_result);
 
     // Faithful to Run.boot: the AST node stores must exist before the module
     // loader transpiles anything (the parser allocates Expr/Stmt data from them).
@@ -1994,6 +2039,8 @@ fn runFileViaVMOpts(
     // and the resolver reports "Cannot find module". The `vm.preload` assignment
     // (which needs `vm`) stays after init.
     var preload_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    var owned_preload_path: ?[]const u8 = null;
+    errdefer if (owned_preload_path) |path| Io.Dir.cwd().deleteFile(g_io, path) catch {};
     if (inject_node_globals) {
         const boot =
             \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
@@ -2003,7 +2050,8 @@ fn runFileViaVMOpts(
         const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
             return error.NameTooLong;
         try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
-        try preload_list.append(allocator, try allocator.dupe(u8, pre_path));
+        owned_preload_path = try allocator.dupe(u8, pre_path);
+        try preload_list.append(allocator, owned_preload_path.?);
     }
     // User `--require`/`-r`/`--preload` modules (run before the entry).
     for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
@@ -2019,6 +2067,7 @@ fn runFileViaVMOpts(
         .args = args,
         .log = log,
         .is_main_thread = true,
+        .eval = print_result,
     });
 
     var b = &vm.transpiler;
@@ -2032,6 +2081,7 @@ fn runFileViaVMOpts(
         const eval_source = try allocator.create(home_rt.logger.Source);
         eval_source.* = home_rt.logger.Source.initPathString(abs_path, source_text);
         vm.module_loader.eval_source = eval_source;
+        if (print_result) b.options.dead_code_elimination = false;
     }
 
     // `process.argv` is built as [execPath, scriptPath, ...vm.argv]; vm.argv holds
@@ -2083,7 +2133,8 @@ fn runFileViaVMOpts(
     vm.main_is_eval_entry = eval_source_text != null;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
-    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path };
+    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path, .print_result = print_result, .owned_preload_path = owned_preload_path };
+    if (owned_preload_path != null) home_rt.Global.addExitCallback(VmRunState.cleanupOwnedPreloadAtExit);
     const callback = home_rt.jsc.OpaqueWrap(VmRunState, VmRunState.start);
     vm.global.vm().holdAPILock(&VmRunState.instance, callback);
 }
@@ -2488,7 +2539,7 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try argv.append(allocator, "-");
     try argv.appendSlice(allocator, extra_args);
 
-    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source);
+    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false);
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
@@ -5298,11 +5349,10 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        // Without `--print`, run through the full VM (faithful globals + error
-        // printer). `--print` stays on the eval shim, which formats the result
-        // value. globalExits on success.
-        if (build_options.enable_jsc and !print_result) {
-            runInlineEvalViaVM(allocator, code.?, extra.items) catch |err| {
+        // Both modes use the complete native VM. Print mode additionally
+        // retains and formats the module's real completion value.
+        if (build_options.enable_jsc) {
+            runInlineEvalModeViaVM(allocator, code.?, extra.items, print_result) catch |err| {
                 std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
                 std.process.exit(1);
             };
@@ -5322,7 +5372,11 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --print <code>\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, args[2], true, &.{});
+        if (build_options.enable_jsc) {
+            try runInlineEvalModeViaVM(allocator, args[2], args[3..], true);
+        } else {
+            try evalCommand(allocator, args[2], true, &.{});
+        }
         return;
     }
 
@@ -5497,7 +5551,11 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, code.?, print_result, &.{});
+        if (build_options.enable_jsc) {
+            try runInlineEvalModeViaVM(allocator, code.?, &.{}, print_result);
+        } else {
+            try evalCommand(allocator, code.?, print_result, &.{});
+        }
         return;
     }
 
