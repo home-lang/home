@@ -65,6 +65,7 @@ test {
     _ = check;
     _ = render;
     _ = @import("lib.zig");
+    _ = @import("source_markers.zig");
 }
 
 test "ts_checker: end-to-end smoke" {

@@ -33,6 +33,7 @@ const relation = @import("relation.zig");
 const lower = @import("lower.zig");
 const lib = @import("lib.zig");
 const unicode_case = @import("unicode_case.zig");
+const source_markers_mod = @import("source_markers.zig");
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -4747,6 +4748,9 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_facts: SourceFacts = .{},
+    /// Exact raw substring positions, shared by feature prefilters and
+    /// directive parsers. Rebuilt whenever the attached source changes.
+    source_markers: ?source_markers_mod.Index = null,
     parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
     parameter_annotations_by_name: std.AutoHashMapUnmanaged(
         hir_mod.StringId,
@@ -5232,6 +5236,8 @@ pub const Checker = struct {
     pub fn setSource(self: *Checker, source: []const u8) void {
         self.source = source;
         self.source_facts = .{};
+        self.source_markers = source_markers_mod.Index.scan(source);
+        const markers = &self.source_markers.?;
         self.jsx_intrinsic_attributes_decl_scanned = false;
         self.jsx_intrinsic_attributes_decl = false;
         self.jsx_namespace_decl_scanned = false;
@@ -5262,39 +5268,28 @@ pub const Checker = struct {
         self.prior_jsdoc_property_assignments.clearRetainingCapacity();
         self.prior_jsdoc_property_assignments_built = false;
         self.source_has_virtual_sections =
-            std.mem.indexOf(u8, source, "@filename:") != null or
-            std.mem.indexOf(u8, source, "@Filename:") != null;
+            markers.contains("@filename:") or markers.contains("@Filename:");
         self.source_may_have_umd_namespace_export =
-            std.mem.indexOf(u8, source, "export") != null and
-            std.mem.indexOf(u8, source, "namespace") != null and
-            std.mem.indexOf(u8, source, "as") != null;
+            markers.contains("export") and markers.contains("namespace") and markers.contains("as");
         self.source_may_have_declare_any_var =
-            std.mem.indexOf(u8, source, "declare") != null and
-            std.mem.indexOf(u8, source, "var") != null and
-            std.mem.indexOfScalar(u8, source, ':') != null and
-            std.mem.indexOf(u8, source, "any") != null;
+            markers.contains("declare") and markers.contains("var") and
+            markers.contains(":") and markers.contains("any");
         self.source_may_have_import_equals =
-            std.mem.indexOf(u8, source, "import") != null and
-            std.mem.indexOfScalar(u8, source, '=') != null;
-        self.source_may_have_import_declaration = std.mem.indexOf(u8, source, "import") != null;
-        self.source_may_have_jsdoc_import_tag = std.mem.indexOf(u8, source, "@import") != null;
-        self.source_may_have_require_binding = self.sourceSliceMentionsIdentifier(source, "require");
+            markers.contains("import") and markers.contains("=");
+        self.source_may_have_import_declaration = markers.contains("import");
+        self.source_may_have_jsdoc_import_tag = markers.contains("@import");
+        self.source_may_have_require_binding = markers.contains("require") and self.sourceSliceMentionsIdentifier(source, "require");
         self.source_may_have_namespace_declaration =
-            std.mem.indexOf(u8, source, "namespace") != null or
-            std.mem.indexOf(u8, source, "module") != null or
-            std.mem.indexOf(u8, source, "global") != null;
+            markers.contains("namespace") or markers.contains("module") or markers.contains("global");
         self.source_may_have_class_or_enum_declaration =
-            std.mem.indexOf(u8, source, "class") != null or
-            std.mem.indexOf(u8, source, "enum") != null;
-        self.source_may_have_enum_declaration = std.mem.indexOf(u8, source, "enum") != null;
-        self.source_may_have_type_alias_declaration = std.mem.indexOf(u8, source, "type") != null;
+            markers.contains("class") or markers.contains("enum");
+        self.source_may_have_enum_declaration = markers.contains("enum");
+        self.source_may_have_type_alias_declaration = markers.contains("type");
         self.source_may_have_computed_prototype_assignment =
-            std.mem.indexOf(u8, source, "prototype") != null and
-            std.mem.indexOfScalar(u8, source, '[') != null and
-            std.mem.indexOfScalar(u8, source, '=') != null and
-            std.mem.indexOfScalar(u8, source, '{') != null;
-        self.source_may_have_prototype_assignment = std.mem.indexOf(u8, source, ".prototype") != null;
-        self.source_may_have_protected_member = std.mem.indexOf(u8, source, "protected") != null;
+            markers.contains("prototype") and markers.contains("[") and
+            markers.contains("=") and markers.contains("{");
+        self.source_may_have_prototype_assignment = markers.contains(".prototype");
+        self.source_may_have_protected_member = markers.contains("protected");
         self.may_have_expando_property_assignments = null;
         self.virtual_section_start_cache.clearRetainingCapacity();
         self.visible_named_type_decls.clearRetainingCapacity();
@@ -5314,6 +5309,12 @@ pub const Checker = struct {
         self.named_shape_non_class_cache.clearRetainingCapacity();
         self.named_shape_any_cache.clearRetainingCapacity();
         self.named_shape_misses.clearRetainingCapacity();
+    }
+
+    fn sourceMarkerPosition(self: *const Checker, comptime marker: []const u8) ?usize {
+        const source = self.source orelse return null;
+        if (self.source_markers) |*markers| return markers.indexOf(marker);
+        return std.mem.indexOf(u8, source, marker);
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -12379,8 +12380,8 @@ pub const Checker = struct {
 
     fn sourceContainsImportMeta(self: *Checker) bool {
         if (self.source_facts.contains_import_meta) |cached| return cached;
-        const src = self.source orelse return false;
-        const result = std.mem.indexOf(u8, src, "import.meta") != null;
+        if (self.source == null) return false;
+        const result = self.sourceMarkerPosition("import.meta") != null;
         self.source_facts.contains_import_meta = result;
         return result;
     }
@@ -14201,6 +14202,7 @@ pub const Checker = struct {
 
     fn virtualSectionFilenameForNode(self: *Checker, node: NodeId) ?[]const u8 {
         const src = self.source orelse return null;
+        if (!self.sourceHasVirtualFilenameSections()) return null;
         const section = self.virtualSectionStartForNode(node);
         if (section >= src.len) return null;
         const line_end = std.mem.indexOfScalarPos(u8, src, section, '\n') orelse src.len;
@@ -24935,7 +24937,7 @@ pub const Checker = struct {
 
     fn sourceLibDirectiveNeedsIterableIterator(self: *Checker) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -37654,7 +37656,7 @@ pub const Checker = struct {
         if (self.source_facts.no_lib_true_directive) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse break :blk false;
+            const pos = self.sourceMarkerPosition("@noLib") orelse self.sourceMarkerPosition("@nolib") orelse break :blk false;
             const line_end = std.mem.indexOfScalarPos(u8, src, pos, '\n') orelse src.len;
             break :blk std.mem.indexOf(u8, src[pos..line_end], "true") != null;
         };
@@ -50227,8 +50229,8 @@ pub const Checker = struct {
     fn sourceExplicitlyEnablesCheckJs(self: *Checker) bool {
         const src = self.source orelse return false;
         return blk: {
-            if (std.mem.indexOf(u8, src, "@ts-check") != null) break :blk true;
-            var search_start: usize = 0;
+            if (self.sourceMarkerPosition("@ts-check") != null) break :blk true;
+            var search_start = self.sourceMarkerPosition("@check") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
                 search_start = pos + "@check".len;
                 if (src.len < pos + "@checkJs".len) continue;
@@ -50274,6 +50276,7 @@ pub const Checker = struct {
 
     fn scanSourceDirectiveIsTrue(self: *const Checker, marker: []const u8) bool {
         const src = self.source orelse return false;
+        if (std.mem.startsWith(u8, marker, "@") and self.sourceMarkerPosition("@") == null) return false;
         const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
         var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
         if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
@@ -50285,7 +50288,7 @@ pub const Checker = struct {
         if (self.source_facts.allow_js_directive) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            var search_start: usize = 0;
+            var search_start = self.sourceMarkerPosition("@allow") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@allow")) |pos| {
                 search_start = pos + "@allow".len;
                 if (src.len < pos + "@allowJs".len) continue;
@@ -50305,7 +50308,7 @@ pub const Checker = struct {
         if (self.source_facts.explicitly_disables_check_js) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            var search_start: usize = 0;
+            var search_start = self.sourceMarkerPosition("@check") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
                 search_start = pos + "@check".len;
                 if (src.len < pos + "@checkJs".len) continue;
@@ -99088,7 +99091,7 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) return false;
         if (self.sourceHasNoLibTrueDirective()) return false;
 
-        const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
+        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
         const has_promise_constructor = if (has_lib_directive)
             !self.sourceLibDirectiveExcludes("es2015")
         else
@@ -131822,7 +131825,7 @@ pub const Checker = struct {
     /// (any `es2017*` lib counts as covering es2017, etc.).
     fn sourceLibDirectiveExcludes(self: *Checker, required: []const u8) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -131833,7 +131836,7 @@ pub const Checker = struct {
 
     fn sourceLibDirectiveExcludesExplicitResourceManagement(self: *Checker) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -131854,7 +131857,7 @@ pub const Checker = struct {
             if (self.sourceHasNoLibTrueDirective()) break :result true;
             if (self.sourceHasReferenceLibDirective("dom")) break :result false;
             const src = self.source orelse break :result false;
-            const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse break :result false;
+            const lib_pos = self.sourceMarkerPosition("@lib") orelse break :result false;
             const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
             var buf: [256]u8 = undefined;
             const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -131942,7 +131945,7 @@ pub const Checker = struct {
             "es2024"
         else
             self.libGatedPropertyMember(receiver_t, member_name) orelse return false;
-        const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
+        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
         if (has_lib_directive) {
             if (!self.sourceLibDirectiveExcludes(required)) return false;
         } else if (!self.sourceTargetExcludesLib(required)) return false;
@@ -131972,7 +131975,7 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         if (std.mem.eql(u8, s, "ITextWriter")) {
             const src = self.source orelse return true;
-            const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return true;
+            const lib_pos = self.sourceMarkerPosition("@lib") orelse return true;
             const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
             return std.mem.indexOf(u8, src[lib_pos..line_end], "scripthost") != null;
         }
@@ -201552,6 +201555,76 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(!s.checker.sourceHasNoLibTrueDirective());
     try T.expect(!s.checker.sourceContainsImportMeta());
     try T.expect(!s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
+}
+
+test "checker: source marker feature facts match independent substring searches" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    for ([_][]const u8{
+        "",                                                                           "const value = 1;",                                             "// @Filename: a.ts\n// @filename: b.ts",
+        "export namespace N as any declare var value: any; import x = require('x');", "myclassify enumtype global module .prototype [ = { protected", "'@import' /* require */",
+        "requires require1 $require _require require$ require_",                      "\xffrequire\xc3\xa9",                                          "require",
+        "prototype[ = {",                                                             "prototype[ {",                                                 "enum",
+        "type",
+    }) |source| {
+        s.checker.setSource(source);
+        try T.expectEqual(std.mem.indexOf(u8, source, "@filename:") != null or std.mem.indexOf(u8, source, "@Filename:") != null, s.checker.source_has_virtual_sections);
+        try T.expectEqual(std.mem.indexOf(u8, source, "export") != null and std.mem.indexOf(u8, source, "namespace") != null and std.mem.indexOf(u8, source, "as") != null, s.checker.source_may_have_umd_namespace_export);
+        try T.expectEqual(std.mem.indexOf(u8, source, "declare") != null and std.mem.indexOf(u8, source, "var") != null and std.mem.indexOfScalar(u8, source, ':') != null and std.mem.indexOf(u8, source, "any") != null, s.checker.source_may_have_declare_any_var);
+        try T.expectEqual(std.mem.indexOf(u8, source, "import") != null and std.mem.indexOfScalar(u8, source, '=') != null, s.checker.source_may_have_import_equals);
+        try T.expectEqual(std.mem.indexOf(u8, source, "import") != null, s.checker.source_may_have_import_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "@import") != null, s.checker.source_may_have_jsdoc_import_tag);
+        try T.expectEqual(s.checker.sourceSliceMentionsIdentifier(source, "require"), s.checker.source_may_have_require_binding);
+        try T.expectEqual(std.mem.indexOf(u8, source, "namespace") != null or std.mem.indexOf(u8, source, "module") != null or std.mem.indexOf(u8, source, "global") != null, s.checker.source_may_have_namespace_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "class") != null or std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_class_or_enum_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_enum_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "type") != null, s.checker.source_may_have_type_alias_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "prototype") != null and std.mem.indexOfScalar(u8, source, '[') != null and std.mem.indexOfScalar(u8, source, '=') != null and std.mem.indexOfScalar(u8, source, '{') != null, s.checker.source_may_have_computed_prototype_assignment);
+        try T.expectEqual(std.mem.indexOf(u8, source, ".prototype") != null, s.checker.source_may_have_prototype_assignment);
+        try T.expectEqual(std.mem.indexOf(u8, source, "protected") != null, s.checker.source_may_have_protected_member);
+        inline for (source_markers_mod.patterns) |marker| {
+            try T.expectEqual(std.mem.indexOf(u8, source, marker), s.checker.sourceMarkerPosition(marker));
+        }
+    }
+}
+
+test "checker: source marker directives preserve precedence casing and fallback" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const cases = .{
+        // source, noLib, checkJs enabled, checkJs disabled, allowJs
+        .{ "", false, false, false, false },
+        .{ "// @nolib:true\n// @noLib:false", false, false, false, false },
+        .{ "// @noLib:false\n// @noLib:true", false, false, false, false },
+        .{ "// @nolib:untrue\n", true, false, false, false },
+        .{ "// @noLib:TRUE\n", false, false, false, false },
+        .{ "// @checkJs:false\n// @checkJs:true", false, false, true, false },
+        .{ "// @checkJs:false\n// @ts-check", false, true, true, false },
+        .{ "@checkOther @checkjS:true @allowOther @allowJS:true", false, true, false, true },
+        .{ "@checkJs:TRUE @allowJs:TRUE", false, false, false, false },
+        .{ "@checkJS:trueish @allowJs:trueish", false, true, false, true },
+        .{ "@check @allow", false, false, false, false },
+        .{ "@CheckJs:true @AllowJs:true", false, false, false, false },
+        .{ "@checkJs:\ntrue @allowJs:\ntrue", false, false, false, false },
+    };
+    inline for (cases) |case| {
+        for ([_]bool{ true, false }) |indexed| {
+            s.checker.setSource(case[0]);
+            if (!indexed) s.checker.source_markers = null;
+            try T.expectEqual(case[1], s.checker.sourceHasNoLibTrueDirective());
+            try T.expectEqual(case[2], s.checker.sourceExplicitlyEnablesCheckJs());
+            try T.expectEqual(case[3], s.checker.sourceExplicitlyDisablesCheckJs());
+            try T.expectEqual(case[4], s.checker.sourceHasAllowJsDirective());
+        }
+    }
+    s.checker.setSource("plain:true");
+    try T.expect(s.checker.scanSourceDirectiveIsTrue("plain"));
+    try T.expect(!s.checker.scanSourceDirectiveIsTrue("@declaration"));
+    s.checker.setSource("@declaration:TRUE");
+    try T.expect(s.checker.scanSourceDirectiveIsTrue("@declaration"));
+    s.checker.source = null;
+    try T.expect(s.checker.sourceMarkerPosition("@") == null);
+    try T.expect(!s.checker.sourceExplicitlyEnablesCheckJs());
 }
 
 test "checker: parameter annotation index resets with source facts" {
