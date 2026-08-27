@@ -2,7 +2,6 @@
 # Format: [modifier] test-name [[ expectations ]] [# comment]
 
 # Tests that are broken
-test/cli/create/create-jsx.test.ts [ FAIL ] # false > react spa (no tailwind) > build
 [ WINDOWS-AARCH64 ] test/js/node/test/parallel/test-repl-close.js [ FAIL ] # EPIPE on stdin.write to closed child process
 
 # Exposed by the bun -e/--eval fix that stopped swallowing uncaught exceptions (see PR #31826):

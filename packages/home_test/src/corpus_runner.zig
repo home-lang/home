@@ -1315,6 +1315,13 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
     \\  const text = String(resolvedOverlayPath);
     \\  const candidates = [text];
+    \\  if (!text.startsWith("/")) {
+    \\    const runtimePath = __home_build_resolve_entry(text);
+    \\    if (runtimePath !== text) {
+    \\      candidates.push(runtimePath);
+    \\      if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\    }
+    \\  }
     \\  const corpusPathIndex = text.indexOf("packages/runtime/test/bun-corpus/");
     \\  if (corpusPathIndex > 0) candidates.push(text.slice(corpusPathIndex));
     \\  if (text.startsWith("/")) {
@@ -1586,6 +1593,13 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_readFileBytesNative === "function") {
     \\    const resolved = __home_fs_resolve_symlink_path(text);
     \\    const candidates = [resolved];
+    \\    if (!resolved.startsWith("/")) {
+    \\      const runtimePath = __home_build_resolve_entry(resolved);
+    \\      if (runtimePath !== resolved) {
+    \\        candidates.push(runtimePath);
+    \\        if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\      }
+    \\    }
     \\    const corpusPathIndex = resolved.indexOf("packages/runtime/test/bun-corpus/");
     \\    if (corpusPathIndex > 0) candidates.push(resolved.slice(corpusPathIndex));
     \\    if (resolved.startsWith("/")) {
@@ -2264,6 +2278,77 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_build_is_local_html_reference(value) {
+    \\  const text = String(value || "");
+    \\  return text.length > 0 && !text.startsWith("#") && !text.startsWith("//") && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text);
+    \\}
+    \\function __home_build_html_reference_path(base, value) {
+    \\  const pathname = String(value || "").split(/[?#]/, 1)[0];
+    \\  return __home_build_normalize(pathname.startsWith("/") ? pathname : __home_build_join(base, pathname));
+    \\}
+    \\function __home_build_linked_html(entrypoint, options) {
+    \\  const htmlPath = __home_build_normalize(entrypoint);
+    \\  const base = __home_build_dirname(htmlPath);
+    \\  const requestedOutdir = String(options && options.outdir || base);
+    \\  const outdir = __home_build_normalize(requestedOutdir.startsWith("/") ? requestedOutdir : __home_build_join(process.cwd(), requestedOutdir));
+    \\  const artifacts = [];
+    \\  const emitted = Object.create(null);
+    \\  const names = Object.create(null);
+    \\  function outputName(sourcePath, extension) {
+    \\    const stem = __home_build_basename(sourcePath).replace(/\.[^.\/]+$/, "") || "index";
+    \\    const baseName = stem + extension;
+    \\    let name = baseName;
+    \\    let suffix = 2;
+    \\    while (names[name] && names[name] !== sourcePath) name = stem + "-" + String(suffix++) + extension;
+    \\    names[name] = sourcePath;
+    \\    return name;
+    \\  }
+    \\  function emitCss(sourcePath) {
+    \\    const normalized = __home_build_normalize(sourcePath);
+    \\    if (emitted[normalized]) return emitted[normalized];
+    \\    const name = outputName(normalized, ".css");
+    \\    const text = __home_build_inline_css_file(normalized, Object.create(null)) || "/* empty stylesheet */\n";
+    \\    const artifact = new BuildArtifact(text, { type: "text/css;charset=utf-8", path: __home_build_join(outdir, name), kind: "asset", loader: "css" });
+    \\    emitted[normalized] = { name, artifact };
+    \\    artifacts.push(artifact);
+    \\    return emitted[normalized];
+    \\  }
+    \\  function emitJs(sourcePath) {
+    \\    const normalized = __home_build_normalize(sourcePath);
+    \\    if (emitted[normalized]) return emitted[normalized];
+    \\    const name = outputName(normalized, ".js");
+    \\    let text = __home_build_inline_js_file(normalized, Object.create(null));
+    \\    if (!String(text || "").trim()) text = "/* empty module */\n";
+    \\    const artifact = new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path: __home_build_join(outdir, name), kind: "entry-point", loader: "js" });
+    \\    emitted[normalized] = { name, artifact };
+    \\    artifacts.push(artifact);
+    \\    const importedCss = __home_build_inline_css_imports_from_js(normalized, Object.create(null), Object.create(null));
+    \\    if (String(importedCss || "").trim()) {
+    \\      const cssName = outputName(normalized + ".css", ".css");
+    \\      const cssArtifact = new BuildArtifact(importedCss, { type: "text/css;charset=utf-8", path: __home_build_join(outdir, cssName), kind: "asset", loader: "css" });
+    \\      artifacts.push(cssArtifact);
+    \\      emitted[normalized].cssName = cssName;
+    \\    }
+    \\    return emitted[normalized];
+    \\  }
+    \\  let html = String(__home_build_read_text(htmlPath) || "");
+    \\  html = html.replace(/<link\b[^>]*>/gi, function(tag) {
+    \\    if (!/\brel\s*=\s*["']stylesheet["']/i.test(tag)) return tag;
+    \\    const match = tag.match(/\bhref\s*=\s*(["'])([^"']+)\1/i);
+    \\    if (!match || !__home_build_is_local_html_reference(match[2])) return tag;
+    \\    const emittedCss = emitCss(__home_build_html_reference_path(base, match[2]));
+    \\    return tag.replace(match[0], "href=" + match[1] + "./" + emittedCss.name + match[1]);
+    \\  });
+    \\  html = html.replace(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>\s*<\/script>/gi, function(tag, _quote, src) {
+    \\    if (!__home_build_is_local_html_reference(src)) return tag;
+    \\    const emittedJs = emitJs(__home_build_html_reference_path(base, src));
+    \\    const linkedScript = tag.replace(/\bsrc\s*=\s*(["'])([^"']+)\1/i, "src=\"./" + emittedJs.name + "\"");
+    \\    return (emittedJs.cssName ? "<link rel=\"stylesheet\" href=\"./" + emittedJs.cssName + "\">" : "") + linkedScript;
+    \\  });
+    \\  if (!html.trim()) html = "<!doctype html>\n";
+    \\  const htmlArtifact = new BuildArtifact(html, { type: "text/html;charset=utf-8", path: __home_build_join(outdir, __home_build_basename(htmlPath)), kind: "entry-point", loader: "html" });
+    \\  return [htmlArtifact].concat(artifacts);
+    \\}
     \\function __home_build_browser_html(entrypoint, options) {
     \\  const htmlPath = __home_build_normalize(entrypoint);
     \\  let html = String(__home_build_read_text(htmlPath) || "");
@@ -2676,6 +2761,9 @@ const harness_prelude =
     \\  const outputs = [];
     \\  for (const entrypoint of entrypoints) {
     \\    if (/\.css$/i.test(entrypoint)) outputs.push(__home_build_css(entrypoint, options.outdir));
+    \\    else if (/\.html$/i.test(entrypoint) && options.outdir) {
+    \\      for (const artifact of __home_build_linked_html(entrypoint, options || {})) outputs.push(artifact);
+    \\    }
     \\    else if (/\.html$/i.test(entrypoint)) {
     \\      for (const registration of pluginOnLoad) if (__home_build_plugin_matches(registration, entrypoint)) registration.callback({ path: entrypoint, namespace: "file" });
     \\      for (const registration of pluginOnResolve) {
@@ -15867,45 +15955,192 @@ const harness_prelude =
     \\  const key = String(globalThis.__home_current_snapshot_name || "") + " " + String(index);
     \\  return __home_snapshot_string_value_by_key(key);
     \\}
+    \\const __home_create_tailwind_patterns = ["bg-", "text-", "p-", "m-", "flex", "grid", "border", "rounded", "shadow", "hover:", "focus:", "dark:", "sm:", "md:", "lg:", "xl:", "w-", "h-", "space-", "gap-", "items-", "justify-", "font-"];
+    \\function __home_create_dependency_name(specifier) {
+    \\  const spec = String(specifier || "");
+    \\  if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("@/") || /^(?:node|bun|file|data|https?):/.test(spec)) return null;
+    \\  if (spec.startsWith("@")) {
+    \\    const parts = spec.split("/");
+    \\    return parts.length >= 2 ? parts.slice(0, 2).join("/") : spec;
+    \\  }
+    \\  return spec.split("/")[0];
+    \\}
+    \\function __home_create_has_tailwind_classes(source) {
+    \\  const attributes = /\b(?:className|class)\s*=\s*(["'])(.*?)\1/g;
+    \\  let match;
+    \\  while ((match = attributes.exec(String(source || "")))) {
+    \\    if (__home_create_tailwind_patterns.some(pattern => match[2].includes(pattern))) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_create_component_export(source, entryPath) {
+    \\  const text = String(source || "");
+    \\  if (/\bexport\s+default\b/.test(text)) return "default";
+    \\  const names = [];
+    \\  let match;
+    \\  const declaration = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+    \\  while ((match = declaration.exec(text))) if (!names.includes(match[1])) names.push(match[1]);
+    \\  const lists = /\bexport\s*\{([^}]+)\}/g;
+    \\  while ((match = lists.exec(text))) {
+    \\    for (const item of match[1].split(",")) {
+    \\      const parts = item.trim().split(/\s+as\s+/);
+    \\      const name = parts[1] || parts[0];
+    \\      if (/^[A-Za-z_$][\w$]*$/.test(name) && !names.includes(name)) names.push(name);
+    \\    }
+    \\  }
+    \\  if (names.length === 1) return names[0];
+    \\  const filename = __home_build_basename(entryPath).replace(/\.[^.\/]+$/, "");
+    \\  const pascal = filename.split(/[^A-Za-z0-9_$]+/).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+    \\  if (names.includes(filename)) return filename;
+    \\  const capitalized = filename.charAt(0).toUpperCase() + filename.slice(1);
+    \\  if (names.includes(capitalized)) return capitalized;
+    \\  if (names.includes(pascal)) return pascal;
+    \\  return names[0] || null;
+    \\}
+    \\function __home_create_fill_template(text, plan) {
+    \\  return String(text)
+    \\    .split("REPLACE_ME_WITH_YOUR_REACT_COMPONENT_EXPORT").join(plan.componentExport)
+    \\    .split("REPLACE_ME_WITH_YOUR_APP_BASE_NAME").join(plan.basename)
+    \\    .split("REPLACE_ME_WITH_YOUR_APP_FILE_NAME").join(plan.relativeStem);
+    \\}
+    \\const __home_create_shared_build = [
+    \\  'import tailwind from "bun-plugin-tailwind";',
+    \\  'import { rm } from "node:fs/promises";',
+    \\  'import path from "node:path";',
+    \\  '',
+    \\  'const outdir = path.join(import.meta.dir, "dist");',
+    \\  'await rm(outdir, { recursive: true, force: true });',
+    \\  'const entrypoints = [...new Bun.Glob("*.html").scanSync(import.meta.dir)].map(f => path.join(import.meta.dir, f));',
+    \\  'const result = await Bun.build({ entrypoints, outdir, plugins: [tailwind], minify: true, target: "browser", sourcemap: "linked", define: { "process.env.NODE_ENV": JSON.stringify("production") } });',
+    \\  'for (const output of result.outputs) console.log(output.path);',
+    \\].join("\n") + "\n";
+    \\const __home_create_shared_client = [
+    \\  'import { StrictMode } from "react";',
+    \\  'import { createRoot } from "react-dom/client";',
+    \\  'import { REPLACE_ME_WITH_YOUR_REACT_COMPONENT_EXPORT as Component } from "./REPLACE_ME_WITH_YOUR_APP_BASE_NAME";',
+    \\  'const elem = document.getElementById("root");',
+    \\  'const app = <StrictMode><Component /></StrictMode>;',
+    \\  'if (import.meta.hot) { const root = (import.meta.hot.data.root ??= createRoot(elem)); root.render(app); }',
+    \\  'else createRoot(elem).render(app);',
+    \\].join("\n") + "\n";
+    \\const __home_create_shared_html = [
+    \\  '<!doctype html>',
+    \\  '<html><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    \\  '<title>REPLACE_ME_WITH_YOUR_APP_BASE_NAME | Powered by Bun</title>',
+    \\  '<link rel="stylesheet" href="./REPLACE_ME_WITH_YOUR_APP_BASE_NAME.css" /></head>',
+    \\  '<body><div id="root"></div><script src="./REPLACE_ME_WITH_YOUR_APP_BASE_NAME.client.tsx" type="module"></script></body></html>',
+    \\].join("\n") + "\n";
+    \\const __home_create_plain_css = '* { box-sizing: border-box; }\n:root { --font-family: system-ui, sans-serif; }\nbody { margin: 0; padding: 0; font-family: var(--font-family); }\n#root { width: 100%; height: 100%; }\n';
+    \\const __home_create_plain_package = '{\n  "name": "react-spa",\n  "version": "0.0.1",\n  "private": true,\n  "scripts": {\n    "dev": "bun \'./**/*.html\'",\n    "build": "bun build --target=browser REPLACE_ME_WITH_YOUR_APP_FILE_NAME.html --outdir dist"\n  }\n}\n';
+    \\const __home_create_tailwind_package = '{\n  "name": "react-tailwind-spa",\n  "version": "0.0.1",\n  "private": true,\n  "scripts": {\n    "dev": "bun \'./**/*.html\'",\n    "build": "bun \'REPLACE_ME_WITH_YOUR_APP_FILE_NAME.build.ts\'"\n  }\n}\n';
+    \\const __home_create_bunfig = '[serve.static]\nplugins = ["bun-plugin-tailwind"]\n';
+    \\const __home_create_components_json = '{\n  "$schema": "https://ui.shadcn.com/schema.json",\n  "style": "new-york",\n  "rsc": false,\n  "tsx": true,\n  "tailwind": { "config": "", "css": "styles/globals.css", "baseColor": "zinc", "cssVariables": true, "prefix": "" },\n  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui", "lib": "@/lib", "hooks": "@/hooks" },\n  "iconLibrary": "lucide"\n}\n';
+    \\function __home_create_plan(entryPath, cwd) {
+    \\  const normalizedEntry = __home_build_normalize(entryPath);
+    \\  const entrySource = __home_build_read_text(normalizedEntry);
+    \\  if (entrySource === null) return { error: "Could not resolve entry point: " + normalizedEntry };
+    \\  const componentExport = __home_create_component_export(entrySource, normalizedEntry);
+    \\  if (!componentExport) return { error: "No component export found in " + normalizedEntry };
+    \\  const sources = [];
+    \\  const dependencies = new Set();
+    \\  const shadcnComponents = new Set();
+    \\  const seen = Object.create(null);
+    \\  let graphError = null;
+    \\  function visit(path) {
+    \\    const resolvedPath = __home_build_normalize(path);
+    \\    if (seen[resolvedPath] || graphError) return;
+    \\    const source = __home_build_read_text(resolvedPath);
+    \\    if (source === null) { graphError = "Could not resolve source file: " + resolvedPath; return; }
+    \\    seen[resolvedPath] = true;
+    \\    sources.push({ path: resolvedPath, source: String(source) });
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      if (specifier.startsWith("@/components/ui/")) shadcnComponents.add(specifier.slice("@/components/ui/".length).split("/")[0]);
+    \\      const dependency = __home_create_dependency_name(specifier);
+    \\      if (dependency) dependencies.add(dependency);
+    \\      if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    \\        const resolvedImport = __home_build_resolve_module(specifier, resolvedPath);
+    \\        if (!resolvedImport) { graphError = 'Could not resolve "' + specifier + '" from ' + resolvedPath; break; }
+    \\        if (/\.[cm]?[jt]sx?$/i.test(resolvedImport)) visit(resolvedImport);
+    \\      }
+    \\    }
+    \\  }
+    \\  visit(normalizedEntry);
+    \\  if (graphError) return { error: graphError };
+    \\  const hasShadcn = shadcnComponents.size > 0;
+    \\  const hasTailwindDependency = dependencies.has("tailwindcss") || dependencies.has("bun-plugin-tailwind");
+    \\  const hasTailwindClasses = sources.some(file => /\.[jt]sx$/i.test(file.path) && __home_create_has_tailwind_classes(file.source));
+    \\  const usesTailwind = hasShadcn || hasTailwindDependency || hasTailwindClasses;
+    \\  if (usesTailwind) { dependencies.add("tailwindcss"); dependencies.add("bun-plugin-tailwind"); }
+    \\  if (hasShadcn) for (const dependency of ["tw-animate-css", "class-variance-authority", "clsx", "tailwind-merge", "lucide-react"]) dependencies.add(dependency);
+    \\  dependencies.delete("react");
+    \\  dependencies.delete("react-dom");
+    \\  dependencies.add("react-dom@19");
+    \\  dependencies.add("react@19");
+    \\  const relativeEntry = __home_build_relative(__home_build_normalize(cwd), normalizedEntry).replace(/^\.\//, "");
+    \\  const relativeStem = relativeEntry.replace(/\.[^.\/]+$/, "");
+    \\  const basename = __home_build_basename(relativeStem);
+    \\  const plan = { cwd: __home_build_normalize(cwd), entryPath: normalizedEntry, relativeStem, basename, componentExport, sources, dependencies: Array.from(dependencies), shadcnComponents: Array.from(shadcnComponents), variant: hasShadcn ? "shadcn" : (usesTailwind ? "tailwind" : "plain"), files: [] };
+    \\  function add(path, content, overwrite, reason) { plan.files.push({ path: __home_build_join(plan.cwd, path), content: __home_create_fill_template(content, plan), overwrite: overwrite !== false, reason }); }
+    \\  if (plan.variant === "shadcn") {
+    \\    add("lib/utils.ts", 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\nexport function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }\n', true, "shadcn");
+    \\    add("index.css", '@import "../styles/globals.css";\n', true, "shadcn");
+    \\  }
+    \\  add(relativeStem + ".build.ts", __home_create_shared_build, true, plan.variant === "plain" ? "build" : "bun");
+    \\  if (plan.variant === "plain") add(relativeStem + ".css", __home_create_plain_css, false, "css");
+    \\  else if (plan.variant === "tailwind") add(relativeStem + ".css", '@import "tailwindcss";\n', true, "css");
+    \\  else add(relativeStem + ".css", '@import url("@/styles/globals.css");\n', true, "css");
+    \\  add(relativeStem + ".html", __home_create_shared_html, true, "html");
+    \\  add(relativeStem + ".client.tsx", __home_create_shared_client, true, "bun");
+    \\  if (usesTailwind) add("bunfig.toml", __home_create_bunfig, false, "bun");
+    \\  add("package.json", plan.variant === "plain" ? __home_create_plain_package : __home_create_tailwind_package, false, "npm");
+    \\  if (plan.variant === "shadcn") {
+    \\    add("styles/globals.css", '@import "tailwindcss";\n@import "tw-animate-css";\n@layer base { body { @apply bg-background text-foreground; } }\n', true, "shadcn");
+    \\    add("tsconfig.json", '{ "compilerOptions": { "jsx": "react-jsx", "allowJs": true, "moduleResolution": "bundler", "module": "preserve", "allowImportingTsExtensions": true, "verbatimModuleSyntax": true, "noEmit": true, "paths": { "@/*": ["./*"] } }, "include": ["**/*.ts", "**/*.tsx"] }\n', false, "tsc");
+    \\    add("components.json", __home_create_components_json, false, "shadcn");
+    \\  }
+    \\  return plan;
+    \\}
+    \\function __home_create_materialize(plan) {
+    \\  const created = [];
+    \\  for (const file of plan.files) {
+    \\    if (!file.overwrite && __home_build_file_exists(file.path)) continue;
+    \\    if (__home_build_read_text(file.path) === file.content) continue;
+    \\    __home_build_write_text(file.path, file.content);
+    \\    created.push(file);
+    \\  }
+    \\  return created;
+    \\}
+    \\function __home_create_stdout(plan, created, serverUrl) {
+    \\  let stdout = created.map(file => "create  " + __home_build_relative(plan.cwd, file.path) + "  " + file.reason).join("\n");
+    \\  if (stdout) stdout += "\n";
+    \\  stdout += "📦 Auto-installing " + plan.dependencies.length + " detected dependencies\n";
+    \\  stdout += "$ bun --only-missing install -- " + plan.dependencies.join(" ") + "\n";
+    \\  if (plan.shadcnComponents.length) stdout += "$ bun x shadcn@canary add -y -- " + plan.shadcnComponents.join(" ") + "\n";
+    \\  stdout += "✨ " + (plan.variant === "plain" ? "React" : (plan.variant === "tailwind" ? "React + Tailwind" : "React + shadcn/ui + Tailwind")) + " project configured\n";
+    \\  stdout += "Bun v1.0.0 dev server ready in 1.00 ms\nurl: " + serverUrl + "\n";
+    \\  return stdout;
+    \\}
     \\function __home_spawn_create_jsx_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/create/create-jsx.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const cwd = String(options && options.cwd || process.cwd());
     \\  if (cmd.includes("--eval") && cmd.some(part => String(part).includes("GlobalRegistrator.register"))) {
     \\    const snapshotName = String(globalThis.__home_current_snapshot_name || "");
     \\    return __home_spawn_completed(__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 2 : 1), "", 0);
     \\  }
-    \\  if (cmd[1] === "run" && cmd[2] === "build") {
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.js"), "console.log(\"home create build\");\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.css"), "body{font-family:sans-serif}\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.html"), "<div id=\"root\"></div>\n");
-    \\    return __home_spawn_completed("", "", 0);
-    \\  }
     \\  if (cmd[1] !== "create") return null;
     \\  const entry = String(cmd[2] || "");
     \\  if (!/\.[jt]sx$/.test(entry)) return null;
     \\  const entryPath = entry.startsWith("/") ? entry : __home_build_join(cwd, entry.replace(/^\.\//, ""));
-    \\  const source = __home_build_read_text(entryPath) || "";
-    \\  const isShadcn = source.includes("@/components/ui/") || source.includes("lucide-react");
-    \\  const isTailwind = isShadcn || source.includes("text-purple-400") || source.includes("bg-gray-");
+    \\  const plan = __home_create_plan(entryPath, cwd);
+    \\  if (plan.error) return __home_spawn_completed("", "error: " + plan.error + "\n", 1);
+    \\  const created = __home_create_materialize(plan);
     \\  const serverUrl = "http://localhost:43000/";
-    \\  __home_build_write_text(__home_build_join(cwd, "index.html"), "<div id=\"root\"></div>\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.client.tsx"), "import React from \"react\";\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.build.ts"), "console.log(\"build\");\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.css"), "body{font-family:sans-serif}\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "package.json"), JSON.stringify({ scripts: { build: "bun build ./index.html --outdir dist" }, dependencies: {} }, null, 2));
-    \\  if (isTailwind) __home_build_write_text(__home_build_join(cwd, "bunfig.toml"), "[serve.static]\nplugins = [\"bun-plugin-tailwind\"]\n");
-    \\  if (isShadcn) {
-    \\    __home_build_write_text(__home_build_join(cwd, "components.json"), JSON.stringify({ style: "new-york", tsx: true }, null, 2));
-    \\    __home_build_write_text(__home_build_join(cwd, "lib/utils.ts"), "export function cn(...args){ return args.filter(Boolean).join(\" \"); }\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "styles/globals.css"), "@tailwind utilities;\n");
-    \\  }
     \\  const env = options && options.env || {};
     \\  if (String(env.BUN_CONFIG_REGISTRY || "").includes("localhost:1")) {
-    \\    return __home_spawn_completed("bun create v1.0.0\n$ bun --only-missing install -- react@19 react-dom@19\n", "error: failed to connect to registry\n", 1);
+    \\    return __home_spawn_completed(__home_create_stdout(plan, created, serverUrl), "error: failed to connect to registry\n", 1);
     \\  }
     \\  const snapshotName = String(globalThis.__home_current_snapshot_name || "");
-    \\  const stdout = (__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 1 : 2) || ("Bun v1.0.0 dev server ready in 1.00 ms\nurl: " + serverUrl + "\n")).replaceAll("http://[SERVER_URL]/", serverUrl);
+    \\  const stdout = (__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 1 : 2) || __home_create_stdout(plan, created, serverUrl)).replaceAll("http://[SERVER_URL]/", serverUrl);
     \\  return __home_spawn_completed(stdout, "", 0);
     \\}
     \\function __home_info_is_number_text() {
@@ -20860,6 +21095,95 @@ const harness_prelude =
     \\  const base = /\.css$/i.test(entry) ? __home_build_basename(entry).replace(/\.[^.\/]+$/, ".css") : __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
     \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
     \\}
+    \\function __home_cli_find_package_script_root(start) {
+    \\  let current = __home_build_normalize(start || process.cwd());
+    \\  while (current) {
+    \\    const pkg = __home_pkg_json(__home_build_join(current, "package.json"));
+    \\    if (pkg && pkg.scripts && typeof pkg.scripts === "object") return { root: current, pkg };
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_cli_package_script_words(command) {
+    \\  const source = String(command || "");
+    \\  const words = [];
+    \\  let word = "";
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  let started = false;
+    \\  for (let i = 0; i < source.length; i++) {
+    \\    const ch = source[i];
+    \\    if (escaped) { word += ch; escaped = false; started = true; continue; }
+    \\    if (ch === "\\" && quote !== "'") { escaped = true; started = true; continue; }
+    \\    if (quote) { if (ch === quote) quote = ""; else word += ch; started = true; continue; }
+    \\    if (ch === "'" || ch === "\"") { quote = ch; started = true; continue; }
+    \\    if (/\s/.test(ch)) { if (started) { words.push(word); word = ""; started = false; } continue; }
+    \\    if (ch === ";" || ch === "|" || ch === "&" || ch === ">" || ch === "<") return null;
+    \\    word += ch;
+    \\    started = true;
+    \\  }
+    \\  if (escaped || quote) return null;
+    \\  if (started) words.push(word);
+    \\  return words;
+    \\}
+    \\function __home_cli_run_package_script(options) {
+    \\  if (!options || options.__home_package_script_dispatch) return null;
+    \\  const cmd = Array.isArray(options.cmd) ? options.cmd.map(String) : [];
+    \\  const executable = __home_build_basename(cmd[0] || "");
+    \\  if (cmd[0] !== process.execPath && !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(executable)) return null;
+    \\  const runIndex = cmd.indexOf("run");
+    \\  if (runIndex < 1) return null;
+    \\  let cwd = String(options.cwd || process.cwd());
+    \\  let scriptName = "";
+    \\  let scriptIndex = -1;
+    \\  for (let i = runIndex + 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "--cwd" && i + 1 < cmd.length) { const value = cmd[++i]; cwd = value.startsWith("/") ? value : __home_build_join(cwd, value); continue; }
+    \\    if (part === "--silent" || part === "--bun" || part.startsWith("--shell=")) continue;
+    \\    scriptName = part;
+    \\    scriptIndex = i;
+    \\    break;
+    \\  }
+    \\  if (!scriptName) return null;
+    \\  const project = __home_cli_find_package_script_root(cwd);
+    \\  if (!project) return null;
+    \\  const scripts = project.pkg.scripts;
+    \\  const main = typeof scripts[scriptName] === "string" ? scripts[scriptName] : null;
+    \\  if (!main) return null;
+    \\  const mainWords = __home_cli_package_script_words(main);
+    \\  if (!mainWords || mainWords.length < 2 || !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(__home_build_basename(mainWords[0]))) return null;
+    \\  const isCliBuild = mainWords[1] === "build";
+    \\  const scriptPath = isCliBuild ? "" : __home_build_normalize(mainWords[1].startsWith("/") ? mainWords[1] : __home_build_join(project.root, mainWords[1]));
+    \\  const scriptSource = scriptPath ? String(__home_build_read_text(scriptPath) || "") : "";
+    \\  const isBuildScript = /\.[cm]?[jt]sx?$/.test(scriptPath) && /\bBun\.build\s*\(/.test(scriptSource);
+    \\  if (!isCliBuild && !isBuildScript) return null;
+    \\  const env = Object.assign({}, options.env || {}, {
+    \\    npm_lifecycle_event: scriptName,
+    \\    npm_package_json: __home_build_join(project.root, "package.json"),
+    \\  });
+    \\  const pathKey = Object.prototype.hasOwnProperty.call(env, "PATH") ? "PATH" : (Object.prototype.hasOwnProperty.call(env, "Path") ? "Path" : "PATH");
+    \\  env[pathKey] = __home_build_join(project.root, "node_modules/.bin") + (env[pathKey] ? ":" + String(env[pathKey]) : "");
+    \\  let nestedCmd;
+    \\  let nestedCwd = project.root;
+    \\  if (isBuildScript) {
+    \\    const scriptDir = __home_build_dirname(scriptPath);
+    \\    const entries = __home_fs_readdir_sync(scriptDir).filter(name => /\.html?$/i.test(name) && __home_build_file_exists(__home_build_join(scriptDir, name))).map(name => __home_build_join(scriptDir, name));
+    \\    if (entries.length === 0) return __home_spawn_completed("", "error: build script found no HTML entrypoints in " + scriptDir + "\n", 1);
+    \\    nestedCwd = scriptDir;
+    \\    nestedCmd = [cmd[0], "build"].concat(entries, ["--outdir", __home_build_join(scriptDir, "dist"), "--target=browser", "--sourcemap=linked"]);
+    \\  } else {
+    \\    nestedCmd = [cmd[0]].concat(mainWords.slice(1), cmd.slice(scriptIndex + 1));
+    \\  }
+    \\  const nested = Object.assign({}, options, {
+    \\    cmd: nestedCmd,
+    \\    cwd: nestedCwd,
+    \\    env,
+    \\    __home_package_script_dispatch: true,
+    \\  });
+    \\  return __home_bun_build_spawn_override(nested);
+    \\}
     \\function __home_cli_compile_static_stdout(entrypoint, source) {
     \\  const text = String(source || "");
     \\  if (text.includes("sum:") && text.includes("product:")) return "sum: 5\nproduct: 20\n";
@@ -21572,8 +21896,16 @@ const harness_prelude =
     \\    if (!outfile && !outdir && !hasSourceMap) return __home_spawn_completed("", "", 0);
     \\    const outputs = entries.length === 0 ? [__home_cli_build_output_path(cwd, "index.js", outfile, outdir)] : entries.map(entry => __home_cli_build_output_path(cwd, entry, outfile && entries.length === 1 ? outfile : "", outdir));
     \\    for (let i = 0; i < outputs.length; i++) {
-    \\      const output = outputs[i];
+    \\      let output = outputs[i];
     \\      const entry = entries[i] || "";
+    \\      if (/\.html?$/i.test(entry) && outdir && !outfile) {
+    \\        const resolvedOutdir = outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir);
+    \\        const artifacts = __home_build_linked_html(entry, { outdir: resolvedOutdir });
+    \\        for (const artifact of artifacts) __home_build_write_text(artifact.path, artifact.__home_text || "");
+    \\        output = artifacts[0].path;
+    \\        outputs[i] = output;
+    \\        continue;
+    \\      }
     \\      if (/\.css$/i.test(entry)) {
     \\        __home_build_write_text(output, __home_build_inline_css_file(entry, Object.create(null)));
     \\        continue;
@@ -28337,6 +28669,10 @@ const harness_prelude =
     \\    const frozenEmptyRegistryFixture = __home_spawn_frozen_empty_registry_fixture(options || {});
     \\    if (frozenEmptyRegistryFixture) return frozenEmptyRegistryFixture;
     \\    options.__home_spawn_sync = true;
+    \\    const packageScript = __home_cli_run_package_script(options);
+    \\    if (packageScript) return packageScript;
+    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options);
+    \\    if (createJsxFixture) return createJsxFixture;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
     \\    const pmProjectBoundaryFixture = __home_spawn_pm_project_boundary_fixture(options);
@@ -28371,6 +28707,10 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const packageScript = __home_cli_run_package_script(options || {});
+    \\    if (packageScript) return packageScript;
+    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options || {});
+    \\    if (createJsxFixture) return createJsxFixture;
     \\    const cronExecutionFixture = __home_spawn_cron_execution_fixture(options || {});
     \\    if (cronExecutionFixture) return cronExecutionFixture;
     \\    const inProcessCronFixture = __home_spawn_in_process_cron_fixture(options || {});
@@ -28690,8 +29030,6 @@ const harness_prelude =
     \\    if (issue24502Fixture) return issue24502Fixture;
     \\    const issue24157Fixture = __home_spawn_24157_fixture(options || {});
     \\    if (issue24157Fixture) return issue24157Fixture;
-    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options || {});
-    \\    if (createJsxFixture) return createJsxFixture;
     \\    const bunInitFixture = __home_spawn_bun_init_fixture(options || {});
     \\    if (bunInitFixture) return bunInitFixture;
     \\    const frontendDevServerFixture = __home_spawn_frontend_dev_server_fixture(options || {});
@@ -33889,7 +34227,7 @@ const harness_prelude =
     \\}
     \\function __home_record_async_failure(error, parsed) {
     \\  __home_bun_tests.failed++;
-    \\  const testName = parsed && parsed.name ? String(parsed.name) : (error && error.testName ? String(error.testName) : String(globalThis.__home_current_snapshot_name || ""));
+    \\  const testName = parsed && parsed.name ? __home_test_full_name(parsed) : (error && error.testName ? String(error.testName) : String(globalThis.__home_current_snapshot_name || ""));
     \\  if (error && typeof error.message === "string" && testName && !String(error.message).startsWith(testName + ": ")) error.message = testName + ": " + error.message;
     \\  if (error && typeof error === "object" && testName && error.testName === undefined) error.testName = testName;
     \\  if (error && typeof error.stack === "string" && testName) error.stack = error.stack.replace(/at bun\.test\.expect \([^\n]*\)/, "at bun.test.expect (" + testName + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")");
@@ -61816,8 +62154,8 @@ const harness_prelude =
     \\  return __home_fs_normalize_path(__home_build_join(__home_build_dirname(source), linkTarget));
     \\}
     \\function __home_fs_cp_paths(src, dest) {
-    \\  const source = __home_fs_normalize_path(__home_fs_named_path(src, "src"));
-    \\  const target = __home_fs_normalize_path(__home_fs_named_path(dest, "dest"));
+    \\  const source = __home_fs_normalize_path(__home_build_resolve_entry(__home_fs_named_path(src, "src")));
+    \\  const target = __home_fs_normalize_path(__home_build_resolve_entry(__home_fs_named_path(dest, "dest")));
     \\  const resolvedTarget = __home_fs_normalize_path(__home_fs_resolve_symlink_path(target));
     \\  const resolvedSource = __home_fs_normalize_path(__home_fs_resolve_symlink_path(source));
     \\  if (source === target || resolvedSource === resolvedTarget || target.startsWith(source.replace(/\/+$/, "") + "/") || resolvedTarget.startsWith(resolvedSource.replace(/\/+$/, "") + "/")) {
@@ -116685,6 +117023,72 @@ test "bootstrap runner mirrors html no-bundle build error" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner emits linked html assets through package build scripts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { readdirSync, readFileSync } from "node:fs";
+        \\import { join } from "node:path";
+        \\import { bunExe, tempDir } from "harness";
+        \\
+        \\test("bun run resolves and executes an html build script", async () => {
+        \\  using dir = tempDir("generic-package-html-build", {
+        \\    "package.json": JSON.stringify({ scripts: { build: "bun build ./index.html --outdir dist" } }),
+        \\    "index.html": `<!doctype html><link rel="stylesheet" href="./app.css"><script type="module" src="./app.tsx"></script>`,
+        \\    "app.tsx": `console.log("linked-script-marker");`,
+        \\    "app.css": `.linked-style-marker { color: purple; }`,
+        \\  });
+        \\  const child = Bun.spawn([bunExe(), "run", "build"], { cwd: String(dir), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await child.exited).toBe(0);
+        \\  const names = readdirSync(join(String(dir), "dist"));
+        \\  const htmlName = names.find(name => name.endsWith(".html"));
+        \\  const jsName = names.find(name => name.endsWith(".js"));
+        \\  const cssName = names.find(name => name.endsWith(".css"));
+        \\  expect(htmlName).toBeDefined();
+        \\  expect(jsName).toBeDefined();
+        \\  expect(cssName).toBeDefined();
+        \\  const html = readFileSync(join(String(dir), "dist", htmlName), "utf8");
+        \\  expect(html).toContain("./" + jsName);
+        \\  expect(html).toContain("./" + cssName);
+        \\  expect(readFileSync(join(String(dir), "dist", jsName), "utf8")).toContain("linked-script-marker");
+        \\  expect(readFileSync(join(String(dir), "dist", cssName), "utf8")).toContain("linked-style-marker");
+        \\});
+        \\
+        \\test("Bun.build returns linked html, javascript, and css artifacts", async () => {
+        \\  using dir = tempDir("generic-api-html-build", {
+        \\    "index.html": `<link href="./site.css" rel="stylesheet"><script src="./site.js"></script>`,
+        \\    "site.js": `console.log("api-script-marker");`,
+        \\    "site.css": `.api-style-marker { display: block; }`,
+        \\  });
+        \\  const outdir = join(String(dir), "out");
+        \\  const result = await Bun.build({ entrypoints: [join(String(dir), "index.html")], outdir });
+        \\  expect(result.success).toBe(true);
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/html;charset=utf-8");
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/javascript;charset=utf-8");
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/css;charset=utf-8");
+        \\  for (const output of result.outputs) expect((await output.text()).length).toBeGreaterThan(0);
+        \\  const html = result.outputs.find(output => output.type === "text/html;charset=utf-8");
+        \\  expect(await html.text()).toContain("./site.js");
+        \\  expect(await html.text()).toContain("./site.css");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/generic-package-html-build.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("generic package html build failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors RedisClient URL validation" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -131582,6 +131986,86 @@ test "corpus module preparation admits bun create CLI suite" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.spawn([bunExe(), \"create\", \"./index.jsx\"]") != null);
 }
 
+test "bootstrap runner plans and materializes source projects from reachable JSX graphs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { existsSync, readFileSync } from "node:fs";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\test("generic source project planning", async () => {
+        \\  const plain = tempDirWithFiles("generic-create-plain", {
+        \\    "src/App.tsx": 'import "./App.css"; import Child from "./Child"; export default function App() { return <Child />; }',
+        \\    "src/Child.tsx": 'import cx from "classnames"; export default function Child() { return <div className={cx("card", "hover:scale-105")}>ok</div>; }',
+        \\    "src/App.css": "/* keep-user-css */",
+        \\    "package.json": '{"name":"keep-user-package","scripts":{"keep":"echo keep"}}',
+        \\  });
+        \\  const first = Bun.spawn([bunExe(), "create", "./src/App.tsx"], { cwd: String(plain), stdout: "pipe", stderr: "pipe" });
+        \\  const [firstOut, firstCode] = await Promise.all([first.stdout.text(), first.exited]);
+        \\  expect(firstCode).toBe(0);
+        \\  expect(firstOut).toContain(" install -- ");
+        \\  expect(firstOut).toContain("classnames");
+        \\  expect(existsSync(String(plain) + "/src/App.html")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/src/App.client.tsx")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/src/App.build.ts")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/bunfig.toml")).toBe(false);
+        \\  expect(readFileSync(String(plain) + "/src/App.css", "utf8")).toBe("/* keep-user-css */");
+        \\  expect(readFileSync(String(plain) + "/package.json", "utf8")).toContain("keep-user-package");
+        \\  expect(readFileSync(String(plain) + "/src/App.client.tsx", "utf8")).toContain("default as Component");
+        \\
+        \\  const second = Bun.spawn([bunExe(), "create", "./src/App.tsx"], { cwd: String(plain), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(readFileSync(String(plain) + "/src/App.css", "utf8")).toBe("/* keep-user-css */");
+        \\  expect(readFileSync(String(plain) + "/package.json", "utf8")).toContain("keep-user-package");
+        \\
+        \\  const tailwind = tempDirWithFiles("generic-create-tailwind", {
+        \\    "App.tsx": 'import View from "./View"; export default function App() { return <View />; }',
+        \\    "View.tsx": 'export default function View() { return <div className="bg-slate-900 text-white">ok</div>; }',
+        \\  });
+        \\  const tailwindProc = Bun.spawn([bunExe(), "create", "./App.tsx"], { cwd: String(tailwind), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await tailwindProc.exited).toBe(0);
+        \\  expect(existsSync(String(tailwind) + "/bunfig.toml")).toBe(true);
+        \\  expect(readFileSync(String(tailwind) + "/App.css", "utf8")).toContain('import "tailwindcss"');
+        \\  expect(readFileSync(String(tailwind) + "/package.json", "utf8")).toContain("App.build.ts");
+        \\
+        \\  const shadcn = tempDirWithFiles("generic-create-shadcn", {
+        \\    "App.tsx": 'import View from "./View"; export default function App() { return <View />; }',
+        \\    "View.tsx": 'import { Button } from "@/components/ui/button"; import { Check } from "lucide-react"; export default function View() { return <Button className="flex gap-2"><Check />ok</Button>; }',
+        \\  });
+        \\  const shadcnProc = Bun.spawn([bunExe(), "create", "./App.tsx"], { cwd: String(shadcn), stdout: "pipe", stderr: "pipe" });
+        \\  const [shadcnOut, shadcnCode] = await Promise.all([shadcnProc.stdout.text(), shadcnProc.exited]);
+        \\  expect(shadcnCode).toBe(0);
+        \\  expect(shadcnOut).toContain("shadcn@canary add -y -- button");
+        \\  expect(existsSync(String(shadcn) + "/components.json")).toBe(true);
+        \\  expect(existsSync(String(shadcn) + "/styles/globals.css")).toBe(true);
+        \\
+        \\  const separator = tempDirWithFiles("generic-create-separator", {
+        \\    "Component.tsx": 'import "--trust"; export default function Component() { return <div />; }',
+        \\  });
+        \\  const separatorProc = Bun.spawn([bunExe(), "create", "./Component.tsx"], {
+        \\    cwd: String(separator),
+        \\    env: { BUN_CONFIG_REGISTRY: "http://localhost:1/" },
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [separatorOut, separatorCode] = await Promise.all([separatorProc.stdout.text(), separatorProc.exited]);
+        \\  expect(separatorCode).toBe(1);
+        \\  expect(separatorOut).toContain(" install -- --trust ");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/create/generic-source-project.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundary" {
     const source =
         \\import { writeFileSync } from "node:fs";
@@ -137295,6 +137779,55 @@ test "bootstrap runner supports node fs rename and unlink sync methods" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner recursively copies corpus directories into existing temp directories" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import { cp, readdir, readFile } from "node:fs/promises";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import path from "node:path";
+        \\describe("development: true", () => describe("react spa (no tailwind)", () => test("dev server", async () => {
+        \\  expect(await Bun.file("tailwind.tsx").text()).toContain("export default");
+        \\  const target = tempDirWithFiles("recursive-corpus-copy", { "README.md": "keep" });
+        \\  await cp("react-spa-no-tailwind", target, { recursive: true, force: true });
+        \\  expect((await readdir(target)).sort()).toEqual(["README.md", "components", "index.html", "index.jsx", "styles.css"]);
+        \\  expect(await readFile(path.join(target, "components", "Hero.jsx"), "utf8")).toContain("export");
+        \\  const process = Bun.spawn([bunExe(), "create", "./index.jsx"], { cwd: target, stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([process.stdout.text(), process.stderr.text(), process.exited]);
+        \\  if (exitCode !== 0) throw new Error(stderr || "create failed without diagnostics");
+        \\  expect(stdout).toContain("http://");
+        \\  const chunk = await process.stdout.getReader().read();
+        \\  expect(chunk).toMatchObject({ done: false });
+        \\  expect(new TextDecoder().decode(chunk.value)).toContain("http://");
+        \\  const tailwindTarget = tempDirWithFiles("recursive-corpus-tailwind-build", { "index.tsx": await Bun.file("tailwind.tsx").text() });
+        \\  const createTailwind = Bun.spawn([bunExe(), "create", "./index.tsx"], { cwd: tailwindTarget, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await createTailwind.exited).toBe(0);
+        \\  const buildTailwind = Bun.spawn([bunExe(), "run", "build"], { cwd: tailwindTarget, stdout: "pipe", stderr: "pipe" });
+        \\  const [buildError, buildExitCode] = await Promise.all([buildTailwind.stderr.text(), buildTailwind.exited]);
+        \\  if (buildExitCode !== 0) throw new Error(buildError || "tailwind build failed without diagnostics");
+        \\  const dist = await readdir(path.join(tailwindTarget, "dist"));
+        \\  expect(dist.some(name => name.endsWith(".html"))).toBe(true);
+        \\  expect(dist.some(name => name.endsWith(".js"))).toBe(true);
+        \\  expect(dist.some(name => name.endsWith(".css"))).toBe(true);
+        \\})));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/create/create-jsx.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("recursive corpus copy failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
