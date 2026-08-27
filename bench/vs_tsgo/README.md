@@ -45,7 +45,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `generic_calls` | 256 typed call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
 | `control_flow` | 256 exhaustive functions | Discriminated-union narrowing, branch joins, definite assignment, and exhaustiveness |
 | `type_predicates` | 256 predicate families | User-defined predicates, assertion functions, call-driven narrowing, nested property reads, and typed consumption |
-| `type_predicates_large` | 2,048 identical predicate families | Scaling behavior of the same generator, feature mix, and compiler configuration |
+| `type_predicates_large` | 2,048 predicate families | Scaling behavior of the same generator, feature mix, and compiler configuration |
 | `null_safe_access` | 256 nullable object families | Optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption |
 | `destructuring` | 128 object families | Nested object and tuple bindings, defaults, object rest, spread reconstruction, and typed consumption |
 | `overload_resolution` | 128 groups × 8 calls | Overload candidate selection, generic literal inference, and contextual argument typing |
