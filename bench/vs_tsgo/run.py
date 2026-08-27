@@ -896,6 +896,38 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
             raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
     if workload == "destructuring":
         validate_destructuring_negatives(commands)
+    elif workload == "type_predicates":
+        validate_type_predicate_negatives(commands)
+
+
+def validate_type_predicate_negatives(commands: dict[str, list[str]]) -> None:
+    # Both guards and assertion functions must narrow to the real object
+    # shape, not any or the original union. These mutations are never timed.
+    with tempfile.TemporaryDirectory(prefix="home-bench-predicates-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "type_predicates", project)
+        source_path = project / "src/type-predicates.ts"
+        source = source_path.read_text(encoding="utf-8")
+        anchors = ["  if (isReady0(value)) {\n", "  assertReady0(value);\n"]
+        for index, anchor in enumerate(anchors):
+            if source.count(anchor) != 1:
+                raise SystemExit("type-predicate negative-control anchor is not unique")
+            invalid = (
+                f"  const invalidLabel{index}: number = value.payload.label;\n"
+                f"  const invalidProgress{index} = value.progress;\n"
+            )
+            source = source.replace(anchor, anchor + invalid, 1)
+        write(source_path, source)
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode == 0 or codes != ["2322"] * 2 + ["2339"] * 2:
+                raise SystemExit(f"{name} failed type-predicate negative controls:\n{details}")
 
 
 def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:

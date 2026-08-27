@@ -59,6 +59,10 @@ The destructuring workload also runs five automatic negative controls before
 timing: nested property, tuple element, rest-field, default-value, and excluded
 rest-property checks must produce four TS2322 diagnostics and one TS2339 in
 every compiler. These controls run in a temporary copy and are never timed.
+Type predicates has four automatic controls inside the guard branch and after
+the assertion call: assigning a narrowed string property to `number` and
+reading an excluded union member must produce two TS2322 diagnostics and two
+TS2339 diagnostics in every compiler. These also use an untimed temporary copy.
 
 They do not stand in for application-scale measurements; pinned real-world
 projects should be added only when all three compilers can validate the same
