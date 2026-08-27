@@ -66,7 +66,7 @@ pub fn packKey(rel: Relation, src: TypeId, tgt: TypeId) u64 {
 /// L1 capacity — per-worker, lockless, sized to fit the hot working
 /// set of a typical file's relation queries. When the table reaches
 /// this size we evict the oldest half (FIFO via insertion-order ring).
-pub const L1_CAPACITY: u32 = 256;
+pub const L1_CAPACITY: u32 = 4096;
 
 /// L2 capacity — shared across workers, locked, sized to retain
 /// cross-cutting type-pair results (e.g. interfaces consulted by
@@ -135,11 +135,12 @@ pub const L1Cache = struct {
 
     /// Insert/overwrite; evicts the oldest half on overflow.
     pub fn insert(self: *L1Cache, key: u64, r: Result) !void {
+        // Resolve the slot once. `getPtr` followed by `put` hashes every new
+        // relation twice on this hot path.
+        const entry = try self.table.getOrPut(self.gpa, key);
+        entry.value_ptr.* = r;
         // Updating an existing key keeps insertion order — no eviction.
-        if (self.table.getPtr(key)) |slot| {
-            slot.* = r;
-            return;
-        }
+        if (entry.found_existing) return;
         if (self.ring_len >= self.cap) {
             // Evict the oldest half of the ring in FIFO order.
             const drop = self.cap / 2;
@@ -151,7 +152,6 @@ pub const L1Cache = struct {
                 self.ring_len -= 1;
             }
         }
-        try self.table.put(self.gpa, key, r);
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
         self.ring_len += 1;
@@ -202,10 +202,9 @@ pub const L2Cache = struct {
     pub fn insert(self: *L2Cache, key: u64, r: Result) !void {
         self.mu.lock();
         defer self.mu.unlock();
-        if (self.table.getPtr(key)) |slot| {
-            slot.* = r;
-            return;
-        }
+        const entry = try self.table.getOrPut(self.gpa, key);
+        entry.value_ptr.* = r;
+        if (entry.found_existing) return;
         if (self.ring_len >= self.cap) {
             const drop = self.cap / 2;
             var i: u32 = 0;
@@ -216,7 +215,6 @@ pub const L2Cache = struct {
                 self.ring_len -= 1;
             }
         }
-        try self.table.put(self.gpa, key, r);
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
         self.ring_len += 1;
