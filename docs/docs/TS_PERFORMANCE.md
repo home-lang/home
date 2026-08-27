@@ -10,36 +10,38 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-27 at commit `fa7842396` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-27 at commit `332e22826` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T154256Z`. Home records a lower
-mean than the faster competitor on 15 of 16 workloads. The round-robin compiler
+The local raw-result identifier is `20260827T155812Z`. Home records a lower
+mean than the faster competitor on all 16 workloads. The round-robin compiler
 order and complete, unfiltered 30-sample result are retained.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 77.6 ± 11.5 ms | 43.5 ± 2.5 ms | **3.8 ± 0.4 ms** | **11.29× faster** |
-| `many_files` | 292.1 ± 85.7 ms | 76.9 ± 24.1 ms | **44.2 ± 13.7 ms** | **1.74× faster** |
-| `deep_types` | 139.6 ± 12.2 ms | 55.5 ± 5.1 ms | **15.2 ± 0.7 ms** | **3.64× faster** |
-| `import_graph` | 180.6 ± 21.1 ms | 67.8 ± 11.8 ms | **37.5 ± 7.0 ms** | **1.81× faster** |
-| `reexport_graph` | 101.7 ± 11.2 ms | 44.2 ± 6.5 ms | **32.1 ± 7.0 ms** | **1.38× faster** |
-| `tsx_components` | 203.6 ± 79.0 ms | 55.4 ± 19.1 ms | **28.8 ± 17.1 ms** | **1.92× faster** |
-| `generic_calls` | 183.7 ± 6.7 ms | 56.2 ± 2.8 ms | **26.3 ± 1.8 ms** | **2.14× faster** |
-| `control_flow` | 209.4 ± 89.5 ms | 61.8 ± 19.4 ms | **44.0 ± 5.4 ms** | **1.40× faster** |
-| `type_predicates` | 286.0 ± 154.9 ms | 80.7 ± 22.2 ms | **73.5 ± 6.9 ms** | **1.10× faster** |
-| `null_safe_access` | 233.4 ± 91.4 ms | 71.3 ± 26.9 ms | **51.1 ± 14.1 ms** | **1.40× faster** |
-| `overload_resolution` | 227.3 ± 32.4 ms | 69.6 ± 4.4 ms | **39.3 ± 1.1 ms** | **1.77× faster** |
-| `class_hierarchy` | 206.0 ± 17.8 ms | 56.8 ± 4.0 ms | **37.5 ± 1.9 ms** | **1.52× faster** |
-| `structural_objects` | 265.5 ± 111.7 ms | 84.7 ± 37.9 ms | **52.4 ± 23.3 ms** | **1.62× faster** |
-| `interface_composition` | 215.3 ± 16.1 ms | 67.6 ± 6.1 ms | **54.6 ± 24.3 ms** | **1.24× faster** |
-| `variadic_tuples` | 255.0 ± 12.5 ms | 78.4 ± 3.9 ms | **52.0 ± 3.2 ms** | **1.51× faster** |
-| `checkjs_jsdoc` | 219.8 ± 20.4 ms | 56.5 ± 2.7 ms | 58.4 ± 33.3 ms | 1.03× slower |
+| `startup` | 68.2 ± 4.2 ms | 40.3 ± 2.0 ms | **3.5 ± 0.2 ms** | **11.43× faster** |
+| `many_files` | 220.2 ± 21.5 ms | 55.1 ± 4.2 ms | **34.7 ± 11.0 ms** | **1.59× faster** |
+| `deep_types` | 150.6 ± 39.6 ms | 61.1 ± 20.5 ms | **15.7 ± 1.2 ms** | **3.90× faster** |
+| `import_graph` | 135.6 ± 4.9 ms | 47.7 ± 3.0 ms | **30.2 ± 5.2 ms** | **1.58× faster** |
+| `reexport_graph` | 102.7 ± 14.2 ms | 42.9 ± 1.5 ms | **30.1 ± 3.0 ms** | **1.43× faster** |
+| `tsx_components` | 174.7 ± 13.5 ms | 50.2 ± 3.0 ms | **24.9 ± 1.0 ms** | **2.01× faster** |
+| `generic_calls` | 192.9 ± 16.3 ms | 57.2 ± 3.3 ms | **26.7 ± 1.8 ms** | **2.14× faster** |
+| `control_flow` | 208.0 ± 9.5 ms | 62.4 ± 2.4 ms | **45.4 ± 1.6 ms** | **1.37× faster** |
+| `type_predicates` | 268.2 ± 23.6 ms | 78.6 ± 9.7 ms | **74.6 ± 3.4 ms** | **1.05× faster** |
+| `null_safe_access` | 212.6 ± 28.0 ms | 61.3 ± 5.2 ms | **48.5 ± 7.4 ms** | **1.26× faster** |
+| `overload_resolution` | 209.9 ± 13.1 ms | 66.7 ± 6.2 ms | **38.0 ± 1.1 ms** | **1.76× faster** |
+| `class_hierarchy` | 191.8 ± 9.6 ms | 53.9 ± 3.2 ms | **37.1 ± 3.7 ms** | **1.45× faster** |
+| `structural_objects` | 185.2 ± 6.9 ms | 58.3 ± 2.2 ms | **36.7 ± 2.4 ms** | **1.59× faster** |
+| `interface_composition` | 197.6 ± 7.6 ms | 61.6 ± 2.7 ms | **48.1 ± 1.4 ms** | **1.28× faster** |
+| `variadic_tuples` | 244.5 ± 13.3 ms | 75.1 ± 3.0 ms | **50.0 ± 1.8 ms** | **1.50× faster** |
+| `checkjs_jsdoc` | 196.6 ± 4.1 ms | 51.7 ± 1.1 ms | **40.1 ± 0.9 ms** | **1.29× faster** |
 
-The checked-JavaScript result includes one 234.3 ms Home sample; its median is
-52.1 ms, but the unfiltered mean remains a loss. That narrow margin is tracked
-in [issue #452](https://github.com/home-lang/home/issues/452), not hidden by
-discarding samples or substituting a better run.
+The preceding snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
+Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
+234.3 ms Home sample (52.1 ms median). That unfiltered result remains part of
+the record. [Issue #452](https://github.com/home-lang/home/issues/452) addressed
+the narrow margin with the general function-containment index described below;
+the current snapshot follows that code change rather than discarding samples.
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -184,7 +186,10 @@ workload-specific shortcuts:
 - source-annotation recovery stops when the nearest lexical parameter and its
   following source token prove there is no annotation to recover, while
   explicit annotations, comments, destructuring, and ambiguous syntax retain
-  the complete fallback; and
+  the complete fallback;
+- source-function ownership uses sorted nested function spans for first-time
+  position queries, preserving the original full scan for malformed crossing
+  ranges or allocation failure and the original NodeId tie-breaking; and
 - the lockless relation cache retains a 4,096-entry working set and inserts new
   relations with one hash-table probe instead of two.
 
@@ -294,3 +299,19 @@ general lexical/source guard removes only that impossible search. A scaled
 accepted corpus, configuration, validity gate, and timing schedule stayed
 unchanged. The complete checker gate passes 4,192 tests including the new
 source-recovery regression.
+
+The checked-JavaScript margin follow-up retained the losing snapshot
+`20260827T154256Z` rather than filtering its slow sample. Profiling a
+2,048-family same-shape copy showed that first-time JSDoc comment ownership
+queries still scanned every HIR node. Commit `332e22826` builds a sorted,
+nested function-span index and resolves those positions by binary search plus
+the enclosing-span chain. Its regression compares indexed and original-scan
+answers at every source position in nested function, arrow, and function
+expression input, and checks source-state invalidation. The scaled profile
+copy fell from 4.55 seconds to 2.31 seconds; the unchanged accepted 128-family
+source (SHA-256
+`898573fc0f2567653fef3edb3675d768f825abd80b83e708e7d57d29049c03ec`)
+measures 40.1 ± 0.9 ms versus native TypeScript 7 at 51.7 ± 1.1 ms in snapshot
+`20260827T155812Z`, a 1.29× mean win. All three compilers still accept the
+valid project silently and reject the preserved string-to-number JSDoc variant
+with `TS2322`; the complete checker gate passes 4,193 tests.
