@@ -3218,6 +3218,19 @@ const VisibleAnnotatedValueKey = struct {
     virtual_section_start: usize,
 };
 
+const LocalValueContainerIndex = struct {
+    const Entry = struct { declaration: NodeId, ordinal: usize };
+    const StatementKey = struct { node: NodeId, virtual_section_start: usize };
+
+    declarations: std.AutoHashMapUnmanaged(DeclarationKey, Entry) = .empty,
+    statement_ordinals: std.AutoHashMapUnmanaged(StatementKey, usize) = .empty,
+
+    fn deinit(self: *LocalValueContainerIndex, gpa: std.mem.Allocator) void {
+        self.declarations.deinit(gpa);
+        self.statement_ordinals.deinit(gpa);
+    }
+};
+
 const JsDocGlobalDeclEntry = struct {
     name: hir_mod.StringId,
     node: NodeId,
@@ -4749,6 +4762,9 @@ pub const Checker = struct {
         NodeId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) = .empty,
+    /// First local value declaration and exact statement boundaries, partitioned
+    /// by virtual source section. Ordinals preserve recovery-node ordering too.
+    local_value_decls_by_container: std.AutoHashMapUnmanaged(NodeId, LocalValueContainerIndex) = .empty,
     /// Named `@typedef` and `@callback` blocks in a physical JS source.
     /// JSDoc lowering probes several declaration categories per reference;
     /// indexing once avoids repeated whole-source negative scans.
@@ -5219,6 +5235,9 @@ pub const Checker = struct {
         var function_decls_it = self.function_decls_by_container.valueIterator();
         while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
         self.function_decls_by_container.clearRetainingCapacity();
+        var local_values_it = self.local_value_decls_by_container.valueIterator();
+        while (local_values_it.next()) |index| index.deinit(self.gpa);
+        self.local_value_decls_by_container.clearRetainingCapacity();
         self.jsdoc_named_declarations.clearRetainingCapacity();
         self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
         self.jsdoc_named_declarations_built = false;
@@ -5739,6 +5758,9 @@ pub const Checker = struct {
         var function_decls_it = self.function_decls_by_container.valueIterator();
         while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
         self.function_decls_by_container.deinit(self.gpa);
+        var local_values_it = self.local_value_decls_by_container.valueIterator();
+        while (local_values_it.next()) |index| index.deinit(self.gpa);
+        self.local_value_decls_by_container.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
         self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
         self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
@@ -101195,6 +101217,60 @@ pub const Checker = struct {
     }
 
     fn findLocalValueDeclBeforeExpression(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
+        var anchor = node;
+        var scope = self.hir.parentOf(node);
+        while (scope != hir_mod.none_node_id) {
+            const stmts = self.containerStatements(scope) orelse {
+                anchor = scope;
+                scope = self.hir.parentOf(scope);
+                continue;
+            };
+            if (stmts.len <= 1) return self.findLocalValueDeclBeforeExpressionSlow(node, name);
+            const index = self.local_value_decls_by_container.getPtr(scope) orelse blk: {
+                self.indexLocalValueDeclarations(scope, stmts, has_sections) catch
+                    return self.findLocalValueDeclBeforeExpressionSlow(node, name);
+                break :blk self.local_value_decls_by_container.getPtr(scope).?;
+            };
+            const entry = index.declarations.get(.{ .name = name, .virtual_section_start = section }) orelse return null;
+            if (index.statement_ordinals.get(.{ .node = anchor, .virtual_section_start = section })) |boundary| {
+                if (entry.ordinal >= boundary) return null;
+            }
+            return entry.declaration;
+        }
+        return null;
+    }
+
+    fn indexLocalValueDeclarations(self: *Checker, container: NodeId, stmts: []const NodeId, has_sections: bool) !void {
+        var index: LocalValueContainerIndex = .{};
+        errdefer index.deinit(self.gpa);
+        for (stmts, 0..) |stmt, ordinal| {
+            const section = if (has_sections) self.virtualSectionStartForNode(stmt) else 0;
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            // The original scanner stops at either a statement or the direct
+            // declaration inside its export wrapper, before considering it.
+            for ([_]NodeId{ stmt, decl }) |boundary_node| {
+                if (boundary_node == hir_mod.none_node_id) continue;
+                const boundary = try index.statement_ordinals.getOrPut(self.gpa, .{
+                    .node = boundary_node,
+                    .virtual_section_start = section,
+                });
+                if (!boundary.found_existing) boundary.value_ptr.* = ordinal;
+            }
+            if (decl == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr, .class_decl, .class_expr => {},
+                else => continue,
+            }
+            const name = self.declarationName(decl) orelse continue;
+            const entry = try index.declarations.getOrPut(self.gpa, .{ .name = name, .virtual_section_start = section });
+            if (!entry.found_existing) entry.value_ptr.* = .{ .declaration = decl, .ordinal = ordinal };
+        }
+        try self.local_value_decls_by_container.put(self.gpa, container, index);
+    }
+
+    fn findLocalValueDeclBeforeExpressionSlow(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         const has_sections = self.sourceHasVirtualFilenameSections();
         const anchor_section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
         var anchor = node;
@@ -201534,6 +201610,68 @@ test "checker: function declaration index retains scanner on allocation failure"
         try T.expectEqual(@as(u32, 0), s.checker.function_decls_by_container.count());
         try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
         try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(s.root, name));
+    }
+}
+
+test "checker: local value declaration index matches scope section and boundary scans" {
+    const s = try newSetup(
+        \\// @filename: first.ts
+        \\export const first = 1;
+        \\const later = first;
+        \\function f(first: number) { const inner = first; return inner; }
+        \\class C {}
+        \\enum E { Member }
+        \\{ later; const first = 2; const later = first; }
+        \\namespace N { export const first = 3; const later = first; }
+        \\const { destructured } = { destructured: 1 };
+        \\export { first };
+        \\// @filename: second.ts
+        \\const first = 4;
+        \\const later = first;
+        \\function f() { later; const inner = 5; return inner; }
+    );
+    defer destroySetup(s);
+    const names = [_][]const u8{ "first", "later", "inner", "f", "C", "E", "destructured", "missing" };
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        for (names) |text| {
+            const name = try s.sint.intern(text);
+            const expected = s.checker.findLocalValueDeclBeforeExpressionSlow(node, name);
+            try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(node, name));
+            try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(node, name));
+        }
+    }
+    try T.expect(s.checker.local_value_decls_by_container.count() > 0);
+    s.checker.setSource("const next = 1;");
+    try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+}
+
+test "checker: local value declaration index retains scanner on allocation failure" {
+    for (0..3) |fail_index| {
+        const s = try newSetup("const first = 1; const second = first;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("first");
+        var use = hir_mod.none_node_id;
+        var node: NodeId = 1;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) == .identifier and hir_mod.identifierOf(&s.hir, node).name == name and
+                !s.checker.isDeclNameSlot(node)) use = node;
+        }
+        try T.expect(use != hir_mod.none_node_id);
+        const expected = s.checker.findLocalValueDeclBeforeExpressionSlow(use, name);
+        try T.expect(expected != null);
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const actual = blk: {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            break :blk s.checker.findLocalValueDeclBeforeExpression(use, name);
+        };
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(expected, actual);
+        try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(use, name));
     }
 }
 
