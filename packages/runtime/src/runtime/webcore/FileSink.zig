@@ -143,10 +143,20 @@ pub fn onAttachedProcessExit(this: *FileSink, status: *const bun.spawn.Status) v
         readable_stream.deinit();
     }
 
+    // Process exit by itself is not an EPIPE when the process completed
+    // successfully. On Windows in particular the child can exit normally while
+    // an overlapped write is still pending, and manufacturing EPIPE here turns
+    // ordinary REPL/stdin shutdown into an unhandled rejection. Preserve the
+    // existing failure result for abnormal process termination. A transport
+    // error already reported through `onError` wins because it moves the pending
+    // state to `.used`; ordinary, unattached broken-pipe writes keep using that
+    // error path unchanged.
     this.writer.close();
 
-    this.pending.result = .{ .err = .fromCode(.PIPE, .write) };
-    this.runPending();
+    if (attachedProcessExitResult(this.pending.state, this.pending.consumed, status.isOK())) |result| {
+        this.pending.result = result;
+        this.runPending();
+    }
 
     // `writer.close()` → `onClose` already released this above; kept for
     // paths where `onClose` isn't reached (e.g. writer already closed).
@@ -168,6 +178,30 @@ fn runPending(this: *FileSink) void {
     // This was held to prevent GC from collecting the wrapper while the async
     // operation was in progress.
     this.js_sink_ref.deinit();
+}
+
+/// Settle a write still pending when its attached process has closed stdin.
+/// A clean exit makes the accepted byte count final. Abnormal termination keeps
+/// the historical EPIPE fallback. Write errors reported independently use
+/// `onError` and are not changed by this process-lifecycle fallback.
+fn attachedProcessExitResult(state: streams.Result.Pending.State, consumed: Blob.SizeType, process_exited_ok: bool) ?streams.Result.Writable {
+    if (state != .pending) return null;
+    if (process_exited_ok) return .{ .owned_and_done = consumed };
+    return .{ .err = .fromCode(.PIPE, .write) };
+}
+
+test "normal attached process exit settles only pending writes without inventing EPIPE" {
+    const result = attachedProcessExitResult(.pending, 37, true).?;
+    try std.testing.expect(result == .owned_and_done);
+    try std.testing.expectEqual(@as(Blob.SizeType, 37), result.owned_and_done);
+    try std.testing.expect(attachedProcessExitResult(.none, 37, true) == null);
+    try std.testing.expect(attachedProcessExitResult(.used, 37, true) == null);
+}
+
+test "abnormal attached process exit does not turn a pending write into success" {
+    const result = attachedProcessExitResult(.pending, 37, false).?;
+    try std.testing.expect(result == .err);
+    try std.testing.expectEqual(bun.sys.E.PIPE, result.err.getErrno());
 }
 
 pub fn onWrite(this: *FileSink, amount: usize, status: bun.io.WriteStatus) void {

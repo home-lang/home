@@ -3218,7 +3218,9 @@ pub const jsc = struct {
             data: JSValue = .zero,
             unix_: MaybeString = .{},
             hostname: MaybeString = .{},
+            local_address: MaybeString = .{},
             port: ?u16 = null,
+            local_port: ?u16 = null,
             exclusive: bool = false,
             allow_half_open: bool = false,
             reuse_port: bool = false,
@@ -3237,11 +3239,17 @@ pub const jsc = struct {
                 if (try opts.get(globalObject, "hostname")) |h| {
                     result.hostname = try MaybeString.fromJS(globalObject, h);
                 }
+                if (try opts.get(globalObject, "localAddress")) |h| {
+                    result.local_address = try MaybeString.fromJS(globalObject, h);
+                }
                 if (try opts.get(globalObject, "unix")) |u| {
                     result.unix_ = try MaybeString.fromJS(globalObject, u);
                 }
                 if (try opts.get(globalObject, "port")) |p| {
                     if (p.isNumber()) result.port = @truncate(@as(u32, @bitCast(p.toInt32())));
+                }
+                if (try opts.get(globalObject, "localPort")) |p| {
+                    if (p.isNumber()) result.local_port = @truncate(@as(u32, @bitCast(p.toInt32())));
                 }
                 if (try opts.get(globalObject, "fd")) |fd| {
                     if (fd.isNumber()) result.fd = fd.toInt32();
@@ -3266,6 +3274,7 @@ pub const jsc = struct {
             pub fn deinit(this: *SocketConfig) void {
                 this.unix_.deinit();
                 this.hostname.deinit();
+                this.local_address.deinit();
                 if (this.tls == .object) this.tls.object.deinit();
             }
         };

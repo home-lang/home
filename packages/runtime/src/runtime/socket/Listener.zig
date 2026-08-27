@@ -173,16 +173,28 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
 
             // we need to add support for the backlog parameter on listen here we use the
             // default value of nodejs
+            var pipe_error: ?bun.sys.Error = null;
             const named_pipe = WindowsNamedPipeListeningContext.listen(
                 globalObject,
                 pipe_name,
                 511,
                 ssl,
                 this,
-            ) catch return globalObject.throwInvalidArguments(
-                "Failed to listen at {s}",
-                .{pipe_name},
-            );
+                &pipe_error,
+            ) catch {
+                if (pipe_error) |system_error| {
+                    const error_info = api.socket.socketErrorInfo(@intCast(system_error.errno));
+                    const err = jsc.SystemError{
+                        .errno = -error_info.errno,
+                        .code = bun.String.static(error_info.code),
+                        .message = bun.String.static("Failed to listen"),
+                        .path = bun.String.cloneUTF8(pipe_name),
+                        .syscall = bun.String.static("listen"),
+                    };
+                    return globalObject.throwValue(err.toErrorInstance(globalObject));
+                }
+                return globalObject.throwInvalidArguments("Failed to listen at {s}", .{pipe_name});
+            };
             this.listener = .{ .namedPipe = named_pipe };
 
             const this_value = this.toJS(globalObject);
@@ -255,7 +267,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             },
             .fd => |fd| {
                 const err: bun.jsc.SystemError = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.EINVAL),
+                    .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
                     .code = .static("EINVAL"),
                     .message = .static("Bun does not support listening on a file descriptor."),
                     .syscall = .static("listen"),
@@ -883,8 +895,8 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             socket.ref();
             SocketType.js.dataSetCached(socket.getThisValue(globalObject), globalObject, default_data);
             socket.flags.allow_half_open = socket_config.allowHalfOpen;
-            socket.doConnect(connection) catch {
-                socket.handleConnectError(@intFromEnum(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+            socket.doConnect(connection, socket_config.local_address.slice(), socket_config.localPort orelse 0) catch {
+                socket.handleConnectError(@backingInt(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
                 // Balance the unconditional `socket.ref()` above. `handleConnectError`
                 // only derefs when the socket was attached (`needs_deref`), which is
                 // never true on this synchronous-failure path — the socket is still
@@ -1033,7 +1045,9 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
         backlog: i32,
         ssl_config: ?*const SSLConfig,
         listener: *Listener,
+        pipe_error: *?bun.sys.Error,
     ) !*WindowsNamedPipeListeningContext {
+        pipe_error.* = null;
         const this = WindowsNamedPipeListeningContext.new(.{
             .globalThis = globalThis,
             .vm = globalThis.bunVM(),
@@ -1064,7 +1078,11 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
         if (path[path.len - 1] == 0) {
             // is already null terminated
             const slice_z = path[0 .. path.len - 1 :0];
-            this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect).unwrap() catch return error.FailedToBindPipe;
+            const result = this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect);
+            if (result.asErr()) |err| {
+                pipe_error.* = err;
+                return error.NamedPipeListenFailed;
+            }
         } else {
             var path_buf: bun.PathBuffer = undefined;
             // we need to null terminate the path
@@ -1073,7 +1091,11 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
             @memcpy(path_buf[0..len], path[0..len]);
             path_buf[len] = 0;
             const slice_z = path_buf[0..len :0];
-            this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect).unwrap() catch return error.FailedToBindPipe;
+            const result = this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect);
+            if (result.asErr()) |err| {
+                pipe_error.* = err;
+                return error.NamedPipeListenFailed;
+            }
         }
         //TODO: add readableAll and writableAll support if someone needs it
         // if(uv.uv_pipe_chmod(&this.uvPipe, uv.UV_WRITABLE | uv.UV_READABLE) != 0) {

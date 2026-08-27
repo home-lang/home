@@ -36,6 +36,84 @@ pub const SocketConfig = Handlers.SocketConfig;
 pub const Listener = @import("./Listener.zig");
 pub const WindowsNamedPipeContext = if (Environment.isWindows) @import("./WindowsNamedPipeContext.zig") else void;
 
+/// Canonical socket error metadata used by both uSockets and Windows named
+/// pipes. Callers hand us either a positive `SystemErrno` value or, on Windows,
+/// the positive magnitude of a negative libuv error. Keep the original error
+/// class instead of treating every failure other than ENOENT as ECONNREFUSED.
+pub const SocketErrorInfo = struct {
+    /// Positive errno magnitude. `jsc.SystemError` stores its negation.
+    errno: c_int,
+    code: [:0]const u8,
+};
+
+fn socketErrorInfoForPlatform(errno: c_int, windows: bool) SocketErrorInfo {
+    const noent = @backingInt(bun.sys.SystemErrno.ENOENT);
+    const addrinuse = @backingInt(bun.sys.SystemErrno.EADDRINUSE);
+    const connreset = @backingInt(bun.sys.SystemErrno.ECONNRESET);
+    const connrefused = @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
+
+    const canonical_errno: c_int = if (windows) switch (errno) {
+        -uv.UV_ENOENT => noent,
+        -uv.UV_EADDRINUSE => addrinuse,
+        -uv.UV_ECONNRESET => connreset,
+        -uv.UV_ECONNREFUSED => connrefused,
+        else => errno,
+    } else errno;
+
+    const code: [:0]const u8 = switch (canonical_errno) {
+        noent => "ENOENT",
+        addrinuse => "EADDRINUSE",
+        connreset => "ECONNRESET",
+        connrefused => "ECONNREFUSED",
+        // Preserve the historical fallback for unknown socket errors while the
+        // four named-pipe/network errors above retain their exact identity.
+        else => "ECONNREFUSED",
+    };
+    const reported_errno = if (windows) switch (canonical_errno) {
+        noent => -uv.UV_ENOENT,
+        addrinuse => -uv.UV_EADDRINUSE,
+        connreset => -uv.UV_ECONNRESET,
+        connrefused => -uv.UV_ECONNREFUSED,
+        else => -uv.UV_ECONNREFUSED,
+    } else switch (canonical_errno) {
+        noent, addrinuse, connreset, connrefused => canonical_errno,
+        else => connrefused,
+    };
+
+    return .{ .errno = reported_errno, .code = code };
+}
+
+pub fn socketErrorInfo(errno: c_int) SocketErrorInfo {
+    return socketErrorInfoForPlatform(errno, Environment.isWindows);
+}
+
+test "socket errors preserve named-pipe failure identity" {
+    const cases = [_]struct {
+        canonical: c_int,
+        uv_errno: c_int,
+        code: []const u8,
+    }{
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ENOENT), .uv_errno = -uv.UV_ENOENT, .code = "ENOENT" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.EADDRINUSE), .uv_errno = -uv.UV_EADDRINUSE, .code = "EADDRINUSE" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ECONNRESET), .uv_errno = -uv.UV_ECONNRESET, .code = "ECONNRESET" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ECONNREFUSED), .uv_errno = -uv.UV_ECONNREFUSED, .code = "ECONNREFUSED" },
+    };
+
+    for (cases) |case| {
+        const posix = socketErrorInfoForPlatform(case.canonical, false);
+        try std.testing.expectEqual(case.canonical, posix.errno);
+        try std.testing.expectEqualStrings(case.code, posix.code);
+
+        const windows_from_system = socketErrorInfoForPlatform(case.canonical, true);
+        try std.testing.expectEqual(case.uv_errno, windows_from_system.errno);
+        try std.testing.expectEqualStrings(case.code, windows_from_system.code);
+
+        const windows_from_uv = socketErrorInfoForPlatform(case.uv_errno, true);
+        try std.testing.expectEqual(case.uv_errno, windows_from_uv.errno);
+        try std.testing.expectEqualStrings(case.code, windows_from_uv.code);
+    }
+}
+
 pub fn NewSocket(comptime ssl: bool) type {
     return struct {
         const This = @This();
@@ -113,7 +191,7 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
         }
 
-        pub fn doConnect(this: *This, connection: Listener.UnixOrHost) !void {
+        pub fn doConnect(this: *This, connection: Listener.UnixOrHost, local_address: []const u8, local_port: u16) !void {
             this.ref();
             defer this.deref();
 
@@ -127,13 +205,15 @@ pub fn NewSocket(comptime ssl: bool) type {
                 .host => |host| {
                     var sf = bun.stackFallback(1024, bun.default_allocator);
                     const alloc = sf.get();
+                    const local_hostz = if (local_address.len > 0) bun.handleOom(bun.dupeZ(alloc, u8, local_address)) else null;
+                    defer if (local_hostz) |address| alloc.free(address);
                     // getaddrinfo doesn't accept bracketed IPv6.
                     const raw = host.host;
                     const clean = if (raw.len > 1 and raw[0] == '[' and raw[raw.len - 1] == ']') raw[1 .. raw.len - 1] else raw;
                     const hostz = bun.handleOom(bun.dupeZ(alloc, u8, clean));
                     defer alloc.free(hostz);
 
-                    this.socket = switch (group.connect(kind, ssl_ctx, hostz, host.port, flags, @sizeOf(*anyopaque))) {
+                    this.socket = switch (group.connectWithLocalAddress(kind, ssl_ctx, hostz, host.port, if (local_hostz) |address| address.ptr else null, local_port, flags, @sizeOf(*anyopaque))) {
                         .failed => return error.FailedToOpenSocket,
                         .socket => |s| blk: {
                             s.ext(*This).* = this;
@@ -329,18 +409,15 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
 
             bun.assert(errno >= 0);
-            var errno_: c_int = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) @intFromEnum(bun.sys.SystemErrno.ENOENT) else @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
-            const code_ = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) bun.String.static("ENOENT") else bun.String.static("ECONNREFUSED");
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ENOENT)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ENOENT);
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ECONNREFUSED);
+            const error_info = socketErrorInfo(errno);
 
             const callback = handlers.onConnectError;
             const globalObject = handlers.globalObject;
             const err = jsc.SystemError{
-                .errno = -errno_,
+                .errno = -error_info.errno,
                 .message = bun.String.static("Failed to connect"),
                 .syscall = bun.String.static("connect"),
-                .code = code_,
+                .code = bun.String.static(error_info.code),
             };
 
             // the handlers must be kept alive for the duration of the function call
@@ -1907,7 +1984,7 @@ pub const DuplexUpgradeContext = struct {
                 // duplex events — skip the TLSSocket instead of calling
                 // `getHandlers()` on the freed allocation.
                 this.tls = null;
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+                tls.handleConnectError(@backingInt(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
             }
         }
     }
@@ -1969,7 +2046,7 @@ pub const DuplexUpgradeContext = struct {
                 started catch |err| switch (err) {
                     error.OutOfMemory => bun.outOfMemory(),
                     else => {
-                        const errno = @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
+                        const errno = @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
                         if (this.tls) |tls| {
                             // `handleConnectError` consumes our +1 (its
                             // `needs_deref` path) and detaches. Null
@@ -2283,6 +2360,7 @@ const Environment = bun.Environment;
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;
 const uws = bun.uws;
+const uv = bun.windows.libuv;
 const BoringSSL = bun.BoringSSL.c;
 
 const jsc = bun.jsc;

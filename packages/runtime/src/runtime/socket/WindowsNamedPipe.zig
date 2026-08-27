@@ -47,7 +47,8 @@ pub const Flags = packed struct(u8) {
     is_closed: bool = false,
     is_client: bool = false,
     is_ssl: bool = false,
-    _: u4 = 0,
+    readable_ended: bool = false,
+    _: u3 = 0,
 };
 pub const Handlers = struct {
     ctx: *anyopaque,
@@ -78,6 +79,48 @@ fn onPipeClose(this: *WindowsNamedPipe) void {
     this.flags.disconnected = true;
     this.pipe = null;
     this.onClose();
+}
+
+fn onUnadoptedPipeClose(pipe: *uv.Pipe) callconv(.c) void {
+    const this: *WindowsNamedPipe = @ptrCast(@alignCast(pipe.data));
+    bun.destroy(pipe);
+    this.onPipeClose();
+}
+
+const PipeOwner = enum {
+    writer,
+    raw_pipe,
+    none,
+};
+
+fn pipeOwner(writer_has_source: bool, raw_pipe_present: bool) PipeOwner {
+    if (writer_has_source) return .writer;
+    if (raw_pipe_present) return .raw_pipe;
+    return .none;
+}
+
+/// Before `start()` succeeds, the writer has not adopted `pipe`. Closing the
+/// writer in that state is a no-op, so close the raw libuv handle ourselves and
+/// deliver the normal close notification from its callback.
+fn closeUnadoptedPipe(this: *WindowsNamedPipe) bool {
+    switch (pipeOwner(this.writer.source != null, this.pipe != null)) {
+        .writer => return false,
+        .none => return true,
+        .raw_pipe => {},
+    }
+
+    const pipe = this.pipe.?;
+    this.pipe = null;
+    if (pipe.loop == null) {
+        bun.destroy(pipe);
+        this.onPipeClose();
+        return true;
+    }
+    if (pipe.isClosing()) return true;
+
+    pipe.data = this;
+    pipe.close(onUnadoptedPipeClose);
+    return true;
 }
 
 fn onReadAlloc(this: *WindowsNamedPipe, suggested_size: usize) []u8 {
@@ -128,18 +171,23 @@ fn onWrite(this: *WindowsNamedPipe, amount: usize, status: bun.io.WriteStatus) v
 fn onReadError(this: *WindowsNamedPipe, err: bun.sys.E) void {
     log("onReadError", .{});
     if (err == .EOF) {
-        // we received FIN but we dont allow half-closed connections right now
-        this.handlers.onEnd(this.handlers.ctx);
-    } else {
-        this.onError(bun.sys.Error.fromCode(err, .read));
+        // A peer FIN only closes the readable side. Keep the writer alive so
+        // the JS stream layer can honor allowHalfOpen and flush its own FIN.
+        if (!this.flags.readable_ended) {
+            this.flags.readable_ended = true;
+            this.handlers.onEnd(this.handlers.ctx);
+        }
+        return;
     }
-    this.writer.close();
+
+    this.onError(bun.sys.Error.fromCode(err, .read));
 }
 
 fn onError(this: *WindowsNamedPipe, err: bun.sys.Error) void {
     log("onError", .{});
     this.handlers.onError(this.handlers.ctx, err);
-    this.close();
+    // Fatal read/write errors must not flush queued bytes as a graceful FIN.
+    this.terminate();
 }
 
 fn onOpen(this: *WindowsNamedPipe) void {
@@ -323,7 +371,7 @@ pub fn getAcceptedBy(this: *WindowsNamedPipe, server: *uv.Pipe, ssl_ctx: ?*Borin
         }) catch {
             return .{
                 .err = .{
-                    .errno = @intFromEnum(bun.sys.E.PIPE),
+                    .errno = @backingInt(bun.sys.E.PIPE),
                     .syscall = .connect,
                 },
             };
@@ -420,14 +468,14 @@ fn initTLSWrapper(this: *WindowsNamedPipe, ssl_options: ?jsc.API.ServerConfig.SS
         this.flags.is_ssl = true;
         this.wrapper = WrapperType.initWithCTX(ctx, true, handlers) catch {
             BoringSSL.SSL_CTX_free(ctx);
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.PIPE), .syscall = .connect } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
         };
         return .success;
     }
     if (ssl_options) |tls| {
         this.flags.is_ssl = true;
         this.wrapper = WrapperType.init(tls, true, handlers) catch {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.PIPE), .syscall = .connect } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
         };
         return .success;
     }
@@ -499,10 +547,22 @@ pub fn rawWrite(this: *WindowsNamedPipe, encoded_data: []const u8) i32 {
 }
 
 pub fn close(this: *WindowsNamedPipe) void {
+    if (this.closeUnadoptedPipe()) return;
     if (this.wrapper) |*wrapper| {
         _ = wrapper.shutdown(false);
     }
     this.writer.end();
+}
+
+/// Abort the pipe without sending a graceful FIN. This is the named-pipe
+/// counterpart of a TCP close with `.failure`, used by resetAndDestroy().
+pub fn terminate(this: *WindowsNamedPipe) void {
+    if (this.closeUnadoptedPipe()) return;
+    if (this.wrapper) |*wrapper| {
+        _ = wrapper.shutdown(true);
+        return;
+    }
+    this.writer.close();
 }
 
 pub fn shutdown(this: *WindowsNamedPipe) void {
@@ -585,6 +645,11 @@ pub fn deinit(this: *WindowsNamedPipe) void {
     if (this.writer.getStream()) |stream| {
         _ = stream.readStop();
     }
+    if (Environment.isWindows and pipeOwner(this.writer.source != null, this.pipe != null) == .raw_pipe) {
+        const pipe = this.pipe.?;
+        this.pipe = null;
+        pipe.closeAndDestroy();
+    }
     this.writer.deinit();
     if (this.wrapper) |*wrapper| {
         wrapper.deinit();
@@ -607,6 +672,13 @@ const Environment = bun.Environment;
 const jsc = bun.jsc;
 const BoringSSL = bun.BoringSSL.c;
 const uv = bun.windows.libuv;
+
+test "named pipe cleanup always has a single pipe owner" {
+    try std.testing.expectEqual(PipeOwner.writer, pipeOwner(true, true));
+    try std.testing.expectEqual(PipeOwner.writer, pipeOwner(true, false));
+    try std.testing.expectEqual(PipeOwner.raw_pipe, pipeOwner(false, true));
+    try std.testing.expectEqual(PipeOwner.none, pipeOwner(false, false));
+}
 const EventLoopTimer = bun.api.Timer.EventLoopTimer;
 
 const uws = bun.uws;

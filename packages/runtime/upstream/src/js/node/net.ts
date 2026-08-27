@@ -625,8 +625,12 @@ function kConnectTcp(self, addressType, req, address, port) {
   const promise = doConnect(self._handle, {
     hostname: address,
     port,
+    localAddress: req.localAddress || undefined,
+    localPort: req.localPort || undefined,
     ipv6Only: addressType === 6,
-    allowHalfOpen: self.allowHalfOpen,
+    // Native sockets stay half-open so a peer FIN cannot discard buffered
+    // writes. The stream layer applies the user-facing allowHalfOpen policy.
+    allowHalfOpen: true,
     tls: req.tls,
     data: { self, req },
     socket: self[khandlers],
@@ -643,7 +647,8 @@ function kConnectPipe(self, req, address) {
   const promise = doConnect(self._handle, {
     hostname: address,
     unix: address,
-    allowHalfOpen: self.allowHalfOpen,
+    // Native sockets stay half-open; see kConnectTcp.
+    allowHalfOpen: true,
     tls: req.tls,
     data: { self, req },
     socket: self[khandlers],
@@ -891,7 +896,8 @@ Socket.prototype.connect = function connect(...args) {
         data: this,
         fd: fd,
         socket: SocketHandlers,
-        allowHalfOpen: this.allowHalfOpen,
+        // Always half-open natively; see kConnectTcp.
+        allowHalfOpen: true,
       }).catch(error => {
         if (!this.destroyed) {
           this.emit("error", error);
@@ -1128,7 +1134,8 @@ Socket.prototype._destroy = function _destroy(err, callback) {
 
     if (this.resetAndClosing) {
       this.resetAndClosing = false;
-      const err = this._handle.close();
+      // resetAndDestroy() must request an RST rather than a graceful FIN.
+      const err = this._handle.terminate();
       setImmediate(() => {
         $debug("emit close");
         this.emit("close", isException);
@@ -2346,7 +2353,8 @@ Server.prototype.listen = function listen(port, hostname, onListen) {
       onListen,
     );
   } catch (err) {
-    setTimeout(emitErrorNextTick, 1, this, err);
+    const isUnix = path != null;
+    setTimeout(emitErrorNextTick, 1, this, formatListenError(err, isUnix ? path : hostname, isUnix ? undefined : port));
   }
   return this;
 };
@@ -2368,7 +2376,9 @@ Server.prototype[kRealListen] = function (
     this._handle = Bun.listen({
       unix: path,
       tls,
-      allowHalfOpen: allowHalfOpen || this[bunSocketServerOptions]?.allowHalfOpen || false,
+      // Accepted native sockets are always half-open. The JS Socket applies
+      // the server's user-facing allowHalfOpen policy.
+      allowHalfOpen: true,
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
@@ -2380,7 +2390,7 @@ Server.prototype[kRealListen] = function (
       fd,
       hostname,
       tls,
-      allowHalfOpen: allowHalfOpen || this[bunSocketServerOptions]?.allowHalfOpen || false,
+      allowHalfOpen: true,
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
@@ -2392,7 +2402,7 @@ Server.prototype[kRealListen] = function (
       port,
       hostname,
       tls,
-      allowHalfOpen: allowHalfOpen || this[bunSocketServerOptions]?.allowHalfOpen || false,
+      allowHalfOpen: true,
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
@@ -2445,6 +2455,33 @@ Server.prototype.getsockname = function getsockname(out) {
 
 function emitErrorNextTick(self, error) {
   self.emit("error", error);
+}
+
+function uvListenErrorDescription(code) {
+  switch (code) {
+    case "EADDRINUSE":
+      return "address already in use";
+    case "EACCES":
+      return "permission denied";
+    case "EADDRNOTAVAIL":
+      return "address not available";
+    case "EINVAL":
+      return "invalid argument";
+    default:
+      return undefined;
+  }
+}
+
+function formatListenError(err, address, port) {
+  const description = err && typeof err.code === "string" ? uvListenErrorDescription(err.code) : undefined;
+  if (description) {
+    err.syscall = "listen";
+    err.address = address;
+    if (port) err.port = port;
+    const location = port ? `${address}:${port}` : address;
+    err.message = `listen ${err.code}: ${description}${location ? ` ${location}` : ""}`;
+  }
+  return err;
 }
 
 function emitErrorAndCloseNextTick(self, error) {

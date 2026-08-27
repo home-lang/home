@@ -481,7 +481,9 @@ pub const InternalSocket = union(enum) {
             .connected => |socket| socket.close(code),
             .connecting => |socket| socket.close(),
             .upgradedDuplex => |socket| socket.close(),
-            .pipe => |pipe| if (Environment.isWindows) pipe.close(),
+            .pipe => |pipe| if (Environment.isWindows) {
+                if (code == .failure) pipe.terminate() else pipe.close();
+            },
         }
     }
 
