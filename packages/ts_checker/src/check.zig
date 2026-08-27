@@ -4434,6 +4434,11 @@ pub const Checker = struct {
     /// so TS2345/TS2322 prose renders `Date` instead of falling through
     /// to the positional placeholder. Strings are static ÃÂ¢ÃÂÃÂ no arena.
     builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// The fixed Function member recipe shares its private any[] and rest
+    /// signatures. Each outer object still gets a fresh declaration identity.
+    /// Published only after complete construction; shares the interner and
+    /// rest-signature table lifetime, not the attached source lifetime.
+    builtin_function_members: ?[2]types.ObjectMember = null,
     /// Function name ÃÂ¢ÃÂÃÂ list of overload signature TypeIds in
     /// declaration order. Populated when multiple `function f(...)`
     /// declarations share a name (overloads + implementation). The
@@ -81921,6 +81926,9 @@ pub const Checker = struct {
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
         if (std.mem.eql(u8, name, "Function")) {
+            if (self.builtin_function_members) |*members| {
+                return self.interner.internObjectType(members) catch types.Primitive.unknown;
+            }
             const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch
                 return types.Primitive.unknown;
             const sig_call = self.interner.internSignature(&[_]TypeId{any_array}, types.Primitive.any, false) catch
@@ -81945,7 +81953,9 @@ pub const Checker = struct {
                     .is_method = true,
                 },
             };
-            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+            const result = self.interner.internObjectType(&members) catch return types.Primitive.unknown;
+            self.builtin_function_members = members;
+            return result;
         }
         if (std.mem.eql(u8, name, "RegExp")) {
             const string_t = types.Primitive.string_t;
@@ -202032,6 +202042,122 @@ test "checker: named shape member facts do not accept combined or obsolete facts
     try T.expect(s.checker.objectTypeHasNamedShape(combined, false) == null);
     try T.expect(s.checker.namedShapeMemberFactsAllow(original));
     try T.expect(s.checker.objectTypeHasNamedShape(original, false) == null);
+}
+
+test "checker: builtin Function recipe preserves fresh objects and rest signatures" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const first = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(first != types.Primitive.unknown);
+    const recipe = s.checker.builtin_function_members.?;
+    const count = s.ti.pool.typeCount();
+    const second = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(first != second);
+    try T.expectEqual(count + 1, s.ti.pool.typeCount());
+    try T.expectEqualStrings("Function", s.checker.builtin_object_names.get(first).?);
+    try T.expectEqualStrings("Function", s.checker.builtin_object_names.get(second).?);
+    try T.expect(try s.engine.isAssignableTo(first, second));
+    try T.expect(try s.engine.isAssignableTo(second, first));
+    for (recipe, 0..) |member, i| {
+        try T.expectEqualStrings(if (i == 0) "__call" else "call", s.sint.get(member.name));
+        try T.expectEqual(member.type, s.ti.objectMember(second, member.name).?);
+        try T.expect(member.is_method and !member.is_optional and !member.is_readonly);
+        try T.expect(s.checker.rest_signatures.contains(member.type));
+        try T.expectEqual(types.Primitive.any, s.ti.signatureReturn(member.type).?);
+        const params = s.ti.signatureParams(member.type);
+        try T.expectEqual(i + 1, params.len);
+        if (i == 1) try T.expectEqual(types.Primitive.any, params[0]);
+        try T.expectEqual(types.Primitive.any, s.ti.objectNumberIndex(params[params.len - 1]));
+    }
+    try T.expectEqual(s.ti.signatureParams(recipe[0].type)[0], s.ti.signatureParams(recipe[1].type)[1]);
+    s.checker.setSource("// @noLib: true\n// @lib: es5\nconst next = 2;");
+    const before_third = s.ti.pool.typeCount();
+    const third = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(third != first and third != second);
+    try T.expectEqual(before_third + 1, s.ti.pool.typeCount());
+    for (recipe) |member| {
+        try T.expectEqual(member.type, s.ti.objectMember(third, member.name).?);
+        try T.expect(s.checker.rest_signatures.contains(member.type));
+    }
+    try T.expect(s.checker.lowerBuiltinObjectTypeRaw("function") == null);
+}
+
+test "checker: builtin Function recipe matches fresh construction structurally" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const shared = s.checker.lowerBuiltinObjectType("Function").?;
+    const shared_recipe = s.checker.builtin_function_members.?;
+    // The unprimed path is the original constructor. Compare its fresh
+    // component IDs structurally, without changing public object identity.
+    s.checker.builtin_function_members = null;
+    const fresh = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(shared != fresh);
+    try T.expect(try s.engine.isAssignableTo(shared, fresh));
+    try T.expect(try s.engine.isAssignableTo(fresh, shared));
+    for (shared_recipe, s.checker.builtin_function_members.?) |before, after| {
+        try T.expectEqual(before.name, after.name);
+        try T.expect(before.type != after.type);
+        try T.expect(try s.engine.isAssignableTo(before.type, after.type));
+        try T.expect(try s.engine.isAssignableTo(after.type, before.type));
+        try T.expect(s.checker.rest_signatures.contains(before.type));
+        try T.expect(s.checker.rest_signatures.contains(after.type));
+    }
+}
+
+test "checker: builtin Function recipe allocation failures never publish partial state" {
+    for ([_]bool{ false, true }) |primed| {
+        var failures: usize = 0;
+        var reached_success = false;
+        for (0..128) |fail_offset| {
+            var failing = T.FailingAllocator.init(T.allocator, .{});
+            {
+                // Initialize normally, then fail every allocation position in
+                // the constructor itself. All arenas retain this allocator so
+                // string bytes, signature keys, pools, and metadata are covered.
+                const gpa = failing.allocator();
+                var sint = try string_interner.Interner.init(gpa);
+                defer sint.deinit();
+                var hir = try Hir.init(gpa);
+                defer hir.deinit();
+                var ti = try interner.Interner.init(gpa);
+                defer ti.deinit();
+                var engine = try relation.Engine.init(gpa, &ti);
+                defer engine.deinit();
+                var checker = Checker.init(gpa, &hir, &ti, &sint, &engine);
+                defer checker.deinit();
+                if (primed) {
+                    try T.expect(checker.lowerBuiltinObjectTypeRaw("Function").? != types.Primitive.unknown);
+                    // Ensure a cached hit needs an outer-object pool growth.
+                    while (ti.pool.object_type_payloads.items.len < ti.pool.object_type_payloads.capacity) {
+                        _ = try ti.internObjectType(&.{});
+                    }
+                }
+                failing.fail_index = failing.alloc_index + fail_offset;
+                failing.resize_fail_index = failing.resize_index;
+                const result = checker.lowerBuiltinObjectTypeRaw("Function").?;
+                if (failing.has_induced_failure) {
+                    failures += 1;
+                    try T.expectEqual(types.Primitive.unknown, result);
+                    try T.expectEqual(primed, checker.builtin_function_members != null);
+                } else {
+                    try T.expect(result != types.Primitive.unknown);
+                    reached_success = true;
+                }
+                failing.fail_index = std.math.maxInt(usize);
+                failing.resize_fail_index = std.math.maxInt(usize);
+                const recovered = checker.lowerBuiltinObjectTypeRaw("Function").?;
+                try T.expect(recovered != types.Primitive.unknown);
+                if (result != types.Primitive.unknown) try T.expect(result != recovered);
+                for (checker.builtin_function_members.?) |member| {
+                    try T.expect(checker.rest_signatures.contains(member.type));
+                    try T.expectEqual(member.type, ti.objectMember(recovered, member.name).?);
+                }
+            }
+            try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+            if (reached_success) break;
+        }
+        try T.expect(reached_success and failures > 0);
+    }
 }
 
 test "checker: builtin name static index preserves all spellings and misses" {
