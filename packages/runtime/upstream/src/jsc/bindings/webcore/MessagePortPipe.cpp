@@ -59,13 +59,17 @@ TransferredMessagePort& TransferredMessagePort::operator=(TransferredMessagePort
 void MessagePortPipe::send(uint8_t fromSide, MessageWithMessagePorts&& message)
 {
     ASSERT(fromSide < 2);
+    if (state(fromSide) & Closed)
+        return;
     auto& dst = m_sides[1 - fromSide];
 
     ScriptExecutionContextIdentifier wakeCtx = 0;
     {
         Locker locker { dst.lock };
         uint64_t s = dst.state.load(std::memory_order_relaxed);
-        if (s & (Closed | PeerClosed))
+        // Local close stops outgoing sends immediately, but incoming data is
+        // still synchronously receivable until that endpoint finishes closing.
+        if ((s & CloseDispatched) || ((s & Closed) && !dst.ctxId))
             return;
 
         dst.inbox.append(WTF::move(message));
@@ -217,7 +221,7 @@ void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdent
             if ((st & Closed) || ((st & PeerClosed) && s.inbox.isEmpty())) {
                 // A close is a control marker after the peer's accepted
                 // messages, not a reason to discard that inbox. Explicit
-                // local close has already discarded its own inbox.
+                // local close instead ends its pending receive window here.
                 dispatchClose = true;
             } else {
                 if (limit-- == 0) {
@@ -239,10 +243,18 @@ void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdent
             {
                 Locker locker { s.lock };
                 const uint64_t st = s.state.load(std::memory_order_relaxed);
-                s.state.store((st | Closed | CloseDispatched) & ~(Attached | DrainScheduled), std::memory_order_release);
+                s.state.store((st | Closed | CloseDispatched) & ~uint64_t(Attached), std::memory_order_release);
             }
+            // End the pending receive window and iteratively discard any
+            // remaining local data before callbacks, without clearing the
+            // atomic GC protection until the event has been allocated.
+            close(side);
             auto event = Event::create(eventNames().closeEvent, Event::CanBubble::No, Event::IsCancelable::No);
             port->dispatchEvent(event);
+            {
+                Locker locker { s.lock };
+                s.state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
+            }
             break;
         }
 
@@ -343,25 +355,32 @@ void MessagePortPipe::close(uint8_t side)
 
         Deque<MessageWithMessagePorts> dropped;
         ScriptExecutionContextIdentifier localWake = 0;
+        bool notifyPeer = false;
         {
             Locker locker { s.lock };
             const uint64_t st = s.state.load(std::memory_order_relaxed);
-            if (st & Closed)
+            notifyPeer = !(st & Closed);
+            const bool discardInbox = !s.ctxId || (st & CloseDispatched);
+            if (!notifyPeer && !discardInbox)
                 continue;
-            // Keep the endpoint identity for its asynchronous close event.
-            // Drop only this inbox, not messages already sent to the peer.
-            uint64_t ns = (st & (DrainScheduled | PeerClosed | CloseDispatched)) | Closed;
+            // An attached wrapper keeps its inbox available to synchronous
+            // receive until close completion. Orphaned/tearing-down endpoints
+            // have no receive window and must release nested transfers now.
+            uint64_t ns = (st | Closed) & ~uint64_t(Attached);
+            if (discardInbox) {
+                dropped = std::exchange(s.inbox, {});
+                ns &= QueuedOne - 1;
+            }
             if (s.ctxId && !(ns & (DrainScheduled | CloseDispatched))) {
                 ns |= DrainScheduled;
                 localWake = s.ctxId;
             }
             s.state.store(ns, std::memory_order_release);
-            dropped = std::exchange(s.inbox, {});
         }
 
-        auto& peer = pipe->m_sides[1 - sd];
         ScriptExecutionContextIdentifier peerWake = 0;
-        {
+        if (notifyPeer) {
+            auto& peer = pipe->m_sides[1 - sd];
             Locker locker { peer.lock };
             uint64_t ns = peer.state.load(std::memory_order_relaxed) | PeerClosed;
             // Post the peer-close notification once even for an unstarted

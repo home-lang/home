@@ -86,6 +86,9 @@ function checkPresence() {
 
     port1.postMessage('queued before close')
     port2.close()
+    // Local close stops asynchronous delivery, but synchronous receive keeps
+    // access to already accepted data until the close event completes.
+    assert.equal(take(port2), 'queued before close')
     assert.equal(receiveMessageOnPort(port2), undefined)
 
     for (const invalid of [undefined, null, false, 0, '', {}, [], port1.constructor.prototype]) {
