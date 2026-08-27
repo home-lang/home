@@ -44,6 +44,7 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `tsx_components` | 256 typed components | TSX scanning, parsing, contextual props, expressions, and checking |
 | `generic_calls` | 256 typed call groups | Constrained inference, `keyof`, indexed access, mapped returns, and contextual callbacks |
 | `control_flow` | 256 exhaustive functions | Discriminated-union narrowing, branch joins, definite assignment, and exhaustiveness |
+| `type_predicates` | 256 predicate families | User-defined predicates, assertion functions, call-driven narrowing, nested property reads, and typed consumption |
 | `overload_resolution` | 128 groups × 8 calls | Overload candidate selection, generic literal inference, and contextual argument typing |
 | `class_hierarchy` | 128 generic class families | Inheritance, overrides, constructors, instance members, and structural interface checking |
 | `structural_objects` | 128 source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, and excess source members |

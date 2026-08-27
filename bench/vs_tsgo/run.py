@@ -373,6 +373,60 @@ def generate_control_flow(directory: Path, functions: int) -> None:
     write(directory / "src/control-flow.ts", "".join(blocks))
 
 
+def generate_type_predicates(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Ready{index} {{\n"
+            '  readonly kind: "ready";\n'
+            f"  readonly id: {index};\n"
+            "  readonly payload: { readonly label: string; readonly score: number };\n"
+            "  readonly meta: { readonly active: boolean };\n"
+            "}\n\n"
+            f"interface Pending{index} {{\n"
+            '  readonly kind: "pending";\n'
+            f"  readonly id: {index};\n"
+            "  readonly progress: number;\n"
+            "}\n\n"
+            f"interface Failed{index} {{\n"
+            '  readonly kind: "failed";\n'
+            f"  readonly id: {index};\n"
+            "  readonly error: { readonly message: string; readonly retryable: boolean };\n"
+            "}\n\n"
+            f"type Input{index} = Ready{index} | Pending{index} | Failed{index};\n\n"
+            f"function isReady{index}(value: Input{index}): value is Ready{index} {{\n"
+            '  return value.kind === "ready";\n'
+            "}\n\n"
+            f"function assertReady{index}(value: Input{index}): asserts value is Ready{index} {{\n"
+            f"  if (!isReady{index}(value)) throw value;\n"
+            "}\n\n"
+            f"function summarize{index}(value: Input{index}): readonly [{index}, string, number, boolean] {{\n"
+            f"  if (isReady{index}(value)) {{\n"
+            "    return [value.id, value.payload.label, value.payload.score, value.meta.active];\n"
+            "  }\n"
+            f'  return [value.id, value.kind, 0, false];\n'
+            "}\n\n"
+            f"function requireReady{index}(value: Input{index}): Ready{index} {{\n"
+            f"  assertReady{index}(value);\n"
+            "  return value;\n"
+            "}\n\n"
+            f"const candidate{index}: Input{index} = {{\n"
+            f'  kind: "ready", id: {index},\n'
+            f'  payload: {{ label: "item-{index}", score: {index} }},\n'
+            f"  meta: {{ active: {active} }},\n"
+            "};\n"
+            f"const summary{index} = summarize{index}(candidate{index});\n"
+            f"const required{index}: Ready{index} = requireReady{index}(candidate{index});\n"
+            f"export const predicateResult{index}: readonly [{index}, string, number, boolean, string] = [\n"
+            f"  summary{index}[0], summary{index}[1], summary{index}[2], summary{index}[3], required{index}.payload.label,\n"
+            "];\n\n"
+        )
+    write(directory / "src/type-predicates.ts", "".join(blocks))
+
+
 def generate_overload_resolution(directory: Path, groups: int) -> None:
     write(directory / "tsconfig.json", shared_config())
     generate_minimal_lib(directory)
@@ -675,6 +729,10 @@ def cmd_corpus() -> None:
     generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
     generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
     generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
+    generate_type_predicates(
+        CORPUS / "type_predicates",
+        cfg["type_predicate_families"],
+    )
     generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
     generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
     generate_structural_objects(CORPUS / "structural_objects", cfg["structural_object_families"])
