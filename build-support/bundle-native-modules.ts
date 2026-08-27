@@ -73,6 +73,7 @@ async function main() {
     ['jsc/bindings/InternalModuleRegistry.cpp', 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp', null],
     ['jsc/bindings/webcore/MessagePort.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp', 'MessagePort.h'],
     ['jsc/bindings/webcore/MessagePortPipe.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp', 'MessagePortPipe.h'],
+    ['jsc/bindings/webcore/Worker.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp', 'Worker.h'],
   ] as const).map(([relativeSource, unifiedName, outputName, abiHeader]) => {
     const source = path.join(homeSource, relativeSource)
     const basename = path.basename(source)
@@ -134,7 +135,7 @@ async function main() {
 
   // Own only the selected implementations; keep every other source of their
   // unified translation units ABI-matched to its external headers. Generate the
-  // MessagePort, pipe lifecycle and worker builtin together: their private
+  // MessagePort, pipe lifecycle, Worker and worker builtin together: their private
   // contracts must never come from different builds.
   writeFileSync(path.join(output, privateHeader), privateHeaderBytes)
   for (const { source, basename, body, unified, outputName } of nativeUnits) {

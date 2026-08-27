@@ -11,6 +11,7 @@ var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
 var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
+var cached_worker_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -58,6 +59,14 @@ pub fn messagePortPipeObject(b: *std.Build, object_root: []const u8) std.Build.L
     return object;
 }
 
+pub fn workerObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_worker_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-5.cpp", output.path(b, "HomeWorker.cpp"));
+    cached_worker_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -84,6 +93,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePortPipe.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePortPipe.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/Worker.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/Worker.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/HomeMessagePortLifecycle.h",
         "packages/runtime/upstream/src/jsc/modules/_NativeModule.h",
         "packages/runtime/upstream/src/js/node/url.ts",
@@ -100,6 +111,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp",
     }) |input| generate.addFileInput(.{ .cwd_relative = b.fmt("{s}/{s}", .{ build_root, input }) });
     // Header comparisons are generation inputs, not merely clang inputs: a
     // changed external ABI must invalidate generation before any owned object
@@ -109,6 +121,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     for ([_][3][]const u8{
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "MessagePortPipe.cpp", "MessagePortPipe.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "Worker.cpp", "Worker.h" },
     }) |entry| {
         const unified_path = b.fmt("{s}/unified/{s}", .{ build_root, entry[0] });
         const unified = std.Io.Dir.cwd().readFileAlloc(io, unified_path, b.allocator, .limited(1024 * 1024)) catch |err|

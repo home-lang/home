@@ -8,7 +8,7 @@ const nativeBuild = path.dirname(process.env.HOME_BUN_OBJ_ROOT || '/Users/chris/
 const available = existsSync(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
 const nativeTest = available ? test : test.skip
 const read = (file: string) => readFileSync(file, 'utf8')
-const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp']
+const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp']
 
 function createNativeFixture(temporary: string) {
   const codegen = path.join(temporary, 'codegen')
@@ -27,7 +27,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (basename === 'MessagePort.cpp' || basename === 'MessagePortPipe.cpp') {
+      if (basename === 'MessagePort.cpp' || basename === 'MessagePortPipe.cpp' || basename === 'Worker.cpp') {
         const header = basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -71,7 +71,7 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
-    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]]]) {
+    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => path.basename(relative) === basename
@@ -80,7 +80,8 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
       expect(generatedUnit).toBe(expectedUnit)
       const includes = [...generatedUnit.matchAll(/^#include "([^"]+)"$/gm)].map(match => match[1])
       expect(includes.filter(include => include === basename)).toHaveLength(1)
-      expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(31)
+      const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
+      expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - 1)
       const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', basename)
       expect(read(path.join(output, basename))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
     }
@@ -89,6 +90,7 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
       .toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', privateHeader)))
     expect(existsSync(path.join(output, 'MessagePort.h'))).toBe(false)
     expect(existsSync(path.join(output, 'MessagePortPipe.h'))).toBe(false)
+    expect(existsSync(path.join(output, 'Worker.h'))).toBe(false)
     expect(read(path.join(output, 'MessagePort.cpp'))).toContain('vm.propertyNames->message, value')
   } finally {
     rmSync(output, { recursive: true })
@@ -135,13 +137,13 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
   }
 }, 20000)
 
-nativeTest('rejects MessagePort class-header drift and invalid pipe ownership before output', () => {
+nativeTest('rejects MessagePort and Worker class-header drift and invalid native ownership before output', () => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
@@ -152,17 +154,20 @@ nativeTest('rejects MessagePort class-header drift and invalid pipe ownership be
       expect(existsSync(output)).toBe(false)
       writeFileSync(headerPath, original)
     }
-    const pipeUnit = path.join(temporary, 'unified', units[2])
-    const original = read(pipeUnit)
-    const ownedInclude = `#include ${JSON.stringify(path.join(webcore, 'MessagePortPipe.cpp'))}`
-    expect(original).toContain(ownedInclude)
-    for (const [kind, invalid] of [['missing', original.replace(ownedInclude, '')], ['duplicate', original + ownedInclude + '\n']]) {
-      writeFileSync(pipeUnit, invalid)
-      const output = path.join(temporary, kind + '-output')
-      const result = generate(temporary, output)
-      expect(result.signalCode).toBeUndefined()
-      expect(result.exitCode).toBe(1)
-      expect(existsSync(output)).toBe(false)
+    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]]]) {
+      const unit = path.join(temporary, 'unified', unitName)
+      const original = read(unit)
+      const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`
+      expect(original).toContain(ownedInclude)
+      for (const [kind, invalid] of [['missing', original.replace(ownedInclude, '')], ['duplicate', original + ownedInclude + '\n']]) {
+        writeFileSync(unit, invalid)
+        const output = path.join(temporary, basename + '-' + kind + '-output')
+        const result = generate(temporary, output)
+        expect(result.signalCode).toBeUndefined()
+        expect(result.exitCode).toBe(1)
+        expect(existsSync(output)).toBe(false)
+      }
+      writeFileSync(unit, original)
     }
   } finally {
     rmSync(temporary, { recursive: true })
