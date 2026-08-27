@@ -3659,6 +3659,7 @@ const SourceFacts = struct {
     react18_jsx_reference: ?bool = null,
     may_have_jsdoc: ?bool = null,
     target_es2016_or_later: ?bool = null,
+    lib_directive_excludes_dom_element: ?bool = null,
 };
 
 const RecoveredParameterSyntax = struct {
@@ -130700,16 +130701,21 @@ pub const Checker = struct {
     }
 
     fn sourceLibDirectiveExcludesDomElement(self: *Checker) bool {
-        if (self.sourceHasNoLibTrueDirective()) return true;
-        if (self.sourceHasReferenceLibDirective("dom")) return false;
-        const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
-        const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
-        var buf: [256]u8 = undefined;
-        const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
-        const n = @min(raw_line.len, buf.len);
-        const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
-        return std.mem.indexOf(u8, line, "dom") == null;
+        if (self.source_facts.lib_directive_excludes_dom_element) |cached| return cached;
+        const result = result: {
+            if (self.sourceHasNoLibTrueDirective()) break :result true;
+            if (self.sourceHasReferenceLibDirective("dom")) break :result false;
+            const src = self.source orelse break :result false;
+            const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse break :result false;
+            const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+            var buf: [256]u8 = undefined;
+            const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+            const n = @min(raw_line.len, buf.len);
+            const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+            break :result std.mem.indexOf(u8, line, "dom") == null;
+        };
+        self.source_facts.lib_directive_excludes_dom_element = result;
+        return result;
     }
 
     /// True if a lib-gated builtin (e.g. `SharedArrayBuffer`) is
