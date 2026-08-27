@@ -1008,7 +1008,12 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // termination of every live worker and wait for each to reach
         // shutdown() (past all resolver access) first. Node.js does the
         // equivalent in Environment::stop_sub_worker_contexts().
-        webcore.WebWorker.terminateAllAndWait(10_000);
+        if (!webcore.WebWorker.terminateAllAndWait(10_000)) {
+            // A timeout is not proof that detached workers stopped borrowing
+            // this VM or the resolver. Exit the process without freeing those
+            // resources underneath live threads; the OS reclaims them.
+            bun.Global.exit(this.exit_handler.exit_code);
+        }
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).
@@ -3117,8 +3122,8 @@ fn remapOneFrameSlow(this: *VirtualMachine, frame: *jsc.ZigStackFrame, path: []c
 /// `Error` subclasses are NOT here — their divot stays on `new`.
 fn isBuiltinErrorConstructorName(name: []const u8) bool {
     const names = [_][]const u8{
-        "Error",          "EvalError",   "RangeError",     "ReferenceError",
-        "SyntaxError",    "TypeError",   "URIError",       "AggregateError",
+        "Error",           "EvalError", "RangeError", "ReferenceError",
+        "SyntaxError",     "TypeError", "URIError",   "AggregateError",
         "SuppressedError",
     };
     for (names) |n| {

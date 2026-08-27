@@ -45,10 +45,45 @@
 #include "CloseEvent.h"
 #include "JSMessagePort.h"
 #include "JSBroadcastChannel.h"
+#include "EventLoopTask.h"
+#include <wtf/HashSet.h>
+#include <wtf/NeverDestroyed.h>
+#include <memory>
 
 namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(Worker);
+
+// A stopped parent drains only these native exit-cleanup tasks. Other C++
+// callbacks may own thread-affine resources and are not safe to execute here.
+static Lock homeWorkerExitTasksLock;
+static NeverDestroyed<HashSet<EventLoopTask*>> homeWorkerExitTasks;
+
+struct HomeWorkerExitTaskMarker {
+    EventLoopTask* task { nullptr };
+    ~HomeWorkerExitTaskMarker()
+    {
+        Locker locker { homeWorkerExitTasksLock };
+        homeWorkerExitTasks->remove(task);
+    }
+};
+
+extern "C" bool Home__Worker__isExitTask(EventLoopTask* task)
+{
+    Locker locker { homeWorkerExitTasksLock };
+    return homeWorkerExitTasks->contains(task);
+}
+
+extern "C" void Home__Worker__performExitTask(Zig::GlobalObject* globalObject, EventLoopTask* task)
+{
+    RELEASE_ASSERT(globalObject->isShuttingDown());
+    RELEASE_ASSERT(globalObject->scriptExecutionContext()->isContextThread());
+    RELEASE_ASSERT(Home__Worker__isExitTask(task));
+    // This narrowly marked callback runs no JS during shutdown. Do not route
+    // through the ordinary JS exception bridge: an existing termination
+    // exception must not turn native resource cleanup into a second failure.
+    task->performTask(*globalObject->scriptExecutionContext());
+}
 
 // ---- Native FFI --------------------------------------------------------------------------------
 // The native WebWorker struct is owned by this Worker (freed in ~Worker) and drives the worker
@@ -89,6 +124,7 @@ void WebWorker__releaseParentPollRef(void* worker);
 
 // Free the native WebWorker struct. Called from ~Worker.
 void WebWorker__destroy(void* worker);
+Zig::GlobalObject* Home__Worker__parentGlobalForExit(void* worker);
 
 } // extern "C"
 // -------------------------------------------------------------------------------------------------
@@ -541,17 +577,45 @@ bool Worker::dispatchExit(int32_t exitCode)
     // It must not run under either Worker lock or the global contexts-map lock.
     dropped.clear();
 
+    if (auto* parentGlobal = Home__Worker__parentGlobalForExit(impl_)) {
+        // Nested parents keep their VM alive until every direct child has
+        // finished shutdown. This lifetime barrier permits direct publication
+        // of a specifically marked task, without a generic callback wrapper.
+        auto marker = std::make_unique<HomeWorkerExitTaskMarker>();
+        auto* markerPointer = marker.get();
+        auto* task = new EventLoopTask([exitCode, marker = WTF::move(marker), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
+            (void)marker; // lifetime removes the task from the private registry
+            auto* globalObject = defaultGlobalObject(context.globalObject());
+            if (!globalObject->isShuttingDown() && !context.isJSExecutionForbidden()
+                && Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) == ScriptExecutionStatus::Running
+                && protectedThis->hasEventListeners(eventNames().closeEvent)) {
+                auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
+                protectedThis->EventTargetWithInlineData::dispatchEvent(event);
+            }
+            protectedThis->m_state.store(State::Closed);
+            WebWorker__releaseParentPollRef(protectedThis->impl_);
+        });
+        markerPointer->task = task;
+        {
+            Locker locker { homeWorkerExitTasksLock };
+            homeWorkerExitTasks->add(task);
+        }
+        // Match postTaskTo's pre-enqueue hook: the task's captured Ref exists
+        // before the create-time ref is released, and release happens before
+        // the parent can execute/destroy that task. No `this` access follows.
+        deref();
+        parentGlobal->queueTaskConcurrently(task);
+        return true;
+    }
+
     // Runs on the worker thread after its JSC VM has been torn down. Post the
     // close event to the parent; that task additionally releases parent_poll_ref
     // (parent-thread-only).
     //
-    // If posting fails — parent context no longer exists (nested worker whose
-    // middle thread has already torn down) — the ref and poll are intentionally
-    // leaked: dropping the ref here would run ~Worker → ~EventTarget on the
-    // worker thread and trip EventListenerMap's single-thread assert. Parent
-    // teardown implies process shutdown (or at least that nothing observes the
-    // leak), so this is bounded. The proper fix is for a worker to stop+join
-    // its sub-workers before tearing down its own context.
+    // This remaining path targets a main-thread parent. If its context is
+    // already gone, retain the existing failure behavior: do not drop the
+    // final Worker ref on the worker thread and destroy EventTarget there.
+    // General main-thread queued-task cancellation remains separate work.
     //
     // The create-time ref (taken in create() to keep `this` alive while the
     // worker thread runs) is released via the `betweenLookupAndEnqueue` hook —

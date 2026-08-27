@@ -152,3 +152,26 @@ The pipe, completed-closure leak, and isolated context-destruction corpus tests 
 `tests/runtime/worker-heap-snapshot-cancellation.pending.mjs` remains a bounded Home failure in [#471](https://github.com/home-lang/home/issues/471): the snapshot promise remains unsettled after worker termination, producing a deadline failure and exit status 1. The probe accepts either a resolved readable stream or `ERR_WORKER_NOT_RUNNING`, since snapshot work may finish before cancellation. It checks settlement and the stream interface, not snapshot contents. Node 24.18.0 can resolve the promise, but both consuming the stream and immediately destroying it without consumption produced SIGSEGV during this race, including after printing the settlement message. Therefore no passing Node snapshot control is claimed; a printed success message before a crash is not a successful run. Reproducing that crash is not a compatibility requirement.
 
 The passing inbox checkpoint does not close these issues or establish full Bun suite parity. Missing functionality, pending failures, and upstream skips remain outside passing feature coverage under [#66](https://github.com/home-lang/home/issues/66).
+
+## Nested worker shutdown
+
+Home now propagates termination through the native worker ancestry and waits for each direct child's final resource-cleanup publication before destroying its parent's VM ([#470](https://github.com/home-lang/home/issues/470)). Registration and ancestry traversal share the live-worker registry lock, so a child created during termination inherits the request. Completion is published after exit-task enqueueing and thread-local cleanup; observing zero cannot race the final wake against destruction of the parent's embedded counter.
+
+Nested exit tasks are explicitly marked and published while their parent VM is protected by that child counter. During shutdown, the parent performs only those native cleanup callbacks, releasing the child poll reference and captured Worker reference on the owning thread without dispatching JavaScript into the stopped parent. Normal parent execution still receives child exit events. Unrelated queued tasks are not executed or treated as safely cancelled by this path. General cancellation and native producer quiescence remain [#465](https://github.com/home-lang/home/issues/465) and [#468](https://github.com/home-lang/home/issues/468).
+
+The main-thread wait now returns whether all workers completed. If its deadline expires, process exit must not free shared resolver/VM state underneath outstanding workers. Nested parents retain their VM while waiting; this is a resource-lifetime barrier, not an OS thread join or proof that every native operation can be interrupted.
+
+### Nested shutdown verification checkpoint
+
+- Native build and unchanged rebuild: **14/14 steps**.
+- All **17 existing native runtime regression files** pass on the rebuilt Home executable.
+- `tests/runtime/native-worker-nested-shutdown.test.mjs` adds **five passing cases**: parent termination with queued transfers; normal, explicit, and unreferenced parent exit; and a three-level descendant branch with a sibling. Three consecutive native runs, an additional run with `BUN_DESTRUCT_VM_ON_EXIT=1`, and two Node controls pass. The old Home binary fails the original cancelled-child callback assertion.
+- Exact native corpus execution with **both** `HOME_NATIVE_VM=1` and `HOME_CORPUS_FULL_VM=1`: pipe, completed-close leak, and context-destruction suites report **15 pass, 3 skip, 0 fail / 529 assertions**. The three skips are upstream debug/sanitizer guards, not passing coverage. The existing documented fixture adaptations are unchanged.
+- Three standalone upstream worker fixtures pass through native Home: nested termination, message-port transfer/termination, and termination during transfer-list iteration. The outer corpus adapter was checked separately and its results are not substituted for the full VM.
+- Generator/ABI/source guards: **12 tests / 109 assertions**; native build helpers: **4 Zig tests**. Focused Pickier lint and Zig format checks pass. The full Bun suite and other platform builds were not run for this checkpoint.
+
+The normal-exit control initially exposed another real gap: `fakeParentPort.close()` is a no-op. The descendant test now uses a one-shot message listener to test normal child exit independently of closing that port. `tests/runtime/worker-parent-port-close.pending.mjs` preserves the separate failure: Home times out waiting for natural exit, while the exact Node control closes once and exits successfully. This remains open in [#477](https://github.com/home-lang/home/issues/477); it is not counted among the 18 passing native regression files. The snapshot cancellation probe also still fails with an unsettled promise in [#471](https://github.com/home-lang/home/issues/471).
+
+### Publication
+
+The 65 prior local port commits through `6de9852ea8443c3b5d4a58dcdbcf11944456fd2e` were recovered from the existing separate Git metadata and published on `codex/runtime-port` on 2026-08-27. Their original hashes and sole Chris Breuer author/committer identities were preserved, with no coauthor trailers or force push. Publication on this branch is not a merge into `main` or a claim of complete Bun ownership.
