@@ -59407,6 +59407,8 @@ const harness_prelude =
     \\  this.writableNeedDrain = false;
     \\  this._readableState = { decoder: null, encoding: null, objectMode: this.__home_readable_object_mode, highWaterMark: this.readableHighWaterMark };
     \\  this._writableState = { objectMode: this.__home_writable_object_mode, highWaterMark: this.writableHighWaterMark, length: 0, needDrain: false };
+    \\  this.__home_duplex_paused = false;
+    \\  this.__home_duplex_pending_data = [];
     \\  if (typeof opts.write === "function") this._write = opts.write;
     \\  if (typeof opts.read === "function") this._read = opts.read;
     \\  this.setEncoding = function(encoding) {
@@ -59424,14 +59426,32 @@ const harness_prelude =
     \\    if (chunk === null) {
     \\      this.readable = false;
     \\      this.readableEnded = true;
+    \\      if (this.__home_duplex_paused) { this.__home_duplex_pending_data.push(null); return false; }
     \\      this.emit("end");
     \\      return false;
     \\    }
     \\    let value = chunk;
     \\    if (this._readableState.decoder && typeof chunk !== "string" && __home_stream_is_byte_chunk(chunk)) value = Buffer.from(chunk).toString(this._readableState.encoding || "utf8");
+    \\    if (this.__home_duplex_paused) {
+    \\      this.__home_duplex_pending_data.push(value);
+    \\      return this.__home_duplex_pending_data.length < this.readableHighWaterMark;
+    \\    }
     \\    this.emit("data", value);
     \\    return !this.destroyed;
     \\  };
+    \\  this.pause = function() { this.__home_duplex_paused = true; return this; };
+    \\  this.resume = function() {
+    \\    if (!this.__home_duplex_paused) return this;
+    \\    this.__home_duplex_paused = false;
+    \\    this.emit("resume");
+    \\    while (!this.__home_duplex_paused && this.__home_duplex_pending_data.length > 0) {
+    \\      const chunk = this.__home_duplex_pending_data.shift();
+    \\      if (chunk === null) this.emit("end"); else this.emit("data", chunk);
+    \\    }
+    \\    return this;
+    \\  };
+    \\  this.isPaused = function() { return this.__home_duplex_paused; };
+    \\  this.read = function(size) { if (typeof this._read === "function") this._read(size); return null; };
     \\  this.write = function(chunk, encoding, callback) {
     \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     \\    const state = this._writableState;
@@ -59613,12 +59633,14 @@ const harness_prelude =
     \\function __home_stream_ShutdownWrap() {
     \\  if (!(this instanceof __home_stream_ShutdownWrap)) return new __home_stream_ShutdownWrap();
     \\  this.handle = null;
+    \\  this.callback = null;
     \\  this.oncomplete = null;
     \\  this.__home_stream_wrap_completed = false;
     \\}
     \\function __home_stream_WriteWrap() {
     \\  if (!(this instanceof __home_stream_WriteWrap)) return new __home_stream_WriteWrap();
     \\  this.handle = null;
+    \\  this.callback = null;
     \\  this.oncomplete = null;
     \\  this.__home_stream_wrap_completed = false;
     \\}
@@ -59626,21 +59648,53 @@ const harness_prelude =
     \\  this.owner = owner;
     \\  this.stream = stream;
     \\  this.closed = false;
-    \\  this.reading = true;
+    \\  this.reading = false;
+    \\  this.bytesRead = 0;
+    \\  this.bytesWritten = 0;
+    \\  this.writeQueueSize = 0;
     \\  this.__home_current_write = null;
+    \\  this.__home_write_queue = [];
+    \\  this.__home_current_shutdown = null;
     \\  this.__home_pending_shutdown = null;
+    \\  this.__home_close_callbacks = [];
     \\}
-    \\__home_JSStreamHandle.prototype.readStart = function() { this.reading = true; return 0; };
-    \\__home_JSStreamHandle.prototype.readStop = function() { this.reading = false; return 0; };
+    \\__home_JSStreamHandle.prototype.readStart = function() { if (this.closed) return -1; this.reading = true; if (this.stream && typeof this.stream.resume === "function") this.stream.resume(); return 0; };
+    \\__home_JSStreamHandle.prototype.readStop = function() { this.reading = false; if (this.stream && typeof this.stream.pause === "function") this.stream.pause(); return 0; };
+    \\__home_JSStreamHandle.prototype.readBuffer = function(chunk) {
+    \\  if (this.closed || !this.reading || !this.owner || this.owner._handle !== this) return false;
+    \\  const value = Buffer.from(chunk);
+    \\  this.bytesRead += value.length;
+    \\  if (this.owner.push(value) === false) this.readStop();
+    \\  return true;
+    \\};
+    \\__home_JSStreamHandle.prototype.emitEOF = function() {
+    \\  if (this.closed || !this.owner || this.owner._handle !== this) return;
+    \\  this.reading = false;
+    \\  this.owner.push(null);
+    \\};
     \\__home_JSStreamHandle.prototype.ref = function() { this.__home_referenced = true; };
     \\__home_JSStreamHandle.prototype.unref = function() { this.__home_referenced = false; };
     \\__home_JSStreamHandle.prototype.hasRef = function() { return this.__home_referenced !== false; };
     \\__home_JSStreamHandle.prototype.close = function(callback) {
-    \\  if (!this.closed) {
-    \\    this.closed = true;
-    \\    if (this.stream && typeof this.stream.destroy === "function" && !this.stream.destroyed) this.stream.destroy();
-    \\  }
-    \\  if (typeof callback === "function") Promise.resolve().then(callback);
+    \\  if (this.closed) { if (typeof callback === "function") Promise.resolve().then(callback); return; }
+    \\  if (typeof callback === "function") this.__home_close_callbacks.push(callback);
+    \\  this.closed = true;
+    \\  this.reading = false;
+    \\  const requests = [];
+    \\  if (this.__home_current_write) requests.push(this.__home_current_write.request);
+    \\  for (const entry of this.__home_write_queue) requests.push(entry.request);
+    \\  if (this.__home_current_shutdown) requests.push(this.__home_current_shutdown);
+    \\  if (this.__home_pending_shutdown) requests.push(this.__home_pending_shutdown);
+    \\  this.__home_current_write = null;
+    \\  this.__home_write_queue.length = 0;
+    \\  this.__home_current_shutdown = null;
+    \\  this.__home_pending_shutdown = null;
+    \\  this.writeQueueSize = 0;
+    \\  if (this.stream && typeof this.stream.destroy === "function" && !this.stream.destroyed) this.stream.destroy();
+    \\  Promise.resolve().then(() => {
+    \\    for (const request of requests) __home_stream_wrap_complete(request, -1, this);
+    \\    for (const closeCallback of this.__home_close_callbacks.splice(0)) closeCallback();
+    \\  });
     \\};
     \\__home_JSStreamHandle.prototype.__home_finish_shutdown = function(request) {
     \\  const handle = this;
@@ -59649,31 +59703,50 @@ const harness_prelude =
     \\    Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, handle));
     \\    return;
     \\  }
+    \\  this.__home_current_shutdown = request;
     \\  Promise.resolve().then(() => {
-    \\    if (handle.closed || handle.owner.destroyed || stream.destroyed) { __home_stream_wrap_complete(request, -1, handle); return; }
-    \\    if (typeof stream.end === "function") stream.end(error => __home_stream_wrap_complete(request, error ? -1 : 0, handle));
-    \\    else __home_stream_wrap_complete(request, 0, handle);
+    \\    if (handle.closed || handle.owner.destroyed || stream.destroyed) { handle.__home_current_shutdown = null; __home_stream_wrap_complete(request, -1, handle); return; }
+    \\    const finish = error => { if (handle.__home_current_shutdown === request) handle.__home_current_shutdown = null; __home_stream_wrap_complete(request, error ? -1 : 0, handle); };
+    \\    if (typeof stream.end === "function") stream.end(finish); else finish();
     \\  });
     \\};
     \\__home_JSStreamHandle.prototype.shutdown = function(request) {
-    \\  if (this.__home_current_write || this.stream && (this.stream.writableNeedDrain || this.stream._writableState && this.stream._writableState.needDrain)) {
+    \\  request.handle = this;
+    \\  if (this.closed) { Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, this)); return 0; }
+    \\  if (this.__home_current_write || this.__home_write_queue.length > 0 || this.stream && (this.stream.writableNeedDrain || this.stream._writableState && this.stream._writableState.needDrain)) {
+    \\    const previousShutdown = this.__home_pending_shutdown;
+    \\    if (previousShutdown) Promise.resolve().then(() => __home_stream_wrap_complete(previousShutdown, -1, this));
     \\    this.__home_pending_shutdown = request;
     \\    return 0;
     \\  }
     \\  this.__home_finish_shutdown(request);
     \\  return 0;
     \\};
-    \\__home_JSStreamHandle.prototype.__home_write = function(request, data, encoding) {
+    \\__home_JSStreamHandle.prototype.__home_dispatch_write = function(entry) {
     \\  const handle = this;
-    \\  if (this.closed || !this.stream || this.stream.destroyed) { Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, handle)); return -1; }
-    \\  this.__home_current_write = request;
-    \\  this.stream.write(data, encoding, error => {
+    \\  this.__home_current_write = entry;
+    \\  const finish = error => {
+    \\    if (handle.__home_current_write !== entry) { __home_stream_wrap_complete(entry.request, error ? -1 : 0, handle); return; }
     \\    handle.__home_current_write = null;
-    \\    __home_stream_wrap_complete(request, error ? -1 : 0, handle);
+    \\    handle.writeQueueSize = Math.max(0, handle.writeQueueSize - entry.size);
+    \\    __home_stream_wrap_complete(entry.request, error ? -1 : 0, handle);
+    \\    const next = handle.__home_write_queue.shift();
+    \\    if (next) { handle.__home_dispatch_write(next); return; }
     \\    const shutdown = handle.__home_pending_shutdown;
     \\    handle.__home_pending_shutdown = null;
     \\    if (shutdown) handle.__home_finish_shutdown(shutdown);
-    \\  });
+    \\  };
+    \\  if (this.closed || !this.stream || this.stream.destroyed) { Promise.resolve().then(() => finish(new Error("stream is closed"))); return; }
+    \\  try { this.stream.write(entry.data, entry.encoding, finish); } catch (error) { finish(error); }
+    \\};
+    \\__home_JSStreamHandle.prototype.__home_write = function(request, data, encoding) {
+    \\  request.handle = this;
+    \\  if (this.closed || !this.stream || this.stream.destroyed) { Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, this)); return 0; }
+    \\  const size = typeof data === "string" ? Buffer.byteLength(data, encoding || "utf8") : Number(data && (data.byteLength !== undefined ? data.byteLength : data.length)) || 0;
+    \\  const entry = { request, data, encoding, size };
+    \\  this.bytesWritten += size;
+    \\  this.writeQueueSize += size;
+    \\  if (this.__home_current_write) this.__home_write_queue.push(entry); else this.__home_dispatch_write(entry);
     \\  return 0;
     \\};
     \\__home_JSStreamHandle.prototype.writeBuffer = function(request, data) { return this.__home_write(request, data, "buffer"); };
@@ -59685,46 +59758,34 @@ const harness_prelude =
     \\  if (!(this instanceof __home_JSStreamSocket)) return new __home_JSStreamSocket(stream);
     \\  if (!stream || typeof stream.on !== "function" || typeof stream.write !== "function") throw new TypeError("stream must be a Duplex stream");
     \\  const owner = this;
-    \\  __home_stream_duplex.call(this, {
+    \\  if (typeof stream.pause === "function") stream.pause();
+    \\  const handle = new __home_JSStreamHandle(null, stream);
+    \\  __home_net_Socket.call(this, {
+    \\    handle,
+    \\    manualStart: true,
+    \\    readable: stream.readable !== false,
+    \\    writable: stream.writable !== false,
     \\    readableHighWaterMark: Number(stream.readableHighWaterMark) || 16 * 1024,
     \\    writableHighWaterMark: Number(stream.writableHighWaterMark) || 16 * 1024,
-    \\    read() {},
-    \\    write(chunk, encoding, callback) {
-    \\      const handle = owner._handle;
-    \\      handle.__home_current_write = callback;
-    \\      stream.write(chunk, encoding, error => {
-    \\        handle.__home_current_write = null;
-    \\        callback(error);
-    \\        const shutdown = handle.__home_pending_shutdown;
-    \\        handle.__home_pending_shutdown = null;
-    \\        if (shutdown) handle.__home_finish_shutdown(shutdown);
-    \\      });
-    \\    },
     \\  });
     \\  this.stream = stream;
-    \\  this._handle = new __home_JSStreamHandle(this, stream);
     \\  this.__home_stream_wrap_errored = false;
     \\  const onData = chunk => {
     \\    const invalid = typeof chunk === "string" || !!(stream.readableObjectMode || stream._readableState && stream._readableState.objectMode) || !__home_stream_is_byte_chunk(chunk);
     \\    if (invalid) {
+    \\      if (typeof stream.pause === "function") stream.pause();
     \\      stream.off("data", onData);
     \\      if (!owner.__home_stream_wrap_errored) { owner.__home_stream_wrap_errored = true; owner.emit("error", __home_stream_wrap_error()); }
     \\      return;
     \\    }
-    \\    owner.push(chunk);
+    \\    handle.readBuffer(chunk);
     \\  };
     \\  stream.on("data", onData);
-    \\  stream.on("end", () => owner.push(null));
+    \\  stream.on("end", () => handle.emitEOF());
     \\  stream.on("error", error => owner.emit("error", error));
-    \\  const destroy = this.destroy;
-    \\  this.destroy = function(error) {
-    \\    if (this.destroyed) return this;
-    \\    this._handle.closed = true;
-    \\    if (!stream.destroyed && typeof stream.destroy === "function") stream.destroy(error);
-    \\    return destroy.call(this, error);
-    \\  };
+    \\  stream.on("close", () => { if (!owner.destroyed) owner.destroy(); });
+    \\  this.read(0);
     \\}
-    \\__home_JSStreamSocket.prototype = Object.create(__home_stream_duplex.prototype, { constructor: { configurable: true, writable: true, value: __home_JSStreamSocket } });
     \\Object.defineProperty(__home_JSStreamSocket, "name", { configurable: true, value: "StreamWrap" });
     \\__home_JSStreamSocket.StreamWrap = __home_JSStreamSocket;
     \\__home_JSStreamSocket.JSStreamSocket = __home_JSStreamSocket;
@@ -64615,32 +64676,93 @@ const harness_prelude =
     \\    "    at processTicksAndRejections (node:internal/process/task_queues:1:1)";
     \\  return error;
     \\}
-    \\function __home_net_Socket() {
-    \\  const socket = new __home_stream_duplex();
-    \\  Object.setPrototypeOf(socket, __home_net_Socket.prototype);
+    \\function __home_net_Socket(options) {
+    \\  if (!(this instanceof __home_net_Socket)) return new __home_net_Socket(options);
+    \\  const socket = this;
+    \\  const opts = typeof options === "number" ? { fd: options } : options && typeof options === "object" ? options : {};
+    \\  if (opts.fd !== undefined) {
+    \\    if (typeof opts.fd !== "number") { const error = new TypeError('The "options.fd" property must be of type number.'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\    if (!Number.isInteger(opts.fd) || opts.fd < 0) { const error = new RangeError('The value of "options.fd" is out of range. It must be >= 0.'); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\  }
+    \\  const handle = opts.handle && typeof opts.handle === "object" ? opts.handle : null;
+    \\  __home_stream_duplex.call(socket, {
+    \\    readableHighWaterMark: Number(opts.readableHighWaterMark) || 16 * 1024,
+    \\    writableHighWaterMark: Number(opts.writableHighWaterMark) || 16 * 1024,
+    \\    read() { if (handle && typeof handle.readStart === "function") handle.readStart(); },
+    \\    write(chunk, encoding, callback) {
+    \\      if (!handle) {
+    \\        const error = __home_net_socket_error();
+    \\        Promise.resolve().then(() => { socket.emit("error", error); callback(error); });
+    \\        return;
+    \\      }
+    \\      const request = new __home_stream_WriteWrap();
+    \\      request.handle = handle;
+    \\      request.callback = callback;
+    \\      request.oncomplete = status => callback(status < 0 ? Object.assign(new Error("Socket write failed"), { code: "EPIPE", errno: status, syscall: "write" }) : undefined);
+    \\      if (typeof chunk === "string") {
+    \\        const selectedEncoding = String(encoding || "utf8").toLowerCase();
+    \\        const method = selectedEncoding === "ascii" ? "writeAsciiString" : selectedEncoding === "latin1" || selectedEncoding === "binary" ? "writeLatin1String" : selectedEncoding === "utf16le" || selectedEncoding === "ucs2" ? "writeUcs2String" : "writeUtf8String";
+    \\        if (typeof handle[method] === "function") { handle[method](request, chunk); return; }
+    \\      }
+    \\      if (typeof handle.writeBuffer === "function") { handle.writeBuffer(request, Buffer.from(chunk)); return; }
+    \\      Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, handle));
+    \\    },
+    \\  });
+    \\  socket._handle = handle;
+    \\  if (handle) handle.owner = socket;
     \\  socket.destroyed = false;
     \\  socket.connecting = false;
-    \\  socket.readable = true;
-    \\  socket.writable = true;
-    \\  socket.push = function(chunk) {
-    \\    if (chunk === null) { this.readable = false; this.emit("end"); return false; }
-    \\    this.emit("data", __home_http_body_event_chunk(chunk));
-    \\    return true;
+    \\  socket.readable = opts.readable !== false;
+    \\  socket.writable = opts.writable !== false;
+    \\  socket._final = function(callback) {
+    \\    if (!this._handle || typeof this._handle.shutdown !== "function") { callback(); return; }
+    \\    const request = new __home_stream_ShutdownWrap();
+    \\    request.handle = this._handle;
+    \\    request.callback = callback;
+    \\    request.oncomplete = status => callback(status < 0 ? Object.assign(new Error("Socket shutdown failed"), { code: "EPIPE", errno: status, syscall: "shutdown" }) : undefined);
+    \\    this._handle.shutdown(request);
     \\  };
-    \\  socket.write = function(chunk, callback) {
-    \\    const error = __home_net_socket_error();
-    \\    Promise.resolve().then(() => {
-    \\      socket.emit("error", error);
-    \\      if (typeof callback === "function") callback(error);
-    \\    });
-    \\    return false;
+    \\  const duplexPause = socket.pause;
+    \\  const duplexResume = socket.resume;
+    \\  socket.pause = function() { duplexPause.call(this); if (this._handle && typeof this._handle.readStop === "function") this._handle.readStop(); return this; };
+    \\  socket.resume = function() { duplexResume.call(this); if (this._handle && typeof this._handle.readStart === "function") this._handle.readStart(); return this; };
+    \\  socket.ref = function() { if (this._handle && typeof this._handle.ref === "function") this._handle.ref(); return this; };
+    \\  socket.unref = function() { if (this._handle && typeof this._handle.unref === "function") this._handle.unref(); return this; };
+    \\  socket.hasRef = function() { return !this._handle || typeof this._handle.hasRef !== "function" ? true : this._handle.hasRef(); };
+    \\  socket.setNoDelay = function() { return this; };
+    \\  socket.setKeepAlive = function() { return this; };
+    \\  socket.setTimeout = function(timeout, callback) {
+    \\    if (typeof callback === "function") this.once("timeout", callback);
+    \\    this.timeout = Math.max(0, Number(timeout) || 0);
+    \\    if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id);
+    \\    this.__home_socket_timeout_id = this.timeout > 0 ? setTimeout(() => { if (!this.destroyed) this.emit("timeout"); }, this.timeout) : undefined;
+    \\    return this;
     \\  };
-    \\  socket.end = function() { this.destroyed = true; return this; };
-    \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\  if (!handle) {
+    \\    socket.end = function() { if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id); this.destroyed = true; this.readable = false; this.writable = false; return this; };
+    \\    socket.destroy = function(error) { if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id); this.destroyed = true; this.readable = false; this.writable = false; if (error) this.emit("error", error); return this; };
+    \\    return socket;
+    \\  }
+    \\  socket.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    const activeHandle = this._handle;
+    \\    if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id);
+    \\    this._handle = null;
+    \\    this.destroyed = true;
+    \\    this.readable = false;
+    \\    this.writable = false;
+    \\    if (error) this.emit("error", error);
+    \\    const close = () => { if (this.__home_close_emitted) return; this.__home_close_emitted = true; this.emit("close", !!error); };
+    \\    if (activeHandle && typeof activeHandle.close === "function") activeHandle.close(close); else Promise.resolve().then(close);
+    \\    return this;
+    \\  };
+    \\  if (!opts.manualStart && socket.readable && handle && typeof handle.readStart === "function") handle.readStart();
     \\  return socket;
     \\}
     \\__home_net_Socket.prototype = Object.create(__home_stream_duplex.prototype);
     \\Object.defineProperty(__home_net_Socket.prototype, "constructor", { value: __home_net_Socket, configurable: true, writable: true });
+    \\__home_JSStreamSocket.prototype = Object.create(__home_net_Socket.prototype, { constructor: { configurable: true, writable: true, value: __home_JSStreamSocket } });
+    \\Object.setPrototypeOf(__home_JSStreamSocket, __home_net_Socket);
     \\__home_net_Socket.prototype.destroy = function(error) {
     \\  if (this && this.__home_http2_client) {
     \\    this.destroyed = true;
@@ -119116,6 +119238,124 @@ test "bootstrap runner preserves exact node JS stream socket contracts" {
 
         if (summary.failed != 0 or summary.unsupported != 0) {
             std.debug.print("JS stream socket failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves generic handle-backed net Socket contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const net = require('net');
+        \\const { Duplex } = require('stream');
+        \\const StreamWrap = require('internal/js_stream_socket');
+        \\const { internalBinding } = require('internal/test/binding');
+        \\const { ShutdownWrap } = internalBinding('stream_wrap');
+        \\test('generic handles own net.Socket transport and lifecycle', async () => {
+        \\  const calls = [];
+        \\  const handle = {
+        \\    owner: null,
+        \\    readStart() { calls.push('readStart'); return 0; },
+        \\    readStop() { calls.push('readStop'); return 0; },
+        \\    writeBuffer(request, chunk) { calls.push(`write:${Buffer.from(chunk).toString()}`); Promise.resolve().then(() => request.oncomplete.call(request, 0)); return 0; },
+        \\    shutdown(request) { calls.push('shutdown'); Promise.resolve().then(() => request.oncomplete.call(request, 0)); return 0; },
+        \\    close(callback) { calls.push(this.owner._handle === null ? 'close:detached' : 'close:attached'); Promise.resolve().then(callback); },
+        \\    ref() { calls.push('ref'); },
+        \\    unref() { calls.push('unref'); },
+        \\    hasRef() { return false; },
+        \\  };
+        \\  const socket = new net.Socket({ handle, manualStart: true });
+        \\  assert(socket instanceof net.Socket);
+        \\  assert.strictEqual(socket._handle, handle);
+        \\  assert.deepStrictEqual(calls, []);
+        \\  socket.read(0);
+        \\  socket.pause().resume().ref().unref();
+        \\  assert.deepStrictEqual(calls, ['readStart', 'readStop', 'readStart', 'ref', 'unref']);
+        \\  assert.strictEqual(socket.hasRef(), false);
+        \\  let writes = 0;
+        \\  assert.strictEqual(socket.write(Buffer.from('ok'), error => { assert.ifError(error); writes++; }), true);
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(writes, 1);
+        \\  let finishes = 0;
+        \\  socket.end(error => { assert.ifError(error); finishes++; });
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(finishes, 1);
+        \\  let closes = 0;
+        \\  socket.on('close', () => closes++);
+        \\  socket.destroy();
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(closes, 1);
+        \\  assert.strictEqual(socket._handle, null);
+        \\  assert(calls.includes('close:detached'));
+        \\});
+        \\test('JSStreamSocket inherits net.Socket and cancels races once', async () => {
+        \\  let release;
+        \\  const source = new Duplex({ read() {}, write(_chunk, _encoding, callback) { release = callback; } });
+        \\  const socket = new StreamWrap(source);
+        \\  assert(socket instanceof StreamWrap);
+        \\  assert(socket instanceof net.Socket);
+        \\  assert.strictEqual(Object.getPrototypeOf(StreamWrap.prototype), net.Socket.prototype);
+        \\  let writes = 0;
+        \\  let shutdowns = 0;
+        \\  let closes = 0;
+        \\  socket.on('close', () => closes++);
+        \\  socket.write(Buffer.alloc(socket.writableHighWaterMark * 2), error => { assert(error); writes++; });
+        \\  assert.strictEqual(typeof release, 'function');
+        \\  const request = new ShutdownWrap();
+        \\  request.oncomplete = status => { assert(status < 0); shutdowns++; };
+        \\  request.handle = socket._handle;
+        \\  request.handle.shutdown(request);
+        \\  socket.destroy();
+        \\  await Promise.resolve();
+        \\  assert.deepStrictEqual([writes, shutdowns, closes], [1, 1, 1]);
+        \\  release();
+        \\  await Promise.resolve();
+        \\  assert.deepStrictEqual([writes, shutdowns, closes], [1, 1, 1]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-home-js-stream-socket-handle.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("generic handle-backed net Socket failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner preserves net Socket handle-adjacent corpus contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/parallel/test-net-timeout-no-handle.js",
+        "js/node/test/parallel/test-http-agent-uninitialized-with-handle.js",
+        "js/node/test/parallel/test-http-agent-uninitialized.js",
+        "js/node/test/parallel/test-tls-js-stream.js",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (paths) |path| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("net Socket handle-adjacent failure in {s}: {s}\n", .{ path, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
