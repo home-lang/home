@@ -18,6 +18,7 @@ const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 const ts_checker = @import("ts_checker");
 const ts_cache = @import("ts_cache");
+const DirectiveLines = @import("directive_lines.zig").Iterator;
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -1487,7 +1488,7 @@ fn virtualReferencePathExists(source: []const u8, path: []const u8) bool {
 }
 
 fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const line = std.mem.trim(u8, line_raw, " \t\r/*");
         if (!std.mem.startsWith(u8, line, "@")) continue;
@@ -1501,7 +1502,7 @@ fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
 }
 
 fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const marker = directiveValueStart(line_raw, name) orelse continue;
         var value = std.mem.trim(u8, marker, " \t:");
@@ -1516,7 +1517,7 @@ fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u
 }
 
 fn sourceHasJsxCompilerOptionDirective(source: []const u8) bool {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const marker = directiveValueStart(line_raw, "jsx") orelse continue;
         const trimmed = std.mem.trim(u8, marker, " \t");
@@ -4001,7 +4002,7 @@ fn jsonStringEnd(source: []const u8, quote: usize, quote_char: u8) ?usize {
 }
 
 fn directiveBool(source: []const u8, name: []const u8) ?bool {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         const marker = directiveValueStart(line, name) orelse continue;
@@ -4043,6 +4044,43 @@ fn isDirectiveNameChar(c: u8) bool {
 // =============================================================================
 
 const T = std.testing;
+
+test {
+    _ = @import("directive_lines.zig");
+}
+
+test "driver: candidate directive lines preserve parser-specific precedence" {
+    const Case = struct {
+        source: []const u8,
+        value: ?[]const u8,
+        option: ?[]const u8,
+        boolean: ?bool,
+    };
+    for ([_]Case{
+        .{ .source = "plain\nplain", .value = null, .option = null, .boolean = null },
+        .{ .source = "prefix @other: true @checkJs: true\n// @checkJs: false", .value = "false", .option = "false", .boolean = false },
+        .{ .source = "// @checkJsSuffix:true\n// @CHECKJS: true", .value = "Suffix:true", .option = "true", .boolean = true },
+        .{ .source = "// @checkJs: false\n// @checkJs: true", .value = "false", .option = "false", .boolean = false },
+        .{ .source = "// @checkJs:\n// @checkJs: true", .value = "", .option = null, .boolean = true },
+        .{ .source = "@checkJs: TrUe*/ trailing", .value = "TrUe", .option = "TrUe", .boolean = true },
+        .{ .source = "text '@checkJs:true'", .value = null, .option = "true'", .boolean = true },
+        .{ .source = "plain@checkJs:true\n", .value = null, .option = "true", .boolean = true },
+        .{ .source = "// @checkJs: notABool\n// @checkJs: false", .value = "notABool", .option = "notABool", .boolean = false },
+    }) |case| {
+        const value = directiveValue(case.source, "checkJs");
+        if (case.value) |expected| {
+            try T.expectEqualStrings(expected, value orelse return error.MissingDirectiveValue);
+        } else try T.expect(value == null);
+        const option = compilerOptionDirectiveValue(case.source, "checkJs");
+        if (case.option) |expected| {
+            try T.expectEqualStrings(expected, option orelse return error.MissingOptionValue);
+        } else try T.expect(option == null);
+        try T.expectEqual(case.boolean, directiveBool(case.source, "checkJs"));
+    }
+    try T.expect(sourceHasJsxCompilerOptionDirective("@jsxOther: react\n@JsX: react"));
+    try T.expect(!sourceHasJsxCompilerOptionDirective("@bad @jsx: react"));
+    try T.expect(!sourceHasJsxCompilerOptionDirective("// @jsx react\n"));
+}
 
 test "driver: same-position diagnostics prefer shorter source span" {
     var diags = [_]Diagnostic{
