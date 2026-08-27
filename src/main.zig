@@ -1821,6 +1821,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     var code: ?[]const u8 = null;
     var print_mode = false;
     var expose_gc = false;
+    var experimental_stream_iter = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
@@ -1837,6 +1838,10 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
             }
         } else if (std.mem.eql(u8, a, "--expose-gc")) {
             expose_gc = true;
+        } else if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+            // Only a leading runtime flag enables the feature. Once `-e` has
+            // consumed its source, later flags are script arguments in Node.
+            if (code == null) experimental_stream_iter = true;
         } else if (std.mem.startsWith(u8, a, "-")) {
             // Other leading runtime flags are accepted and ignored.
         } else if (code == null) {
@@ -1846,6 +1851,9 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
         }
     }
     if (code == null) return false;
+    if (experimental_stream_iter) {
+        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+    }
 
     // Assemble the module source: optional gc alias, then either the raw code
     // (`-e`) or a `console.log(<expr>)` wrapper (`--print`).
@@ -5472,6 +5480,7 @@ pub fn main(init: std.process.Init) !void {
         defer preloads.deinit(allocator);
         var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
         defer conditions.deinit(allocator);
+        var experimental_stream_iter = false;
         var ri: usize = 2;
         while (ri < args.len) : (ri += 1) {
             const a = args[ri];
@@ -5509,6 +5518,10 @@ pub fn main(init: std.process.Init) !void {
                 }
                 continue;
             }
+            if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+                experimental_stream_iter = true;
+                continue;
+            }
             // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
             if (std.mem.eql(u8, a, "-")) break;
             // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
@@ -5527,6 +5540,9 @@ pub fn main(init: std.process.Init) !void {
 
         g_user_preloads = preloads.items;
         g_user_conditions = conditions.items;
+        if (experimental_stream_iter) {
+            home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+        }
         try runCommand(allocator, args[ri], args[ri + 1 ..]);
         return;
     }
@@ -5775,6 +5791,7 @@ pub fn main(init: std.process.Init) !void {
             // package.json "exports"/"imports" conditions (comma-separated values
             // and repeated flags both accepted, matching Bun).
             var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+            var experimental_stream_iter = false;
             const addConditions = struct {
                 fn call(list: *std.ArrayListUnmanaged([]const u8), alloc: std.mem.Allocator, csv: []const u8) void {
                     var it = std.mem.splitScalar(u8, csv, ',');
@@ -5813,7 +5830,14 @@ pub fn main(init: std.process.Init) !void {
                     addConditions(&conditions, allocator, a["--conditions=".len..]);
                     continue;
                 }
+                if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+                    experimental_stream_iter = true;
+                    continue;
+                }
                 if (looksLikeRunnableFile(a)) {
+                    if (experimental_stream_iter) {
+                        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+                    }
                     g_user_preloads = preloads.items;
                     g_user_conditions = conditions.items;
                     try runCommand(allocator, a, args[i + 1 ..]);

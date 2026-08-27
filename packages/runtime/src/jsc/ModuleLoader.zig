@@ -842,6 +842,7 @@ pub export fn Bun__resolveAndFetchBuiltinModule(
 
     const specifier_slice = specifier.toUTF8(bun.default_allocator);
     defer specifier_slice.deinit();
+    if (HardcodedModule.streamIterAliasGated(specifier_slice.slice())) return false;
     const alias = HardcodedModule.Alias.bun_aliases.get(specifier_slice.slice()) orelse
         return false;
     const hardcoded = HardcodedModule.map.get(alias.path) orelse {
@@ -1195,6 +1196,7 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
 pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?ResolvedSource {
     const specifier_slice = specifier.toUTF8(bun.default_allocator);
     defer specifier_slice.deinit();
+    if (HardcodedModule.streamIterAliasGated(specifier_slice.slice())) return null;
     if (HardcodedModule.map.get(specifier_slice.slice())) |hardcoded| {
         return getHardcodedModule(jsc_vm, specifier, hardcoded);
     }
@@ -1329,6 +1331,7 @@ export fn Bun__resolveEmbeddedNodeFile(vm: *VirtualMachine, in_out_str: *bun.Str
 
 export fn ModuleLoader__isBuiltin(data: [*]const u8, len: usize) bool {
     const str = data[0..len];
+    if (HardcodedModule.streamIterAliasGated(str)) return false;
     return HardcodedModule.Alias.bun_aliases.get(str) != null;
 }
 
