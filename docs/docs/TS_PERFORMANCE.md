@@ -10,24 +10,25 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-26 at commit `617d29ead` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-26 at commit `ca0b8dfb7` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T000322Z`.
+The local raw-result identifier is `20260827T014124Z`.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 95.0 ± 86.4 ms | 55.4 ± 51.1 ms | **5.0 ± 6.3 ms** | **11.11× faster** |
-| `many_files` | 269.4 ± 73.2 ms | 64.7 ± 15.2 ms | **40.1 ± 12.1 ms** | **1.61× faster** |
-| `deep_types` | 127.3 ± 2.1 ms | 52.0 ± 1.5 ms | **17.9 ± 0.4 ms** | **2.91× faster** |
-| `import_graph` | 128.2 ± 1.8 ms | 44.9 ± 1.0 ms | **25.6 ± 1.0 ms** | **1.75× faster** |
-| `reexport_graph` | 95.0 ± 5.6 ms | 40.4 ± 1.0 ms | **27.1 ± 1.4 ms** | **1.49× faster** |
-| `tsx_components` | 158.1 ± 1.6 ms | 46.2 ± 0.9 ms | **27.6 ± 0.4 ms** | **1.67× faster** |
-| `generic_calls` | 173.8 ± 1.8 ms | 53.0 ± 0.8 ms | **35.9 ± 5.8 ms** | **1.48× faster** |
-| `control_flow` | 185.6 ± 3.2 ms | 57.4 ± 1.2 ms | **49.3 ± 0.5 ms** | **1.17× faster** |
-| `overload_resolution` | 195.7 ± 0.8 ms | 63.3 ± 1.1 ms | **54.2 ± 0.6 ms** | **1.17× faster** |
-| `class_hierarchy` | 199.6 ± 68.5 ms | 54.1 ± 13.5 ms | **47.6 ± 0.9 ms** | **1.14× faster** |
-| `structural_objects` | 180.6 ± 2.5 ms | 57.0 ± 1.1 ms | **47.5 ± 0.8 ms** | **1.20× faster** |
+| `startup` | 80.1 ± 1.6 ms | 47.6 ± 2.1 ms | **4.2 ± 0.8 ms** | **11.43× faster** |
+| `many_files` | 287.3 ± 17.6 ms | 73.9 ± 12.4 ms | **41.9 ± 7.0 ms** | **1.76× faster** |
+| `deep_types` | 162.4 ± 20.6 ms | 61.8 ± 3.5 ms | **20.3 ± 0.8 ms** | **3.05× faster** |
+| `import_graph` | 168.2 ± 21.4 ms | 56.1 ± 2.2 ms | **34.5 ± 2.5 ms** | **1.63× faster** |
+| `reexport_graph` | 127.7 ± 12.7 ms | 53.9 ± 7.9 ms | **36.6 ± 6.2 ms** | **1.47× faster** |
+| `tsx_components` | 247.5 ± 62.0 ms | 63.9 ± 6.5 ms | **33.1 ± 2.0 ms** | **1.93× faster** |
+| `generic_calls` | 273.3 ± 82.1 ms | 71.7 ± 3.0 ms | **42.2 ± 1.6 ms** | **1.70× faster** |
+| `control_flow` | 280.1 ± 30.7 ms | 77.4 ± 3.5 ms | **62.6 ± 3.3 ms** | **1.24× faster** |
+| `overload_resolution` | 292.4 ± 24.7 ms | 84.8 ± 5.3 ms | **64.5 ± 2.5 ms** | **1.31× faster** |
+| `class_hierarchy` | 248.2 ± 13.8 ms | 65.6 ± 3.0 ms | **60.3 ± 18.6 ms** | **1.09× faster** |
+| `structural_objects` | 234.8 ± 3.9 ms | 70.3 ± 5.3 ms | **56.7 ± 10.8 ms** | **1.24× faster** |
+| `interface_composition` | 294.9 ± 33.5 ms | 82.0 ± 2.3 ms | **74.6 ± 3.0 ms** | **1.10× faster** |
 
 The comparison column always uses the faster of `tsc` and `tsgo`, so Home must
 beat both compilers to record a win. These are local synthetic measurements,
@@ -67,6 +68,7 @@ not a claim that every real project or machine has the same speedup.
 | `overload_resolution` | One module with 128 groups of eight typed overload calls | Literal-discriminated overload selection, generic inference, object and tuple payloads, callbacks, and typed result consumption |
 | `class_hierarchy` | One module with 128 independent generic base/derived/interface families | Class heritage resolution, generic substitution, constructors, overrides, protected members, interface compatibility, and typed instance consumption |
 | `structural_objects` | One module with 128 independent source/target object families | Nested structural compatibility, optional and readonly members, tuples, intersections, generic function properties, excess source members, assignments, and typed argument passing |
+| `interface_composition` | One module with 128 independent generic interface and namespace families | Multi-base interface heritage, repeated declaration merging, namespace/type/value merging, nested exported interfaces, generic functions, structural values, and typed consumption |
 
 The suite intentionally uses dependency-free synthetic projects so its inputs
 stay stable and auditable. It does not replace benchmarks of pinned real-world
@@ -135,30 +137,40 @@ workload-specific shortcuts:
 - DOM library availability is computed once per source and reused while
   lowering annotations, preserving `@noLib`, `reference lib`, and explicit
   `@lib` semantics without repeatedly scanning the entire file; and
+- named types maintain a validated reverse display-name index instead of
+  repeatedly iterating the complete forward name table;
+- visible namespaces and simple annotated declarations reuse lexical,
+  virtual-section-aware indexes, including a conservative dotted-namespace
+  fact that avoids impossible fallback scans;
+- interface declaration merging records the real predecessor chain so generic
+  and non-generic back-patching touches only declarations in the merge; and
+- module augmentation, type-alias, and class/interface compatibility paths use
+  syntax facts before performing root-level searches, while allocation failure
+  retains the original semantic resolver; and
 - program-level declaration, namespace, interface, class, and CommonJS
   collectors skip files whose source cannot contain the syntax they collect.
 
 The `control_flow` workload was deliberately added before these optimizations.
 Its five-run red baseline (`20260826T203831Z`) measured Home at
 2,927.8 ± 159.6 ms versus native TypeScript 7 at 81.5 ± 21.8 ms. The unchanged
-workload now measures 56.7 ± 25.4 ms in the 30-run snapshot above: a 51.6×
-Home improvement and a 1.09× win over the fastest competitor. The improvement
+workload now measures 62.6 ± 3.3 ms in the 30-run snapshot above: a 46.8×
+Home improvement and a 1.24× win over the fastest competitor. The improvement
 came from removing repeated general-purpose source and HIR scans; the corpus,
 compiler options, validity gate, and measurement schedule were not weakened.
 
 The `overload_resolution` workload was likewise frozen before its optimization.
 Its five-run red baseline (`20260826T221712Z`) measured Home at
 126.9 ± 0.9 ms versus native TypeScript 7 at 70.3 ± 1.1 ms. The unchanged
-workload now measures 58.1 ± 2.2 ms in the 30-run snapshot above: a 2.18×
-Home improvement and a 1.14× win over the fastest competitor. The optimized
+workload now measures 64.5 ± 2.5 ms in the 30-run snapshot above: a 1.97×
+Home improvement and a 1.31× win over the fastest competitor. The optimized
 path only eliminates candidates whose fixed primitive literal parameter is
 provably incompatible with the corresponding literal expression.
 
 The `class_hierarchy` workload was also frozen before optimization. Its
 five-run red baseline (`20260826T232221Z`) measured Home at 79.4 ± 2.8 ms
 versus native TypeScript 7 at 59.6 ± 1.5 ms. The unchanged workload now
-measures 50.7 ± 15.9 ms in the 30-run snapshot above: a 1.57× Home
-improvement and a 1.06× win over the fastest competitor. The optimization
+measures 60.3 ± 18.6 ms in the 30-run snapshot above: a 1.32× Home
+improvement and a 1.09× win over the fastest competitor. The optimization
 caches successful general-purpose heritage resolutions and removes source or
 HIR scans only when conservative facts prove the searched construct cannot
 apply; the source, compiler options, validity gate, and schedule are unchanged.
@@ -166,9 +178,18 @@ apply; the source, compiler options, validity gate, and schedule are unchanged.
 The `structural_objects` workload was frozen before optimization. Its five-run
 red baseline (`20260826T234904Z`) measured Home at 160.9 ± 4.5 ms versus
 native TypeScript 7 at 62.7 ± 2.7 ms. The unchanged workload now measures
-47.5 ± 0.8 ms in the 30-run snapshot above: a 3.39× Home improvement and
-a 1.20× win over the fastest competitor. Profiling found that DOM library
+56.7 ± 10.8 ms in the 30-run snapshot above: a 2.84× Home improvement and
+a 1.24× win over the fastest competitor. Profiling found that DOM library
 availability was rescanning the complete source for every relevant annotation;
 the result now uses the checker's existing per-source fact lifecycle. The
 corpus, compiler options, validity gate, and measurement schedule were not
 weakened.
+
+The `interface_composition` workload was frozen before optimization. Its
+five-run red baseline (`20260827T000848Z`) measured Home at 117.3 ± 3.0 ms
+versus native TypeScript 7 at 65.3 ± 0.8 ms. The unchanged workload now
+measures 74.6 ± 3.0 ms in the 30-run snapshot above: a 1.57× Home improvement
+and a 1.10× win over the fastest competitor. The improvement replaces repeated
+namespace, declaration-merge, annotation, and type-name searches with validated
+indexes and conservative source facts. The generated source, compiler options,
+silent-success validity gate, and interleaved schedule remain unchanged.
