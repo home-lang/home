@@ -4020,6 +4020,10 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Reverse display-name lookup for registered named types. Entries are
+    /// validated against `type_names` before use so name rebinding cannot
+    /// leave a stale diagnostic identity.
+    named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
     /// Most-recent `interface_decl` node that registered a type under
     /// each name. Lets the interface-merge logic in
     /// `checkInterfaceDecl` confirm the previous declaration shares
@@ -4954,6 +4958,7 @@ pub const Checker = struct {
             .class_private_set_only_accessors = .empty,
             .class_static_private_set_only_accessors = .empty,
             .type_names = .empty,
+            .named_type_by_id = .empty,
             .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .generic_interfaces_by_decl = .empty,
@@ -5418,6 +5423,7 @@ pub const Checker = struct {
         while (cspsoa_it.next()) |set| set.deinit(self.gpa);
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
+        self.named_type_by_id.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -7034,7 +7040,7 @@ pub const Checker = struct {
                         if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |typedef_t| {
                             const typedef_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
                             if (!self.type_names.contains(typedef_name)) {
-                                try self.type_names.put(self.gpa, typedef_name, typedef_t);
+                                try self.putTypeName(typedef_name, typedef_t);
                                 try self.registerAliasDisplayText(typedef_t, tag.name);
                             }
                         }
@@ -8171,7 +8177,7 @@ pub const Checker = struct {
                     )
                 else
                     types.Primitive.unknown;
-                try self.type_names.put(self.gpa, id.name, placeholder);
+                try self.putTypeName(id.name, placeholder);
             }
             return;
         }
@@ -8210,7 +8216,7 @@ pub const Checker = struct {
             .is_type_alias = true,
             .body_node = ta.aliased,
         });
-        try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
+        try self.putTypeName(id.name, types.Primitive.unknown);
     }
 
     /// Scan the source for `// @ts-ignore` and `// @ts-expect-error`
@@ -42509,7 +42515,7 @@ pub const Checker = struct {
                     try self.decl_single_base.put(self.gpa, final_instance_t, pt);
                 }
             }
-            try self.type_names.put(self.gpa, cid.name, final_instance_t);
+            try self.putTypeName(cid.name, final_instance_t);
             try self.class_instance_types.put(self.gpa, cid.name, final_instance_t);
             if (class_param_ids.items.len > 0) {
                 // Class parameters use the completed instance shape for the
@@ -43382,7 +43388,7 @@ pub const Checker = struct {
                 const cid = hir_mod.identifierOf(self.hir, c.name);
                 try self.class_instance_types.put(self.gpa, cid.name, instance_t);
                 try self.class_static_types.put(self.gpa, cid.name, static_t);
-                try self.type_names.put(self.gpa, cid.name, instance_t);
+                try self.putTypeName(cid.name, instance_t);
                 if (parent_instance_t) |pt| {
                     if (pt != instance_t and pt < self.interner.pool.typeCount() and
                         self.interner.pool.flagsOf(pt).is_object_type)
@@ -64356,7 +64362,7 @@ pub const Checker = struct {
                 );
             }
             if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
-            try self.type_names.put(self.gpa, id.name, final_t);
+            try self.putTypeName(id.name, final_t);
             if (recursive_provisional_t != types.Primitive.none and recursive_provisional_t != final_t) {
                 try self.recursive_interface_targets.put(self.gpa, recursive_provisional_t, final_t);
             }
@@ -68009,7 +68015,7 @@ pub const Checker = struct {
         else
             types.Primitive.number_t;
         if (!saw_string and !e.is_const) try self.numeric_enums.put(self.gpa, enum_name, {});
-        try self.type_names.put(self.gpa, enum_name, enum_t);
+        try self.putTypeName(enum_name, enum_t);
         self.hir.setType(node, enum_t);
         self.hir.setType(e.name, enum_t);
         if (self.strict_flags.isolated_declarations and
@@ -70001,7 +70007,7 @@ pub const Checker = struct {
                     try self.reportSelfReferencedTypeAnnotationAtName(var_decl);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -70009,7 +70015,7 @@ pub const Checker = struct {
                     try self.reportReturnTypeAnnotationCircularOnce(return_type);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -70017,7 +70023,7 @@ pub const Checker = struct {
                     try self.reportMappedAliasCircularConstraint(ta.aliased);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -70056,7 +70062,7 @@ pub const Checker = struct {
             self.hir.setType(node, aliased_t);
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
-                try self.type_names.put(self.gpa, id.name, aliased_t);
+                try self.putTypeName(id.name, aliased_t);
                 if (aliased_t >= types.Primitive.first_dynamic and aliased_t < self.interner.pool.typeCount()) {
                     const bare_name = self.string_interner.get(id.name);
                     const display = try self.diag_arena.allocator().dupe(u8, bare_name);
@@ -70196,7 +70202,7 @@ pub const Checker = struct {
             // Also expose the un-instantiated body via `type_names`
             // so a bare `Alias` (no type-args) resolves ÃÂ¢ÃÂÃÂ TS treats
             // it as `Alias<unknown, ÃÂ¢ÃÂÃÂ¦>`.
-            try self.type_names.put(self.gpa, id.name, body_t);
+            try self.putTypeName(id.name, body_t);
             try self.type_alias_bodies.put(self.gpa, id.name, body_t);
             self.hir.setType(ta.name, body_t);
         }
@@ -71640,7 +71646,7 @@ pub const Checker = struct {
         try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
         try self.class_name_by_static.put(self.gpa, static_t, cid.name);
         try self.class_decl_by_instance.put(self.gpa, instance_t, node);
-        try self.type_names.put(self.gpa, cid.name, instance_t);
+        try self.putTypeName(cid.name, instance_t);
         if (self.class_protected_members.fetchRemove(cid.name)) |old| {
             var owned = old.value;
             owned.deinit(self.gpa);
@@ -76830,7 +76836,7 @@ pub const Checker = struct {
             {
                 if (self.type_names.get(r.name)) |existing| return existing;
                 const synth = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
-                try self.type_names.put(self.gpa, r.name, synth);
+                try self.putTypeName(r.name, synth);
                 return synth;
             }
             return null;
@@ -104904,11 +104910,11 @@ pub const Checker = struct {
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
         try self.class_instance_types.put(self.gpa, local_name, instance_t);
         try self.class_static_types.put(self.gpa, local_name, static_t);
-        try self.type_names.put(self.gpa, local_name, instance_t);
+        try self.putTypeName(local_name, instance_t);
         if (class_name != local_name) {
             try self.class_instance_types.put(self.gpa, class_name, instance_t);
             try self.class_static_types.put(self.gpa, class_name, static_t);
-            try self.type_names.put(self.gpa, class_name, instance_t);
+            try self.putTypeName(class_name, instance_t);
         }
         if (class_params.items.len > 0) {
             try self.registerSyntheticProgramClassGeneric(local_name, class_params.items, instance_t);
@@ -111710,7 +111716,7 @@ pub const Checker = struct {
         const import_meta_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         // `ImportMeta` is a lib-provided global type, and source-level
         // `declare global` declarations augment that same symbol.
-        try self.type_names.put(self.gpa, import_meta_name, import_meta_t);
+        try self.putTypeName(import_meta_name, import_meta_t);
         return import_meta_t;
     }
 
@@ -117623,7 +117629,7 @@ pub const Checker = struct {
         const instance_name = self.string_interner.intern(instance_name_text) catch return error.OutOfMemory;
         if (self.type_names.get(instance_name)) |existing| return existing;
         const instance_t = try self.htmlElementType();
-        try self.type_names.put(self.gpa, instance_name, instance_t);
+        try self.putTypeName(instance_name, instance_t);
         try self.registerAliasDisplayText(instance_t, instance_name_text);
         return instance_t;
     }
@@ -117649,7 +117655,7 @@ pub const Checker = struct {
         }) catch return error.OutOfMemory;
         try self.registerAliasDisplayText(react_child_t, "ReactChild");
         const react_child_name = self.string_interner.intern("ReactChild") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, react_child_name, react_child_t);
+        try self.putTypeName(react_child_name, react_child_t);
         const nested_array_t = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const fragment_element_t = self.interner.internUnion(&[_]TypeId{
             react_child_t,
@@ -117678,7 +117684,7 @@ pub const Checker = struct {
         };
         const react_node_t = self.interner.internUnion(&members) catch return error.OutOfMemory;
         try self.registerAliasDisplayText(react_node_t, "ReactNode");
-        try self.type_names.put(self.gpa, name, react_node_t);
+        try self.putTypeName(name, react_node_t);
         return react_node_t;
     }
 
@@ -131174,7 +131180,7 @@ pub const Checker = struct {
         // Without it, indexing `arguments` under `noImplicitAny` over-reports
         // TS7053. Pins paramTagOnFunctionUsingArguments.
         const t = self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, types.Primitive.any) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         if (!self.builtin_object_names.contains(t)) {
             try self.builtin_object_names.put(self.gpa, t, "IArguments");
         }
@@ -131393,7 +131399,7 @@ pub const Checker = struct {
 
         const symbol_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         const symbol_constructor_name = self.string_interner.intern("SymbolConstructor") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, symbol_constructor_name, symbol_t);
+        try self.putTypeName(symbol_constructor_name, symbol_t);
         return symbol_t;
     }
 
@@ -133905,7 +133911,7 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("finish") catch return error.OutOfMemory, .type = try self.seedAnySig0(types.Primitive.void_t), .is_optional = false, .is_readonly = false, .is_method = true },
         };
         const t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         return t;
     }
 
@@ -135374,15 +135380,15 @@ pub const Checker = struct {
         };
         const global_this_t = self.interner.internObjectType(&global_members) catch return error.OutOfMemory;
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, window_name, window_t);
-        try self.type_names.put(self.gpa, global_name, global_this_t);
+        try self.putTypeName(window_name, window_t);
+        try self.putTypeName(global_name, global_this_t);
         return self.interner.internIntersection(&[_]TypeId{ window_t, global_this_t }) catch return error.OutOfMemory;
     }
 
     fn bareGlobalThisType(self: *Checker) CheckError!TypeId {
         const t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, global_name, t);
+        try self.putTypeName(global_name, t);
         return t;
     }
 
@@ -180232,7 +180238,7 @@ pub const Checker = struct {
             },
         };
         const t = self.interner.internObjectType(&element_members) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         const base_members = element_members ++ [_]types.ObjectMember{.{
             .name = self.string_interner.intern("__home_display_base") catch return error.OutOfMemory,
             .type = types.Primitive.undefined_t,
@@ -180242,7 +180248,7 @@ pub const Checker = struct {
         }};
         const base_t = self.interner.internObjectType(&base_members) catch return error.OutOfMemory;
         const base_name = self.string_interner.intern("ReactElement<any>") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, base_name, base_t);
+        try self.putTypeName(base_name, base_t);
         try self.relation_display_base.put(self.gpa, t, base_t);
         return t;
     }
@@ -181875,10 +181881,28 @@ pub const Checker = struct {
         return hir_mod.none_node_id;
     }
 
+    fn putTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
+        const previous = self.type_names.get(name);
+        try self.type_names.put(self.gpa, name, t);
+        if (previous) |previous_t| {
+            if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
+                _ = self.named_type_by_id.remove(previous_t);
+            }
+        }
+        try self.named_type_by_id.put(self.gpa, t, name);
+    }
+
     fn namedTypeForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.named_type_by_id.get(t)) |name| {
+            if (self.type_names.get(name) == t) return name;
+            _ = self.named_type_by_id.remove(t);
+        }
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.* == t) return entry.key_ptr.*;
+            if (entry.value_ptr.* == t) {
+                self.named_type_by_id.put(self.gpa, t, entry.key_ptr.*) catch {};
+                return entry.key_ptr.*;
+            }
         }
         // Partial class instance types built inside per-field
         // initializer checks aren't in `type_names` yet but they are
