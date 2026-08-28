@@ -39,6 +39,21 @@ nonzero until those cases are fixed; it does not skip known failures or add them
 to the timing table. Use `--family same-file` or `--family cross-file` to focus
 an investigation, and retain the full audit for admission decisions.
 
+The separate imported-owner audit is also **untimed**:
+
+```sh
+python3 bench/vs_tsgo/audit_owners.py
+```
+
+It checks same-named declarations from two real modules: constrained generics,
+type predicates, private class origins, rest arguments, and readonly flags.
+Each family has valid/invalid pairs with the app explicitly listed before and
+after both declaration files. Only invalid statements are appended to the
+negative app; declarations and compiler settings stay identical. It uses the
+same version/diagnostic checks as the global audit and keeps known failures in
+the default selection. These controls inform cross-file integration under
+[#487](https://github.com/home-lang/home/issues/487), not the timing table.
+
 For an additional targeted confirmation, use
 `./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3 --workload type_predicates_large`.
 Repeat `--workload` for multiple cases; omitting it still runs the full suite.
