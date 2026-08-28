@@ -82,7 +82,10 @@ pub const Lowerer = struct {
             // return-type position lower to `boolean` because that's
             // their runtime type. The narrowing semantics are
             // separately recorded in the checker via `fn_predicates`.
-            .type_predicate_type => types.Primitive.boolean_t,
+            .type_predicate_type => if (hir_mod.typePredicateOf(self.hir, node).is_asserts)
+                types.Primitive.void_t
+            else
+                types.Primitive.boolean_t,
             // Template literal types: when every interpolated type
             // resolves to a string-literal type, concatenate the
             // text+lit parts into a single string-literal type
@@ -757,4 +760,18 @@ test "lower: union sort+dedup canonicalizes" {
     // path doesn't blow up.)
     try T.expect(s.ti.pool.flagsOf(id_ab).is_union);
     try T.expect(s2.ti.pool.flagsOf(id_ba).is_union);
+}
+
+test "lower: assertions return void and ordinary predicates return boolean" {
+    const cases = [_]struct { source: []const u8, result: TypeId }{
+        .{ .source = "let f: (value: unknown) => asserts value is string;", .result = types.Primitive.void_t },
+        .{ .source = "let f: (value: unknown) => asserts value;", .result = types.Primitive.void_t },
+        .{ .source = "let f: (value: unknown) => value is string;", .result = types.Primitive.boolean_t },
+    };
+    for (cases) |case| {
+        const s = try newSetup(case.source);
+        defer destroySetup(s);
+        const signature = try s.lowerer.lower(typeAnnotationOf(s));
+        try T.expectEqual(case.result, s.ti.signatureReturn(signature).?);
+    }
 }

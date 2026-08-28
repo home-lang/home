@@ -36353,7 +36353,7 @@ pub const Checker = struct {
             false;
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
             (if (is_predicate)
-                types.Primitive.boolean_t
+                (if (hir_mod.typePredicateOf(self.hir, f.return_type).is_asserts) types.Primitive.void_t else types.Primitive.boolean_t)
             else if (self.typeAnnotationShouldBecomeErrorAny(f.return_type))
                 types.Primitive.any
             else
@@ -76855,7 +76855,10 @@ pub const Checker = struct {
                     try self.checkTypePredicateConstraints(ft.return_type, fn_params);
                 }
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
-                    (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(ft.return_type))
+                    (if (is_predicate)
+                        (if (hir_mod.typePredicateOf(self.hir, ft.return_type).is_asserts) types.Primitive.void_t else types.Primitive.boolean_t)
+                    else
+                        try self.lowererLowerWithTypeParams(ft.return_type))
                 else
                     types.Primitive.any;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
@@ -232411,6 +232414,62 @@ test "checker: const tuple paths reduce recursive conditional aliases" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: assertion declarations return void without aliasing boolean guards" {
+    const b = try newBoundSetup(
+        \\declare function isText(value: unknown): value is string;
+        \\declare function assertText(value: unknown): asserts value is string;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = isText(value);
+        \\const goodAssertion: void = assertText(value);
+        \\const badResult: boolean = assertText(value);
+        \\const badSignature: (value: unknown) => boolean = assertText;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: assertion function types return void" {
+    const b = try newBoundSetup(
+        \\type Guard = (value: unknown) => value is string;
+        \\type Assert = (value: unknown) => asserts value is string;
+        \\declare const guard: Guard;
+        \\declare const assert: Assert;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = guard(value);
+        \\const goodAssertion: void = assert(value);
+        \\const badResult: boolean = assert(value);
+        \\const badSignature: (value: unknown) => boolean = assert;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: assertion methods return void" {
+    const b = try newBoundSetup(
+        \\interface Checks {
+        \\    isText(value: unknown): value is string;
+        \\    assertText(value: unknown): asserts value is string;
+        \\}
+        \\declare const checks: Checks;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = checks.isText(value);
+        \\const goodAssertion: void = checks.assertText(value);
+        \\const badResult: boolean = checks.assertText(value);
+        \\const badSignature: (value: unknown) => boolean = checks.assertText;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: generic interface callbacks retain instantiated receiver parameters" {
