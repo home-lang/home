@@ -2979,3 +2979,16 @@ python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T224220Z
 
 The full console record and rendered report are retained as
 `graph-types.4EsbvV/timing-release-v3.log` and `report-release-v3.md`.
+
+A separate same-host before/after diagnostic confirms the large-predicate
+regression: frozen `3b7f0ea93` takes **351.0 ± 16.9 ms**, versus `de8fe28f1`
+**533.8 ± 14.9 ms**, a **1.52× slowdown**. Both binaries first pass this same
+workload's positive and unchanged predicate rejection controls. Three warmups
+per binary precede thirty two-process rounds, alternating before/after order;
+all **30 rounds / 60 successful samples** are retained in
+`graph-types.4EsbvV/predicate-ab-v3/` with binary paths, versions and hashes.
+The newer binary loses all thirty paired rounds. This diagnostic is not averaged
+into the three-compiler table and says nothing about the old binary's eligibility
+for the graph workloads. Source inspection identifies repeated whole-block
+export-name scans as a candidate cost to investigate under #537; optimization
+and its verification remain pending.
