@@ -72,6 +72,20 @@ diagnostic checks, with no skipped failures. Use `--family` for an investigation
 and the complete audit for verification. Tracked in
 [#507](https://github.com/home-lang/home/issues/507).
 
+Callable-union reduction has a separate **untimed** audit:
+
+```sh
+python3 bench/vs_tsgo/audit_callable_unions.py
+```
+
+Its 256 cases cover mixed predicate/boolean functions, different predicate
+targets, compatible predicates, and explicit receiver types. Declaration order
+and branch order vary independently across arrays, conditional expressions,
+object wrappers, and script/module scope. Every negative control only appends
+an invalid use to its positive project. All three compilers receive identical
+projects, exact version checks, and exact diagnostic-code comparisons; no
+failures are waived. Tracked in [#511](https://github.com/home-lang/home/issues/511).
+
 For an additional targeted confirmation, use
 `./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3 --workload type_predicates_large`.
 Repeat `--workload` for multiple cases; omitting it still runs the full suite.
