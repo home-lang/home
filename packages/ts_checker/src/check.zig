@@ -3741,6 +3741,8 @@ const PriorJsDocPropertyAssignment = struct {
 /// consumers must retain that owner rather than treating these as global IDs.
 /// Transient control-flow scopes and in-progress resolution caches stay in
 /// Checker. Moving this result does not allocate or duplicate type graphs.
+/// This is not yet a complete foreign-type context: interpretation tables
+/// such as NoInfer/this markers still need ownership coverage before import.
 pub const CheckedTypes = struct {
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo) = .empty,
@@ -5857,8 +5859,6 @@ pub const Checker = struct {
         return self.interner.typeParameterVariance(tp_id);
     }
 
-    /// Check a complete source file. The HIR root must be a
-    /// block_stmt of top-level statements.
     /// Transfer the checked result into fresh, stable source-file storage
     /// after all checking and diagnostic rendering. Rebind the relation
     /// engine in the same operation so it cannot borrow the dying Checker.
@@ -5871,6 +5871,8 @@ pub const Checker = struct {
         self.engine.setRestSignatures(&destination.rest_signatures);
     }
 
+    /// Check a complete source file. The HIR root must be a
+    /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         // ÃÂÃÂ§4.A.X TS 4.0 ÃÂ¢ÃÂÃÂ give the relation engine a live reference
         // to `rest_signatures` so signature assignability can expand

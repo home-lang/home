@@ -1257,3 +1257,54 @@ projection failure remain reproducible under
 [#476](https://github.com/home-lang/home/issues/476), with the diagnostic-text
 gap in [#478](https://github.com/home-lang/home/issues/478). Async remains untimed
 under [#473](https://github.com/home-lang/home/issues/473).
+
+### Checked-type ownership and assertion returns (untimed)
+
+Commit [`091f15129`](https://github.com/home-lang/home/commit/091f1512954bf216b86556d9f892b6e59134e752)
+moves core declaration/signature metadata into the stable `Compilation` result
+before destroying its temporary checker. This fixes the retained relation
+engine borrowing a destroyed rest-signature table. The transfer moves existing
+maps, rather than cloning type graphs, and rebinds the engine as part of the
+same operation. Type IDs, string IDs, and declaration nodes still belong to the
+source compilation; equal numeric IDs from separate files are not interchangeable.
+
+Post-compilation tests exercise rest-tuple assignability in both directions,
+incompatible parameters, generic constraints/defaults and return members,
+optional arguments, explicit `this`, predicate metadata, overloads, source
+nodes, and independent compilation lifetimes. These tests also exposed
+[#489](https://github.com/home-lang/home/issues/489): assertion signatures were
+incorrectly lowered as boolean guards. Commit
+[`134a9102d`](https://github.com/home-lang/home/commit/134a9102d4e9f022035033bbec058e385405a0d6)
+preserves `void` for assertions and `boolean` for ordinary guards in declaration,
+function-type, and low-level type lowering. Identical parameter lists remain in
+the tests, so the guard/assertion collision is exercised rather than avoided.
+
+| Untimed assertion family, valid and invalid scripts/modules | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Function declarations | 4/4 | 4/4 | 4/4 |
+| Function-type aliases | 4/4 | 4/4 | 4/4 |
+| Interface methods | 4/4 | 4/4 | 4/4 |
+
+These 36 shared CLI checks use identical strict/noEmit/noLib/skipLibCheck
+projects and the minimal library. Invalid inputs must report two TS2322 errors:
+using an assertion's result as boolean and assigning its signature to a
+boolean-returning function. Removing only those two statements yields valid
+controls. Before the fix, Home instead rejected the valid `void` result and
+accepted the invalid boolean uses. The low-level tests additionally cover
+`asserts value` without an `is` target.
+
+The final functional source passes 4,236 checker tests, 175 driver tests,
+101 program tests, 69 CLI tests, and 25 harness/report tests. All 72 earlier
+generic-callback checks still pass. The local evidence directory is
+`bench/vs_tsgo/results/type-ownership.DvClDP`; the ReleaseFast binary SHA-256 is
+`2d1bd9e91307373ffe28b5f0af3f9efb11ea96039df3b2ad77c9540e60fee942`.
+
+This is an ownership prerequisite, not completed cross-file type linkage.
+[#488](https://github.com/home-lang/home/issues/488) remains open: interpretation
+tables such as `NoInfer`, `this` markers, readonly/pattern index metadata, and
+tuple/array origins still require ownership coverage before foreign types can
+be safely imported. The global audit still has 14 Home failures out of 132
+checks; Home still fails both imported-graph rejection gates. Sixteen workload
+gates pass, but neither graph is readmitted and the other rows remain provisional.
+No timing run or new speed claim was made under concurrent workstation load.
+The published timings and frozen predicate sources are unchanged.

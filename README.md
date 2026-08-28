@@ -106,8 +106,9 @@ Other rows remain provisional pending broader rejection-control coverage.
 The large-predicate lead was independently confirmed at **1.08×**
 in an additional 30-round run.
 This snapshot is from `9e45e105d` and includes stronger return-type checks.
-Later generic-callback and declaration fixes have passed correctness checks
-but have not yet been retimed. Async/await
+Later generic-callback, declaration, and
+[assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
+have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
