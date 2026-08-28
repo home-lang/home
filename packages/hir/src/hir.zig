@@ -786,6 +786,9 @@ pub const ObjectPropertyPayload = struct {
     /// by a private storage slot; Stage 3 decorators receive
     /// `kind: "accessor"` in their context object.
     is_accessor: bool = false,
+    /// Class field modifiers retained for source-owned type metadata.
+    is_optional: bool = false,
+    is_readonly: bool = false,
 };
 
 // ============================================================================
@@ -2458,6 +2461,13 @@ pub const Builder = struct {
         if (value != none_node_id) self.hir.setParent(value, id);
         if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
         return id;
+    }
+
+    pub fn setClassFieldModifiers(self: *Builder, node: NodeId, optional: bool, readonly: bool) void {
+        std.debug.assert(self.hir.kindOf(node) == .object_property);
+        const property = &self.hir.object_property_payloads.items[self.hir.payloads.items[node]];
+        property.is_optional = optional;
+        property.is_readonly = readonly;
     }
 
     /// Add a variable declaration. `kind` must be one of

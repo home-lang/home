@@ -7111,6 +7111,7 @@ pub const Parser = struct {
                     mods.is_override,
                     mods.is_accessor,
                 );
+                self.builder.setClassFieldModifiers(prop, is_optional_member, mods.is_readonly);
                 try members.append(self.gpa, prop);
                 continue;
             }
@@ -8327,6 +8328,7 @@ pub const Parser = struct {
         var value: NodeId = hir_mod.none_node_id;
         var type_anno: NodeId = hir_mod.none_node_id;
         var is_method = false;
+        var is_optional_field = false;
         if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
             var type_params: []NodeId = &.{};
             var owns_tps = false;
@@ -8377,6 +8379,7 @@ pub const Parser = struct {
             try self.reportAccessorModifierOnlyOnProperty(mods);
         } else {
             const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
+            is_optional_field = optional_member_token != null;
             const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             if (self.match(.colon)) {
                 type_anno = try self.parseTypeAnnotation();
@@ -8394,7 +8397,7 @@ pub const Parser = struct {
             };
         }
 
-        return try self.builder.addObjectPropertyFull(
+        const property = try self.builder.addObjectPropertyFull(
             .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
             key,
             value,
@@ -8406,6 +8409,8 @@ pub const Parser = struct {
             mods.visibility,
             mods.is_override,
         );
+        self.builder.setClassFieldModifiers(property, is_optional_field, mods.is_readonly);
+        return property;
     }
 
     fn skipMalformedClassFieldTail(self: *Parser) void {
@@ -36460,4 +36465,29 @@ test "parser: identical well-known symbol interface properties merge" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 0), countDiag(s, 2300));
+}
+
+test "parser: class field optional and readonly modifiers survive in HIR" {
+    var s = try newTestSetup(
+        \\declare class Box<T> {
+        \\  readonly value /* before optional */ ? /* before colon */ : T;
+        \\  readonly ['computed']?: T;
+        \\  optional?: T;
+        \\  readonly: T;
+        \\  plain: T;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const class_node = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, class_node);
+    try T.expectEqual(@as(usize, 5), members.len);
+    const expected_optional = [_]bool{ true, true, true, false, false };
+    const expected_readonly = [_]bool{ true, true, false, false, false };
+    for (members, expected_optional, expected_readonly) |node, optional, readonly| {
+        const field = hir_mod.objectPropertyOf(&s.hir, node);
+        try T.expectEqual(optional, field.is_optional);
+        try T.expectEqual(readonly, field.is_readonly);
+    }
 }
