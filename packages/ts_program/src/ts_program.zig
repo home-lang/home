@@ -3157,7 +3157,13 @@ pub const Program = struct {
     /// each to a FileId, populating the adjacency list.
     fn resolveImports(self: *Program) ProgramError!void {
         const hir_mod = @import("hir");
+        var targets: std.AutoHashMapUnmanaged(FileId, void) = .empty;
+        defer targets.deinit(self.gpa);
         for (self.files.items) |f| {
+            // Resolution is a snapshot, not an append-only history. Closure
+            // discovery and incremental checking can visit a file repeatedly.
+            f.imports.clearRetainingCapacity();
+            targets.clearRetainingCapacity();
             const c = f.compilation orelse continue;
             const root = c.root;
             // Defensive guard: a parse error can leave c.root pointing
@@ -3167,9 +3173,7 @@ pub const Program = struct {
             if (c.hir.kindOf(root) != .block_stmt) continue;
             const stmts = hir_mod.blockStmts(&c.hir, root);
             for (stmts) |s| {
-                if (c.hir.kindOf(s) != .import_decl) continue;
-                const imp = hir_mod.importOf(&c.hir, s);
-                const module_name = c.interner.get(imp.module);
+                const module_name = staticModuleSpecifier(c, s) orelse continue;
                 if (module_name.len == 0) continue;
                 // Resolve relative to the importing file.
                 const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
@@ -3180,6 +3184,8 @@ pub const Program = struct {
                 // record the edge. Otherwise the program is partial —
                 // the LSP will pick it up when the file is added.
                 if (self.by_path.get(res.path)) |target_id| {
+                    const seen = try targets.getOrPut(self.gpa, target_id);
+                    if (seen.found_existing) continue;
                     try f.imports.append(self.gpa, target_id);
                     // Record *why* the target is in the program, for
                     // `--explainFiles` (TS1393). First importer wins,
@@ -3207,6 +3213,16 @@ pub const Program = struct {
                 }
             }
         }
+    }
+
+    fn staticModuleSpecifier(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
+        const name = switch (c.hir.kindOf(node)) {
+            .import_decl => hir_mod_ns.importOf(&c.hir, node).module,
+            .export_decl => hir_mod_ns.exportOf(&c.hir, node).module,
+            else => return null,
+        };
+        const text = c.interner.get(name);
+        return if (text.len == 0) null else text;
     }
 
     /// Expand the program to the transitive closure of imports, reading
@@ -3266,9 +3282,7 @@ pub const Program = struct {
                 if (c.hir.kindOf(c.root) != .block_stmt) continue;
                 const stmts = hir_mod.blockStmts(&c.hir, c.root);
                 for (stmts) |s| {
-                    if (c.hir.kindOf(s) != .import_decl) continue;
-                    const imp = hir_mod.importOf(&c.hir, s);
-                    const module_name = c.interner.get(imp.module);
+                    const module_name = staticModuleSpecifier(c, s) orelse continue;
                     if (module_name.len == 0) continue;
                     const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -8370,6 +8384,75 @@ test "Program: cycle does not infinite loop" {
     const order = try p.topologicalOrder();
     defer T.allocator.free(order);
     try T.expectEqual(@as(usize, 2), order.len);
+}
+
+test "Program: static module closure includes re-export leaves and checks their declarations" {
+    const forms = [_][]const u8{
+        "import './middle';",
+        "export { answer } from './middle';",
+        "export * from './middle';",
+        "export * as group from './middle';",
+        "export type { Shape } from './middle';",
+        "export type * from './middle';",
+    };
+    for (forms) |entry_source| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/entry.ts", entry_source);
+        try vfs.addFile("/middle.ts", "export * from './leaf';");
+        try vfs.addFile("/leaf.ts", "export interface Shape { value: number; } export const answer: number = 1; const bad: string = answer;");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const entry = try p.add("/entry.ts", entry_source);
+        try T.expectEqual(@as(usize, 2), try p.loadImportClosure(.{ .strict = true, .no_emit = true }));
+        const middle = p.lookupPath("/middle.ts").?;
+        const leaf = p.lookupPath("/leaf.ts").?;
+        try T.expectEqualSlices(FileId, &.{middle}, p.files.items[entry].imports.items);
+        try T.expectEqualSlices(FileId, &.{leaf}, p.files.items[middle].imports.items);
+        try T.expect(p.reaches(entry, leaf));
+        try expectCompilationHasDiagnosticCode(p.files.items[leaf].compilation.?, 2322);
+        const reason = p.files.items[leaf].include_reason.?;
+        try T.expectEqual(IncludeKind.import, reason.kind);
+        try T.expectEqual(middle, reason.importer);
+        try T.expectEqualStrings("\"./leaf\"", reason.specifier_text);
+        try T.expectEqualStrings("./leaf", p.files.items[middle].source[reason.specifier_pos + 1 ..][0..6]);
+    }
+}
+
+test "Program: re-export cycles and diamonds retain unique current dependency edges" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const entry_source = "export * from './left'; export * from './right'; import './left';";
+    try vfs.addFile("/entry.ts", entry_source);
+    try vfs.addFile("/left.ts", "export * from './right'; export * from './leaf';");
+    try vfs.addFile("/right.ts", "export * from './left'; export * from './leaf';");
+    try vfs.addFile("/leaf.ts", "export const answer = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const entry = try p.add("/entry.ts", entry_source);
+    try T.expectEqual(@as(usize, 3), try p.loadImportClosure(.{ .bind_only = true }));
+    const left = p.lookupPath("/left.ts").?;
+    const right = p.lookupPath("/right.ts").?;
+    const leaf = p.lookupPath("/leaf.ts").?;
+    for (0..3) |_| {
+        try p.compileAll(.{ .bind_only = true });
+        try T.expectEqualSlices(FileId, &.{ left, right }, p.files.items[entry].imports.items);
+        try T.expectEqualSlices(FileId, &.{ right, leaf }, p.files.items[left].imports.items);
+        try T.expectEqualSlices(FileId, &.{ left, leaf }, p.files.items[right].imports.items);
+        try T.expect(p.reaches(left, right) and p.reaches(right, left));
+        const order = try p.topologicalOrder();
+        defer T.allocator.free(order);
+        try T.expectEqual(@as(usize, 4), order.len);
+    }
+    _ = try p.updateSource("/left.ts", "export const local = 1;");
+    try p.compileAll(.{ .bind_only = true });
+    try T.expectEqual(@as(usize, 0), p.files.items[left].imports.items.len);
+    try T.expect(!p.reaches(left, leaf));
+    try T.expect(p.reaches(entry, leaf));
 }
 
 test "Program: importHelpers diagnoses missing Stage 3 decorator helpers" {
