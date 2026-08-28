@@ -64,6 +64,14 @@ def cases() -> list[Case]:
                               "b-barrel.ts": "export type { Secret } from './a-owner';\n"},
          "import * as ns from './b-barrel';\ndeclare const instance: ns.Secret;\n"
          "const good: string = instance.value;\n", "ns.Secret.count;\n", ("2339",))
+    pair("cyclic-namespace", {"a-owner.ts": CLASS + "export * as peer from './b-peer';\n",
+                              "b-peer.ts": "export * as peer from './a-owner';\n"},
+         "import * as ns from './a-owner';\nconst copy = ns.peer.peer;\n"
+         "const good: number = copy.Secret.count;\n", "const bad: string = copy.Secret.count;\n")
+    chain = {f"d{index:02d}.ts": f"export * from './d{index + 1:02d}';\n" for index in range(40)}
+    pair("long-star-chain", {"a-owner.ts": CLASS, **chain, "d40.ts": "export * from './a-owner';\n"},
+         "import * as ns from './d00';\nconst good: number = ns.Secret.count;\n",
+         "const bad: string = ns.Secret.count;\n")
     return result
 
 

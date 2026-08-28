@@ -9,13 +9,20 @@ import audit_static_values
 class StaticValueAuditTests(unittest.TestCase):
     def test_all_import_and_consumer_families_are_retained(self):
         cases = audit_static_values.cases()
-        self.assertEqual(68, len(cases))
-        self.assertEqual(68, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(76, len(cases))
+        self.assertEqual(76, len({(case.family, case.name) for case in cases}))
         self.assertEqual({"named", "named-alias", "default", "namespace", "captured-namespace",
                           "destructured-namespace", "element-namespace", "namespace-default", "namespace-reexport",
                           "mixed-exports", "namespace-name-isolation", "named-shadow", "namespace-shadow",
-                          "private-static-identity", "namespace-visibility", "type-only-import", "type-only-export"},
+                          "private-static-identity", "namespace-visibility", "type-only-import", "type-only-export",
+                          "cyclic-namespace", "long-star-chain"},
                          {case.family for case in cases})
+        for case in cases:
+            if case.family == "long-star-chain":
+                self.assertEqual(41, sum(name.startswith('d') and name.endswith('.ts') for name in case.files))
+            if case.family == "cyclic-namespace":
+                self.assertIn("export * as peer from './b-peer'", case.files["a-owner.ts"])
+                self.assertIn("export * as peer from './a-owner'", case.files["b-peer.ts"])
 
     def test_negative_controls_only_append_invalid_uses(self):
         cases = audit_static_values.cases()
