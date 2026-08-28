@@ -37,7 +37,9 @@ def cases() -> list[Case]:
         "type-only-runtime": (
             {"leaf.ts": "export function fn(value: number): number { return value; }\n",
              "alias.ts": "import type { fn } from './leaf'; export { fn };\n"},
-            "import { fn } from './alias';\n", "fn(1);\n", ("1361",),
+            "import { fn } from './alias';\n"
+            "function local(fn: (value: number) => number) { return fn(1); }\n",
+            "fn(1);\n", ("1361",),
         ),
     }
     for projection, source in (("named", "export { fn } from './alias';\n"),
@@ -46,7 +48,9 @@ def cases() -> list[Case]:
             {"leaf.ts": "export function fn(value: number): number { return value; }\n",
              "alias.ts": "import type { fn } from './leaf'; export { fn };\n",
              "barrel.ts": source},
-            "import { fn } from './barrel';\n", "fn(1);\n", ("1361",),
+            "import { fn } from './barrel';\n"
+            "function local(fn: (value: number) => number) { return fn(1); }\n",
+            "fn(1);\n", ("1361",),
         )
     result = []
     for family, (files, valid, invalid, expected) in graphs.items():
