@@ -5098,6 +5098,164 @@ test "driver: checked alias display and arguments own their borrowed leaves" {
     try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
 }
 
+// Test provenance is a registry of REAL source owners and nodes. The handles
+// are not local HIR nodes: consumers must resolve them through this registry.
+// This exercises the transfer contract without pretending program resolution
+// has already adopted source-aware lookup.
+const TestTransferOrigin = struct { owner: *const Compilation, node: NodeId };
+const TestTransferNames = struct {
+    source: *const Compilation,
+    destination: *string_interner.Interner,
+    origins: *std.ArrayListUnmanaged(TestTransferOrigin),
+
+    fn string(context: *anyopaque, id: hir_mod.StringId) ts_checker.type_transfer.Error!hir_mod.StringId {
+        const self: *TestTransferNames = @ptrCast(@alignCast(context));
+        return self.destination.intern(self.source.interner.get(id)) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.ShardCapacityExceeded => error.TypeIdOverflow,
+        };
+    }
+
+    fn node(context: *anyopaque, id: NodeId) ts_checker.type_transfer.Error!NodeId {
+        const self: *TestTransferNames = @ptrCast(@alignCast(context));
+        if (id == hir_mod.none_node_id or id >= self.source.hir.nodeCount()) return error.UnmappedName;
+        for (self.origins.items, 0..) |origin, index| {
+            if (origin.owner == self.source and origin.node == id) return @intCast(index + 1);
+        }
+        try self.origins.append(T.allocator, .{ .owner = self.source, .node = id });
+        return @intCast(self.origins.items.len);
+    }
+
+    fn callbacks(self: *TestTransferNames) ts_checker.type_transfer.Names {
+        return .{ .context = self, .string = string, .declaration = node };
+    }
+};
+
+test "driver: checked transfer preserves real declarations and isolated canonical signature semantics" {
+    const first = try compileSource(T.allocator,
+        \\export interface Box<T> { value: T; }
+        \\export declare function identity<T extends string = 'seed'>(value: T): Box<T>;
+        \\export declare function tuple(...args: [number, string]): number;
+        \\export declare function fixed(n: number, s: string): number;
+        \\export declare function wrong(flag: boolean): number;
+        \\export declare function guard(value: unknown): value is string;
+        \\export declare function choose<T>(first: T, second: NoInfer<T>): T;
+        \\export interface Attributes { readonly [key: `data-${string}`]: string; }
+        \\export type Repeated<T extends unknown[]> = [...T, number, ...T];
+        \\export declare abstract class Secret { private key: string; abstract read(): string; }
+        \\export enum State { Ready = 3, Done = 5 }
+        \\export declare const state: State;
+    , .{ .strict = true, .no_emit = true, .importer_path = "/first.ts" });
+    defer {
+        first.deinit();
+        T.allocator.destroy(first);
+    }
+    const second = try compileSource(T.allocator,
+        \\export interface Box<T> { value: T; }
+        \\export declare function identity<T extends number = 42>(value: T): Box<T>;
+        \\export declare function guard(value: unknown): value is number;
+        \\export declare abstract class Secret { private key: number; abstract read(): number; }
+        \\export enum State { Ready = 3, Done = 5 }
+        \\export declare const state: State;
+    , .{ .strict = true, .no_emit = true, .importer_path = "/second.ts" });
+    defer {
+        second.deinit();
+        T.allocator.destroy(second);
+    }
+    try T.expect(!first.has_errors and !second.has_errors);
+    var destination = try ts_checker.Interner.init(T.allocator);
+    defer destination.deinit();
+    var strings = try string_interner.Interner.init(T.allocator);
+    defer strings.deinit();
+    // Canonical guard shape is deliberately present before either import.
+    const canonical_guard = try destination.internSignature(&.{ts_checker.Primitive.unknown}, ts_checker.Primitive.boolean_t, false);
+    var origins: std.ArrayListUnmanaged(TestTransferOrigin) = .empty;
+    defer origins.deinit(T.allocator);
+    var first_names = TestTransferNames{ .source = first, .destination = &strings, .origins = &origins };
+    var second_names = TestTransferNames{ .source = second, .destination = &strings, .origins = &origins };
+    var first_ids = try ts_checker.type_transfer.append(&destination, &first.type_interner, first_names.callbacks());
+    defer first_ids.deinit();
+    var first_checked = try ts_checker.checked_transfer.clone(T.allocator, &first.checked_types, first_ids, first_names.callbacks());
+    defer first_checked.deinit(T.allocator);
+    var second_ids = try ts_checker.type_transfer.append(&destination, &second.type_interner, second_names.callbacks());
+    defer second_ids.deinit();
+    var second_checked = try ts_checker.checked_transfer.clone(T.allocator, &second.checked_types, second_ids, second_names.callbacks());
+    defer second_checked.deinit(T.allocator);
+
+    const first_guard = try first_ids.typeId(try testCheckedValueType(first, "guard"));
+    const second_guard = try second_ids.typeId(try testCheckedValueType(second, "guard"));
+    try T.expectEqual(canonical_guard, first_guard);
+    try T.expectEqual(canonical_guard, second_guard);
+    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
+    const first_origin = origins.items[first_checked.signature_decl_nodes.get(first_guard).? - 1];
+    const second_origin = origins.items[second_checked.signature_decl_nodes.get(second_guard).? - 1];
+    try T.expect(first_origin.owner == first and second_origin.owner == second);
+    for ([_]TestTransferOrigin{ first_origin, second_origin }) |origin| {
+        try T.expectEqual(hir_mod.NodeKind.fn_decl, origin.owner.hir.kindOf(origin.node));
+        const span = origin.owner.hir.spanOf(origin.node);
+        try T.expect(std.mem.indexOf(u8, origin.owner.source[span.start..span.end], "function guard") != null);
+    }
+
+    const first_identity = try first_ids.typeId(try testCheckedValueType(first, "identity"));
+    const second_identity = try second_ids.typeId(try testCheckedValueType(second, "identity"));
+    const first_param = first_checked.generic_signature_params.get(first_identity).?[0];
+    const second_param = second_checked.generic_signature_params.get(second_identity).?[0];
+    try T.expect(first_param != second_param);
+    try T.expectEqual(ts_checker.Primitive.string_t, destination.pool.type_parameter_payloads.items[destination.pool.payloadOf(first_param)].constraint);
+    try T.expectEqual(ts_checker.Primitive.number_t, destination.pool.type_parameter_payloads.items[destination.pool.payloadOf(second_param)].constraint);
+    try T.expectEqual(first_param, destination.objectMember(destination.signatureReturn(first_identity).?, strings.lookup("value").?).?);
+    try T.expectEqual(second_param, destination.objectMember(destination.signatureReturn(second_identity).?, strings.lookup("value").?).?);
+    const secret = strings.lookup("Secret").?;
+    const first_class = first_checked.class_instance_types.get(secret).?;
+    const second_class = second_checked.class_instance_types.get(secret).?;
+    try T.expect(first_class != second_class);
+    try T.expect(first_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
+    try T.expect(second_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
+    try T.expect(origins.items[first_checked.class_decl_by_instance.get(first_class).? - 1].owner == first);
+    try T.expect(origins.items[second_checked.class_decl_by_instance.get(second_class).? - 1].owner == second);
+    const first_state = try first_ids.typeId(try testCheckedValueType(first, "state"));
+    const second_state = try second_ids.typeId(try testCheckedValueType(second, "state"));
+    try T.expect(first_state != second_state);
+    try T.expect(origins.items[first_checked.enum_nominal_decls.get(first_state).? - 1].owner == first);
+    try T.expect(origins.items[second_checked.enum_nominal_decls.get(second_state).? - 1].owner == second);
+
+    const choose = try first_ids.typeId(try testCheckedValueType(first, "choose"));
+    const choose_params = destination.signatureParams(choose);
+    try T.expectEqual(choose_params[0], first_checked.no_infer_types.get(choose_params[1]).?);
+    const attributes = first_checked.type_names.get(strings.lookup("Attributes").?).?;
+    try T.expect(first_checked.readonly_index_types.contains(attributes));
+    const pattern_index = first_checked.pattern_index_signatures.get(attributes).?[0];
+    try T.expectEqual(ts_checker.Primitive.string_t, pattern_index.value_type);
+    try T.expect(origins.items[pattern_index.decl_node - 1].owner == first);
+    const repeated = first_checked.generic_aliases.get(strings.lookup("Repeated").?).?;
+    const segments = first_checked.symbolic_tuple_layouts.get(repeated.body).?;
+    try T.expectEqual(@as(usize, 3), segments.len);
+    try T.expectEqual(repeated.params[0], segments[0].type);
+    try T.expectEqual(repeated.params[0], segments[2].type);
+    try T.expectEqual(ts_checker.Primitive.number_t, segments[1].type);
+    try T.expect(segments[0].is_variadic and !segments[1].is_variadic and segments[2].is_variadic);
+
+    const tuple = try first_ids.typeId(try testCheckedValueType(first, "tuple"));
+    const fixed = try first_ids.typeId(try testCheckedValueType(first, "fixed"));
+    const wrong = try first_ids.typeId(try testCheckedValueType(first, "wrong"));
+    // Remove the source semantic records before using their independently
+    // owned copies. Source HIR/text stay alive for the provenance registry.
+    first.checked_types.deinit(T.allocator);
+    second.checked_types.deinit(T.allocator);
+    var engine = try ts_checker.Engine.init(T.allocator, &destination);
+    defer engine.deinit();
+    engine.setStringInterner(&strings);
+    engine.setRestSignatures(&first_checked.rest_signatures);
+    try T.expect(try engine.isAssignableTo(tuple, fixed));
+    try T.expect(try engine.isAssignableTo(fixed, tuple));
+    try T.expect(!try engine.isAssignableTo(wrong, tuple));
+    try T.expect(!try engine.isAssignableTo(tuple, wrong));
+    try T.expectEqualStrings("value", strings.get(first_checked.signature_param_names.get(first_identity).?[0]));
+    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(canonical_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(canonical_guard).?.target_type);
+}
+
 test "driver: arrow function" {
     var c = try compileSource(T.allocator, "let inc = (n: number) => n + 1;", .{});
     defer {
