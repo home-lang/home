@@ -245,6 +245,14 @@ pub const Compilation = struct {
     /// Set only after semantic checking and metadata capture complete. A
     /// bind-only or early scanner-recovery result is not a typed source owner.
     checked_types_ready: bool = false,
+    /// Preparation owns all parser state needed by the later checker. The
+    /// parser itself is gone before a prepared compilation is published.
+    is_declaration_file: bool = false,
+    has_syntactic_parse_diagnostics: bool = false,
+    jsx_comma_recovery_spans: std.ArrayListUnmanaged(hir_mod.Span) = .empty,
+    /// Checking is one-shot. After a failed check only deinit is permitted;
+    /// changed source/parser options require a newly prepared compilation.
+    check_state: enum { unavailable, bound, checking, checked } = .unavailable,
     /// Emitted JavaScript text.
     js: []u8,
     /// All diagnostics from every phase, in source order.
@@ -265,6 +273,7 @@ pub const Compilation = struct {
         self.diagnostics.deinit(self.gpa);
         for (self.references.items) |r| self.gpa.free(r.name);
         self.references.deinit(self.gpa);
+        self.jsx_comma_recovery_spans.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);
         self.type_engine.deinit();
@@ -1900,6 +1909,24 @@ pub fn compileSource(
     source: []const u8,
     options: CompileOptions,
 ) CompileError!*Compilation {
+    const c = try prepareSource(gpa, source, options);
+    errdefer {
+        c.deinit();
+        gpa.destroy(c);
+    }
+    if (!options.bind_only) try checkPreparedSource(c, options);
+    return c;
+}
+
+/// Parse and bind a source without checking or emitting it. Source bytes
+/// remain caller-owned. Keep the parser-affecting options unchanged when
+/// passing this result to checkPreparedSource; program semantic facts can
+/// be supplied after the full import closure has been discovered.
+pub fn prepareSource(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!*Compilation {
     const c = gpa.create(Compilation) catch return error.OutOfMemory;
     errdefer gpa.destroy(c);
 
@@ -1942,14 +1969,8 @@ pub fn compileSource(
 
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
-    try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
     try extractReferenceDirectives(gpa, c, source);
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
-
-    const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
-    const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
 
     // ------ Lex ------
     var tsx_lex_source: ?[]u8 = null;
@@ -2151,13 +2172,18 @@ pub fn compileSource(
         }
     }
     try appendJsxDirectiveDiagnostics(gpa, c, source, options);
+    c.is_declaration_file = is_declaration_file;
+    c.has_syntactic_parse_diagnostics = has_syntactic_parse_diagnostics;
+    c.jsx_comma_recovery_spans = parser.jsx_comma_recovery_spans;
+    parser.jsx_comma_recovery_spans = .empty;
+    errdefer c.jsx_comma_recovery_spans.deinit(gpa);
 
     // ------ Bind ------
     var bind = binder.Binder.init(gpa, &c.hir, &c.interner, options.file_id) catch return error.OutOfMemory;
+    defer bind.deinit();
     errdefer {
         bind.module.deinit();
         gpa.destroy(bind.module);
-        bind.deinit();
     }
 
     bind.bindSourceFile(c.root) catch |err| switch (err) {
@@ -2176,25 +2202,47 @@ pub fn compileSource(
         c.has_errors = true;
     }
     c.module = bind.module;
-    bind.deinit();
-    // Own bind no longer drops module on errdefer.
 
-    // ------ Type check ------
+    // Initialize owned type storage even for bind-only and recovery results.
     c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
     errdefer c.type_interner.deinit();
     c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
     errdefer c.type_engine.deinit();
-    if (options.bind_only) {
-        c.js = try gpa.dupe(u8, "");
+    c.check_state = .bound;
+    sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    return c;
+}
+
+/// Finish a prepared source in place, preserving its HIR, tokens and binder
+/// owners. Completed checks are idempotent for the same options; this is not
+/// an incremental recheck API. On failure the caller must destroy the result.
+/// Scanner recovery without a usable root remains an untyped result.
+pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileError!void {
+    if (c.check_state == .checked) return;
+    const can_check = c.check_state == .bound;
+    std.debug.assert((can_check or c.check_state == .unavailable) and !options.bind_only);
+    c.check_state = .checking;
+    const gpa = c.gpa;
+    const source = c.source;
+    const has_syntactic_parse_diagnostics = c.has_syntactic_parse_diagnostics;
+    const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
+    const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
+    // Missing-reference checks depend on the completed program, not parsing.
+    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
+    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
+    try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
+    if (!can_check) {
         sortDiagnosticsBySourceOrder(c.diagnostics.items);
-        return c;
+        c.check_state = .checked;
+        return;
     }
+    // ------ Type check ------
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
     checker.setTsx(options.is_tsx);
-    checker.setIsDeclarationFile(is_declaration_file);
+    checker.setIsDeclarationFile(c.is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling
     // the checker whether the parser produced a true syntactic diagnostic.
@@ -2203,7 +2251,7 @@ pub fn compileSource(
     // as grammar errors. They therefore must not populate
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
-    checker.setJsxCommaRecoverySpans(parser.jsx_comma_recovery_spans.items);
+    checker.setJsxCommaRecoverySpans(c.jsx_comma_recovery_spans.items);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
@@ -2457,7 +2505,7 @@ pub fn compileSource(
 
     try checker.takeCheckedTypes(&c.checked_types);
     c.checked_types_ready = c.root != hir_mod.none_node_id;
-    return c;
+    c.check_state = .checked;
 }
 
 fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32, code: u32) u32 {
@@ -4166,6 +4214,85 @@ test "driver: checked owner readiness is distinct from diagnostic success" {
         try T.expectEqualStrings(source, owner.text);
         try T.expectEqual(source.len != 0, compilation.has_errors);
     }
+}
+
+test "driver: prepared source checks and emits once without replacing bound owners" {
+    const source = "export const value: string = 1;";
+    const options: CompileOptions = .{ .strict = true };
+    const c = try prepareSource(T.allocator, source, options);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const module = c.module;
+    const root = c.root;
+    const tokens = c.tokens.items.ptr;
+    const symbol = c.lookupTopLevel("value") orelse return error.MissingExport;
+    try T.expectEqual(.bound, c.check_state);
+    try T.expectEqual(@as(usize, 0), c.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), c.js.len);
+    try T.expectError(error.UncheckedSource, c.sourceOwner("/prepared.ts"));
+
+    try checkPreparedSource(c, options);
+    try T.expectEqual(.checked, c.check_state);
+    try T.expect(c.module == module and c.tokens.items.ptr == tokens);
+    try T.expectEqual(root, c.root);
+    try T.expect(c.lookupTopLevel("value").? == symbol);
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, c.js, "export const value = 1;") != null);
+    _ = try c.sourceOwner("/prepared.ts");
+    const output = c.js.ptr;
+    try checkPreparedSource(c, options);
+    try T.expect(c.js.ptr == output);
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+}
+
+test "driver: prepared sources retain parser recovery after parser destruction" {
+    const cases = [_]struct { source: []const u8, options: CompileOptions, jsx_recovery_count: usize = 0 }{
+        .{ .source = "const x = ; let y: string = 1;", .options = .{ .no_emit = true } },
+        .{ .source = "const x = <div>{1, 2}</div>;", .options = .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true } },
+        .{ .source = "const x = <div /><span />;", .options = .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true }, .jsx_recovery_count = 1 },
+        .{ .source = "export const value: string;", .options = .{ .importer_path = "/types.d.ts", .no_emit = true } },
+        .{ .source = "const pattern = /\\w+/; const text = String.raw`\\u{}`;", .options = .{ .no_emit = true } },
+    };
+    for (cases) |case| {
+        const direct = try compileSource(T.allocator, case.source, case.options);
+        defer {
+            direct.deinit();
+            T.allocator.destroy(direct);
+        }
+        const prepared = try prepareSource(T.allocator, case.source, case.options);
+        defer {
+            prepared.deinit();
+            T.allocator.destroy(prepared);
+        }
+        try T.expectEqual(case.jsx_recovery_count, prepared.jsx_comma_recovery_spans.items.len);
+        try checkPreparedSource(prepared, case.options);
+        try T.expectEqual(direct.has_errors, prepared.has_errors);
+        try T.expectEqual(direct.is_declaration_file, prepared.is_declaration_file);
+        try T.expectEqual(direct.has_syntactic_parse_diagnostics, prepared.has_syntactic_parse_diagnostics);
+        try T.expectEqual(direct.diagnostics.items.len, prepared.diagnostics.items.len);
+        for (direct.diagnostics.items, prepared.diagnostics.items) |expected, actual| {
+            try T.expectEqual(expected.code, actual.code);
+            try T.expectEqual(expected.pos, actual.pos);
+            try T.expectEqualStrings(expected.message, actual.message);
+        }
+    }
+}
+
+test "driver: failed prepared checking remains safely deinitializable" {
+    const c = try prepareSource(T.allocator, "export const value: string = 1;", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    c.gpa = failing.allocator();
+    defer c.gpa = T.allocator;
+    try T.expectError(error.OutOfMemory, checkPreparedSource(c, .{ .no_emit = true }));
+    try T.expectEqual(.checking, c.check_state);
+    try T.expectError(error.UncheckedSource, c.sourceOwner("/failed.ts"));
 }
 
 test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
