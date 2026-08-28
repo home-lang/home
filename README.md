@@ -131,6 +131,7 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 42/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
+| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-baseline-and-source-owned-metadata-untimed) | 100/100 | 100/100 | 50/100 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |

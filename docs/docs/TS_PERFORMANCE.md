@@ -2398,3 +2398,67 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_class_bindings.
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Imported generic-class baseline and source-owned metadata (untimed)
+
+Tracked in [#524](https://github.com/home-lang/home/issues/524), under
+[#521](https://github.com/home-lang/home/issues/521),
+[#487](https://github.com/home-lang/home/issues/487), and
+[#416](https://github.com/home-lang/home/issues/416).
+Audit commit [`d7f80bd89`](https://github.com/home-lang/home/commit/d7f80bd89)
+adds 100 controls: 25 families, each with a positive and appended-only negative
+variant in both app root orders. Files, roots and compiler options are identical
+across compilers. Positive controls must be silent; negatives must match the
+exact diagnostic-code multiset. No timing is collected.
+
+The suite covers named/default/namespace imports, renamed and re-exported
+bindings, nested arrays/objects/tuples/unions/functions, method calls, same-owner
+and different-owner compatibility, importer-local name isolation, defaults,
+dependent defaults and constraints, required/excess argument counts, owner-local
+and imported aliases, and recursive aliases. Unsupported cases stay in the audit.
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home baseline |
+|---|---:|---:|---:|
+| Imported generic-class controls | 100/100 | 100/100 | 50/100 |
+
+The frozen Home baseline is `static-values.csYPot/home-final`, SHA-256
+`9fb67479dbd422678c617facf686d4a09317658e7c4a871084db906bf12572c1`.
+The 300 compiler/case checks produce 50 failures, all Home failures.
+Evidence is `bench/vs_tsgo/results/generic-classes.9vD3xi/audit-before.log`;
+audit source SHA-256 is
+`19a07655d38308109c36714aaa6d9db10638f7758feac67c2ca3404118f8a2e7`.
+
+The metadata foundation
+([`af11e4ebf`](https://github.com/home-lang/home/commit/af11e4ebf)) retains parameter identities, defaults, constraints,
+variance, nested annotations, declaration origins and recursive references from
+the defining source. Imported aliases are resolved in that owner's bound scope;
+unsupported forms remain explicit rather than becoming `any` or incomplete
+objects. Class-field optional/readonly modifiers are now retained in HIR
+([`f0d84813d`](https://github.com/home-lang/home/commit/f0d84813d)), including
+comments between a field name, `?` and `:`. This is preparation for the imported
+consumer, not a claim that generic instantiation is fixed. The collector is
+tested independently and is not yet invoked during production class collection;
+unused schemas are not allocated on the compilation path.
+
+The foundation passes 129/129 Program tests (including nine schema controls),
+898/898 parser tests, 187/187 driver tests, 69/69 CLI tests and 53/53 benchmark
+harness tests. These are targeted foundation checks, not a new full-checker or
+conformance checkpoint. Zig formatting passes; targeted Pickier reports no
+errors and one pre-existing README link-fragment warning.
+
+An experimental Debug run with schema collection enabled still passes 50/100
+generic controls (`audit-foundation-debug.log`); it is not the frozen baseline
+or a timing result. The same Debug binary passes all 84 static-value controls
+(`static-foundation-debug.log`), as do both pinned baselines. Collection remains disabled in the committed production
+path until a checked consumer can use it.
+
+The compiler pins and installed binaries are TS **6.0.3** and native TS **7.0.2**.
+The harness rejects `7.0.0-dev.20260707.2` and stable-version suffix mismatches
+before collecting results. Native TS 7 and `tsgo` are the same competitor.
+The original imported graph admission remains **0/2** for Home; the timing
+snapshot above is unchanged and no new performance claim is made.
+
+```sh
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_generic_classes.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
