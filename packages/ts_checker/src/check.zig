@@ -519,6 +519,10 @@ pub const ModuleInterfaceAugmentation = struct {
 
 pub const ProgramExportedClass = struct {
     target_path: []const u8,
+    /// Export binding location may differ from the owning class declaration.
+    export_name: []const u8 = "",
+    declaration_path: []const u8 = "",
+    declaration_pos: ?u32 = null,
     ambient_module_name: []const u8 = "",
     class_name: []const u8,
     type_parameter_names: []const []const u8 = &.{},
@@ -526,6 +530,10 @@ pub const ProgramExportedClass = struct {
     is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
+
+    pub fn exportedName(self: ProgramExportedClass) []const u8 {
+        return if (self.export_name.len > 0) self.export_name else self.class_name;
+    }
 };
 
 pub const ProgramMemberVisibility = enum {
@@ -83431,6 +83439,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(t)) |member| {
+            if (member.visibility != .public) continue;
             if (self.string_interner.getOptional(member.name)) |name| {
                 if (std.mem.startsWith(u8, name, "#")) continue;
             }
@@ -106072,7 +106081,7 @@ pub const Checker = struct {
         for (self.program_exported_classes) |exported_class| {
             if (!std.mem.eql(u8, exported_class.target_path, reference.target_path)) continue;
             if (reference.is_default and !exported_class.is_default) continue;
-            if (!reference.is_default and !std.mem.eql(u8, exported_class.class_name, reference.name)) continue;
+            if (!reference.is_default and !std.mem.eql(u8, exported_class.exportedName(), reference.name)) continue;
             const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
             return try self.syntheticProgramClassInstanceType(exported_class, class_name);
         }
@@ -106111,7 +106120,7 @@ pub const Checker = struct {
             if (sp.local != local_name) continue;
             const imported_name_text = self.string_interner.get(sp.imported);
             for (self.program_exported_classes) |exported_class| {
-                if (!std.mem.eql(u8, exported_class.class_name, imported_name_text)) continue;
+                if (!std.mem.eql(u8, exported_class.exportedName(), imported_name_text)) continue;
                 if (std.mem.startsWith(u8, spec, ".")) {
                     if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
                 } else {
@@ -106181,7 +106190,7 @@ pub const Checker = struct {
         const spec = self.string_interner.get(specifier);
         const class_name_text = self.string_interner.get(class_name);
         for (self.program_exported_classes) |exported_class| {
-            if (!std.mem.eql(u8, exported_class.class_name, class_name_text)) continue;
+            if (!std.mem.eql(u8, exported_class.exportedName(), class_name_text)) continue;
             if (std.mem.startsWith(u8, spec, ".")) {
                 if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
             } else if (!self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) {
@@ -106356,6 +106365,11 @@ pub const Checker = struct {
     }
 
     fn syntheticProgramClassOrigin(self: *Checker, exported_class: ProgramExportedClass) CheckError!hir_mod.StringId {
+        if (exported_class.declaration_pos) |position| {
+            const path = exported_class.declaration_path;
+            const text = try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ path.len, path, position });
+            return self.string_interner.intern(text) catch error.OutOfMemory;
+        }
         const text = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "{d}:{s}{d}:{s}{d}:{s}",
@@ -208390,6 +208404,26 @@ test "checker: program ambient require namespaces retain private class origin" {
     s.checker.setProgramExportedClasses(&classes);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: keyof exposes only public class members through mapped types" {
+    const s = try newSetup(
+        \\class Visible {
+        \\  private hidden!: string;
+        \\  protected inherited!: number;
+        \\  value!: string;
+        \\}
+        \\type Keys = keyof Visible;
+        \\const good: Keys = "value";
+        \\const badPrivate: Keys = "hidden";
+        \\const badProtected: Keys = "inherited";
+        \\type Surface<T> = { [P in keyof T]: T[P] };
+        \\const surface: Surface<Visible> = { value: "ok" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: imported nominal origins are metadata without synthetic members" {

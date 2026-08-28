@@ -29,6 +29,7 @@ const source_owners = ts_driver.source_owners;
 
 pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
+const class_declarations = @import("class_declarations.zig");
 
 const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
@@ -843,13 +844,26 @@ pub const Program = struct {
     }
 
     fn collectProgramExportedClasses(self: *const Program) ProgramError![]const ts_driver.ProgramExportedClass {
-        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .empty;
-        errdefer out.deinit(self.gpa);
+        var has_class = false;
+        for (self.files.items) |file| {
+            if (file.redirect_target == null and file.sourceContains("class")) {
+                has_class = true;
+                break;
+            }
+        }
+        if (!has_class) return &.{};
+        var sources: std.ArrayListUnmanaged(class_declarations.Source) = .empty;
+        defer sources.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (!f.sourceContains("class")) continue;
-            try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
+            // Every execution mode prepares bound owners before collecting
+            // cross-file declarations. Do not reparse or omit missing owners.
+            const compilation = f.compilation orelse unreachable;
+            try sources.append(self.gpa, .{ .path = f.path, .compilation = compilation });
         }
+        const classes = class_declarations.collect(self.gpa, self.resolver, sources.items) catch return error.OutOfMemory;
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .{ .items = @constCast(classes), .capacity = classes.len };
+        errdefer freeProgramExportedClasses(self.gpa, out.items);
         var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
         defer {
             for (namespace_augmentations.items) |aug| {
@@ -869,19 +883,21 @@ pub const Program = struct {
             var extra_count: usize = 0;
             for (namespace_augmentations.items) |aug| {
                 if (!std.mem.eql(u8, aug.class_name, class.class_name)) continue;
-                if (!programModulePathMatches(aug.target_path, class.target_path)) continue;
+                if (!programModulePathMatches(aug.target_path, if (class.declaration_path.len > 0) class.declaration_path else class.target_path)) continue;
                 extra_count += aug.members.len;
             }
             if (extra_count == 0) continue;
             var merged: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
+            defer merged.deinit(self.gpa);
             try merged.appendSlice(self.gpa, class.static_members);
             for (namespace_augmentations.items) |aug| {
                 if (!std.mem.eql(u8, aug.class_name, class.class_name)) continue;
-                if (!programModulePathMatches(aug.target_path, class.target_path)) continue;
+                if (!programModulePathMatches(aug.target_path, if (class.declaration_path.len > 0) class.declaration_path else class.target_path)) continue;
                 try merged.appendSlice(self.gpa, aug.members);
             }
+            const owned = try merged.toOwnedSlice(self.gpa);
             if (class.static_members.len > 0) self.gpa.free(class.static_members);
-            class.static_members = try merged.toOwnedSlice(self.gpa);
+            class.static_members = owned;
         }
         return try out.toOwnedSlice(self.gpa);
     }
@@ -1701,240 +1717,6 @@ pub const Program = struct {
         members: []const ts_driver.ProgramExportedClassMember = &.{},
     };
 
-    fn collectProgramExportedClassesFromSource(
-        gpa: std.mem.Allocator,
-        path: []const u8,
-        source: []const u8,
-        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
-    ) ProgramError!void {
-        try collectAmbientModuleClassesFromSource(gpa, path, source, out);
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
-            search_start = export_pos + "export".len;
-            if (!identifierKeywordAt(source, export_pos, "export")) continue;
-            var cursor = export_pos + "export".len;
-            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            var is_default = false;
-            while (true) {
-                const modifier_len: usize = if (identifierKeywordAt(source, cursor, "default")) blk: {
-                    is_default = true;
-                    break :blk "default".len;
-                } else if (identifierKeywordAt(source, cursor, "declare"))
-                    "declare".len
-                else if (identifierKeywordAt(source, cursor, "abstract"))
-                    "abstract".len
-                else
-                    break;
-                cursor += modifier_len;
-                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            }
-            if (!identifierKeywordAt(source, cursor, "class")) continue;
-            cursor += "class".len;
-            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
-            const class_open = classBodyOpenAfterName(source, name_end, source.len) orelse continue;
-            const type_parameter_names = try collectClassTypeParameterNames(gpa, source, name_end, class_open);
-            var members: []const ts_driver.ProgramExportedClassMember = &.{};
-            if (findMatchingBrace(source, class_open)) |class_close| {
-                members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
-            }
-            const static_members = try collectExportedNamespaceStaticMembers(gpa, source, source[cursor..name_end]);
-            try out.append(gpa, .{
-                .target_path = path,
-                .class_name = source[cursor..name_end],
-                .type_parameter_names = type_parameter_names,
-                .is_default = is_default,
-                .members = members,
-                .static_members = static_members,
-            });
-            search_start = name_end;
-        }
-    }
-
-    fn collectAmbientModuleClassesFromSource(
-        gpa: std.mem.Allocator,
-        path: []const u8,
-        source: []const u8,
-        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
-    ) ProgramError!void {
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
-            search_start = declare_pos + "declare".len;
-            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
-            var module_pos = declare_pos + "declare".len;
-            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
-            if (!identifierKeywordAt(source, module_pos, "module")) continue;
-            module_pos += "module".len;
-            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
-            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
-            const quote = source[module_pos];
-            const spec_start = module_pos + 1;
-            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse continue;
-            const spec = source[spec_start..spec_end];
-            if (std.mem.startsWith(u8, spec, ".")) continue;
-            const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
-            const body_close = findMatchingBrace(source, body_open) orelse continue;
-            try collectAmbientModuleClassesFromBody(gpa, path, spec, source, body_open + 1, body_close, out);
-            search_start = body_close + 1;
-        }
-    }
-
-    fn collectAmbientModuleClassesFromBody(
-        gpa: std.mem.Allocator,
-        path: []const u8,
-        spec: []const u8,
-        source: []const u8,
-        body_start: usize,
-        body_end: usize,
-        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
-    ) ProgramError!void {
-        const export_assignment_target = ambientModuleExportAssignmentTarget(source, body_start, body_end);
-        var search_start = body_start;
-        while (search_start < body_end) {
-            const class_pos = std.mem.indexOfPos(u8, source, search_start, "class") orelse break;
-            if (class_pos >= body_end) break;
-            search_start = class_pos + "class".len;
-            if (!identifierKeywordAt(source, class_pos, "class")) continue;
-            var name_start = class_pos + "class".len;
-            while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
-            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
-            const class_open = classBodyOpenAfterName(source, name_end, body_end) orelse continue;
-            const type_parameter_names = try collectClassTypeParameterNames(gpa, source, name_end, class_open);
-            var members: []const ts_driver.ProgramExportedClassMember = &.{};
-            if (findMatchingBrace(source, class_open)) |class_close| {
-                if (class_close <= body_end) {
-                    members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
-                }
-            }
-            try out.append(gpa, .{
-                .target_path = path,
-                .ambient_module_name = spec,
-                .class_name = source[name_start..name_end],
-                .type_parameter_names = type_parameter_names,
-                .is_export_assignment_target = if (export_assignment_target) |target|
-                    std.mem.eql(u8, target, source[name_start..name_end])
-                else
-                    false,
-                .members = members,
-            });
-            search_start = name_end;
-        }
-    }
-
-    fn ambientModuleExportAssignmentTarget(source: []const u8, body_start: usize, body_end: usize) ?[]const u8 {
-        var index = body_start;
-        var depth: usize = 0;
-        while (index < body_end) {
-            if (skipProgramCommentOrString(source, index, body_end)) |next| {
-                index = next;
-                continue;
-            }
-            switch (source[index]) {
-                '{' => depth += 1,
-                '}' => if (depth > 0) {
-                    depth -= 1;
-                },
-                else => {},
-            }
-            if (depth != 0 or !identifierKeywordAt(source, index, "export")) {
-                index += 1;
-                continue;
-            }
-            var cursor = skipProgramTrivia(source, index + "export".len, body_end);
-            if (cursor >= body_end or source[cursor] != '=') {
-                index += "export".len;
-                continue;
-            }
-            cursor = skipProgramTrivia(source, cursor + 1, body_end);
-            const target_end = parseIdentifierEnd(source, cursor, body_end) orelse return null;
-            return source[cursor..target_end];
-        }
-        return null;
-    }
-
-    fn classBodyOpenAfterName(source: []const u8, name_end: usize, limit: usize) ?usize {
-        var cursor = name_end;
-        while (cursor < limit and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-        if (cursor < limit and source[cursor] == '<') {
-            cursor = (findMatchingDelimited(source, cursor, limit, '<', '>') orelse return null) + 1;
-        }
-        return std.mem.indexOfScalarPos(u8, source, cursor, '{');
-    }
-
-    fn collectClassTypeParameterNames(
-        gpa: std.mem.Allocator,
-        source: []const u8,
-        name_end: usize,
-        class_open: usize,
-    ) ProgramError![]const []const u8 {
-        var cursor = name_end;
-        while (cursor < class_open and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-        if (cursor >= class_open or source[cursor] != '<') return &.{};
-        const close = findMatchingDelimited(source, cursor, class_open, '<', '>') orelse return &.{};
-        var names: std.ArrayListUnmanaged([]const u8) = .empty;
-        errdefer names.deinit(gpa);
-        cursor += 1;
-        while (cursor < close) {
-            while (cursor < close and (std.ascii.isWhitespace(source[cursor]) or source[cursor] == ',')) : (cursor += 1) {}
-            if (identifierKeywordAt(source, cursor, "const")) {
-                cursor += "const".len;
-                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            }
-            if (identifierKeywordAt(source, cursor, "in")) {
-                cursor += "in".len;
-                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            }
-            if (identifierKeywordAt(source, cursor, "out")) {
-                cursor += "out".len;
-                while (cursor < close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            }
-            const param_end = parseIdentifierEnd(source, cursor, close) orelse break;
-            try names.append(gpa, source[cursor..param_end]);
-            cursor = param_end;
-            var depth: usize = 0;
-            while (cursor < close) : (cursor += 1) {
-                switch (source[cursor]) {
-                    '<', '(', '[', '{' => depth += 1,
-                    '>', ')', ']', '}' => if (depth > 0) {
-                        depth -= 1;
-                    },
-                    ',' => if (depth == 0) {
-                        cursor += 1;
-                        break;
-                    },
-                    else => {},
-                }
-            }
-        }
-        return try names.toOwnedSlice(gpa);
-    }
-
-    fn collectExportedNamespaceStaticMembers(
-        gpa: std.mem.Allocator,
-        source: []const u8,
-        class_name: []const u8,
-    ) ProgramError![]const ts_driver.ProgramExportedClassMember {
-        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
-        errdefer out.deinit(gpa);
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
-            search_start = export_pos + "export".len;
-            if (!identifierKeywordAt(source, export_pos, "export")) continue;
-            var cursor = export_pos + "export".len;
-            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            if (!identifierKeywordAt(source, cursor, "namespace")) continue;
-            cursor += "namespace".len;
-            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
-            if (!std.mem.eql(u8, source[cursor..name_end], class_name)) continue;
-            const ns_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse continue;
-            const ns_close = findMatchingBrace(source, ns_open) orelse continue;
-            try collectNamespaceStaticMembers(gpa, source, ns_open + 1, ns_close, &out);
-            search_start = ns_close + 1;
-        }
-        return try out.toOwnedSlice(gpa);
-    }
-
     fn collectRelativeModuleNamespaceStaticAugmentationsFromSource(
         gpa: std.mem.Allocator,
         path: []const u8,
@@ -2082,88 +1864,6 @@ pub const Program = struct {
             if (std.mem.endsWith(u8, path, ext)) return path[0 .. path.len - ext.len];
         }
         return path;
-    }
-
-    fn collectExportedClassMembers(
-        gpa: std.mem.Allocator,
-        source: []const u8,
-        body_start: usize,
-        body_end: usize,
-    ) ProgramError![]const ts_driver.ProgramExportedClassMember {
-        var members: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
-        errdefer members.deinit(gpa);
-        var i = body_start;
-        var depth: usize = 0;
-        var visibility: ts_driver.ProgramMemberVisibility = .public;
-        while (i < body_end and i < source.len) : (i += 1) {
-            const c = source[i];
-            if (c == '{' or c == '(' or c == '[') {
-                depth += 1;
-                continue;
-            }
-            if (c == '}' or c == ')' or c == ']') {
-                if (depth > 0) depth -= 1;
-                continue;
-            }
-            if (depth != 0 or !asciiIdentifierStart(c)) continue;
-            const member_start = i;
-            const member_end = parseIdentifierEnd(source, member_start, body_end) orelse continue;
-            const name = source[member_start..member_end];
-            if (std.mem.eql(u8, name, "private")) {
-                visibility = .private;
-                i = member_end;
-                continue;
-            }
-            if (std.mem.eql(u8, name, "protected")) {
-                visibility = .protected;
-                i = member_end;
-                continue;
-            }
-            if (std.mem.eql(u8, name, "public")) {
-                visibility = .public;
-                i = member_end;
-                continue;
-            }
-            if (std.mem.eql(u8, name, "constructor") or
-                std.mem.eql(u8, name, "get") or
-                std.mem.eql(u8, name, "set") or
-                std.mem.eql(u8, name, "static") or
-                std.mem.eql(u8, name, "readonly") or
-                std.mem.eql(u8, name, "declare") or
-                std.mem.eql(u8, name, "abstract"))
-            {
-                i = member_end;
-                continue;
-            }
-            var cursor = member_end;
-            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-            if (cursor < body_end and source[cursor] == '(') {
-                try members.append(gpa, .{ .name = name, .type_name = "any", .is_method = true, .visibility = visibility });
-                visibility = .public;
-                if (findMatchingParen(source, cursor, body_end)) |close| {
-                    i = skipClassMemberRemainder(source, close + 1, body_end);
-                }
-                continue;
-            }
-            var type_name: []const u8 = "any";
-            if (cursor < body_end and source[cursor] == ':') {
-                cursor += 1;
-                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-                const type_start = cursor;
-                if (parseIdentifierEnd(source, type_start, body_end)) |type_end| {
-                    type_name = source[type_start..type_end];
-                    cursor = type_end;
-                }
-            } else if (cursor < body_end and source[cursor] == '=') {
-                cursor += 1;
-                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-                type_name = inferSimpleInitializerTypeName(source, cursor, body_end);
-            }
-            try members.append(gpa, .{ .name = name, .type_name = type_name, .is_method = false, .visibility = visibility });
-            visibility = .public;
-            i = skipClassMemberRemainder(source, cursor, body_end);
-        }
-        return members.toOwnedSlice(gpa);
     }
 
     fn skipClassMemberRemainder(source: []const u8, start: usize, limit: usize) usize {
@@ -2788,12 +2488,7 @@ pub const Program = struct {
     }
 
     fn freeProgramExportedClasses(gpa: std.mem.Allocator, items: []const ts_driver.ProgramExportedClass) void {
-        for (items) |item| {
-            if (item.type_parameter_names.len > 0) gpa.free(item.type_parameter_names);
-            if (item.members.len > 0) gpa.free(item.members);
-            if (item.static_members.len > 0) gpa.free(item.static_members);
-        }
-        gpa.free(items);
+        class_declarations.free(gpa, items);
     }
 
     fn freeProgramAmbientModuleInterfaceExports(gpa: std.mem.Allocator, items: []const ts_driver.ProgramAmbientModuleInterfaceExport) void {
@@ -4880,6 +4575,89 @@ fn moduleDefinePropertyDescriptorObject(
     return null;
 }
 
+test "Program: bound class facts separate static members and ignore source trivia" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const source =
+        \\// export class Phantom { private ghost: number; }
+        \\export declare class Box<T> {
+        \\  /* private phantom: string; */
+        \\  private static key: string;
+        \\  static count: number;
+        \\  value: T;
+        \\  'private': number;
+        \\  static(): number;
+        \\}
+        \\export namespace Box { const hidden = 1; export const version: number = 1; }
+        \\const text = 'export class Hidden { value: number; }';
+    ;
+    _ = try program.add("/classes.ts", source);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    try T.expectEqual(@as(usize, 1), classes.len);
+    const class = classes[0];
+    try T.expectEqualStrings("Box", class.class_name);
+    try T.expectEqualStrings("/classes.ts", class.declaration_path);
+    try T.expect(class.declaration_pos != null);
+    try T.expectEqual(@as(usize, 1), class.type_parameter_names.len);
+    try T.expectEqualStrings("T", class.type_parameter_names[0]);
+    try T.expectEqual(@as(usize, 3), class.members.len);
+    try T.expectEqualStrings("value", class.members[0].name);
+    try T.expectEqualStrings("T", class.members[0].type_name);
+    try T.expectEqualStrings("private", class.members[1].name);
+    try T.expectEqual(ts_driver.ProgramMemberVisibility.public, class.members[1].visibility);
+    try T.expectEqualStrings("static", class.members[2].name);
+    try T.expect(class.members[2].is_method);
+    try T.expectEqual(@as(usize, 3), class.static_members.len);
+    try T.expectEqualStrings("key", class.static_members[0].name);
+    try T.expectEqual(ts_driver.ProgramMemberVisibility.private, class.static_members[0].visibility);
+    try T.expectEqualStrings("count", class.static_members[1].name);
+    try T.expectEqualStrings("version", class.static_members[2].name);
+}
+
+test "Program: class export aliases retain their bound declaration through cycles" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const Fixture = struct { path: []const u8, source: []const u8 };
+    for ([_]Fixture{
+        .{ .path = "/owner.ts", .source = "class Secret { private key: string; } export { Secret, Secret as Alias };" },
+        .{ .path = "/barrel.ts", .source = "export * from './owner'; export * from './cycle';" },
+        .{ .path = "/cycle.ts", .source = "export * from './barrel';" },
+        .{ .path = "/default.ts", .source = "export { Alias as default } from './owner';" },
+    }) |fixture| {
+        try vfs.addFile(fixture.path, fixture.source);
+        _ = try program.add(fixture.path, fixture.source);
+    }
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    try T.expectEqual(@as(usize, 7), classes.len);
+    for (classes) |class| {
+        try T.expectEqualStrings("/owner.ts", class.declaration_path);
+        try T.expectEqual(classes[0].declaration_pos, class.declaration_pos);
+        try T.expectEqualStrings("Secret", class.class_name);
+        try T.expectEqual(@as(usize, 1), class.members.len);
+        if (std.mem.eql(u8, class.target_path, "/default.ts")) {
+            try T.expect(class.is_default);
+            try T.expectEqualStrings("default", class.exportedName());
+        } else {
+            try T.expect(!class.is_default);
+            try T.expect(std.mem.eql(u8, class.exportedName(), "Secret") or std.mem.eql(u8, class.exportedName(), "Alias"));
+        }
+    }
+}
+
 test "Program: ambient module export assignment target is collected" {
     const source =
         \\declare module "SubModule" {
@@ -4888,10 +4666,27 @@ test "Program: ambient module export assignment target is collected" {
         \\  export = SubModule;
         \\}
     ;
-    const body_start = std.mem.indexOfScalar(u8, source, '{').? + 1;
-    const body_end = Program.findMatchingBrace(source, body_start - 1).?;
-    const target = Program.ambientModuleExportAssignmentTarget(source, body_start, body_end) orelse return error.MissingTarget;
-    try T.expectEqualStrings("SubModule", target);
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/ambient.d.ts", source);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    var assignments: usize = 0;
+    try T.expectEqual(@as(usize, 1), classes.len);
+    for (classes) |class| {
+        if (!class.is_export_assignment_target) continue;
+        assignments += 1;
+        try T.expectEqualStrings("SubModule", class.class_name);
+        try T.expectEqualStrings("SubModule", class.ambient_module_name);
+        try T.expect(class.declaration_pos != null);
+    }
+    try T.expectEqual(@as(usize, 1), assignments);
     const facts = ambientModuleExportFacts(T.allocator, source, "SubModule", "", false) orelse return error.MissingTarget;
     try T.expect(facts.exported_type);
     try T.expect(facts.exported_value);
@@ -8197,6 +7992,8 @@ test "Program: source markers preserve collection metadata" {
         try vfs.addFile(fixture.path, fixture.source);
         _ = try p.add(fixture.path, fixture.source);
     }
+    try p.prepareNameStore();
+    try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
     const before_roots = try p.collectAmbientGlobalNamespaceRoots();
     defer Program.freeStringSlice(T.allocator, before_roots);
     const before_expandos = try p.collectScriptObjectExpandos();
