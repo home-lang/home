@@ -210,6 +210,17 @@ HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
   writeFileSync(join(debugDirectory, 'bunfig.toml'), 'logLevel = "debug"\n')
   writeFileSync(join(debugDirectory, 'quiet.toml'), 'logLevel = "error"\n')
   writeFileSync(join(debugDirectory, 'index.js'), 'console.log("debug-entry");')
+  const optionEntry = 'console.log(JSON.stringify({execPath:process.execPath,args:process.argv.slice(2)}));'
+  writeFileSync(join(debugDirectory, 'option-entry.js'), optionEntry)
+  writeFileSync(join(debugDirectory, '-option-entry.js'), optionEntry)
+  function checkConfigEntry(argv, expectedArgs, quiet = false) {
+    const result = success(argv, { cwd: debugDirectory })
+    const record = JSON.parse(result.stdout)
+    assert.equal(realpathSync(record.execPath), realpathSync(process.execPath))
+    assert.deepEqual(record.args, expectedArgs)
+    if (quiet) assert.equal(result.stderr, '')
+    else assert.match(result.stderr, /ENOENT loading tsconfig\.json extends/, JSON.stringify(argv))
+  }
   for (const prefix of [[], ['run']]) {
     const debug = success([...prefix, '--config=' + join(debugDirectory, 'bunfig.toml'), './index.js'], { cwd: debugDirectory })
     assert.equal(debug.stdout, 'debug-entry\n')
@@ -217,7 +228,25 @@ HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
     const quiet = success([...prefix, '--config=' + join(debugDirectory, 'quiet.toml'), './index.js'], { cwd: debugDirectory })
     assert.equal(quiet.stdout, 'debug-entry\n')
     assert.equal(quiet.stderr, '')
+    // Optional config values never consume a separate script token. Only
+    // the long attached form selects quiet.toml in the pinned parser.
+    for (const flag of ['--config', '-c', '-c=quiet.toml']) {
+      checkConfigEntry([...prefix, flag, './option-entry.js', './index.js', ...args], ['./index.js', ...args])
+    }
+    checkConfigEntry([...prefix, '--config=quiet.toml', './option-entry.js', ...args], args, true)
+    checkConfigEntry([...prefix, '--config', './option-entry.js', '-e', 'throw 1'], ['-e', 'throw 1'])
+    checkConfigEntry([...prefix, '--config', '--', '-option-entry.js', '--config', 'tail'], ['--config', 'tail'])
+    checkConfigEntry([...prefix, '--', '-option-entry.js', './index.js'], ['./index.js'], prefix.length > 0)
+    checkConfigEntry([...prefix, './option-entry.js', '--config', 'quiet.toml', '--', '-c'], ['--config', 'quiet.toml', '--', '-c'], prefix.length > 0)
+    const separateConfig = run([...prefix, '--config', 'quiet.toml', './option-entry.js'], { cwd: debugDirectory })
+    assert.equal(separateConfig.status, 1)
+    assert.equal(separateConfig.stdout, '')
   }
+  checkConfigEntry(['--config', 'run', './option-entry.js', ...args], args)
+  assert.equal(success(['--config', '-e', 'console.log("config-inline")'], { cwd: debugDirectory }).stdout, 'config-inline\n')
+  const configHelp = success(['--config'], { cwd: debugDirectory })
+  assert.match(configHelp.stdout, /Usage:/)
+  assert.doesNotMatch(configHelp.stderr, /Unknown command/)
   // Resolving a non-runnable data file does not suppress a valid CLI binary.
   if (process.platform !== 'win32') {
     const binary = join(directory, 'node_modules', '.bin', 'data')

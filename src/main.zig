@@ -1902,6 +1902,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
+        if (code == null and std.mem.eql(u8, a, "--")) return false;
         if (std.mem.eql(u8, a, "--print") or std.mem.eql(u8, a, "-p")) {
             print_mode = true;
             if (code == null and i + 1 < args.len) {
@@ -1924,7 +1925,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
         } else if (std.mem.startsWith(u8, a, "-")) {
             // Do not mistake an option value (for example the `module` in
             // `--input-type module --eval ...`) for a script entrypoint.
-            if (code == null and runtimeFlagTakesValue(a)) {
+            if (code == null and runtimeFlagConsumesNext(a)) {
                 if (i + 1 >= args.len) return false;
                 i += 1;
             }
@@ -2005,7 +2006,7 @@ fn nativeRuntimeContext(inline_eval: bool) !home_rt.cli.Command.Context {
                 std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--print") or
                 arg.len == 0 or arg[0] != '-') break;
             try parser_args.append(allocator, arg);
-            if (runtimeFlagTakesValue(arg) and i + 1 < raw.len) {
+            if (runtimeFlagConsumesNext(arg) and i + 1 < raw.len) {
                 i += 1;
                 try parser_args.append(allocator, raw[i]);
             }
@@ -2547,6 +2548,11 @@ fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime 
     const allocator = home_rt.default_allocator;
     const ctx = try nativePackageCommandContext(args, tag);
     g_native_runtime_context = ctx;
+    if (tag == .AutoCommand and target.len == 0 and ctx.filters.len == 0 and !ctx.workspaces) {
+        home_rt.cli.Command.Tag.printHelp(.AutoCommand, false);
+        home_rt.Output.flush();
+        return true;
+    }
     if (std.mem.eql(u8, target, "-")) {
         if (!ctx.debug.loaded_bunfig) {
             try home_rt.cli.Arguments.loadConfigPath(allocator, true, "bunfig.toml", ctx, .RunCommand);
@@ -2599,7 +2605,7 @@ fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void
             ri += 1;
             break;
         }
-        if (runtimeFlagTakesValue(a)) {
+        if (runtimeFlagConsumesNext(a)) {
             if (ri + 1 < args.len) ri += 1;
             continue;
         }
@@ -5934,18 +5940,23 @@ pub fn main(init: std.process.Init) !void {
         }
         if (has_file and (native_vm or std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
             var experimental_stream_iter = false;
+            var positional_only = false;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
                 const a = args[i];
-                if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+                if (!positional_only and std.mem.eql(u8, a, "--")) {
+                    positional_only = true;
+                    continue;
+                }
+                if (!positional_only and std.mem.eql(u8, a, "--experimental-stream-iter")) {
                     experimental_stream_iter = true;
                     continue;
                 }
-                if (runtimeFlagTakesValue(a)) {
+                if (!positional_only and runtimeFlagConsumesNext(a)) {
                     if (i + 1 < args.len) i += 1;
                     continue;
                 }
-                if (a.len > 0 and a[0] == '-') continue;
+                if (!positional_only and a.len > 0 and a[0] == '-') continue;
                 if (looksLikeRunnableFile(a) or native_vm) {
                     if (experimental_stream_iter) {
                         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
@@ -5955,6 +5966,7 @@ pub fn main(init: std.process.Init) !void {
                     return;
                 }
             }
+            if (native_vm and try tryNativePackageRun(args, "", .AutoCommand)) return;
         }
     }
 
@@ -5973,9 +5985,11 @@ fn looksLikeRunnableFile(s: []const u8) bool {
     return false;
 }
 
-fn runtimeFlagTakesValue(flag: []const u8) bool {
+/// Match clap's separate-token consumption: optional values use only an
+/// attached long-option value, while required/repeated values consume next.
+fn runtimeFlagConsumesNext(flag: []const u8) bool {
     inline for (home_rt.cli.Arguments.auto_params) |param| {
-        if (comptime param.takes_value != .none) {
+        if (comptime param.takes_value == .one or param.takes_value == .many) {
             if (comptime param.names.long) |name| {
                 if (std.mem.eql(u8, flag, "--" ++ name)) return true;
             }
@@ -5996,7 +6010,7 @@ fn leadingRuntimeCommandIndex(args: []const [:0]const u8, names: []const []const
             std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p") or
             std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) return null;
         if (arg.len > 0 and arg[0] == '-') {
-            if (runtimeFlagTakesValue(arg)) {
+            if (runtimeFlagConsumesNext(arg)) {
                 if (i + 1 >= args.len) return null;
                 i += 1;
             }
@@ -6019,7 +6033,13 @@ fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {
 }
 
 test "runtime flags preserve command dispatch boundaries" {
-    try std.testing.expect(runtimeFlagTakesValue("--input-type"));
+    try std.testing.expect(runtimeFlagConsumesNext("--input-type"));
+    try std.testing.expect(runtimeFlagConsumesNext("--env-file"));
+    try std.testing.expect(!runtimeFlagConsumesNext("--config"));
+    try std.testing.expect(!runtimeFlagConsumesNext("-c"));
+    try std.testing.expect(!runtimeFlagConsumesNext("--inspect"));
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeRunIndex(&.{ "home", "--config", "run", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeRunIndex(&.{ "home", "--config", "fixture.js", "run" }));
     try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--input-type", "module", "--eval", "test" }));
     try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeTestIndex(&.{ "home", "--no-warnings", "test", "fixture.js" }));
     try std.testing.expectEqual(@as(?usize, 3), leadingRuntimeTestIndex(&.{ "home", "--require", "preload.js", "test", "fixture.js" }));
