@@ -1622,3 +1622,103 @@ sixteen semantically equivalent workloads.
 The tuple and both frozen predicate source hashes are unchanged.
 No timing claim follows from these ownership tests; historical timings remain
 unchanged, and neither graph is readmitted.
+
+### Prepared program discovery and expanded global audit (untimed)
+
+Commit [`4693c6277`](https://github.com/home-lang/home/commit/4693c6277)
+separates source preparation (parse/bind) from one-shot checking and emit.
+Preparation retains the original HIR, tokens, binder symbols, declaration-file
+flag, syntactic-error flag, and JSX comma-recovery spans. The parser can be
+destroyed before checking begins. Checked-owner publication still occurs only
+after semantic checking and metadata capture; preparation alone is not a typed
+source owner. Failed checking is deinitializable and must not be retried on the
+partially checked object.
+
+Commit [`83d145926`](https://github.com/home-lang/home/commit/83d145926)
+uses that boundary in the program pipeline. Import/reference discovery performs
+parse/bind only and skips semantic fact collection during discovery rounds.
+After the graph stops expanding, checking reuses its bound sources against the
+final program facts. Conformance no longer reparses/rebinds/checks the complete
+graph a second time. Serial, parallel, and streaming paths share the per-file
+lifecycle. Streaming reference checks also receive the final known-path list.
+If a caller explicitly checked an incomplete graph before expanding it, those
+semantic results are invalidated and rebuilt; unchanged repeated discovery
+retains the checked owners. This is not dependency-aware incremental checking.
+
+The driver suite passes 186/186, program 105/105, and CLI 69/69. Regressions
+cover retained binder/token identity, emit/check idempotence, declaration-file
+and parser-recovery state, multi-hop discovery, serial/parallel/streaming
+results, zero-worker fallback, expansion invalidation, and allocation-failure
+cleanup/retry. The conformance suite passes 1,417/1,417. The unchanged checker
+test target was a cache hit; no fresh checker execution is claimed here.
+
+A separate CLI probe lists only the minimal library and `app.ts` as roots:
+
+```ts
+// app.ts
+/// <reference path="./bridge.d.ts" />
+globalThis.lateValue;
+// bridge.d.ts
+/// <reference path="./definitions.d.ts" />
+// definitions.d.ts
+declare var lateValue: number;
+```
+
+These are three separate source files, not concatenated input. Every compiler
+uses the same strict/noEmit/noLib project and minimal library. Two invalid
+variants append statements to the unchanged app: one adds `missingValue; const
+bad: string = 1;`, and the other adds `const wrong: string =
+globalThis.lateValue;`. Diagnostic multisets and exit status must match.
+
+| Untimed transitive-reference probe | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---|---|---|---|
+| Valid project | Pass | Pass | False TS6053 × 2 and TS7017 | Pass |
+| Invalid local code | TS2304 + TS2322 | TS2304 + TS2322 | Expected errors plus false reference/global errors | TS2304 + TS2322 |
+| Invalid global property assignment | TS2322 | TS2322 | Incorrect reference/global diagnostics | Incorrectly accepted |
+
+This proves the scheduling correction, **not** typed-global parity. The earlier
+binary is the preceding checkpoint's `home-final` (SHA-256 `6d6b278c9df4db5a67171436def69c720fbe4d91e3171e8221c6d9cb161f4134`).
+The before/after probe has twelve checks including that older Home binary:
+four fail, three in the older Home and one in the new Home.
+
+Commits [`bebe678de`](https://github.com/home-lang/home/commit/bebe678de) and
+[`445422c60`](https://github.com/home-lang/home/commit/445422c60) extend the
+permanent global audit with sibling ambient `let` and `const` bindings and
+typed `globalThis` reads, each positive/negative and with both
+declaration-before/after-app orders. The lexical cases report false TS2304;
+the invalid `globalThis` assignments are accepted. Neither failure is waived.
+The original 44 controls retain their prior results; the larger denominator
+reflects twelve added controls, not a timing or correctness regression.
+
+| Fresh untimed audit | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Expanded globals | 56/56 | 56/56 | 32/56 |
+| Imported owners | 20/20 | 20/20 | 8/20 |
+| Tuple controls | 14/14 | 14/14 | 14/14 |
+| Assertion controls | 12/12 | 12/12 | 12/12 |
+
+All eighteen positive benchmark workloads pass. Home still fails both graph
+rejection gates and passes the other sixteen gates; that is not evidence of
+sixteen semantically equivalent workloads. Both graph timing claims remain
+ineligible. The tuple and both predicate corpus hashes are unchanged, and no
+timings were collected during concurrent workstation activity.
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_driver
+./pantry/.bin/zig build test -Dfilter=ts_program
+./pantry/.bin/zig build test -Dfilter=ts_conformance
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```
+
+The harness suite passes 33/33. Local evidence, including the independent
+discovery probe and raw diagnostics, is retained in
+`bench/vs_tsgo/results/prepared-program.Wx2zap`. The fresh ReleaseFast binary
+SHA-256 is `a3eddac96fe1b07d7876defc63a2cda06b9f13210b333e8dc57e2b38e8a0ea12`.
+This addresses the scheduling/reuse work in
+[#505](https://github.com/home-lang/home/issues/505). Actual owner-aware global
+and import type resolution, declaration merging, and module-cycle semantics
+remain open in [#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487), under the performance
+tracker [#416](https://github.com/home-lang/home/issues/416).

@@ -110,16 +110,17 @@ Later generic-callback, declaration, and
 [assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
 have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
-The latest [untimed atomic-owner and provenance checks](./docs/docs/TS_PERFORMANCE.md#atomic-owner-publication-and-source-provenance-untimed)
-test coordinated type/metadata publication and real source ownership. Program
-integration remains open; the broader imported-owner audit exposes twelve
-additional failing Home cases:
+The latest [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
+verify that checking uses the completed graph without reparsing bound sources.
+False reference/global-presence errors are fixed, but cross-file type linkage
+remains incomplete. Expanded controls keep those failures visible:
 
 | Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
 |---|---:|---:|---:|
 | Variadic tuple controls | 14/14 | 14/14 | 14/14 |
-| Global declaration controls | 44/44 | 44/44 | 30/44 |
+| Global declaration controls | 56/56 | 56/56 | 32/56 |
 | Imported-owner controls | 20/20 | 20/20 | 8/20 |
+| Transitive reference probe | 3/3 | 3/3 | 2/3 |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
