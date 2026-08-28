@@ -3,9 +3,60 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { Readable } from 'node:stream'
 
 // These are native Home checks, not delegated Bun/Node compatibility results.
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
+
+// Bun pin 4982b91's howMuchToRead() retains the first byte chunk for
+// unsized reads. Do not infer this contract from a different installed Bun.
+const sourceBytes = new Uint8Array([99, 1, 2, 3, 99])
+const view = sourceBytes.subarray(1, 4)
+const secondChunk = Buffer.from([4, 5])
+const readable = new Readable({ read() {} })
+readable.push(view)
+readable.push(secondChunk)
+assert.equal(readable.readableLength, 5)
+const normalized = readable.read()
+assert.ok(Buffer.isBuffer(normalized))
+assert.notEqual(normalized, view)
+assert.equal(normalized.buffer, view.buffer)
+assert.equal(normalized.byteOffset, view.byteOffset)
+assert.deepEqual([...normalized], [1, 2, 3])
+assert.equal(readable.read(), secondChunk)
+assert.equal(readable.read(), null)
+readable.push(view)
+readable.push(secondChunk)
+assert.deepEqual([...readable.read(4)], [1, 2, 3, 4])
+assert.deepEqual([...readable.read()], [5])
+readable.push(new DataView(sourceBytes.buffer, 2, 2))
+assert.deepEqual([...readable.read()], [2, 3])
+readable.push(null)
+assert.equal(readable.read(), null)
+
+const objectReadable = new Readable({ objectMode: true, read() {} })
+objectReadable.push(view)
+objectReadable.push(secondChunk)
+assert.equal(objectReadable.read(0), null)
+assert.equal(objectReadable.read(100), view)
+assert.equal(objectReadable.read(), secondChunk)
+objectReadable.push(null)
+const iterated = []
+for await (const chunk of Readable.from([view, secondChunk])) iterated.push(chunk)
+assert.equal(iterated[0], view)
+assert.equal(iterated[1], secondChunk)
+
+const decoded = new Readable({ read() {} })
+decoded.setEncoding('utf8')
+decoded.push(Buffer.from([0xe2, 0x82]))
+assert.equal(decoded.read(), null)
+decoded.push(Buffer.from([0xac, 0x61, 0x62]))
+decoded.push('cdefgh')
+decoded.push(null)
+assert.equal(decoded.read(6), '€abcde')
+assert.equal(decoded.read(3), 'fgh')
+assert.equal(decoded.read(), null)
+
 const env = {
   ...process.env,
   HOME_NATIVE_VM: '1',
