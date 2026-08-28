@@ -128,10 +128,10 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
 | [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
 | Imported-owner controls | 20/20 | 20/20 | 10/20 |
-| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 42/52 |
+| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
-| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-baseline-and-source-owned-metadata-untimed) | 100/100 | 100/100 | 50/100 |
+| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 120/120 | 120/120 | 118/120 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |
@@ -139,11 +139,14 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 
 The [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
 fixes omitted dependencies and false alias/ambiguity errors. Automatic cross-file
-type transfer is not yet enabled, and both graph timing claims remain ineligible.
-The latest [imported static-value checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed)
+type transfer remains incomplete, and both graph timing claims remain ineligible.
+The [imported static-value checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed)
 preserves class values through namespace aliases, captures, destructuring, and
 cycles: its controls improve from 52/84 to 84/84. Bound-class controls now pass
-52/52; generic and inheritance failures remain visible in the nominal audit.
+52/52. The latest [imported generic-class checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed)
+improves from 62/120 to 118/120 with source-owned arguments, defaults and
+constraints. Growing recursive aliases still fail two controls; eight
+inheritance controls remain failing in the nominal audit.
 These are correctness results, not new timings.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)

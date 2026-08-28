@@ -2462,3 +2462,100 @@ snapshot above is unchanged and no new performance claim is made.
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_generic_classes.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Imported generic-class instantiation (untimed)
+
+Tracked in [#524](https://github.com/home-lang/home/issues/524), under
+[#521](https://github.com/home-lang/home/issues/521),
+[#487](https://github.com/home-lang/home/issues/487), and
+[#416](https://github.com/home-lang/home/issues/416).
+The source-owned schema collector is now enabled for generic classes. Imported
+type annotations instantiate the defining declaration with the consumer's
+actual arguments; defaults, dependent constraints and member expressions resolve
+in the declaration's scope. Repeated instances are cached by source declaration
+identity and effective arguments. Recursive object aliases with unchanged
+arguments retain their object identity, optional members and concrete types.
+Non-public members retain declaration origins without synthetic brand fields.
+Implementation:
+[`0a1e5afe8`](https://github.com/home-lang/home/commit/0a1e5afe8) and
+[`33ddbef63`](https://github.com/home-lang/home/commit/33ddbef63).
+
+The audit grew from the historical 100 cases above to **120**: 30 families,
+each with a positive and appended-only negative control in both root orders.
+The additional families cover growing recursive aliases, unused (phantom) type
+parameters, explicit method receivers, resolved `unknown` constraints and weak
+optional-object constraints. They were added in
+[`96d0da00c`](https://github.com/home-lang/home/commit/96d0da00c),
+[`71023f916`](https://github.com/home-lang/home/commit/71023f916),
+[`65ea1e895`](https://github.com/home-lang/home/commit/65ea1e895), and
+[`bb6f55301`](https://github.com/home-lang/home/commit/bb6f55301).
+All compilers receive identical files and options. Positives must be silent;
+negatives must match the exact diagnostic-code multiset. No cases are excluded
+and no timing is collected.
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Imported generic-class controls | 120/120 | 120/120 | 62/120 | 118/120 |
+| Imported nominal-identity controls | 52/52 | 52/52 | 42/52 | 44/52 |
+| Imported static-value controls | 84/84 | 84/84 | 84/84 | 84/84 |
+| Bound-class export controls | 52/52 | 52/52 | 52/52 | 52/52 |
+| Original workload admission | 18/18 | 18/18 | 16/18 | 16/18 |
+| Imported graph admission (subset above) | 2/2 | 2/2 | 0/2 | 0/2 |
+
+The full 120-case baseline was rerun against the same frozen pre-consumer Home
+binary used above; **62/120 is not a reinterpretation of the historical 50/100**.
+The new release passes every original 100-case control and 18 of the 20 added
+controls. Same-owner phantom parameters remain structurally compatible;
+different-owner private members remain incompatible. A detached method with an
+explicit `this` requirement is rejected. Resolved `unknown` arguments no longer
+bypass constraints. Weak-constraint checking uses apparent object types,
+including the declared BigInt wrapper when available; it does not invent
+required properties or make primitive `bigint` satisfy the `object` constraint.
+
+Both remaining generic failures are the negative growing-recursion controls:
+`Link<X> = { item: X; next?: Link<X[]> }` needs lazy parameterized expansion.
+An eager finite graph cannot represent every instantiation. This form remains
+unsupported and visible in the audit; there is no fixed-depth truncation or
+new `any` substitution to manufacture a passing result. The nominal suite's
+eight remaining failures concern private/protected inheritance. Generic
+constructors, heritage, generic methods, unsupported annotation forms and full
+cross-file checked-type transfer are not established by this checkpoint.
+Variance metadata is retained, not a claim of complete variance enforcement.
+Issue #524 remains open. Both imported graph timing claims remain ineligible.
+
+Evidence is under `bench/vs_tsgo/results/generic-classes.9vD3xi/`:
+
+- `audit-before-120.log`: 360 compiler/case checks, 58 failures, all Home.
+- `audit-final-120.log`: 360 checks, two failures, both Home growing-recursion negatives.
+- `nominal_origins-final.log`, `static_values-final.log` and `class_bindings-final.log`: adjacent release audits.
+- `admission-final.log`: every original workload checked, including required rejection controls.
+- `release-final-v2.log`: successful ReleaseFast build; `home-final`: frozen release binary.
+
+The baseline SHA-256 is
+`9fb67479dbd422678c617facf686d4a09317658e7c4a871084db906bf12572c1`.
+The new release SHA-256 is
+`5a4127f13c8901a1899686b09ca7d62d9bf338f41ff8ea5b43c08d179d35bbb7`.
+The 120-case audit source SHA-256 is
+`4fa967df7188d6f1b5928e8a8cb1ccfeb5bd25b9b56fed93e0f0f69f10a2a377`.
+Version preflight verifies the executable outputs, not just the manifest:
+TS **6.0.3** and native TS **7.0.2**. TS 7 and `tsgo` are one competitor;
+the old `7.0.0-dev.20260707.2` binary is rejected.
+
+Full verification passes **4,279/4,279 checker**, **1,417/1,417 conformance**,
+**130/130 Program**, **187/187 driver**, **69/69 CLI** and **53/53 harness**
+tests. Logs are `checker-final.log`, `conformance-final.log`,
+`program-final.log`, `driver-final.log`, `cli-final.log` and
+`harness-final-120.log`. Fresh release audits also retain callable identity
+56/56, callable unions 256/256, graph discovery 28/28 and export origins 32/32
+for all three compilers. Home's imported-owner 10/20, global 32/56 and
+bound-global 44/56 results remain unchanged; both pinned competitors pass all
+of those controls. Logs use the audit's underscore-separated name plus
+`-final.log`. Zig formatting checks pass. Targeted Pickier reports zero errors
+and one pre-existing README fragment warning (`lint-final.log`).
+These are correctness results; the existing timing snapshot is unchanged.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 bench/vs_tsgo/audit_generic_classes.py
+HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 bench/vs_tsgo/audit_nominal_origins.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
