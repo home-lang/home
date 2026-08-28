@@ -89,6 +89,49 @@ try {
     assert.equal(result.stdout, '[null,["--cwd","missing"]]\n')
   }
   assert.equal(success(['run', '--cwd', 'subdirectory', 'entry'], { env: configEnv }).stdout, '["module",[]]\n')
+  const dotenvDirectory = join(directory, 'dotenv')
+  mkdirSync(dotenvDirectory)
+  const dotenvEnv = { ...env }
+  for (const key of Object.keys(dotenvEnv)) if (key.startsWith('HOME_DOTENV_')) delete dotenvEnv[key]
+  dotenvEnv.HOME_DOTENV_PROCESS = '$HOME_DOTENV_BASE'
+  dotenvEnv.HOME_DOTENV_EMPTY = ''
+  writeFileSync(join(dotenvDirectory, '.env'), String.raw`HOME_DOTENV_BASE=first
+HOME_DOTENV_CHAIN=$HOME_DOTENV_BASE
+HOME_DOTENV_BASE=last
+HOME_DOTENV_FINAL=${'${HOME_DOTENV_CHAIN}'}:${'${HOME_DOTENV_MISSING:-fallback}'}
+HOME_DOTENV_ESCAPED=\$HOME_DOTENV_BASE
+HOME_DOTENV_PROCESS=ignored
+HOME_DOTENV_EMPTY=ignored
+HOME_DOTENV_INDIRECT=$HOME_DOTENV_PROCESS
+HOME_DOTENV_ZERO=${'${HOME_DOTENV_EMPTY:-fallback}'}
+HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
+`)
+  const dotenvKeys = ['BASE', 'CHAIN', 'FINAL', 'ESCAPED', 'PROCESS', 'EMPTY', 'INDIRECT', 'ZERO', 'QUOTED']
+  const dotenvSource = 'console.log(JSON.stringify(' + JSON.stringify(dotenvKeys) + '.map(key => process.env["HOME_DOTENV_" + key])));'
+  writeFileSync(join(dotenvDirectory, 'entry.js'), dotenvSource)
+  const dotenvExpected = ['last', 'last', 'last:fallback', '$HOME_DOTENV_BASE', '$HOME_DOTENV_BASE', '', '$HOME_DOTENV_BASE', '', 'single last']
+  for (const args of [['entry.js'], ['run', 'entry.js'], ['-e', dotenvSource]]) {
+    assert.deepEqual(JSON.parse(success(args, { cwd: dotenvDirectory, env: dotenvEnv }).stdout), dotenvExpected)
+  }
+  writeFileSync(join(dotenvDirectory, 'first.env'), 'HOME_DOTENV_BASE=first-file\nHOME_DOTENV_CHAIN=$HOME_DOTENV_BASE\n')
+  writeFileSync(join(dotenvDirectory, 'second.env'), 'HOME_DOTENV_BASE=second-first\nHOME_DOTENV_BASE=second-last\n')
+  const explicit = ['--no-env-file', '--env-file', 'first.env', '--env-file', 'second.env', '--env-file', 'second.env']
+  assert.deepEqual(JSON.parse(success([...explicit, '-e', dotenvSource], { cwd: dotenvDirectory, env: dotenvEnv }).stdout), [
+    'second-last', 'second-last', null, null, '$HOME_DOTENV_BASE', '', null, null, null,
+  ])
+  // The shared Node parser replaces duplicate definitions but does not expand
+  // dollars. Repeated calls must not retain its temporary input/arena storage.
+  const parseEnvSource = `
+    const assert = require('node:assert/strict');
+    const { parseEnv } = require('node:util');
+    const input = 'BASE=first\\nBASE=last\\nVALUE=$BASE\\nESCAPED=\\\\$BASE';
+    for (let i = 0; i < 512; i++) {
+      assert.deepEqual(parseEnv(input), { BASE: 'last', VALUE: '$BASE', ESCAPED: '\\\\$BASE' });
+      if (i % 32 === 0) Bun.gc(true);
+    }
+    console.log('parse-env-complete');
+  `
+  assert.equal(success(['--no-env-file', '-e', parseEnvSource], { cwd: dotenvDirectory, env: dotenvEnv }).stdout, 'parse-env-complete\n')
   mkdirSync(join(directory, 'node_modules', 'native-condition'))
   writeFileSync(join(directory, 'node_modules', 'native-condition', 'package.json'), JSON.stringify({
     name: 'native-condition', exports: { 'native-config': './custom.js', default: './default.js' },

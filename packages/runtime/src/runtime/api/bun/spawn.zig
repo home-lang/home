@@ -388,9 +388,9 @@ test "spawn: BunSpawn.Actions close/dup2/inherit record one action each" {
     var actions = try BunSpawn.Actions.init();
     defer actions.deinit();
 
-    try actions.close(3).unwrap();
-    try actions.dup2(4, 5).unwrap();
-    try actions.inherit(6).unwrap();
+    try actions.close(3);
+    try actions.dup2(4, 5);
+    try actions.inherit(6);
 
     try std.testing.expectEqual(@as(usize, 3), actions.actions.items.len);
     try std.testing.expectEqual(BunSpawn.Action.FileActionType.close, actions.actions.items[0].kind);
@@ -430,7 +430,7 @@ test "spawn: BunSpawn.Attr round-trips flags through set/get" {
     defer attr.deinit();
 
     try attr.set(0x42);
-    try std.testing.expectEqual(@as(u16, 0x42), try attr.get().unwrap());
+    try std.testing.expectEqual(@as(u16, 0x42), try attr.get());
 
     try attr.resetSignals();
     try std.testing.expect(attr.reset_signals);
@@ -442,15 +442,15 @@ test "spawn: BunSpawn.Attr.set derives detached from SETSID when available" {
 
     if (comptime spawnFlagFieldBits("SETSID")) |setsid| {
         attr.detached = true;
-        try attr.set(0).unwrap();
+        try attr.set(0);
         try std.testing.expect(!attr.detached);
 
         try attr.set(setsid);
         try std.testing.expect(attr.detached);
-        try std.testing.expectEqual(setsid, try attr.get().unwrap());
+        try std.testing.expectEqual(setsid, try attr.get());
     } else {
         attr.detached = true;
-        try attr.set(0).unwrap();
+        try attr.set(0);
         try std.testing.expect(attr.detached);
     }
 }

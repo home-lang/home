@@ -1159,34 +1159,57 @@ const Parser = struct {
         comptime is_process: bool,
         comptime expand: bool,
     ) OOM!void {
-        var count = map.map.count();
+        // Entries before this boundary came from the process or an earlier
+        // file. New entries may be replaced later in this file and expanded,
+        // but must not change the inherited-environment precedence boundary.
+        const initial_count = map.map.count();
+        var replaced_inherited = if (comptime override)
+            try std.DynamicBitSetUnmanaged.initEmpty(allocator, initial_count)
+        else
+            std.DynamicBitSetUnmanaged{};
+        defer replaced_inherited.deinit(allocator);
         while (this.pos < this.src.len) {
             const key = this.parseKey(true) orelse {
                 this.skipLine();
                 continue;
             };
             const value = try this.parseValue(is_process);
+            // Allocate before replacing an entry, so allocation failure does
+            // not leave a dangling value or an uninitialized new map slot.
+            const owned_value = try allocator.dupe(u8, value);
+            errdefer allocator.free(owned_value);
             const entry = try map.map.getOrPut(key);
             if (entry.found_existing) {
-                if (comptime !override) continue;
-                allocator.free(entry.value_ptr.value);
-            } else {
-                count += 1;
+                if (entry.index < initial_count) {
+                    if (comptime !override) {
+                        allocator.free(owned_value);
+                        continue;
+                    }
+                    // Preexisting Map values may borrow process/worker data.
+                    // Their owner, not this parser invocation, releases them.
+                    // Once replaced here, subsequent same-file replacements
+                    // own and must release the parser's previous allocation.
+                    if (replaced_inherited.isSet(entry.index)) allocator.free(entry.value_ptr.value);
+                    replaced_inherited.set(entry.index);
+                } else {
+                    // Every value inserted by this invocation is owned here.
+                    allocator.free(entry.value_ptr.value);
+                }
             }
             entry.value_ptr.* = .{
-                .value = try allocator.dupe(u8, value),
+                .value = owned_value,
                 .conditional = false,
             };
         }
         if (comptime !is_process and expand) {
-            var it = map.iterator();
-            while (it.next()) |entry| {
-                if (count > 0) {
-                    count -= 1;
-                } else if (try this.expandValue(map, entry.value_ptr.value)) |value| {
-                    allocator.free(entry.value_ptr.value);
-                    entry.value_ptr.* = .{
-                        .value = try allocator.dupe(u8, value),
+            // Preserve insertion order: later expansions see the completed
+            // values of earlier entries, while inherited values stay literal.
+            for (map.map.values()[initial_count..]) |*entry| {
+                if (try this.expandValue(map, entry.value)) |value| {
+                    const owned_value = try allocator.dupe(u8, value);
+                    allocator.free(entry.value);
+                    entry.* = .{
+                        .value = owned_value,
                         .conditional = false,
                     };
                 }
