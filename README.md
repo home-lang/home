@@ -74,42 +74,42 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Frontend performance snapshot** (Apple M3 Pro, 30 interleaved runs after
-three warmups; lower is better):
+**Frontend performance snapshot** (`3b7f0ea93`, Apple M3 Pro, shared workstation;
+30 interleaved runs after three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 64.4 ms | 42.2 ms | **3.9 ms** | **10.82× faster** |
-| 256 files | 213.2 ms | 53.5 ms | **30.0 ms** | **1.78× faster** |
-| Deep types | 127.9 ms | 52.6 ms | **12.9 ms** | **4.09× faster** |
-| 128-module import graph | 129.2 ms | 45.0 ms | 25.8 ms | Ineligible: type checks fail |
-| 64-leaf barrel graph | 94.7 ms | 40.7 ms | 26.8 ms | Ineligible: type checks fail |
-| 256 typed TSX components | 159.1 ms | 46.3 ms | **21.3 ms** | **2.17× faster** |
-| 256 generic call groups | 177.5 ms | 55.4 ms | **22.0 ms** | **2.52× faster** |
-| 256 exhaustive control-flow functions | 212.2 ms | 63.1 ms | **32.9 ms** | **1.92× faster** |
-| 256 type-predicate/assertion families | 237.3 ms | 72.4 ms | **46.5 ms** | **1.56× faster** |
-| 2,048 type-predicate/assertion families | 1027.8 ms | 348.8 ms | **322.1 ms** | **1.08× faster** |
-| 256 null-safe-access families | 206.3 ms | 60.3 ms | **40.6 ms** | **1.49× faster** |
-| 128 destructuring/rest/spread families | 144.3 ms | 48.5 ms | **35.3 ms** | **1.38× faster** |
-| 128 × 8 overload calls | 222.7 ms | 71.6 ms | **30.9 ms** | **2.32× faster** |
-| 128 generic class families | 200.0 ms | 55.8 ms | **29.8 ms** | **1.87× faster** |
-| 128 structural object families | 197.7 ms | 60.7 ms | **31.5 ms** | **1.93× faster** |
-| 128 interface/namespace families | 233.3 ms | 76.2 ms | **46.5 ms** | **1.64× faster** |
-| 256 variadic tuple families | 268.4 ms | 81.0 ms | 46.2 ms | Provisional: older admission schema |
-| 128 checked-JavaScript/JSDoc families | 246.4 ms | 63.0 ms | **41.2 ms** | **1.53× faster** |
+| Startup | 63.1 ms | 38.2 ms | **3.4 ms** | **11.30× faster** |
+| 256 files | 206.7 ms | 54.2 ms | **31.5 ms** | **1.72× faster** |
+| Deep types | 146.1 ms | 58.8 ms | **30.1 ms** | **1.95× faster** |
+| 128-module import graph | — | — | — | Ineligible: type checks fail |
+| 64-leaf barrel graph | — | — | — | Ineligible: type checks fail |
+| 256 typed TSX components | 161.7 ms | 47.9 ms | **23.1 ms** | **2.08× faster** |
+| 256 generic call groups | 197.7 ms | 60.7 ms | **25.6 ms** | **2.37× faster** |
+| 256 exhaustive control-flow functions | 219.0 ms | 67.6 ms | **39.9 ms** | **1.69× faster** |
+| 256 type-predicate/assertion families | 322.9 ms | 88.1 ms | **53.5 ms** | **1.65× faster** |
+| 2,048 type-predicate/assertion families | 1120.0 ms | 393.6 ms | 377.0 ms | 1.04× lower mean; noisy |
+| 256 null-safe-access families | 223.1 ms | 69.7 ms | **52.0 ms** | **1.34× faster** |
+| 128 destructuring/rest/spread families | 156.0 ms | 50.7 ms | **37.7 ms** | **1.34× faster** |
+| 128 × 8 overload calls | 224.9 ms | 70.2 ms | **33.6 ms** | **2.09× faster** |
+| 128 generic class families | 335.8 ms | 76.8 ms | **45.3 ms** | **1.69× faster** |
+| 128 structural object families | 229.8 ms | 71.1 ms | **35.5 ms** | **2.01× faster** |
+| 128 interface/namespace families | 241.4 ms | 73.6 ms | **52.5 ms** | **1.40× faster** |
+| 256 variadic tuple families | 275.0 ms | 84.3 ms | **48.0 ms** | **1.76× faster** |
+| 128 checked-JavaScript/JSDoc families | 210.3 ms | 56.4 ms | **39.8 ms** | **1.42× faster** |
+| 256 recursive generic payloads | 151.7 ms | 71.8 ms | **29.7 ms** | **2.42× faster** |
 
-These are local synthetic means, with substantial variance in several rows;
-they are not a claim of universal benchmark leadership.
-Both graph speed claims are withdrawn: Home accepts invalid imported-property
-checks rejected by TS 6 and TS 7 ([audit and remaining gaps](./docs/docs/TS_PERFORMANCE.md#global-declaration-and-graph-admission-audit-untimed)).
-Other rows remain provisional pending broader rejection-control coverage.
-The large-predicate lead was independently confirmed at **1.08×**
-in an additional 30-round run.
-This snapshot is from `9e45e105d` and includes stronger return-type checks.
-Later generic-callback, declaration, and
-[assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
-have passed correctness checks but have not yet been retimed. Async/await
-coverage is still undergoing validation and is not included in these timings.
+Home has lower means on all **17 timed workloads**, not universal benchmark
+leadership. Shared-host load causes substantial variance in several rows;
+the large-predicate margin is especially uncertain. Both original graph workloads
+still fail rejection controls and were **not timed**. All selected workloads
+pass current admission before timing, including the strengthened tuple controls
+and nine new recursive-generic controls. Broader rejection coverage,
+real-project validation and cross-platform measurements remain incomplete.
+See [full results, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#lazy-generic-checkpoint-performance).
+An independent 30-round repeat records 2.47× for recursive generics and 1.12×
+for large predicates; it does not replace or get averaged into this table.
+Async/await coverage is still undergoing validation and is not timed.
 The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
 verify that checking uses the completed graph without reparsing bound sources.
 False reference/global-presence errors are fixed, but cross-file type linkage
@@ -117,8 +117,8 @@ remains incomplete. The [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#
 passes **56/56** after isolating callable metadata and nested generic inference.
 The latest [callable-union audit](./docs/docs/TS_PERFORMANCE.md#callable-union-predicates-and-receivers-untimed)
 improves from **120/256 to 256/256** after fixing predicate composition and
-receiver requirements. These are correctness results; the timing snapshot above
-has not been refreshed. Expanded controls keep remaining failures visible:
+receiver requirements. These separate correctness audits keep remaining
+failures visible:
 
 | Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
 |---|---:|---:|---:|
@@ -131,8 +131,8 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
-| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 120/120 | 120/120 | 118/120 |
-| [Recursive generic-consumer controls](./docs/docs/TS_PERFORMANCE.md#recursive-generic-consumer-baseline-untimed) | 216/216 | 216/216 | 96/216 |
+| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers) | 120/120 | 120/120 | 120/120 |
+| [Recursive generic-consumer controls](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers) | 288/288 | 288/288 | 288/288 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |
@@ -144,13 +144,14 @@ type transfer remains incomplete, and both graph timing claims remain ineligible
 The [imported static-value checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed)
 preserves class values through namespace aliases, captures, destructuring, and
 cycles: its controls improve from 52/84 to 84/84. Bound-class controls now pass
-52/52. The latest [imported generic-class checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed)
-improves from 62/120 to 118/120 with source-owned arguments, defaults and
-constraints. Growing recursive aliases still fail two controls; eight
-inheritance controls remain failing in the nominal audit.
-The broader recursive audit exposes failures in local and imported consumers;
-its 96/216 baseline is separate from the 118/120 imported-class checkpoint.
-These are correctness results, not new timings.
+52/52. The latest [lazy generic-consumer checkpoint](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers)
+improves recursive controls from 112/288 to 288/288 and imported generic-class
+controls from 118/120 to 120/120. Requested type surfaces expand from cached,
+source-owned definitions while nested references remain symbolic. Eight nominal
+inheritance controls still fail. The original workload admission stays 16/18;
+a separate recursive throughput workload passes its positive and nine appended
+negative controls, bringing the expanded admission set to 17/19. These counts
+are correctness results, not speed claims.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact

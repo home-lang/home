@@ -2654,3 +2654,200 @@ is freshly verified at **16/18** for Home and **18/18** for both competitors
 HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 bench/vs_tsgo/audit_recursive_generics.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Lazy source-owned generic consumers
+
+Work for [#524](https://github.com/home-lang/home/issues/524), parents
+[#521](https://github.com/home-lang/home/issues/521) and
+[#487](https://github.com/home-lang/home/issues/487), tracker
+[#416](https://github.com/home-lang/home/issues/416).
+[`220a62d57`](https://github.com/home-lang/home/commit/220a62d57) expands the
+preceding audit from 216 to **288** controls by adding private-to-module local
+declarations. This fourth placement uses the same 18 families, two root orders,
+and positive/appended-only-negative pairs. All prior controls remain. Every
+compiler receives identical files/options; positive programs must be silent and
+negative programs must produce exactly one TS2322. These are correctness
+controls, not a recursive-generic throughput benchmark.
+
+The frozen foundation ReleaseFast binary (`c6c6c6652`, SHA-256
+`95ababead014327b0e3bc97b7909eae88aeabaf5b2542612ba79fb74ffc6e173`) passes
+**112/288**: 16/72 for each local placement and 40/72 for each import placement.
+Both TS 6.0.3 and native TS 7.0.2 pass **288/288**. Evidence is
+`bench/vs_tsgo/results/lazy-generics.2H3YDX/recursive-before-288.log`.
+The added placement exposes 56 additional Home failures; it does not remove or
+reclassify any failure from the 216-case baseline. Audit source SHA-256:
+`361a6c796efca23e5ef11a76efc119d8d4c7f0b07ecdfbf51acec46d3253ca15`.
+
+Implementation [`3b7f0ea93`](https://github.com/home-lang/home/commit/3b7f0ea93)
+builds a declaration-owned symbolic body once, retaining
+fresh formal parameter identities. Instantiation substitutes the requested
+arguments but leaves nested references symbolic. Member access, indexed access,
+expression consumers and structural relations request the same cached expansion;
+growing recursion no longer requires eager unfolding. Local generic class
+metadata follows the same path without becoming an exported import binding.
+Definition identity is based on source owner and declaration position, not a
+display name. Transparent aliases preserve the identity of the type they reuse.
+No fixed-depth unrolling or new permissive `any` recovery is introduced.
+
+The dedicated growing-recursion test follows 64 requested surfaces and verifies
+their concrete arguments, cache reuse and a single generic definition. This test
+depth is not an implementation limit. Other focused controls cover owner
+separation, dependent defaults, constraints, local export visibility and display
+name collisions. Unsupported schema forms remain explicit; this checkpoint does
+not establish general imported-function/heritage/mapped-type support or repair
+the original graph admission gates by itself.
+
+The final ReleaseFast candidate passes the complete recursive audit:
+
+| Placement or separate audit | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Local exported declarations | 72/72 | 72/72 | 16/72 | 72/72 |
+| Local non-exported declarations | 72/72 | 72/72 | 16/72 | 72/72 |
+| Named imports | 72/72 | 72/72 | 40/72 | 72/72 |
+| Namespace imports | 72/72 | 72/72 | 40/72 | 72/72 |
+| Recursive total | 288/288 | 288/288 | 112/288 | 288/288 |
+| Imported generic classes (separate suite) | 120/120 | 120/120 | 118/120 | 120/120 |
+| Nominal identity (separate suite) | 52/52 | 52/52 | 44/52 | 44/52 |
+| Original workload admission | 18/18 | 18/18 | 16/18 | 16/18 |
+
+Evidence is under `bench/vs_tsgo/results/lazy-generics.2H3YDX/`, using the
+immutable `release-v5/bin/home-tsc` binary, SHA-256
+`267691e33056e2c4a8b23b757bc3eed19c8b3d90fa9407120b8985834a844ccd`.
+Logs: `recursive-release-v5.log`, `audit_generic_classes-release-v5.log`,
+`audit_nominal_origins-release-v5.log`, and `admission-release-v5.log`.
+The 288-case audit makes 864 compiler/case checks with zero failures; the
+imported-class audit makes 360 checks with zero failures. Eight Home nominal
+inheritance failures and both original graph rejection failures remain visible.
+
+The separate throughput workload
+([`de72563b3`](https://github.com/home-lang/home/commit/de72563b3)) consumes 256
+distinct payload interfaces through an imported `Box<T>` and four requested
+levels of `Link<T[]>`. Every family checks both its complete array container
+and its numeric leaf. Before timing, a temporary copy appends nine invalid uses
+at the first, middle and last payload: wrong leaf type, wrong nested container,
+and missing property. Admission requires exactly six TS2322 and three TS2339
+diagnostics; crashes, silent acceptance and incomplete rejection fail the gate.
+The original positive corpus is never mutated or replaced for the negative run.
+
+The frozen foundation accepts these invalid uses (`recursive-workload-before.log`)
+and is therefore **ineligible** for a before/after timing comparison on this new
+workload. All three current compilers pass its positive and negative checks
+(`admission-release-v5.log`). The expanded manifest admits 17/19 workloads for
+Home and 19/19 for each competitor, while the original 18-workload set remains
+16/18 for Home. Adding a passing workload does not repair either failing graph.
+
+Exact committed-source verification passes **4,285/4,285 checker**,
+**1,417/1,417 conformance**, **131/131 Program**, **187/187 driver**,
+**69/69 CLI**, **9/9 source-owned focus**, and **60/60 benchmark harness** tests.
+Logs are `checker-v5.log`, `conformance-v5.log`, `ts_program-v5.log`,
+`ts_driver-v5.log`, `ts_cli-v5.log`, `focused-v5.log` and
+`harness-recursive-final.log` in the evidence directory above. Earlier
+interrupted verification attempts are not counted as passes. Zig formatting
+and targeted Pickier checks pass, apart from the pre-existing README fragment
+warning (`lint-docs.log`).
+
+Reporting fix [`74d11634e`](https://github.com/home-lang/home/commit/74d11634e)
+subsequently raises the harness total to **66/66**
+(`harness-report-integrity.log`). Interleaved reports now require the exact
+metadata-declared workload/round file set, the rotating compiler order, and one
+successful finite positive timing per compiler per round. An unfinished run
+cannot print partial averages under a completed-run heading. Missing/extra
+rounds, malformed JSON, duplicate compilers and failed samples are rejected,
+not filtered. The historical complete report still validates
+(`historical-report-check.log`).
+
+Fresh release audits also retain callable identity 56/56, callable unions
+256/256, static values 84/84, bound-class exports 52/52, graph discovery 28/28,
+and export origins 32/32 for all three compilers. Home's imported-owner 10/20,
+global 32/56 and bound-global 44/56 results remain unchanged; each competitor
+passes every control in those suites. Logs use `audit_<name>-release-v5.log`.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/lazy-generics.2H3YDX/release-v5/bin/home-tsc" python3 bench/vs_tsgo/audit_recursive_generics.py
+HOME_TSC="$PWD/bench/vs_tsgo/results/lazy-generics.2H3YDX/release-v5/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3 --workload recursive_generics
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
+
+### Lazy generic checkpoint performance
+
+The full current checkpoint uses compiler `3b7f0ea93` and the frozen release
+binary identified above. Raw result directory:
+`bench/vs_tsgo/results/20260828T221149Z`; execution log:
+`lazy-generics.2H3YDX/timing-release-v5.log`. Apple M3 Pro, arm64, macOS 27.0,
+Zig `0.17.0-dev.1441+d5181a9c9`, TS **6.0.3**, native TS **7.0.2**.
+TS 7 and tsgo are one competitor. All 17 selected workloads pass current
+schema-3 admission before timing. The two failing original graphs are explicitly
+excluded, not silently omitted from an all-workload success claim.
+
+Each compiler receives the same generated project, minimal library, strict
+checking, `noLib` and `noEmit` options. Three warmups precede 30 fresh-process
+timings per compiler/workload, with compiler order rotating in every round.
+The complete report validates **510 round files / 1,530 successful samples**.
+No measurements are discarded, replaced or trimmed. Means and sample standard
+deviations are shown below; ratios compare Home with the faster competitor.
+
+These are **shared-workstation measurements**, not an isolated-host experiment.
+This task's builds, tests and audits completed before measurement, but unrelated
+CPU and filesystem activity continued. Observed load averages were
+13.34 / 37.27 / 42.65 at the start and 9.88 / 21.73 / 34.34 after the run.
+Several rows have substantial variance. Interleaving balances order but does
+not remove contention or prove statistical significance; the narrow large-case
+predicate margin is especially uncertain. Earlier historical timings are retained
+elsewhere in this document, not treated as a controlled before/after experiment.
+
+| Workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs faster competitor |
+|---|---:|---:|---:|---:|
+| Startup | 63.1 ± 1.3 ms | 38.2 ± 1.0 ms | 3.4 ± 0.2 ms | 11.30× faster |
+| 256 files | 206.7 ± 2.9 ms | 54.2 ± 2.5 ms | 31.5 ± 0.8 ms | 1.72× faster |
+| Deep types | 146.1 ± 58.4 ms | 58.8 ± 19.1 ms | 30.1 ± 11.1 ms | 1.95× faster |
+| 128-module import graph | — | — | — | Ineligible: rejection gate fails |
+| 64-leaf barrel graph | — | — | — | Ineligible: rejection gate fails |
+| TSX components | 161.7 ± 5.2 ms | 47.9 ± 3.1 ms | 23.1 ± 4.7 ms | 2.08× faster |
+| Generic calls | 197.7 ± 49.6 ms | 60.7 ± 18.9 ms | 25.6 ± 8.7 ms | 2.37× faster |
+| Control flow | 219.0 ± 78.6 ms | 67.6 ± 18.4 ms | 39.9 ± 18.3 ms | 1.69× faster |
+| Type predicates | 322.9 ± 151.3 ms | 88.1 ± 33.6 ms | 53.5 ± 16.9 ms | 1.65× faster |
+| Large type predicates | 1120.0 ± 211.7 ms | 393.6 ± 94.1 ms | 377.0 ± 100.9 ms | 1.04× lower mean; noisy |
+| Null-safe access | 223.1 ± 75.3 ms | 69.7 ± 26.0 ms | 52.0 ± 25.9 ms | 1.34× faster |
+| Destructuring | 156.0 ± 18.2 ms | 50.7 ± 4.0 ms | 37.7 ± 7.1 ms | 1.34× faster |
+| Overload resolution | 224.9 ± 27.2 ms | 70.2 ± 6.5 ms | 33.6 ± 9.5 ms | 2.09× faster |
+| Class hierarchy | 335.8 ± 90.2 ms | 76.8 ± 17.7 ms | 45.3 ± 14.8 ms | 1.69× faster |
+| Structural objects | 229.8 ± 28.9 ms | 71.1 ± 12.3 ms | 35.5 ± 4.9 ms | 2.01× faster |
+| Interface composition | 241.4 ± 39.7 ms | 73.6 ± 13.5 ms | 52.5 ± 10.3 ms | 1.40× faster |
+| Variadic tuples | 275.0 ± 12.9 ms | 84.3 ± 5.7 ms | 48.0 ± 7.9 ms | 1.76× faster |
+| Checked JavaScript/JSDoc | 210.3 ± 9.9 ms | 56.4 ± 7.2 ms | 39.8 ± 6.4 ms | 1.42× faster |
+| Recursive generic payloads | 151.7 ± 2.2 ms | 71.8 ± 1.1 ms | 29.7 ± 0.2 ms | 2.42× faster |
+
+Home has lower means on **17/17 timed workloads**, while expanded admission
+remains **17/19**. In paired rounds Home beats native TS 7 in 30/30 recursive
+rounds and 24/30 large-predicate rounds. These observations are not proof of
+universal, real-project or cross-platform leadership. This correctness
+implementation is not claimed to accelerate the old compiler: its predecessor
+fails the new recursive workload's rejection controls, so that speed comparison
+would not represent equivalent semantic work.
+
+```sh
+# Run all currently eligible workloads; failing graph gates stay explicitly excluded.
+HOME_TSC="$PWD/bench/vs_tsgo/results/lazy-generics.2H3YDX/release-v5/bin/home-tsc" python3 -c 'import sys; sys.path.insert(0,"bench/vs_tsgo"); import run; run.cmd_cold(30, 3, [w for w in run.manifest()["workloads"] if w not in ("import_graph", "reexport_graph")])'
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T221149Z
+```
+
+After the full run, an independent 30-round confirmation was declared for the
+new recursive workload and the narrowest mean margin, large predicates. It uses
+the same frozen binary, three warmups, pinned competitors and admission gates.
+Results are retained separately in `20260828T221611Z`
+(`lazy-generics.2H3YDX/timing-confirmation-v5.log`):
+
+| Confirmation workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs faster competitor |
+|---|---:|---:|---:|---:|
+| Large type predicates | 1151.5 ± 272.4 ms | 392.7 ± 83.0 ms | 349.9 ± 17.0 ms | 1.12× faster |
+| Recursive generic payloads | 156.6 ± 14.2 ms | 73.1 ± 3.9 ms | 29.6 ± 0.7 ms | 2.47× faster |
+
+All **60 round files / 180 samples** validate. Home beats native TS 7 in
+28/30 paired large-predicate rounds and 30/30 recursive rounds. These numbers
+do not replace, get averaged into, or erase the first run's noisy 1.04× margin.
+The shared-host and incomplete-coverage qualifications still apply.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/lazy-generics.2H3YDX/release-v5/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3 --workload type_predicates_large --workload recursive_generics
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T221611Z
+```
