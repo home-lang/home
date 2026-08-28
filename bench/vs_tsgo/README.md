@@ -57,6 +57,21 @@ same version/diagnostic checks as the global audit and keeps known failures in
 the default selection. These controls inform cross-file integration under
 [#487](https://github.com/home-lang/home/issues/487), not the timing table.
 
+The callable-identity audit is **untimed** as well:
+
+```sh
+python3 bench/vs_tsgo/audit_callables.py
+```
+
+Its 56 cases test whether equal parameter/return shapes accidentally share
+predicate, rest, optional, or generic metadata. Each valid/invalid pair uses
+identical declarations in both declaration orders and in script/module scope;
+only the invalid statement is appended. Predicate controls exercise direct
+calls, aliases, wrappers, and assignments. It uses the same exact-version and
+diagnostic checks, with no skipped failures. Use `--family` for an investigation
+and the complete audit for verification. Tracked in
+[#507](https://github.com/home-lang/home/issues/507).
+
 For an additional targeted confirmation, use
 `./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3 --workload type_predicates_large`.
 Repeat `--workload` for multiple cases; omitting it still runs the full suite.
