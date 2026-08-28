@@ -23,6 +23,7 @@ pub const relation = @import("relation.zig");
 pub const lower = @import("lower.zig");
 pub const check = @import("check.zig");
 pub const render = @import("render.zig");
+pub const type_transfer = @import("type_transfer.zig");
 
 pub const TypeId = types.TypeId;
 pub const CheckedTypes = check.CheckedTypes;
@@ -66,6 +67,7 @@ test {
     _ = lower;
     _ = check;
     _ = render;
+    _ = type_transfer;
     _ = @import("lib.zig");
     _ = @import("source_markers.zig");
 }

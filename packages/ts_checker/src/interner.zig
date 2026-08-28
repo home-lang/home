@@ -575,6 +575,36 @@ pub const Interner = struct {
         return try self.internKey(key, .{ .is_keyof = true });
     }
 
+    pub fn internTupleType(self: *Interner, elements: []const types.TupleElement) !TypeId {
+        return self.internOwnedGraphKey(.{ .tuple = elements }, .{ .is_tuple = true });
+    }
+
+    pub fn internInstantiation(self: *Interner, origin: TypeId, args: []const TypeId) !TypeId {
+        return self.internOwnedGraphKey(.{ .instantiation = .{ .origin = origin, .args = args } }, .{ .is_instantiation = true });
+    }
+
+    // These variable-length keys must own their slices just like unions,
+    // signatures, and template literals; callers may release their buffers.
+    fn internOwnedGraphKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
+        const shard = &self.shards[shardIndexFor(key.hash())];
+        shard.mu.lockShared();
+        if (shard.table.getContext(key, KeyHashCtx{})) |id| {
+            shard.mu.unlockShared();
+            return id;
+        }
+        shard.mu.unlockShared();
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(key, KeyHashCtx{})) |id| return id;
+        const allocator = shard.key_arena.allocator();
+        const owned: TypeKey = switch (key) {
+            .tuple => |elements| .{ .tuple = try allocator.dupe(types.TupleElement, elements) },
+            .instantiation => |value| .{ .instantiation = .{ .origin = value.origin, .args = try allocator.dupe(TypeId, value.args) } },
+            else => unreachable,
+        };
+        return self.publishKeyLocked(shard, owned, flags);
+    }
+
     pub fn internTemplateLiteral(self: *Interner, texts: []const StringId, type_parts: []const TypeId) !TypeId {
         // Probe with the caller's slices first; on a hit no allocation
         // is needed. On a miss we dupe into the chosen shard arena

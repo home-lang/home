@@ -142,8 +142,8 @@ pub const EnumLiteralInfo = struct {
 /// indexed by the same `TypeId` (SoA — see `Pool` below).
 pub const TypeHeader = struct {
     flags: TypeFlags,
-    /// Symbol that introduced this type (class / interface / type alias),
-    /// or 0 if synthetic.
+    /// Declaring HIR NodeId (not a StringId), or 0 if synthetic. The node
+    /// belongs to the source owner and must be remapped across type pools.
     symbol: u32,
     /// Index into the appropriate side-table column (literal_payloads,
     /// union_payloads, …). Zero is a valid "none" sentinel for the
