@@ -1531,6 +1531,73 @@ python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
 ```
 
+## Program-wide name identity and bound global ownership (untimed)
+
+Every prepared `Program` source now retains a reference-counted handle to one
+sharded name store. Per-file HIR, binder symbols, declarations, NodeIds, and
+TypeIds remain separate: equal StringIds are meaningful across the program,
+but foreign local IDs are never interpreted through another source. Serial,
+parallel, streaming, bind-only, incremental, and cached-emission paths retain
+the store explicitly, and recompilation preserves existing name IDs.
+
+Program-level global discovery now indexes actual root binder maps by name and
+value/type/namespace meaning. Each entry retains its source owner and symbol,
+including merged declaration NodeIds. Presence-only checker inputs are
+projections of that index, replacing raw scans which only recognized the first
+plain `var` declarator and mistook comment text for module syntax. The binder
+hoists block and loop `var` declarations to the nearest variable environment
+while keeping `let` and `const` lexical. CommonJS export discovery also reuses
+the prepared syntax owner instead of compiling every source a second time.
+
+The permanent untimed audit uses six visible declaration shapes (plain,
+comma-separated, destructured, block-hoisted, comment-adjacent, and escaped)
+and five isolation shapes (inline external module, function, namespace,
+lexical block, and lexical loop). Every case runs with its declaration root
+both before and after the consumer. Visible declarations have positive,
+missing-name, and wrong-type controls; isolated declarations have positive and
+negative controls. Negative projects only append an invalid use, exact
+diagnostic-code multisets are required, and all compilers receive identical
+projects and configurations.
+
+| Bound-global ownership audit | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Visible declaration and rejection controls | 36/36 | 36/36 | 4/36 | 24/36 |
+| Module and lexical isolation controls | 20/20 | 20/20 | 18/20 | 20/20 |
+| Total | 56/56 | 56/56 | 22/56 | 44/56 |
+
+All twelve remaining Home failures are deliberately retained wrong-type
+controls: the declaration name is visible, but its foreign TypeId is not yet
+linked. This result therefore does not readmit either graph workload or change
+any timing claim. Typed global/import resolution remains tracked in
+[#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487); shared identity and bound
+ownership are tracked in
+[#515](https://github.com/home-lang/home/issues/515).
+
+Implementation commits
+[`ac52b6203`](https://github.com/home-lang/home/commit/ac52b6203),
+[`0a296c1de`](https://github.com/home-lang/home/commit/0a296c1de), and
+[`347693b72`](https://github.com/home-lang/home/commit/347693b72) establish the
+shared store, correct variable-environment binding, and add the source-owned
+declaration index respectively. The audit itself landed in
+[`3f1c34ee9`](https://github.com/home-lang/home/commit/3f1c34ee9).
+
+The interner suite passes 16/16, binder 21/21, driver 187/187, and program
+109/109, including allocation-failure cleanup, concurrent retention,
+independent lifetimes, every execution mode, incremental recompilation, and
+module isolation. The benchmark harness has 38 structural tests. Raw evidence
+is retained in `bench/vs_tsgo/results/program-identities.4udJSv`. The
+pre-change ReleaseFast binary is `callable-unions.2pCgVc/home-v5`, SHA-256
+`462eaf0f83137f05205ac50705c5b4878c0e24f18a7b69fcb1804dc1a03a30dc`.
+The final ReleaseFast binary is `program-identities.4udJSv/home-final`,
+SHA-256
+`0b7289905e110f79611a967097cab671ef1726e5ae06a60cfaf7bb8a26b604ea`.
+
+```sh
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_bound_globals.py
+```
+
 Local evidence is retained in `bench/vs_tsgo/results/checked-transfer.IO4A4Q`.
 The final ReleaseFast binary SHA-256 is
 `4ad8003e751e1471db6f7ea855c3bf8a3822063e89ddb793b85d3714efe93393`.

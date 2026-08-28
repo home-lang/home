@@ -126,6 +126,7 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Callable union controls | 256/256 | 256/256 | 256/256 |
 | Variadic tuple controls | 14/14 | 14/14 | 14/14 |
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
+| [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
 | Imported-owner controls | 20/20 | 20/20 | 8/20 |
 | Transitive reference probe | 3/3 | 3/3 | 2/3 |
 
