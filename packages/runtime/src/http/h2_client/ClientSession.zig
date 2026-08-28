@@ -251,7 +251,15 @@ pub fn attach(this: *ClientSession, client: *HTTPClient) void {
     if (!this.preface_sent) encode.writePreface(this);
 
     this.rearmTimeout();
-    const request = client.buildRequest(client.state.original_request_body.len());
+    // DATA may remain queued across event-loop callbacks.
+    client.compressBodyForSend(false) catch |err| {
+        _ = this.streams.swapRemove(stream.id);
+        stream.deinit();
+        client.h2 = null;
+        client.failFromH2(err);
+        return;
+    };
+    const request = client.buildRequest(client.bodyLenForSend());
     encode.writeRequest(this, client, stream, request) catch |err| {
         // encodeHeader pushes into the HPACK encoder's dynamic table per
         // call, so a mid-encode failure leaves entries the server will

@@ -123,13 +123,22 @@ const ShutdownMessage = struct {
 
 pub const LibdeflateState = struct {
     decompressor: *bun.libdeflate.Decompressor = undefined,
+    lazy_compressor: ?*bun.libdeflate.Compressor = null,
     shared_buffer: [512 * 1024]u8 = undefined,
 
     pub const new = bun.TrivialNew(@This());
 
     pub fn deinit(this: *@This()) void {
         this.decompressor.deinit();
+        if (this.lazy_compressor) |c| c.deinit();
         bun.TrivialDeinit(@This())(this);
+    }
+
+    pub fn compressor(this: *@This()) *bun.libdeflate.Compressor {
+        if (this.lazy_compressor == null) {
+            this.lazy_compressor = bun.libdeflate.Compressor.alloc(@import("compress_body.zig").default_deflate_level) orelse bun.outOfMemory();
+        }
+        return this.lazy_compressor.?;
     }
 };
 

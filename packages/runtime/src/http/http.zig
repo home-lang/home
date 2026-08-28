@@ -1,4 +1,5 @@
 const HTTPClient = @This();
+pub const compress_body = @import("compress_body.zig");
 
 // This becomes Arena.allocator
 pub var default_allocator: std.mem.Allocator = undefined;
@@ -735,8 +736,14 @@ signals: Signals = .{},
 async_http_id: u32 = 0,
 hostname: ?[]u8 = null,
 unix_socket_path: jsc.ZigString.Slice = jsc.ZigString.Slice.empty,
+/// Preserve the original bytes for redirects/retries; only the send cursor
+/// points into this per-request compressed storage.
+compress: ?compress_body.CompressOption = null,
+compressed_request_body: std.ArrayListUnmanaged(u8) = .empty,
+compressed_body_len: usize = 0,
 
 pub fn deinit(this: *HTTPClient) void {
+    this.compressed_request_body.clearAndFree(bun.default_allocator);
     if (this.redirect.len > 0) {
         bun.default_allocator.free(this.redirect);
         this.redirect = &.{};
@@ -1445,8 +1452,40 @@ const InitialRequestPayloadResult = struct {
     try_sending_more_data: bool,
 };
 
+pub fn bodyLenForSend(this: *const HTTPClient) usize {
+    return if (this.state.flags.body_compressed) this.compressed_body_len else this.state.original_request_body.len();
+}
+
+pub fn compressBodyForSend(this: *HTTPClient, into_shared: bool) !void {
+    const opt = this.compress orelse return;
+    if (this.state.flags.body_compressed or this.state.original_request_body != .bytes) return;
+    const input = this.state.original_request_body.bytes;
+    if (input.len == 0) return;
+    const deflater = http_thread.deflater();
+    const result = try compress_body.compressInto(deflater, input, opt, &this.compressed_request_body);
+    const bytes = switch (result) {
+        .shared => |n| blk: {
+            if (into_shared) break :blk deflater.shared_buffer[0..n];
+            try this.compressed_request_body.appendSlice(bun.default_allocator, deflater.shared_buffer[0..n]);
+            break :blk this.compressed_request_body.items;
+        },
+        .spilled => this.compressed_request_body.items,
+    };
+    this.compressed_body_len = bytes.len;
+    this.state.request_body = bytes;
+    this.state.flags.body_compressed = true;
+}
+
+fn spillCompressedBody(this: *HTTPClient) void {
+    if (!this.state.flags.body_compressed or this.compressed_request_body.items.len != 0 or this.state.request_body.len == 0) return;
+    bun.handleOom(this.compressed_request_body.appendSlice(bun.default_allocator, this.state.request_body));
+    this.state.request_body = this.compressed_request_body.items;
+}
+
 // This exists as a separate function to reduce the amount of time the request body buffer is kept around.
 noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call: bool, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) !InitialRequestPayloadResult {
+    try this.compressBodyForSend(true);
+    defer this.spillCompressedBody();
     var request_body_buffer = this.getRequestBodySendBuffer();
     defer request_body_buffer.deinit();
     var temporary_send_buffer = request_body_buffer.toArrayList();
@@ -1454,14 +1493,14 @@ noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call:
 
     var writer = std.Io.Writer.fixed(temporary_send_buffer.allocatedSlice()[temporary_send_buffer.items.len..]);
 
-    const request = this.buildRequest(this.state.original_request_body.len());
+    const request = this.buildRequest(this.bodyLenForSend());
 
     if (this.http_proxy) |_| {
         if (this.url.isHTTPS()) {
             log("start proxy tunneling (https proxy)", .{});
             //DO the tunneling!
             this.flags.proxy_tunneling = true;
-            try writeProxyConnect(@TypeOf(writer), writer, this);
+            try writeProxyConnect(@TypeOf(&writer), &writer, this);
         } else {
             log("start proxy request (http proxy)", .{});
             // HTTP do not need tunneling with CONNECT just a slightly different version of the request
@@ -1797,6 +1836,10 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
             log("send proxy headers", .{});
             if (this.proxy_tunnel) |proxy| {
                 this.setTimeout(socket);
+                this.compressBodyForSend(false) catch |err| {
+                    this.closeAndFail(err, is_ssl, socket);
+                    return;
+                };
                 var stack_buffer = bun.stackFallback(1024 * 16, bun.default_allocator);
                 const allocator = stack_buffer.get();
                 var temporary_send_buffer = std.array_list.Managed(u8).fromOwnedSlice(allocator, &stack_buffer.buffer);
@@ -1804,7 +1847,7 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
                 defer temporary_send_buffer.deinit();
                 var writer = std.Io.Writer.fixed(temporary_send_buffer.allocatedSlice()[temporary_send_buffer.items.len..]);
 
-                const request = this.buildRequest(this.state.request_body.len);
+                const request = this.buildRequest(this.bodyLenForSend());
                 writeRequest(
                     @TypeOf(&writer),
                     &writer,
@@ -1884,6 +1927,14 @@ fn startProxyHandshake(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTP
     log("startProxyHandshake", .{});
     // if we have options we pass them (ca, reject_unauthorized, etc) otherwise use the default
     const ssl_options = if (this.tls_props) |tls| tls.get().* else jsc.API.ServerConfig.SSLConfig.zero;
+    // A split CONNECT envelope is buffered here. Detach it before TLS can
+    // synchronously re-enter header parsing, but keep its allocation alive:
+    // start_payload may borrow its tail until start() copies it into the BIO.
+    // start() can also synchronously fail and free this client, so cleanup
+    // must touch only the detached local after the call.
+    var envelope = this.state.response_message_buffer;
+    this.state.response_message_buffer = .{ .allocator = envelope.allocator, .list = .empty };
+    defer envelope.deinit();
     ProxyTunnel.start(this, is_ssl, socket, ssl_options, start_payload);
 }
 
@@ -3386,6 +3437,27 @@ const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
 const posix = std.posix;
 const SOCK = posix.SOCK;
+
+test "compressed send cursor survives shared-buffer reuse and keeps original bytes" {
+    var shared = [_]u8{ 1, 2, 3, 4, 5 };
+    var client: HTTPClient = undefined;
+    client.compressed_request_body = .empty;
+    defer client.compressed_request_body.deinit(bun.default_allocator);
+    client.compressed_body_len = shared.len;
+    client.state = undefined;
+    client.state.flags = .{ .body_compressed = true };
+    client.state.original_request_body = .{ .bytes = "uncompressed" };
+    // Two compressed bytes were already sent; spill only the unsent cursor.
+    client.state.request_body = shared[2..];
+    client.spillCompressedBody();
+    @memset(&shared, 0);
+    client.spillCompressedBody();
+    try std.testing.expectEqualSlices(u8, &.{ 3, 4, 5 }, client.state.request_body);
+    try std.testing.expectEqual(@as(usize, 5), client.bodyLenForSend());
+    try std.testing.expectEqualStrings("uncompressed", client.state.original_request_body.bytes);
+    client.state.flags.body_compressed = false;
+    try std.testing.expectEqual(@as(usize, 12), client.bodyLenForSend());
+}
 
 test "completion reset preserves caller-owned response bytes" {
     var response = try MutableString.init(std.testing.allocator, 0);

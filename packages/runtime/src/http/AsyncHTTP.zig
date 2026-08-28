@@ -101,6 +101,7 @@ pub const Options = struct {
     verbose: ?HTTPVerboseLevel = null,
     disable_keepalive: ?bool = null,
     disable_decompression: ?bool = null,
+    compress: ?HTTPClient.compress_body.CompressOption = null,
     reject_unauthorized: ?bool = null,
     tls_props: ?SSLConfig.SharedPtr = null,
 };
@@ -188,6 +189,7 @@ pub fn init(
         .http_proxy = this.http_proxy,
         .proxy_headers = options.proxy_headers,
         .redirect_type = redirect_type,
+        .compress = options.compress,
     };
     if (options.unix_socket_path) |val| {
         assert(this.client.unix_socket_path.length() == 0);

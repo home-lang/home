@@ -7,7 +7,9 @@
 /// us a stream for a pending request.
 pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) !void {
     const client = stream.client orelse return error.Aborted;
-    const request = client.buildRequest(client.state.original_request_body.len());
+    // QUIC consumes body bytes asynchronously; never retain shared scratch.
+    try client.compressBodyForSend(false);
+    const request = client.buildRequest(client.bodyLenForSend());
     if (client.verbose != .none) {
         HTTPClient.printRequest(.http3, request, client.url.href, !client.flags.reject_unauthorized, client.state.request_body, client.verbose == .curl);
     }
