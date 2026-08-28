@@ -546,6 +546,23 @@ pub const ProgramExportedClass = struct {
 
 pub const ProgramClassSchema = @import("program_schema.zig");
 
+const ProgramInstantiationKey = struct {
+    declaration: *const ProgramClassSchema.Declaration,
+    arguments: []const TypeId,
+};
+const ProgramInstantiationContext = struct {
+    pub fn hash(_: ProgramInstantiationContext, key: ProgramInstantiationKey) u64 {
+        const owner = std.hash.Wyhash.hash(key.declaration.position, key.declaration.path);
+        return std.hash.Wyhash.hash(owner, std.mem.sliceAsBytes(key.arguments));
+    }
+    pub fn eql(_: ProgramInstantiationContext, a: ProgramInstantiationKey, b: ProgramInstantiationKey) bool {
+        return a.declaration.position == b.declaration.position and
+            std.mem.eql(u8, a.declaration.path, b.declaration.path) and
+            std.mem.eql(TypeId, a.arguments, b.arguments);
+    }
+};
+const ProgramTypeError = CheckError || error{UnsupportedProgramType};
+
 pub const ProgramMemberVisibility = enum {
     public,
     protected,
@@ -4993,6 +5010,7 @@ pub const Checker = struct {
     /// `Array<T>.prototype`, `Object` global. Populated lazily on
     /// first member-access against the corresponding receiver.
     lib_cache: lib.LibCache = .{},
+    empty_apparent_object_type: TypeId = types.Primitive.none,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
     /// Source bytes used for directive scanning (`// @ts-ignore` /
@@ -5271,6 +5289,10 @@ pub const Checker = struct {
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    program_generic_instances: std.HashMapUnmanaged(ProgramInstantiationKey, TypeId, ProgramInstantiationContext, 80) = .empty,
+    program_generic_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
+    program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
+    program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
@@ -5496,6 +5518,8 @@ pub const Checker = struct {
     /// honor `// @ts-ignore` and `// @ts-expect-error` directives.
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
+        self.clearProgramGenericInstances();
+        self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
         self.source = source;
         self.source_facts = .{};
@@ -5733,6 +5757,8 @@ pub const Checker = struct {
     }
 
     pub fn setProgramExportedClasses(self: *Checker, classes: []const ProgramExportedClass) void {
+        self.clearProgramGenericInstances();
+        self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_classes = classes;
     }
@@ -5788,6 +5814,11 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
+        self.clearProgramGenericInstances();
+        self.program_generic_instances.deinit(self.gpa);
+        self.program_generic_active.deinit(self.gpa);
+        self.program_generic_defaults_active.deinit(self.gpa);
+        self.program_schema_support.deinit(self.gpa);
         self.free_type_parameter_pending.deinit(self.gpa);
         self.free_type_parameter_visited.deinit(self.gpa);
         for (self.member_narrow_scopes.items) |*scope| {
@@ -75820,6 +75851,7 @@ pub const Checker = struct {
                     }
                     return types.Primitive.any;
                 }
+                if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
                 if (!self.nameHasEnclosingTypeParameter(r.name, type_node)) {
                     if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
                         const params = self.typeParamNodesOfDecl(decl);
@@ -78360,7 +78392,9 @@ pub const Checker = struct {
             full_path.items[0] = exported_root;
             break :blk full_path.items;
         } else full_path.items[1..];
-        if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name)) |t| return t;
+        if (namespace_path.len == 0) {
+            if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
+        }
         var exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
         const spec = self.string_interner.get(import_info.specifier);
         if (exported_t == null and std.mem.startsWith(u8, spec, ".")) {
@@ -91126,6 +91160,28 @@ pub const Checker = struct {
         }
         if (try self.classStaticSatisfiesConstructorObjectConstraint(source_t, target_t)) return true;
         if (self.engine.isAssignableTo(source_t, target_t) catch false) return true;
+        if (target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_object_type and
+            !self.interner.pool.flagsOf(target_t).is_union)
+        {
+            const source_flags = self.interner.pool.flagsOf(source_t);
+            const bigint = source_t == types.Primitive.bigint_t or (source_flags.is_bigint and source_flags.is_literal);
+            if (source_t == types.Primitive.object_t or bigint) {
+                // TS getApparentType maps non-primitive `object` to the empty
+                // object type. BigInt's global wrapper also defaults to that
+                // type when the selected libraries do not declare BigInt.
+                // This is a structural-object comparison, not permission for
+                // a bigint primitive to satisfy the non-primitive `object` type.
+                const declared_wrapper = if (bigint) blk: {
+                    const name = self.string_interner.lookup("BigInt") orelse break :blk null;
+                    break :blk self.type_names.get(name);
+                } else null;
+                const apparent = declared_wrapper orelse blk: {
+                    if (self.empty_apparent_object_type == types.Primitive.none) self.empty_apparent_object_type = try self.interner.internObjectType(&.{});
+                    break :blk self.empty_apparent_object_type;
+                };
+                if (self.engine.isAssignableTo(apparent, target_t) catch return error.OutOfMemory) return true;
+            }
+        }
         if (try self.objectSourceAssignableToMappedTarget(source_t, target_t)) return true;
         return try self.mappedArraySourceAssignableToArrayTarget(source_t, target_t);
     }
@@ -92174,7 +92230,8 @@ pub const Checker = struct {
         const target_program_origin = self.synthetic_program_class_origins.get(target_t);
         if (source_program_origin != null or target_program_origin != null) {
             return source_program_origin != null and target_program_origin != null and
-                source_program_origin.? == target_program_origin.?;
+                source_program_origin.? == target_program_origin.? and
+                self.alias_type_args.get(source_t) == null and self.alias_type_args.get(target_t) == null;
         }
         const source_name = self.classNameForInstanceType(source_t) orelse return false;
         const target_name = self.classNameForInstanceType(target_t) orelse return false;
@@ -106191,12 +106248,219 @@ pub const Checker = struct {
         return types.Primitive.any;
     }
 
-    fn programExportedClassTypeForImportBinding(
+    fn clearProgramGenericInstances(self: *Checker) void {
+        var keys = self.program_generic_instances.keyIterator();
+        while (keys.next()) |key| self.gpa.free(key.arguments);
+        self.program_generic_instances.clearRetainingCapacity();
+    }
+
+    fn programSchemaSupported(self: *Checker, schema: *const ProgramClassSchema.Schema) CheckError!bool {
+        if (self.program_schema_support.get(schema)) |supported| return supported;
+        const supported = try schema.isSupported(self.gpa);
+        try self.program_schema_support.put(self.gpa, schema, supported);
+        return supported;
+    }
+
+    fn programGenericClassReference(self: *Checker, class: ProgramExportedClass, anchor: NodeId) CheckError!?TypeId {
+        const schema = class.schema orelse return null;
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
+        if (!try self.programSchemaSupported(schema)) return null;
+        const declaration = schema.declaration;
+        const nodes = hir_mod.typeRefArgs(self.hir, anchor);
+        const params = declaration.parameters;
+        var minimum: usize = 0;
+        for (params, 0..) |param, i| if (param.default == null) {
+            minimum = i + 1;
+        };
+        if (nodes.len < minimum or nodes.len > params.len) {
+            var label: std.ArrayListUnmanaged(u8) = .empty;
+            defer label.deinit(self.gpa);
+            try label.appendSlice(self.gpa, class.class_name);
+            try label.append(self.gpa, '<');
+            for (params, 0..) |param, i| {
+                if (i != 0) try label.appendSlice(self.gpa, ", ");
+                try label.appendSlice(self.gpa, param.name);
+            }
+            try label.append(self.gpa, '>');
+            const message = if (minimum == params.len)
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires {d} type argument(s).", .{ label.items, params.len })
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires between {d} and {d} type arguments.", .{ label.items, minimum, params.len });
+            try self.reportOnce(anchor, if (minimum == params.len) TsCodes.generic_type_requires_args else TsCodes.generic_type_requires_between_args, message);
+            // Invalid outer arity does not suppress diagnostics in its args.
+            for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+            return types.Primitive.unknown;
+        }
+        const args = try self.gpa.alloc(TypeId, nodes.len);
+        defer self.gpa.free(args);
+        for (nodes, args) |node, *arg| arg.* = try self.lowererLowerWithTypeParams(node);
+        return self.instantiateProgramDeclaration(declaration, args, nodes) catch |err| switch (err) {
+            error.UnsupportedProgramType => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+    }
+
+    /// Instantiate from source-owned expressions, not from consumer name
+    /// tables or an already-substituted object. Reserving each object identity
+    /// before its members keeps recursive aliases concrete all the way down.
+    fn instantiateProgramDeclaration(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
+        const params = declaration.parameters;
+        if (supplied.len > params.len) return error.UnsupportedProgramType;
+        const args = try self.gpa.alloc(TypeId, params.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        @memcpy(args[0..supplied.len], supplied);
+        if (supplied.len < params.len) {
+            if (self.program_generic_defaults_active.contains(declaration)) return error.UnsupportedProgramType;
+            try self.program_generic_defaults_active.put(self.gpa, declaration, {});
+            defer _ = self.program_generic_defaults_active.remove(declaration);
+            for (params[supplied.len..], supplied.len..) |param, i| {
+                const default = param.default orelse return error.UnsupportedProgramType;
+                args[i] = try self.lowerProgramExpression(default, declaration, args);
+            }
+        }
+        // Constraints are checked at every use, including cache hits. The
+        // effective argument list resolves dependent defaults/constraints in
+        // the declaration environment rather than the importing file.
+        for (params, 0..) |param, i| {
+            if (i >= arg_nodes.len or self.diagnosticExists(arg_nodes[i], TsCodes.type_does_not_satisfy_constraint)) continue;
+            const expression = param.constraint orelse continue;
+            const constraint = try self.lowerProgramExpression(expression, declaration, args);
+            const name = self.string_interner.intern(param.name) catch return error.OutOfMemory;
+            const parameter = try self.interner.internTypeParameterWithFlags(name, constraint, types.Primitive.none, types.Variance.fromHirBits(param.variance), param.is_const);
+            try self.checkTypeArgSatisfiesConstraintImpl(arg_nodes[i], parameter, args[i], !self.typeNodeHasResolutionError(arg_nodes[i]));
+        }
+        const key: ProgramInstantiationKey = .{ .declaration = declaration, .arguments = args };
+        if (self.program_generic_instances.get(key)) |cached| {
+            if (cached == types.Primitive.none) return error.UnsupportedProgramType;
+            return cached;
+        }
+        // A repeated declaration with different arguments describes a growing
+        // recursive type. It needs lazy parameterized expansion, not a finite
+        // object graph. Keep that unsupported case explicit instead of
+        // truncating it, substituting an unsubstituted body, or recursing forever.
+        if (self.program_generic_active.contains(declaration)) return error.UnsupportedProgramType;
+        try self.program_generic_active.put(self.gpa, declaration, {});
+        defer _ = self.program_generic_active.remove(declaration);
+        const body = declaration.body orelse return error.UnsupportedProgramType;
+        const reserved = if (body.* == .object) try self.interner.internObjectType(&.{}) else types.Primitive.none;
+        const owned_args = try self.gpa.dupe(TypeId, args);
+        self.program_generic_instances.put(self.gpa, .{ .declaration = declaration, .arguments = owned_args }, reserved) catch |err| {
+            self.gpa.free(owned_args);
+            return err;
+        };
+        // A failed graph must never leave a partially completed object in the
+        // cache for a later successful lookup.
+        errdefer self.clearProgramGenericInstances();
+        const instance = if (body.* == .object) blk: {
+            const members = try self.programExpressionMembers(body.object, declaration, args);
+            defer self.gpa.free(members);
+            try self.interner.completeFreshObjectType(reserved, members);
+            break :blk reserved;
+        } else try self.lowerProgramExpression(body, declaration, args);
+        self.program_generic_instances.getPtr(key).?.* = instance;
+        if (declaration.is_class) {
+            const origin = try self.programSchemaDeclarationOrigin(declaration);
+            try self.synthetic_program_class_origins.put(self.gpa, instance, origin);
+            const name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory;
+            try self.class_name_by_instance.put(self.gpa, instance, name);
+            // Argument identity is semantic metadata. Retain it even when a
+            // display name cannot be rendered or is deliberately deferred.
+            if (args.len > 0) try self.alias_type_args.put(self.gpa, instance, try self.diag_arena.allocator().dupe(TypeId, args));
+            try self.registerAliasDisplayNameInner(instance, name, args, true);
+        }
+        return instance;
+    }
+
+    fn programSchemaDeclarationOrigin(self: *Checker, declaration: *const ProgramClassSchema.Declaration) CheckError!hir_mod.StringId {
+        const text = try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ declaration.path.len, declaration.path, declaration.position });
+        return self.string_interner.intern(text) catch error.OutOfMemory;
+    }
+
+    fn programExpressionMembers(self: *Checker, members: []const ProgramClassSchema.Member, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError![]types.ObjectMember {
+        const result = try self.gpa.alloc(types.ObjectMember, members.len);
+        errdefer self.gpa.free(result);
+        for (members, result) |member, *out| out.* = .{
+            .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+            .type = try self.lowerProgramExpression(member.type, declaration, args),
+            .is_optional = member.optional,
+            .is_readonly = member.readonly,
+            .is_method = member.method,
+            .visibility = member.visibility,
+            .declaration_origin = if (member.visibility == .public) 0 else try self.programSchemaDeclarationOrigin(declaration),
+        };
+        return result;
+    }
+
+    fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
+        switch (expression.*) {
+            .unsupported => return error.UnsupportedProgramType,
+            .primitive => |type_id| return type_id,
+            .parameter => |parameter| {
+                for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
+                return error.UnsupportedProgramType;
+            },
+            .string => |value| return self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory),
+            .number => |value| return self.interner.internNumberLiteral(value),
+            .boolean => |value| return self.interner.internBooleanLiteral(value),
+            .array => |element| {
+                const element_type = try self.lowerProgramExpression(element, declaration, args);
+                return self.interner.internArrayType(self.string_interner, element_type) catch error.OutOfMemory;
+            },
+            .readonly_array => |element| return self.internReadonlyArrayType(try self.lowerProgramExpression(element, declaration, args)),
+            .object => |members| {
+                const result = try self.programExpressionMembers(members, declaration, args);
+                defer self.gpa.free(result);
+                return self.interner.internObjectType(result);
+            },
+            .tuple => |elements| {
+                const result = try self.gpa.alloc(types.TupleElement, elements.len);
+                defer self.gpa.free(result);
+                for (elements, result) |element, *out| out.* = .{
+                    .type = try self.lowerProgramExpression(element.type, declaration, args),
+                    .is_optional = element.optional,
+                    .is_rest = element.rest,
+                };
+                return self.interner.internTupleType(result);
+            },
+            .union_type, .intersection => |members| {
+                const result = try self.gpa.alloc(TypeId, members.len);
+                defer self.gpa.free(result);
+                for (members, result) |member, *out| out.* = try self.lowerProgramExpression(member, declaration, args);
+                return if (expression.* == .union_type) self.interner.internUnion(result) else self.interner.internIntersection(result);
+            },
+            .function => |function| {
+                const params = try self.gpa.alloc(TypeId, function.parameters.len);
+                defer self.gpa.free(params);
+                const optional = try self.gpa.alloc(bool, params.len);
+                defer self.gpa.free(optional);
+                var rest = false;
+                for (function.parameters, params, optional) |param, *out, *omittable| {
+                    out.* = try self.lowerProgramExpression(param.type, declaration, args);
+                    omittable.* = param.optional or param.rest;
+                    rest = rest or param.rest;
+                }
+                const this_type = if (function.this_type) |receiver| try self.lowerProgramExpression(receiver, declaration, args) else types.Primitive.none;
+                const sig = try self.interner.internSignatureWithThisType(params, try self.lowerProgramExpression(function.result, declaration, args), false, false, this_type);
+                try self.recordSignatureMinArgs(sig, optional);
+                if (this_type != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, this_type);
+                if (rest) try self.rest_signatures.put(self.gpa, sig, {});
+                return sig;
+            },
+            .reference => |ref| {
+                const values = try self.gpa.alloc(TypeId, ref.arguments.len);
+                defer self.gpa.free(values);
+                for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
+                return self.instantiateProgramDeclaration(ref.declaration, values, &.{});
+            },
+        }
+    }
+
+    fn programExportedClassForImportBinding(
         self: *Checker,
         import_node: NodeId,
         local_name: hir_mod.StringId,
-        anchor: NodeId,
-    ) CheckError!?TypeId {
+    ) CheckError!?ProgramExportedClass {
         if (self.program_exported_classes.len == 0) return null;
         if (self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
@@ -106213,8 +106477,7 @@ pub const Checker = struct {
                     if (!exported_class.is_default) continue;
                     if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
                 }
-                const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
-                return try self.syntheticProgramClassStaticType(exported_class, class_name, local_name, anchor);
+                return exported_class;
             }
         }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
@@ -106229,10 +106492,16 @@ pub const Checker = struct {
                 } else {
                     if (!std.mem.eql(u8, exported_class.ambient_module_name, spec)) continue;
                 }
-                return try self.syntheticProgramClassStaticType(exported_class, sp.imported, local_name, anchor);
+                return exported_class;
             }
         }
         return null;
+    }
+
+    fn programExportedClassTypeForImportBinding(self: *Checker, import_node: NodeId, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const class = (try self.programExportedClassForImportBinding(import_node, local_name)) orelse return null;
+        const name = self.string_interner.intern(if (class.is_default) class.class_name else class.exportedName()) catch return error.OutOfMemory;
+        return try self.syntheticProgramClassStaticType(class, name, local_name, anchor);
     }
 
     fn programExportedClassInstanceTypeForImportedName(
@@ -106241,10 +106510,22 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.program_exported_classes.len == 0) return null;
+        // Most type references in a project are not imports. Use the bound
+        // root table before doing lexical scans or resolving module paths.
+        if (self.module) |module| {
+            if (!self.sourceHasVirtualFilenameSections()) {
+                const symbol = module.root.types.get(local_name) orelse module.root.values.get(local_name) orelse return null;
+                if (!symbol.flags.is_import) return null;
+            }
+        }
+        if (self.nameHasEnclosingTypeParameter(local_name, anchor) or self.findVisibleNamedTypeDecl(anchor, local_name) != null) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (try self.programExportedClassForImportBinding(stmt, local_name)) |class| {
+                if (try self.programGenericClassReference(class, anchor)) |instance| return instance;
+            }
             const imp = hir_mod.importOf(self.hir, stmt);
             if (imp.default_binding != hir_mod.none_node_id and
                 self.hir.kindOf(imp.default_binding) == .identifier and
@@ -106288,6 +106569,7 @@ pub const Checker = struct {
         import_node: NodeId,
         specifier: hir_mod.StringId,
         class_name: hir_mod.StringId,
+        anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.program_exported_classes.len == 0) return null;
         const spec = self.string_interner.get(specifier);
@@ -106299,6 +106581,7 @@ pub const Checker = struct {
             } else if (!self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) {
                 continue;
             }
+            if (try self.programGenericClassReference(exported_class, anchor)) |instance| return instance;
             return try self.syntheticProgramClassInstanceType(exported_class, class_name);
         }
         return null;
@@ -141282,8 +141565,21 @@ pub const Checker = struct {
         param_t: TypeId,
         arg_t: TypeId,
     ) CheckError!void {
+        return self.checkTypeArgSatisfiesConstraintImpl(arg_node, param_t, arg_t, false);
+    }
+
+    fn checkTypeArgSatisfiesConstraintImpl(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+        arg_t: TypeId,
+        argument_resolved: bool,
+    ) CheckError!void {
         if (arg_node == hir_mod.none_node_id) return;
-        if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) return;
+        if (arg_t == types.Primitive.any or arg_t == types.Primitive.never) return;
+        // A successfully resolved `unknown` argument is not an error-recovery
+        // placeholder and must satisfy the constraint like every other type.
+        if (arg_t == types.Primitive.unknown and !argument_resolved) return;
         const constraint_param = self.resolvedTypeParameterPlaceholder(param_t);
         if (constraint_param >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(constraint_param).is_type_parameter) return;
@@ -141372,7 +141668,8 @@ pub const Checker = struct {
             (try self.allocTypeArgSignatureConstraintHeaderName(info)) orelse return
         else
             (try self.typeArgConstraintTypeName(constraint, false)) orelse
-                (try self.typeParameterConstraintSourceName(constraint_param)) orelse return;
+                (try self.typeParameterConstraintSourceName(constraint_param)) orelse
+                (try self.allocObjectTypeShape(constraint)) orelse return;
         // Special-case the upstream wording for `extends object`:
         // null and undefined are excluded from the `object` type even
         // though they pass our default `isAssignableTo` heuristic.
@@ -196484,6 +196781,130 @@ test "checker: ambient export assignment class is a require alias type" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: source-owned generic instances retain concrete recursive arguments and owners" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    var declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 7, .name = "Link", .parameters = &params, .is_class = true };
+    const ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&parameter} } };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{
+        .{ .name = "item", .type = &parameter, .visibility = .private },
+        .{ .name = "next", .type = &ref, .optional = true },
+    } };
+    declaration.body = &body;
+    const first = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const repeat = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const other_args = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.number_t}, &.{});
+    const item = try s.sint.intern("item");
+    const next = try s.sint.intern("next");
+    try T.expectEqual(first, repeat);
+    try T.expect(first != other_args);
+    try T.expect(!try s.checker.checkerAssignableTo(first, other_args));
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(first, item).?);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(other_args, item).?);
+    try T.expectEqual(first, s.ti.objectMember(first, next).?);
+    try T.expectEqual(other_args, s.ti.objectMember(other_args, next).?);
+    try T.expect(s.ti.objectMemberInfo(first, next).?.is_optional);
+    try T.expectEqual(s.ti.objectMemberInfo(first, item).?.declaration_origin, s.ti.objectMemberInfo(other_args, item).?.declaration_origin);
+    // A separately collected alias of the same declaration shares its cache
+    // identity, but a genuinely different owner must remain distinct.
+    var alias = declaration;
+    try T.expectEqual(first, try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{}));
+    alias.path = "/other.ts";
+    const other_owner = try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{});
+    try T.expect(s.ti.objectMemberInfo(first, item).?.declaration_origin != s.ti.objectMemberInfo(other_owner, item).?.declaration_origin);
+}
+
+test "checker: source-owned growing recursion remains unsupported without poisoning instance caches" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const array: ProgramClassSchema.Expression = .{ .array = &parameter };
+    var declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 7, .name = "Link", .parameters = &params };
+    const ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&array} } };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "next", .type = &ref }} };
+    declaration.body = &body;
+    try T.expectError(error.UnsupportedProgramType, s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{}));
+    try T.expectEqual(@as(u32, 0), s.checker.program_generic_instances.count());
+    try T.expectEqual(@as(u32, 0), s.checker.program_generic_active.count());
+    const valid: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "item", .type = &parameter }} };
+    declaration.body = &valid;
+    const instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(instance, try s.sint.intern("item")).?);
+}
+
+test "checker: source-owned dependent defaults use earlier effective arguments" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    var params = [_]ProgramClassSchema.Parameter{ .{ .name = "T", .default = &string }, .{ .name = "U" } };
+    const first: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const second: ProgramClassSchema.Expression = .{ .parameter = &params[1] };
+    const array: ProgramClassSchema.Expression = .{ .array = &first };
+    params[1].default = &array;
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "value", .type = &second }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body };
+    const implicit = try s.checker.instantiateProgramDeclaration(&declaration, &.{}, &.{});
+    const explicit = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.number_t}, &.{});
+    const value = try s.sint.intern("value");
+    const string_array = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    const number_array = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    // Array type IDs need not canonicalize, so compare their numeric index.
+    try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(implicit, value).?, string_array));
+    try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, number_array));
+    try T.expect(!try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, string_array));
+}
+
+test "checker: source-owned anonymous constraints report without a local declaration node" {
+    const s = try newSetup("let value: { id: number };");
+    defer destroySetup(s);
+    const variable = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const arg_node = hir_mod.varDeclOf(&s.hir, variable).type_annotation;
+    const arg = try s.checker.lowererLowerWithTypeParams(arg_node);
+    const constraint = try s.ti.internObjectType(&.{.{
+        .name = try s.sint.intern("id"),
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const param = try s.ti.internTypeParameter(try s.sint.intern("T"), constraint, types.Primitive.none);
+    try s.checker.checkTypeArgSatisfiesConstraint(arg_node, param, arg);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: source-owned structural constraints use empty apparent types without inventing properties" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const member: types.ObjectMember = .{
+        .name = try s.sint.intern("value"),
+        .type = types.Primitive.string_t,
+        .is_optional = true,
+        .is_readonly = false,
+        .is_method = false,
+    };
+    const weak = try s.ti.internObjectType(&.{member});
+    var required_member = member;
+    required_member.is_optional = false;
+    const required = try s.ti.internObjectType(&.{required_member});
+    for ([_]TypeId{ types.Primitive.object_t, types.Primitive.bigint_t }) |source| {
+        try T.expect(try s.checker.genericConstraintAssignable(source, weak));
+        try T.expect(!try s.checker.genericConstraintAssignable(source, required));
+    }
+    try T.expect(!try s.checker.genericConstraintAssignable(types.Primitive.bigint_t, types.Primitive.object_t));
+    const wrapper = try s.ti.internObjectType(&.{.{
+        .name = member.name,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    try s.checker.putTypeName(try s.sint.intern("BigInt"), wrapper);
+    try T.expect(!try s.checker.genericConstraintAssignable(types.Primitive.bigint_t, weak));
 }
 
 test "checker: program ambient export assignment class is a require alias type" {

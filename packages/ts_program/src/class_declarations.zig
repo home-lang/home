@@ -28,6 +28,7 @@ pub fn free(gpa: std.mem.Allocator, classes: []const driver.ProgramExportedClass
 }
 
 fn freeClass(gpa: std.mem.Allocator, class: driver.ProgramExportedClass) void {
+    if (class.schema) |schema| @constCast(schema).deinit(gpa);
     gpa.free(class.type_parameter_names);
     gpa.free(class.members);
     gpa.free(class.static_members);
@@ -68,7 +69,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         const c = source.compilation;
         if (c.root == 0 or c.hir.kindOf(c.root) != .block_stmt) continue;
         const statements = hir.blockStmts(&c.hir, c.root);
-        try collectAmbient(gpa, source, statements, &out);
+        try collectAmbient(gpa, resolver, sources, source, statements, &out);
         for (statements) |statement| {
             if (c.hir.kindOf(statement) != .export_decl) continue;
             const ex = hir.exportOf(&c.hir, statement);
@@ -107,7 +108,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         const origin = resolved.type orelse continue;
         const owner = by_path.get(origin.path) orelse continue;
         const node = declarations.get(.{ .source = owner, .position = origin.position }) orelse continue;
-        var class = try classFacts(gpa, sources[owner], node);
+        var class = try classFacts(gpa, resolver, sources, sources[owner], node);
         errdefer freeClass(gpa, class);
         class.target_path = sources[binding.source].path;
         class.export_name = binding.name;
@@ -130,7 +131,7 @@ fn unwrap(c: *const driver.Compilation, node: hir.NodeId) hir.NodeId {
     return if (c.hir.kindOf(node) == .export_decl) hir.exportOf(&c.hir, node).decl else node;
 }
 
-fn classFacts(gpa: std.mem.Allocator, source: Source, node: hir.NodeId) !driver.ProgramExportedClass {
+fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !driver.ProgramExportedClass {
     const c = source.compilation;
     const class = hir.classOf(&c.hir, node);
     var params: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -191,14 +192,17 @@ fn classFacts(gpa: std.mem.Allocator, source: Source, node: hir.NodeId) !driver.
     errdefer gpa.free(owned_params);
     const owned_members = try members.toOwnedSlice(gpa);
     errdefer gpa.free(owned_members);
+    const owned_statics = try statics.toOwnedSlice(gpa);
+    errdefer gpa.free(owned_statics);
     return .{
         .target_path = source.path,
         .declaration_path = source.path,
         .declaration_pos = c.hir.spanOf(node).start,
         .class_name = name,
         .type_parameter_names = owned_params,
+        .schema = if (class.type_params_len > 0) try class_schema.collect(gpa, resolver, sources, source, node) else null,
         .members = owned_members,
-        .static_members = try statics.toOwnedSlice(gpa),
+        .static_members = owned_statics,
     };
 }
 
@@ -245,7 +249,7 @@ fn hasExplicitExports(c: *const driver.Compilation, statements: []const hir.Node
     return false;
 }
 
-fn collectAmbient(gpa: std.mem.Allocator, source: Source, statements: []const hir.NodeId, out: *std.ArrayListUnmanaged(driver.ProgramExportedClass)) !void {
+fn collectAmbient(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, statements: []const hir.NodeId, out: *std.ArrayListUnmanaged(driver.ProgramExportedClass)) !void {
     const c = source.compilation;
     for (statements) |statement| {
         const node = unwrap(c, statement);
@@ -270,7 +274,7 @@ fn collectAmbient(gpa: std.mem.Allocator, source: Source, statements: []const hi
                 const name = nodeName(c, hir.classOf(&c.hir, declaration).name) orelse continue;
                 if (assignment == null or !std.mem.eql(u8, assignment.?, name)) continue;
             }
-            var class = try classFacts(gpa, source, declaration);
+            var class = try classFacts(gpa, resolver, sources, source, declaration);
             errdefer freeClass(gpa, class);
             class.ambient_module_name = specifier;
             class.is_export_assignment_target = if (assignment) |name| std.mem.eql(u8, name, class.class_name) else false;
