@@ -20,6 +20,9 @@ class Case:
     family: str
     files: dict[str, str]
     expected: tuple[str, ...]
+    # None keeps the historical all-files root set. Explicit roots exercise
+    # discovery without granting one compiler a different source graph.
+    roots: tuple[str, ...] | None = None
 
 
 METHODS = "interface Methods { identity(value: string): string; }\n"
@@ -98,7 +101,8 @@ def project_config(case: Case) -> str:
     del config["include"]
     # Explicit roots make the declaration-before/after-app checks independent
     # of directory traversal or glob ordering in the three compilers.
-    config["files"] = ["src/lib.d.ts"] + [f"src/{name}" for name in sorted(case.files)]
+    roots = sorted(case.files) if case.roots is None else case.roots
+    config["files"] = ["src/lib.d.ts"] + [f"src/{name}" for name in roots]
     return json.dumps(config, indent=2) + "\n"
 
 
