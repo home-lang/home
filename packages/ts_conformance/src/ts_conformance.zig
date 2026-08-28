@@ -3767,7 +3767,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
-    try program.recompileAll(compile_options);
+    // loadImportClosure checks the final graph using the retained bound
+    // sources; no second parse/bind/check pass is needed here.
     try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
 
     var script_globals: ScriptGlobalSpaces = .{};

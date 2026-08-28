@@ -367,11 +367,46 @@ pub const Program = struct {
         for (self.files.items) |file| file.source_markers = null;
     }
 
+    fn needsCompilation(f: *const File, options: ts_driver.CompileOptions) bool {
+        if (f.redirect_target != null) return false;
+        const c = f.compilation orelse return true;
+        return !options.bind_only and (c.check_state == .bound or c.check_state == .unavailable);
+    }
+
+    /// All execution modes share the same per-file identity and lifecycle.
+    /// A failed check cannot leave a partially checked source available for
+    /// retry; successful preparation preserves the actual binder/HIR owner.
+    fn compileFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ts_driver.CompileError!void {
+        var per_file = options;
+        per_file.is_tsx = options.is_tsx or f.is_tsx;
+        per_file.package_type_module = f.package_type_module;
+        per_file.is_declaration_file = f.is_declaration;
+        per_file.file_id = f.id;
+        per_file.suppress_import_helper_diagnostics = true;
+        if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
+        if (f.compilation == null) f.compilation = try ts_driver.prepareSource(self.gpa, f.source, per_file);
+        const c = f.compilation.?;
+        errdefer {
+            c.deinit();
+            self.gpa.destroy(c);
+            f.compilation = null;
+        }
+        if (!options.bind_only) try ts_driver.checkPreparedSource(c, per_file);
+    }
+
     /// Compile every file. Two passes:
-    ///   1. Lex/parse/bind/emit each file in isolation.
+    ///   1. Prepare missing sources and check/emit bound sources in place.
     ///   2. Walk imports and resolve specifiers — populating the
     ///      `imports` adjacency list.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        self.deduplicate_packages = options.deduplicate_packages;
+        if (options.bind_only) {
+            for (self.files.items) |f| {
+                if (needsCompilation(f, options)) try self.compileFile(f, options);
+            }
+            try self.resolveImports();
+            return;
+        }
         self.prepareSourceMarkers();
         defer self.clearSourceMarkers();
         self.deduplicate_packages = options.deduplicate_packages;
@@ -403,7 +438,7 @@ pub const Program = struct {
         for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (f.compilation != null) continue;
+            if (!needsCompilation(f, options)) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.package_type_module = f.package_type_module;
@@ -438,14 +473,7 @@ pub const Program = struct {
             // virtual sections were stripped before per-file
             // compilation.
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
-            const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.LexError => return error.LexError,
-                error.ParseError => return error.ParseError,
-                error.BindError => return error.BindError,
-                error.EmitError => return error.EmitError,
-            };
-            f.compilation = c;
+            try self.compileFile(f, per_file);
         }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
@@ -458,10 +486,8 @@ pub const Program = struct {
         try self.resolveImports();
     }
 
-    /// Re-run semantic compilation after the import closure is complete so
-    /// every root observes cross-file export metadata collected from the
-    /// final graph. Parsing during closure discovery remains incremental;
-    /// this is the single authoritative program check.
+    /// Explicitly invalidate and recompile all sources, e.g. after options
+    /// change. Closure discovery itself no longer needs this reparsing pass.
     pub fn recompileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         for (self.files.items) |file| {
             if (file.compilation) |compilation| {
@@ -562,9 +588,13 @@ pub const Program = struct {
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
+        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
+        defer self.gpa.free(known_reference_paths);
+        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
+        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
-            if (f.compilation != null) {
+            if (!needsCompilation(f, options)) {
                 // Already compiled — replay its diagnostics anyway so
                 // a streaming consumer that joined late doesn't miss
                 // them.
@@ -585,17 +615,11 @@ pub const Program = struct {
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
+            per_file.known_reference_paths = known_reference_paths;
             per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
-            const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.LexError => return error.LexError,
-                error.ParseError => return error.ParseError,
-                error.BindError => return error.BindError,
-                error.EmitError => return error.EmitError,
-            };
-            f.compilation = c;
-            callback(ctx, f.path, c.diagnostics.items);
+            try self.compileFile(f, per_file);
+            callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
 
         try self.appendProgramGlobalInterfaceMemberDiagnostics();
@@ -2966,6 +2990,12 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        self.deduplicate_packages = options.deduplicate_packages;
+        if (options.bind_only) {
+            try self.compileFilesParallel(options, workers);
+            try self.resolveImports();
+            return;
+        }
         self.prepareSourceMarkers();
         defer self.clearSourceMarkers();
         self.deduplicate_packages = options.deduplicate_packages;
@@ -3007,25 +3037,28 @@ pub const Program = struct {
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
         shared_options.known_reference_paths = known_reference_paths;
+        try self.compileFilesParallel(shared_options, workers);
+
+        try self.appendMissingCompilerTypeReferenceDiagnostics(options);
+        try self.appendMissingImportedHelperDiagnostics(options);
+        try self.appendRootDirDiagnostics(options);
+        try self.appendProgramGlobalDeclareVarDiagnostics();
+        try self.appendProgramGlobalInterfaceMemberDiagnostics();
+        try self.appendMergedAmbientModuleExportDiagnostics();
+        try self.resolveImports();
+    }
+
+    fn compileFilesParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
         const cpu_count = std.Thread.getCpuCount() catch 1;
-        const n = workers orelse @min(cpu_count, 8);
+        const n = @max(1, workers orelse @min(cpu_count, 8));
 
         // Files-to-compile slice (indices we still need to do).
         var pending: std.ArrayListUnmanaged(usize) = .empty;
         defer pending.deinit(self.gpa);
         for (self.files.items, 0..) |f, idx| {
-            if (f.redirect_target == null and f.compilation == null) try pending.append(self.gpa, idx);
+            if (needsCompilation(f, options)) try pending.append(self.gpa, idx);
         }
-        if (pending.items.len == 0) {
-            try self.appendMissingCompilerTypeReferenceDiagnostics(options);
-            try self.appendMissingImportedHelperDiagnostics(options);
-            try self.appendRootDirDiagnostics(options);
-            try self.appendProgramGlobalDeclareVarDiagnostics();
-            try self.appendProgramGlobalInterfaceMemberDiagnostics();
-            try self.appendMergedAmbientModuleExportDiagnostics();
-            try self.resolveImports();
-            return;
-        }
+        if (pending.items.len == 0) return;
 
         // Atomic cursor that workers pop from.
         var cursor = std.atomic.Value(usize).init(0);
@@ -3038,17 +3071,10 @@ pub const Program = struct {
                     if (i >= pending_slice.len) return;
                     const idx = pending_slice[i];
                     const f = prog.files.items[idx];
-                    var per_file = opts;
-                    per_file.is_tsx = opts.is_tsx or f.is_tsx;
-                    per_file.package_type_module = f.package_type_module;
-                    per_file.is_declaration_file = f.is_declaration;
-                    per_file.suppress_import_helper_diagnostics = true;
-                    if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
-                    const c = ts_driver.compileSource(prog.gpa, f.source, per_file) catch {
+                    prog.compileFile(f, opts) catch {
                         _ = fail.fetchAdd(1, .seq_cst);
                         continue;
                     };
-                    f.compilation = c;
                 }
             }
         };
@@ -3059,9 +3085,9 @@ pub const Program = struct {
         var spawned: usize = 0;
         for (threads, 0..) |*t, i| {
             _ = i;
-            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, shared_options, pending.items, &cursor, &failures }) catch {
+            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending.items, &cursor, &failures }) catch {
                 // If we can't spawn more workers, do the rest serially.
-                Worker.run(self, shared_options, pending.items, &cursor, &failures);
+                Worker.run(self, options, pending.items, &cursor, &failures);
                 break;
             };
             spawned += 1;
@@ -3073,15 +3099,6 @@ pub const Program = struct {
             // report the most generic.
             return error.ParseError;
         }
-
-        try self.appendMissingCompilerTypeReferenceDiagnostics(options);
-        try self.appendMissingImportedHelperDiagnostics(options);
-        try self.appendRootDirDiagnostics(options);
-        try self.appendProgramGlobalDeclareVarDiagnostics();
-        try self.appendProgramGlobalInterfaceMemberDiagnostics();
-        try self.appendMergedAmbientModuleExportDiagnostics();
-
-        try self.resolveImports();
     }
 
     fn appendRootDirDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
@@ -3220,11 +3237,12 @@ pub const Program = struct {
     /// from the root files until no new file is found. Returns the count
     /// of files added beyond the initial roots.
     ///
-    /// Each round compiles the current set (so HIR import lists exist),
+    /// Each round prepares the current set (so HIR import lists exist),
     /// then resolves+reads any imported file not already present; it
     /// repeats until a round adds nothing. `resolveImports` (run inside
     /// `compileAll`) records each added file's `include_reason`, so
-    /// `--explainFiles` can later render TS1393.
+    /// `--explainFiles` can later render TS1393. Check/emit runs only once
+    /// discovery is complete, reusing every bound source in place.
     pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
         return self.loadImportClosureImpl(options, false, null);
     }
@@ -3243,15 +3261,22 @@ pub const Program = struct {
         workers: ?usize,
     ) ProgramError!usize {
         self.deduplicate_packages = options.deduplicate_packages;
+        const had_checked_sources = for (self.files.items) |f| {
+            if (f.compilation) |c| {
+                if (c.check_state == .checked) break true;
+            }
+        } else false;
         const hir_mod = @import("hir");
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
         added += try self.loadCompilerInjectedImports(options);
+        var discovery_options = options;
+        discovery_options.bind_only = true;
         while (true) {
             if (parallel and builtin.mode != .Debug and self.files.items.len >= 16)
-                try self.compileAllParallel(options, workers)
+                try self.compileAllParallel(discovery_options, workers)
             else
-                try self.compileAll(options);
+                try self.compileAll(discovery_options);
             var new_in_round: usize = 0;
             // Snapshot the count: files appended this round are scanned
             // in the next iteration, keeping the fixpoint simple.
@@ -3342,6 +3367,19 @@ pub const Program = struct {
             }
             added += new_in_round;
             if (new_in_round == 0) break;
+        }
+        if (had_checked_sources and added != 0) {
+            // A caller may have checked an incomplete graph explicitly.
+            // Those results cannot be reused after graph expansion; unlike
+            // bound sources, their HIR/types already contain semantic state.
+            try self.recompileAll(options);
+            return added;
+        }
+        if (!options.bind_only) {
+            if (parallel and builtin.mode != .Debug and self.files.items.len >= 16)
+                try self.compileAllParallel(options, workers)
+            else
+                try self.compileAll(options);
         }
         return added;
     }
@@ -7464,6 +7502,135 @@ test "Program: loadImportClosure respects compilerOptions.noLib" {
     const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
     try T.expectEqual(@as(usize, 0), added);
     try T.expect(p.lookupPath("/proj/lib.es2021.d.ts") == null);
+}
+
+test "Program: final closure check sees late declarations without replacing prepared sources" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source = "/// <reference path=\"./bridge.d.ts\" />\nglobalThis.lateValue; missingValue; const bad: string = 1;";
+    try vfs.addFile("/proj/main.ts", source);
+    try vfs.addFile("/proj/bridge.d.ts", "/// <reference path=\"./definitions.d.ts\" />\n");
+    try vfs.addFile("/proj/definitions.d.ts", "declare var lateValue: number;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/proj/main.ts", source);
+    try p.compileAll(.{ .bind_only = true, .no_emit = true });
+    const prepared = p.fileById(id).compilation.?;
+    const module = prepared.module;
+    const tokens = prepared.tokens.items.ptr;
+    try T.expectEqual(.bound, prepared.check_state);
+    try T.expectEqual(@as(usize, 0), prepared.diagnostics.items.len);
+
+    try T.expectEqual(@as(usize, 2), try p.loadImportClosure(.{ .no_emit = true }));
+    try T.expect(p.fileById(id).compilation.? == prepared);
+    try T.expect(prepared.module == module and prepared.tokens.items.ptr == tokens);
+    try T.expectEqual(.checked, prepared.check_state);
+    if (prepared.diagnostics.items.len != 2) for (prepared.diagnostics.items) |d| std.debug.print("closure diagnostic TS{d}: {s}\n", .{ d.code, d.message });
+    try T.expectEqual(@as(usize, 2), prepared.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2304), prepared.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, prepared.diagnostics.items[0].message, "missingValue") != null);
+    try T.expectEqual(@as(u32, 2322), prepared.diagnostics.items[1].code);
+    for (p.files.items) |f| try T.expect(f.compilation.?.checked_types_ready);
+}
+
+test "Program: serial parallel and streaming checks reuse the prepared graph" {
+    const Mode = enum { serial, parallel, parallel_zero, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.parallel_zero, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const source = "/// <reference path=\"./definitions.d.ts\" />\nglobalThis.lateValue; const bad: string = 1;";
+        try vfs.addFile("/proj/main.ts", source);
+        try vfs.addFile("/proj/definitions.d.ts", "declare var lateValue: number;");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const id = try p.add("/proj/main.ts", source);
+        try p.compileAllParallel(.{ .bind_only = true, .no_emit = true }, 2);
+        const prepared = p.fileById(id).compilation.?;
+        _ = try p.loadImportClosureParallel(.{ .bind_only = true, .no_emit = true }, 2);
+        for (p.files.items) |f| {
+            try T.expectEqual(.bound, f.compilation.?.check_state);
+            try T.expectEqual(@as(usize, 0), f.compilation.?.diagnostics.items.len);
+        }
+        const Sink = struct {
+            calls: usize = 0,
+            errors: usize = 0,
+            fn callback(ctx: *@This(), _: []const u8, diags: []const ts_driver.Diagnostic) void {
+                ctx.calls += 1;
+                ctx.errors += diags.len;
+            }
+        };
+        var sink: Sink = .{};
+        const options: ts_driver.CompileOptions = .{ .no_emit = true };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .parallel_zero => try p.compileAllParallel(options, 0),
+            .streaming => try p.compileAllStreaming(options, &sink, Sink.callback),
+        }
+        try T.expect(p.fileById(id).compilation.? == prepared);
+        try T.expectEqual(.checked, prepared.check_state);
+        if (prepared.diagnostics.items.len != 1) for (prepared.diagnostics.items) |d| std.debug.print("{s} diagnostic TS{d}: {s}\n", .{ @tagName(mode), d.code, d.message });
+        try T.expectEqual(@as(usize, 1), prepared.diagnostics.items.len);
+        try T.expectEqual(@as(u32, 2322), prepared.diagnostics.items[0].code);
+        if (mode == .streaming) {
+            try T.expectEqual(@as(usize, 2), sink.calls);
+            try T.expectEqual(@as(usize, 1), sink.errors);
+        }
+        sink = .{};
+        try p.compileAllStreaming(options, &sink, Sink.callback);
+        try T.expectEqual(@as(usize, 2), sink.calls);
+        try T.expectEqual(@as(usize, 1), sink.errors);
+        try T.expect(p.fileById(id).compilation.? == prepared);
+    }
+}
+
+test "Program: expanding an already checked graph invalidates early diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source = "/// <reference path=\"./definitions.d.ts\" />\nglobalThis.lateValue; const bad: string = 1;";
+    try vfs.addFile("/proj/main.ts", source);
+    try vfs.addFile("/proj/definitions.d.ts", "declare var lateValue: number;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/proj/main.ts", source);
+    const options: ts_driver.CompileOptions = .{ .no_emit = true };
+    try p.compileAll(options);
+    // Incomplete graph: both the missing reference and property may report.
+    try T.expect(p.fileById(id).compilation.?.diagnostics.items.len > 1);
+    _ = try p.loadImportClosure(options);
+    const checked = p.fileById(id).compilation.?;
+    try T.expectEqual(@as(usize, 1), checked.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), checked.diagnostics.items[0].code);
+    // Repeated discovery with no expansion does not replace a checked owner.
+    try T.expectEqual(@as(usize, 0), try p.loadImportClosure(options));
+    try T.expect(p.fileById(id).compilation.? == checked);
+    try T.expectEqual(@as(usize, 1), checked.diagnostics.items.len);
+}
+
+test "Program: failed check discards a partial source before retry" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/proj/main.ts", "export const bad: string = 1;");
+    try p.compileAll(.{ .bind_only = true });
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    p.fileById(id).compilation.?.gpa = failing.allocator();
+    try T.expectError(error.OutOfMemory, p.compileAll(.{ .no_emit = true }));
+    try T.expect(p.fileById(id).compilation == null);
+    try p.compileAll(.{ .no_emit = true });
+    const checked = p.fileById(id).compilation.?;
+    try T.expectEqual(.checked, checked.check_state);
+    try T.expectEqual(@as(usize, 1), checked.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), checked.diagnostics.items[0].code);
 }
 
 test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {
