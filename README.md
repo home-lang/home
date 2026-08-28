@@ -110,8 +110,8 @@ Later generic-callback, declaration, and
 [assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
 have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
-The latest [untimed semantic-transfer and imported-owner checks](./docs/docs/TS_PERFORMANCE.md#owner-scoped-semantic-transfer-and-imported-owner-audit-untimed)
-test canonical payloads and owner-separated metadata. Source-aware program
+The latest [untimed atomic-owner and provenance checks](./docs/docs/TS_PERFORMANCE.md#atomic-owner-publication-and-source-provenance-untimed)
+test coordinated type/metadata publication and real source ownership. Program
 integration remains open; the broader imported-owner audit exposes twelve
 additional failing Home cases:
 

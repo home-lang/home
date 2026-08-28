@@ -1542,3 +1542,83 @@ gates. Neither graph is readmitted, and passing sixteen gates does not establish
 sixteen equivalent semantic workloads. The tuple and both predicate source
 hashes are unchanged. No timing run was made during concurrent workstation
 activity.
+
+### Atomic owner publication and source provenance (untimed)
+
+Commit [`9d8be00d7`](https://github.com/home-lang/home/commit/9d8be00d7b1f61f487f559c863ce7cbc826e0d09)
+adds a prepare/commit boundary to payload transfer. A pending transfer is
+exclusively owned and cancelled on destruction unless committed. The combined
+checked-transfer operation clones the complete semantic record before committing
+payloads. Failure therefore restores the destination's original payload-column
+lengths, intern keys, and enum entries, including when failure occurs only after
+the entire payload graph has been prepared. Previously existing keys remain
+valid. Retained allocation capacity is still owned by the destination.
+
+Commit [`202f24b9a`](https://github.com/home-lang/home/commit/202f24b9ae2a56cabdae311533fd603bcb596ce5)
+adds the production source-owner registry and replaces the earlier test-only
+provenance mapper in the independently compiled owner regression. An owner
+borrows immutable HIR, source text, strings, types, and checked metadata. Every
+registration denotes a distinct owner/revision even when its path or memory
+address is reused. Declaration handles resolve to the actual source owner,
+node, span, path, and text. Unregistering the owner before destroying its
+storage invalidates old handles; replacement sources cannot inherit those IDs.
+
+Registry import coordinates declaration mappings with the combined
+payload/semantic transaction. Failed imports remove newly created declaration
+mappings while preserving earlier owners and handles. The caller's string
+interner may retain unused strings and allocation capacity, but no failed type
+or declaration mapping is published. A checked-owner view is available only
+after semantic checking and metadata capture complete: bind-only results are
+rejected. Completed checking with diagnostics remains distinct from an
+unchecked source; valid empty programs also produce checked-owner views.
+Readiness records phase completion, not imported-type parity or benchmark
+eligibility.
+
+| Untimed regression | Verified coverage |
+|---|---|
+| Pending transfer lifecycle | Explicit cancellation, repeated cleanup, commit, prior canonical keys and enum entries |
+| Combined publication | Exhaustive allocation failures across payload and semantic preparation; late invalid mappings/collisions; successful retry |
+| Source provenance | Real HIR/text lookup, same-path replacement, invalid spans/nodes, and stale-owner rejection |
+| Coordinated registry rollback | Existing mappings survive; newly prepared mappings and types disappear together on failure |
+| Compiled owners | Distinct predicates on a shared canonical signature, generic constraints, nominal origins, readonly/index metadata, tuples, and rest relations |
+| Readiness | Bind-only compilation cannot be published as checked; empty and diagnostic-bearing checked results are distinguished |
+
+The focused transfer runner passes 14/14, including its module test root.
+The full checker suite passes 4,252/4,252, driver 183/183, program 101/101,
+CLI 69/69, and benchmark harness/report 33/33 tests. The source registry's
+failure tests include errors after the object header has already created its
+real declaration mapping.
+
+This completes the publication/provenance prerequisite in
+[#504](https://github.com/home-lang/home/issues/504), not source-aware program
+resolution. The shared transfer pool must use one registry's declaration
+handles for **all** declaration-bearing types, including the local owner;
+owner-local HIR IDs and another registry's handles must not be mixed into it.
+Handles are not local HIR indices. Program lookup still needs owner-aware
+interpretation, declaration merging, module-cycle handling, and dependency
+invalidation under [#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487). Unregistering a source
+invalidates provenance; callers must also stop using its dependent semantic
+records. The registry does not yet implement that program-wide invalidation.
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker -Dts-checker-test-filter='transfer:'
+./pantry/.bin/zig build test -Dfilter=ts_driver
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```
+
+Local evidence is retained in `bench/vs_tsgo/results/owner-publication.xWNTr8`.
+The final ReleaseFast binary SHA-256 is
+`6d6b278c9df4db5a67171436def69c720fbe4d91e3171e8221c6d9cb161f4134`.
+Fresh CLI audits against version-verified TS 6.0.3 and native TS 7.0.2 retain
+the preceding checkpoint's results: all 42 tuple and 36 assertion controls
+pass; the global audit has fourteen Home failures (30/44 versus 44/44 for each
+baseline), and the imported-owner audit has twelve (8/20 versus 20/20).
+All eighteen positive workloads pass; Home passes sixteen workload gates and
+fails both graph rejection gates. Passing those sixteen gates is not proof of
+sixteen semantically equivalent workloads.
+The tuple and both frozen predicate source hashes are unchanged.
+No timing claim follows from these ownership tests; historical timings remain
+unchanged, and neither graph is readmitted.
