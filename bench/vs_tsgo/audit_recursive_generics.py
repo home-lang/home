@@ -38,6 +38,11 @@ def cases() -> list[Case]:
                     result.append(Case(f"{placement}/app-{order}/{control}", family,
                                        {**sources, app: text}, expected))
 
+    pair("direct-parameter", "type Link<X> = X;\n",
+         "const good: string = value.value;\n", "const bad: number = value.value;\n")
+    pair("nonrecursive-member", "type Link<X> = { item: X; next: { item: X[] } };\n",
+         "const selected = value.value.next.item;\nconst good: string[] = selected;\n",
+         "const bad: number[] = selected;\n")
     pair("fixed-depth-8", "type Link<X> = { item: X; next: Link<X> };\n",
          "const selected = value.value" + ".next" * 8 + ".item;\nconst good: string = selected;\n",
          "const bad: number = selected;\n")
