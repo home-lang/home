@@ -12,6 +12,34 @@ const transfer = @import("type_transfer.zig");
 
 pub const Error = transfer.Error || error{MetadataCollision};
 
+/// One source owner's complete relocated result. The destination type pool,
+/// mapped strings, and declaration provenance are owned by the caller.
+pub const Imported = struct {
+    ids: transfer.Relocation,
+    checked: check.CheckedTypes,
+
+    pub fn deinit(self: *Imported) void {
+        self.checked.deinit(self.ids.allocator);
+        self.ids.deinit();
+    }
+};
+
+/// Prepare payloads and checked semantics before committing either. Failure
+/// restores destination payloads, intern keys and enum entries. Callers that
+/// allocate provenance in name callbacks must join that allocation transaction
+/// themselves. Keep exclusive ownership of the target until this returns.
+pub fn append(
+    target: *@import("interner.zig").Interner,
+    source: *const @import("interner.zig").Interner,
+    checked: *const check.CheckedTypes,
+    names: transfer.Names,
+) Error!Imported {
+    var pending = try transfer.prepare(target, source, names);
+    defer pending.deinit();
+    const copied = try clone(target.gpa, checked, pending.ids(), names);
+    return .{ .ids = pending.commit(), .checked = copied };
+}
+
 const Shape = union(enum) {
     scalar,
     type_id,
@@ -577,4 +605,86 @@ test "checked transfer: invalid references mappings and key collisions fail with
     defer result.deinit(T.allocator);
     try expectTables(&source, false);
     try expectTables(&result, true);
+}
+
+const Interner = @import("interner.zig").Interner;
+const Pool = @import("types.zig").Pool;
+const PoolLengths = std.enums.EnumArray(std.meta.FieldEnum(Pool), usize);
+
+fn poolLengths(pool: *const Pool) PoolLengths {
+    var result = PoolLengths.initFill(0);
+    inline for (comptime std.meta.fieldNames(Pool)) |name| {
+        if (comptime !std.mem.eql(u8, name, "gpa")) result.set(@field(std.meta.FieldEnum(Pool), name), @field(pool, name).items.len);
+    }
+    return result;
+}
+
+fn internKeyCount(value: *const Interner) usize {
+    var count: usize = 0;
+    for (&value.shards) |*shard| count += shard.table.count();
+    return count;
+}
+
+fn sampleInterner() !Interner {
+    var result = try Interner.init(T.allocator);
+    errdefer result.deinit();
+    for (0..48) |index| _ = try result.internNumberLiteral(@floatFromInt(index));
+    return result;
+}
+
+fn testCombinedAllocationFailures(allocator: std.mem.Allocator) !void {
+    var source = try sampleInterner();
+    defer source.deinit();
+    var checked = try sampleTables();
+    defer checked.deinit(T.allocator);
+    var target = try Interner.init(allocator);
+    defer target.deinit();
+    const old = try target.internNumberLiteral(-1);
+    const before = poolLengths(&target.pool);
+    const keys = internKeyCount(&target);
+    var names: TestNames = .{};
+    var result = append(&target, &source, &checked, names.callbacks()) catch |err| {
+        try T.expectEqualDeep(before, poolLengths(&target.pool));
+        try T.expectEqual(keys, internKeyCount(&target));
+        try T.expectEqual(@as(usize, 0), target.enum_literal_info.count());
+        try T.expectEqual(old, try target.internNumberLiteral(-1));
+        try expectTables(&checked, false);
+        return err;
+    };
+    defer result.deinit();
+    try T.expectEqual(try result.ids.typeId(27), result.checked.type_names.get(2027).?);
+    checked.deinit(T.allocator);
+    try T.expect(result.checked.class_private_members.get(2027).?.contains(2027));
+}
+
+test "checked transfer: combined payload and metadata publication rolls back on every allocation failure" {
+    try T.checkAllAllocationFailures(T.allocator, testCombinedAllocationFailures, .{});
+}
+
+test "checked transfer: failures after payload preparation cancel every new type and key" {
+    var source = try sampleInterner();
+    defer source.deinit();
+    var checked = try sampleTables();
+    defer checked.deinit(T.allocator);
+    var target = try Interner.init(T.allocator);
+    defer target.deinit();
+    _ = try target.internNumberLiteral(-1);
+    const before = poolLengths(&target.pool);
+    const keys = internKeyCount(&target);
+    // Pure numeric payloads do not call the name mapper. These failures are
+    // therefore necessarily AFTER the complete payload graph was prepared.
+    var names: TestNames = .{ .reject = true };
+    try T.expectError(error.UnmappedName, append(&target, &source, &checked, names.callbacks()));
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    try T.expectEqual(keys, internKeyCount(&target));
+    try checked.type_names.put(T.allocator, 28, 28);
+    names = .{ .collapse = true };
+    try T.expectError(error.MetadataCollision, append(&target, &source, &checked, names.callbacks()));
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    try T.expectEqual(keys, internKeyCount(&target));
+    try T.expect(checked.type_names.remove(28));
+    names = .{};
+    var result = try append(&target, &source, &checked, names.callbacks());
+    defer result.deinit();
+    try T.expectEqual(try result.ids.typeId(27), result.checked.type_names.get(2027).?);
 }

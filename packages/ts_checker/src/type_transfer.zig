@@ -46,6 +46,34 @@ pub const Relocation = struct {
 const Column = std.meta.FieldEnum(types.Pool);
 const Offsets = std.enums.EnumArray(Column, u32);
 
+/// Exclusive, unpublished destination state. Until commit/cancel, the caller
+/// must not mutate or expose the destination pool, or run another transfer.
+/// The pending value is uniquely owned and must not be copied. deinit cancels
+/// unless commit has moved its relocation out to the caller.
+pub const Pending = struct {
+    target: *interner.Interner,
+    lengths: Offsets,
+    relocation: ?Relocation,
+
+    pub fn ids(self: *const Pending) Relocation {
+        return self.relocation.?; // Borrowed; do not deinit this view.
+    }
+
+    pub fn commit(self: *Pending) Relocation {
+        const result = self.relocation.?;
+        self.relocation = null;
+        return result;
+    }
+
+    pub fn deinit(self: *Pending) void {
+        if (self.relocation) |*relocation| {
+            rollback(self.target, self.lengths);
+            relocation.deinit();
+            self.relocation = null;
+        }
+    }
+};
+
 fn payloadColumn(flags: types.TypeFlags) Error!Column {
     // Union flags include constituent flags; payload selection must not.
     if (flags.is_union) return .union_payloads;
@@ -356,6 +384,13 @@ fn rollback(target: *interner.Interner, lengths: Offsets) void {
 /// immutable intern keys cannot be constructed by Interner and are rejected.
 /// On failure no new type, intern key, or enum entry remains published.
 pub fn append(target: *interner.Interner, source: *const interner.Interner, names: Names) Error!Relocation {
+    var pending = try prepare(target, source, names);
+    return pending.commit();
+}
+
+/// Prepare payloads without publishing them, allowing semantic/provenance
+/// preparation to join the same transaction. Caller must commit or deinit.
+pub fn prepare(target: *interner.Interner, source: *const interner.Interner, names: Names) Error!Pending {
     if (target == source or target.pool.headers.items.ptr == source.pool.headers.items.ptr) return error.InvalidTypeGraph;
     const allocator = target.gpa;
     const count = source.pool.typeCount();
@@ -458,7 +493,7 @@ pub fn append(target: *interner.Interner, source: *const interner.Interner, name
             !source.pool.flagsOf(entry.key_ptr.*).is_enum_literal or
             try payloadColumn(source.pool.flagsOf(entry.key_ptr.*)) != .literal_payloads) return error.InvalidTypeGraph;
     }
-    return relocation;
+    return .{ .target = target, .lengths = lengths, .relocation = relocation };
 }
 
 const T = std.testing;
@@ -723,6 +758,31 @@ fn testAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "type transfer: allocation failures leave unpublished destination state unchanged" {
     try std.testing.checkAllAllocationFailures(T.allocator, testAllocationFailures, .{});
+}
+
+test "type transfer: pending cancellation restores keys payloads and enum metadata" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    const graph = try testGraph(&source);
+    var destination = try interner.Interner.init(T.allocator);
+    defer destination.deinit();
+    _ = try testGraph(&destination);
+    const before = poolLengths(&destination.pool);
+    const keys = keyCount(&destination);
+    const enums = destination.enum_literal_info.count();
+    var names: TestNames = .{};
+    var pending = try prepare(&destination, &source, names.names());
+    try expectGraph(&destination, graph, pending.ids());
+    pending.deinit();
+    pending.deinit();
+    try T.expectEqualDeep(before, poolLengths(&destination.pool));
+    try T.expectEqual(keys, keyCount(&destination));
+    try T.expectEqual(enums, destination.enum_literal_info.count());
+    var committed = try prepare(&destination, &source, names.names());
+    var ids = committed.commit();
+    defer ids.deinit();
+    committed.deinit();
+    try expectGraph(&destination, graph, ids);
 }
 
 test "type transfer: rejected names and malformed graph references roll back every column" {
