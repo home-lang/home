@@ -25,6 +25,7 @@ const tsconfig_mod = @import("tsconfig");
 const hir_mod_ns = @import("hir");
 const binder = @import("binder");
 const StringInterner = ts_driver.StringInterner;
+const source_owners = ts_driver.source_owners;
 
 pub const FileId = u32;
 
@@ -32,6 +33,20 @@ const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
 };
 const ProgramSourceMarkerIndex = ts_driver.SourceMarkerMatcher(program_source_markers);
+
+const OwnerMutex = struct {
+    state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn lock(self: *OwnerMutex) void {
+        while (self.state.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    fn unlock(self: *OwnerMutex) void {
+        self.state.store(false, .release);
+    }
+};
 
 /// Why a file is part of the program — mirrors tsgo's
 /// `FileIncludeReason` (the subset Home can determine today). Drives the
@@ -146,6 +161,9 @@ pub const File = struct {
     source_markers: ?ProgramSourceMarkerIndex = null,
     /// Compiled artefact. `null` until `compileAll` runs.
     compilation: ?*ts_driver.Compilation,
+    /// Stable checked-source identity in `Program.owners`. Tombstoned before
+    /// the compilation storage is destroyed or replaced.
+    owner: source_owners.OwnerId = .none,
     /// Outgoing import edges — file ids this file imports from.
     imports: std.ArrayListUnmanaged(FileId),
     /// True for `.d.ts` / `.d.hm` / `.d.home` declaration-only files.
@@ -235,6 +253,12 @@ pub const Program = struct {
     /// All source owners use this name keyspace, but retain independent HIR,
     /// symbols and type pools. Initialize before launching any workers.
     strings: ?StringInterner = null,
+    /// Checked source revisions and their declaration provenance. Owner IDs
+    /// are never reused during the Program lifetime.
+    owners: source_owners.Registry,
+    /// Parallel checking publishes completed owners concurrently. The
+    /// registry's append-only identity tables require exclusive mutation.
+    owners_mutex: OwnerMutex = .{},
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
@@ -246,6 +270,7 @@ pub const Program = struct {
     pub fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) Program {
         return .{
             .gpa = gpa,
+            .owners = source_owners.Registry.init(gpa),
             .files = .empty,
             .by_path = .empty,
             .by_package_id = .empty,
@@ -257,10 +282,7 @@ pub const Program = struct {
 
     pub fn deinit(self: *Program) void {
         for (self.files.items) |f| {
-            if (f.compilation) |c| {
-                c.deinit();
-                self.gpa.destroy(c);
-            }
+            self.dropCompilation(f);
             f.imports.deinit(self.gpa);
             if (f.include_reason) |ir| {
                 if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
@@ -271,6 +293,7 @@ pub const Program = struct {
             self.gpa.destroy(f);
         }
         self.files.deinit(self.gpa);
+        self.owners.deinit();
         if (self.strings) |*strings| strings.deinit();
 
         var it = self.by_path.iterator();
@@ -308,6 +331,7 @@ pub const Program = struct {
             .path = owned_path,
             .source = owned_source,
             .compilation = null,
+            .owner = .none,
             .imports = .empty,
             .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
@@ -342,6 +366,7 @@ pub const Program = struct {
             .path = owned_path,
             .source = target.source,
             .compilation = null,
+            .owner = .none,
             .imports = .empty,
             .is_declaration = target.is_declaration,
             .is_tsx = target.is_tsx,
@@ -384,11 +409,7 @@ pub const Program = struct {
     pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) !?FileId {
         const id = self.by_path.get(path) orelse return null;
         const f = self.files.items[id];
-        if (f.compilation) |old| {
-            old.deinit();
-            self.gpa.destroy(old);
-            f.compilation = null;
-        }
+        self.dropCompilation(f);
         // Replace the source slice. We also update the
         // `sources` map's value so the dupe stays consistent.
         const new_dupe = try self.gpa.dupe(u8, new_source);
@@ -425,6 +446,20 @@ pub const Program = struct {
         if (f.redirect_target != null) return false;
         const c = f.compilation orelse return true;
         return !options.bind_only and (c.check_state == .bound or c.check_state == .unavailable);
+    }
+
+    fn dropCompilation(self: *Program, f: *File) void {
+        if (f.owner != .none) {
+            self.owners_mutex.lock();
+            defer self.owners_mutex.unlock();
+            self.owners.unregister(f.owner) catch unreachable;
+            f.owner = .none;
+        }
+        if (f.compilation) |compilation| {
+            compilation.deinit();
+            self.gpa.destroy(compilation);
+            f.compilation = null;
+        }
     }
 
     fn prepareNameStore(self: *Program) ProgramError!void {
@@ -501,12 +536,18 @@ pub const Program = struct {
         if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
         if (f.compilation == null) f.compilation = try ts_driver.prepareSource(self.gpa, f.source, per_file);
         const c = f.compilation.?;
-        errdefer {
-            c.deinit();
-            self.gpa.destroy(c);
-            f.compilation = null;
+        errdefer self.dropCompilation(f);
+        if (!options.bind_only) {
+            try ts_driver.checkPreparedSource(c, per_file);
+            std.debug.assert(f.owner == .none);
+            const source = c.sourceOwner(f.path) catch unreachable;
+            self.owners_mutex.lock();
+            defer self.owners_mutex.unlock();
+            f.owner = self.owners.register(source) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.EmitError,
+            };
         }
-        if (!options.bind_only) try ts_driver.checkPreparedSource(c, per_file);
     }
 
     /// Compile every file. Two passes:
@@ -607,11 +648,7 @@ pub const Program = struct {
     /// change. Closure discovery itself no longer needs this reparsing pass.
     pub fn recompileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         for (self.files.items) |file| {
-            if (file.compilation) |compilation| {
-                compilation.deinit();
-                self.gpa.destroy(compilation);
-                file.compilation = null;
-            }
+            self.dropCompilation(file);
             file.imports.clearRetainingCapacity();
         }
         try self.compileAll(options);
@@ -3726,11 +3763,7 @@ pub const Program = struct {
             const f = self.files.items[id];
             // Free the previous compilation so the new one owns
             // a fresh HIR + symbol table.
-            if (f.compilation) |old| {
-                old.deinit();
-                self.gpa.destroy(old);
-                f.compilation = null;
-            }
+            self.dropCompilation(f);
             // Clear any cached import edges — they'll be repopulated
             // by resolveImports below.
             f.imports.clearRetainingCapacity();
@@ -6836,6 +6869,10 @@ test "Program: compileAll produces JS for every file" {
     for (p.files.items) |f| {
         try T.expect(f.compilation != null);
         try T.expect(f.compilation.?.js.len > 0);
+        try T.expect(f.owner != .none);
+        const source = try p.owners.source(f.owner);
+        try T.expectEqualStrings(f.path, source.path);
+        try T.expect(source.hir == &f.compilation.?.hir);
     }
 }
 
@@ -8189,10 +8226,14 @@ test "Program: updateSource replaces a file's source bytes" {
     _ = try p.add("/a.ts", "let x = 1;");
     try p.compileAll(.{});
     try T.expect(p.fileById(0).compilation != null);
+    const old_owner = p.fileById(0).owner;
+    try T.expect(old_owner != .none);
 
     const id = (try p.updateSource("/a.ts", "let y = 2;")) orelse return error.NoFile;
     // Compilation cleared; source replaced.
     try T.expect(p.fileById(id).compilation == null);
+    try T.expectEqual(source_owners.OwnerId.none, p.fileById(id).owner);
+    try T.expectError(error.InvalidOwner, p.owners.source(old_owner));
     try T.expectEqualStrings("let y = 2;", p.fileById(id).source);
 }
 
@@ -8210,8 +8251,12 @@ test "Program: recompileChanged only recompiles listed paths" {
 
     // Touch only /b.ts.
     const a_owner = p.fileById(0).compilation.?;
+    const a_source_owner = p.fileById(0).owner;
+    const b_source_owner = p.fileById(1).owner;
+    const c_source_owner = p.fileById(2).owner;
     const original_name = p.fileById(1).compilation.?.interner.lookup("b").?;
     _ = try p.updateSource("/b.ts", "let b = 999;");
+    try T.expectError(error.InvalidOwner, p.owners.source(b_source_owner));
     const paths = [_][]const u8{"/b.ts"};
     const recompiled = try p.recompileChanged(&paths, .{});
     try T.expectEqual(@as(u32, 1), recompiled);
@@ -8223,6 +8268,10 @@ test "Program: recompileChanged only recompiles listed paths" {
     try T.expect(b.compilation != null);
     try T.expect(std.mem.indexOf(u8, b.compilation.?.js, "999") != null);
     try T.expect(p.fileById(0).compilation.? == a_owner);
+    try T.expectEqual(a_source_owner, p.fileById(0).owner);
+    try T.expectEqual(c_source_owner, p.fileById(2).owner);
+    try T.expect(b_source_owner != b.owner);
+    try T.expectEqualStrings("/b.ts", (try p.owners.source(b.owner)).path);
     try T.expect(b.compilation.?.interner.sharesStorageWith(&a_owner.interner));
     try T.expectEqual(original_name, b.compilation.?.interner.lookup("b").?);
     try T.expectEqual(b.id, b.compilation.?.module.file_id);
