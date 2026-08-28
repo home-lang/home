@@ -292,7 +292,15 @@ pub fn canTryH3AltSvc(client: *const HTTPClient) bool {
     if (client.flags.is_preconnect_only) return false;
     if (client.unix_socket_path.length() > 0) return false;
     if (client.state.original_request_body == .sendfile) return false;
+    if (client.hasTLSOptionsUnsupportedByH3()) return false;
     return h3AltSvcEnabled();
+}
+
+fn hasTLSOptionsUnsupportedByH3(client: *const HTTPClient) bool {
+    // QUIC does not apply per-request trust settings or call the JS
+    // checkServerIdentity callback. Never silently discard either.
+    return client.signals.get(.cert_errors) or
+        if (client.tls_props) |tls| tls.get().requires_custom_request_ctx else false;
 }
 
 pub fn firstCall(
@@ -1305,6 +1313,10 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
             return;
         }
         if (this.http_proxy != null or this.unix_socket_path.length() > 0) {
+            this.fail(error.HTTP3Unsupported);
+            return;
+        }
+        if (this.hasTLSOptionsUnsupportedByH3()) {
             this.fail(error.HTTP3Unsupported);
             return;
         }
@@ -2703,7 +2715,12 @@ fn handleResponseBodyFromMultiplePackets(this: *HTTPClient, incoming_data: []con
         // EOF-delimited bodies still need incremental decoding, but buffered
         // consumers must not receive a completion callback before EOF. Only
         // callers that requested streaming can consume partial body updates.
-        return is_done or (processed and this.signals.get(.response_body_streaming));
+        // Multiplexed transports publish progress with has_more instead of
+        // HTTP/1's EOF completion path. Deliver their buffered bytes even if
+        // the JS reader's streaming signal has not reached this thread yet:
+        // a duplex upload may be waiting for that first response chunk.
+        return is_done or (processed and
+            (this.signals.get(.response_body_streaming) or this.flags.protocol != .http1_1));
     }
     return false;
 }
@@ -3382,19 +3399,23 @@ test "completion reset preserves caller-owned response bytes" {
     try std.testing.expect(state.body_out_str.? == &response);
 }
 
-test "buffered EOF bodies wait for completion while streaming bodies report progress" {
-    for ([_]bool{ false, true }) |streaming| {
-        var response = try MutableString.init(std.testing.allocator, 0);
-        defer response.deinit();
-        var signal = std.atomic.Value(bool).init(streaming);
-        var client: HTTPClient = undefined;
-        client.state = InternalState.init(.{ .bytes = "" }, &response);
-        client.signals = .{ .response_body_streaming = &signal };
-        client.progress_node = null;
+test "buffered EOF bodies wait while streaming and multiplexed bodies report progress" {
+    inline for ([_]Protocol{ .http1_1, .http2, .http3 }) |protocol| {
+        for ([_]bool{ false, true }) |streaming| {
+            var response = try MutableString.init(std.testing.allocator, 0);
+            defer response.deinit();
+            var signal = std.atomic.Value(bool).init(streaming);
+            var client: HTTPClient = undefined;
+            client.state = InternalState.init(.{ .bytes = "" }, &response);
+            client.signals = .{ .response_body_streaming = &signal };
+            client.progress_node = null;
+            client.flags = .{ .protocol = protocol };
 
-        try std.testing.expectEqual(streaming, try client.handleResponseBodyFromMultiplePackets("first"));
-        try std.testing.expectEqual(streaming, try client.handleResponseBodyFromMultiplePackets("second"));
-        try std.testing.expectEqualStrings("firstsecond", response.list.items);
+            const reports_progress = streaming or protocol != .http1_1;
+            try std.testing.expectEqual(reports_progress, try client.handleResponseBodyFromMultiplePackets("first"));
+            try std.testing.expectEqual(reports_progress, try client.handleResponseBodyFromMultiplePackets("second"));
+            try std.testing.expectEqualStrings("firstsecond", response.list.items);
+        }
     }
 
     var response = try MutableString.init(std.testing.allocator, 0);
@@ -3404,6 +3425,7 @@ test "buffered EOF bodies wait for completion while streaming bodies report prog
     client.state.content_length = 11;
     client.signals = .{};
     client.progress_node = null;
+    client.flags = .{};
     try std.testing.expect(!try client.handleResponseBodyFromMultiplePackets("first"));
     try std.testing.expect(try client.handleResponseBodyFromMultiplePackets("second"));
     try std.testing.expectEqualStrings("firstsecond", response.list.items);
