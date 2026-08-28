@@ -132,6 +132,7 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
 | [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 120/120 | 120/120 | 118/120 |
+| [Recursive generic-consumer controls](./docs/docs/TS_PERFORMANCE.md#recursive-generic-consumer-baseline-untimed) | 216/216 | 216/216 | 96/216 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |
@@ -147,6 +148,8 @@ cycles: its controls improve from 52/84 to 84/84. Bound-class controls now pass
 improves from 62/120 to 118/120 with source-owned arguments, defaults and
 constraints. Growing recursive aliases still fail two controls; eight
 inheritance controls remain failing in the nominal audit.
+The broader recursive audit exposes failures in local and imported consumers;
+its 96/216 baseline is separate from the 118/120 imported-class checkpoint.
 These are correctness results, not new timings.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)

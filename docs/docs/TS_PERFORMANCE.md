@@ -2559,3 +2559,98 @@ HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 
 HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 bench/vs_tsgo/audit_nominal_origins.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Recursive generic-consumer baseline (untimed)
+
+Follow-up to [#524](https://github.com/home-lang/home/issues/524), with parents
+[#521](https://github.com/home-lang/home/issues/521),
+[#487](https://github.com/home-lang/home/issues/487), and tracker
+[#416](https://github.com/home-lang/home/issues/416).
+Audit commits [`6576ff855`](https://github.com/home-lang/home/commit/6576ff855)
+and [`42452f823`](https://github.com/home-lang/home/commit/42452f823)
+add **216** controls: 16 recursive consumer families and two nonrecursive
+calibration families, each tested with a local declaration,
+a named import and a namespace import, with paired positive/appended-only
+negative uses in both app root orders. All three compilers receive identical
+files and options. Positive controls must be silent; negative controls must
+produce exactly one TS2322. No cases are excluded and no timing is collected.
+
+| Recursive generic placement | TS 6.0.3 | Native TS 7.0.2 | Home baseline |
+|---|---:|---:|---:|
+| Local declarations | 72/72 | 72/72 | 16/72 |
+| Named imports | 72/72 | 72/72 | 40/72 |
+| Namespace imports | 72/72 | 72/72 | 40/72 |
+| Total | 216/216 | 216/216 | 96/216 |
+
+The families cover fixed recursion, growing array arguments at depths 1, 4 and
+12, growing object arguments, mutually recursive aliases, parameter permutation,
+recursive method returns and array members, optional unions, indexed access,
+`keyof`, generic inference, destructuring, finite structural targets and
+structurally matching distinct recursive origins. Depth variants exercise the
+same semantics at different use depths; they do not define an implementation
+cutoff. The local controls demonstrate that the remaining problem is not only
+cross-file name resolution. The direct-parameter and nonrecursive-member
+calibration families pass all 24 controls for all three compilers, distinguishing
+the recursive failures from ordinary generic value/member access. All failures
+remain visible.
+
+The baseline is the previously verified ReleaseFast binary
+`bench/vs_tsgo/results/generic-classes.9vD3xi/home-final`, from implementation
+[`33ddbef63`](https://github.com/home-lang/home/commit/33ddbef63), SHA-256
+`5a4127f13c8901a1899686b09ca7d62d9bf338f41ff8ea5b43c08d179d35bbb7`.
+Evidence: `bench/vs_tsgo/results/recursive-generics.mlQve8/audit-before-216.log`
+(648 compiler/case checks, 120 failures, all Home). The initial 192-case run
+is separately retained in `audit-before.log` (Home 72/192); the 24 calibration
+controls add passes without removing any failures. Final audit source SHA-256:
+`65550d718a6369f850474f6699a3d0ec3733da302373fd99ffcb56e31124ff04`.
+Executable preflight verifies TS **6.0.3** and native TS **7.0.2**; TS 7 and
+`tsgo` remain one competitor.
+
+This **96/216** baseline is not a regression from, or a replacement for, the
+distinct **118/120** imported generic-class audit above. Both suites are retained.
+Original workload admission remains 16/18, imported graph admission remains
+0/2, and the timing snapshot is unchanged. No recursive-generic speed claim is
+eligible from this correctness baseline.
+
+The representation foundation
+([`c6c6c6652`](https://github.com/home-lang/home/commit/c6c6c6652)) introduces pool-owned generic definitions: a
+distinct declaration identity, its declaration-scoped parameter TypeIds, and a
+symbolic body. Recursive instantiation references can point back to that
+identity without unfolding the body. Construction is two-phase and unpublished
+until complete; allocation failure cannot publish a partial parameter list.
+Type-pool transfer relocates definitions, parameters, recursive edges and source
+provenance together, and rejects incomplete definitions. Separate declarations
+remain distinct even when their parameter names or body shapes match.
+
+This is prerequisite representation work. Production lowering still uses the
+existing consumer from the preceding checkpoint; shared lazy evaluation and
+member/relation/indexed-access consumers have not been connected to the new
+definition representation. The audit failures are not claimed fixed, and no
+fixed-depth expansion or new permissive fallback is introduced.
+
+Verification passes **4,282/4,282 checker**, **1,417/1,417 conformance**,
+**130/130 Program**, **187/187 driver**, **69/69 CLI** and **56/56 harness**
+tests. The focused definition tests pass 4/4 and transfer tests 10/10, including
+allocation-failure rollback and recursive graph preservation after releasing
+the source pool. Evidence is in `recursive-generics.mlQve8/` under
+`checker-definitions.log`, `conformance-definitions.log`,
+`program-definitions.log`, `driver-definitions.log`, `cli-definitions.log`,
+`harness.log`, `definitions-focused.log` and `transfer-focused.log`.
+Zig formatting passes; targeted Pickier reports zero errors and the existing
+README fragment warning (`lint.log`).
+
+The foundation's ReleaseFast binary is frozen as
+`recursive-generics.mlQve8/home-definitions`, SHA-256
+`95ababead014327b0e3bc97b7909eae88aeabaf5b2542612ba79fb74ffc6e173`
+(`release-definitions.log`). Its fresh 216-case audit retains **96/216** for
+Home and **216/216** for both competitors (`audit-definitions-216.log`): all
+648 compiler/case outcomes match the pre-foundation baseline. The separate
+imported-class suite retains **118/120** for Home and **120/120** for both
+competitors (`generic-classes-definitions.log`). Original workload admission
+is freshly verified at **16/18** for Home and **18/18** for both competitors
+(`admission-definitions.log`); the same two graph rejection gates still fail.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/generic-classes.9vD3xi/home-final" python3 bench/vs_tsgo/audit_recursive_generics.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
