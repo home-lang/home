@@ -23,7 +23,7 @@ pub const Names = struct {
 };
 
 /// IDs are source-owner-specific. Literals/structural keys may reuse existing
-/// destination IDs; declaration-scoped objects and type parameters stay fresh.
+/// destination IDs; objects, type parameters and callable identities stay fresh.
 pub const Relocation = struct {
     allocator: std.mem.Allocator,
     ids: []types.TypeId,
@@ -883,7 +883,7 @@ test "type transfer: real string owners preserve literal and signature relations
     defer engine.deinit();
     engine.setStringInterner(&target_strings);
     try T.expectEqual(target_literal, imported_literal);
-    try T.expectEqual(good_sig, imported_sig);
+    try T.expect(good_sig != imported_sig);
     try T.expect(try engine.isAssignableTo(imported_literal, target_literal));
     try T.expect(try engine.isAssignableTo(target_literal, imported_literal));
     try T.expect(!try engine.isAssignableTo(imported_literal, target_other));
@@ -912,22 +912,28 @@ fn canonicalGraph(value: *interner.Interner) ![14]types.TypeId {
     return .{ text, number, bigint, union_type, intersection, keyof_type, indexed, mapped, conditional, template, string_mapping, tuple, instance, signature };
 }
 
-test "type transfer: all structural keys reuse existing canonical destination types" {
+test "type transfer: immutable keys stay canonical while callable identities stay fresh" {
     var source = try interner.Interner.init(T.allocator);
     defer source.deinit();
     const originals = try canonicalGraph(&source);
     var target = try interner.Interner.init(T.allocator);
     defer target.deinit();
     const existing = try canonicalGraph(&target);
-    const before = poolLengths(&target.pool);
+    var expected_lengths = poolLengths(&target.pool);
     var names: TestNames = .{ .string_base = 0 };
     var relocation = try append(&target, &source, names.names());
     defer relocation.deinit();
-    for (originals, existing) |a, b| try T.expectEqual(b, try relocation.typeId(a));
-    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    for (originals[0..13], existing[0..13]) |a, b| try T.expectEqual(b, try relocation.typeId(a));
+    try T.expect(existing[13] != try relocation.typeId(originals[13]));
+    expected_lengths.set(.headers, expected_lengths.get(.headers) + 1);
+    expected_lengths.set(.signature_payloads, expected_lengths.get(.signature_payloads) + 1);
+    expected_lengths.set(.type_arg_pool, expected_lengths.get(.type_arg_pool) + 1);
+    try T.expectEqualDeep(expected_lengths, poolLengths(&target.pool));
     // Tuple/instantiation builders retain keys independently of the caller's
     // temporary arrays; another call after transfer must still deduplicate.
-    try T.expectEqualSlices(types.TypeId, &existing, &try canonicalGraph(&target));
+    const repeated = try canonicalGraph(&target);
+    try T.expectEqualSlices(types.TypeId, existing[0..13], repeated[0..13]);
+    try T.expect(existing[13] != repeated[13]);
 }
 
 test "type transfer: deep forward references are iterative and unanchored key cycles are rejected" {

@@ -1,9 +1,9 @@
 //! Type interner — Phase 3 / Phase 5 of TS_PARITY_PLAN.
 //!
-//! Wraps the SoA `Pool` with structural-equality interning so two
-//! lookups for the same type return the same `TypeId`. Identity
-//! becomes `id_a == id_b`, the foundation for the relation cache
-//! key (§5.4).
+//! Wraps the SoA `Pool` with structural-equality interning for immutable
+//! type keys. Objects, callable signatures, and declaration-scoped type
+//! parameters retain distinct identities. TypeIds key the relation cache;
+//! different identities can still be structurally compatible.
 //!
 //! Phase 5.A.7 introduces 64-shard lock striping for the dedup
 //! tables. Each shard owns its own `TypeKey → TypeId` map, key arena,
@@ -17,9 +17,8 @@
 //! retain their numeric ids and every existing `pool.headers.items[id]`
 //! call site keeps working unchanged.
 //!
-//! Verified architectural advantage: tsgo has no global type interner
-//! (Appendix D.2). Identity comparisons in tsgo require structural
-//! recursion through the relation cache; in Home they are O(1).
+//! Equal TypeIds provide a constant-time identity check. Distinct types
+//! require the relation engine to determine structural compatibility.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -139,16 +138,6 @@ pub const TypeKey = union(Kind) {
         origin: TypeId,
         args: []const TypeId,
     },
-    /// Function signature: `(p1: T1, p2: T2) => R` — `params`
-    /// captures the parameter type ids in declaration order. Explicit
-    /// `this` parameters are keyed separately from ordinary params.
-    signature: struct {
-        params: []const TypeId,
-        return_type: TypeId,
-        is_construct: bool,
-        is_abstract_construct: bool = false,
-        this_type: TypeId = types.Primitive.none,
-    },
 
     pub const Kind = enum(u8) {
         string_lit,
@@ -167,7 +156,6 @@ pub const TypeKey = union(Kind) {
         tuple,
         type_parameter,
         instantiation,
-        signature,
     };
 
     pub fn hash(self: TypeKey) u64 {
@@ -236,13 +224,6 @@ pub const TypeKey = union(Kind) {
             .instantiation => |inst| {
                 hasher.update(std.mem.asBytes(&inst.origin));
                 for (inst.args) |a| hasher.update(std.mem.asBytes(&a));
-            },
-            .signature => |sig| {
-                for (sig.params) |p| hasher.update(std.mem.asBytes(&p));
-                hasher.update(std.mem.asBytes(&sig.return_type));
-                hasher.update(&[_]u8{@intFromBool(sig.is_construct)});
-                hasher.update(&[_]u8{@intFromBool(sig.is_abstract_construct)});
-                hasher.update(std.mem.asBytes(&sig.this_type));
             },
         }
         return hasher.final();
@@ -317,14 +298,6 @@ pub const TypeKey = union(Kind) {
             .instantiation => |a| {
                 const b = other.instantiation;
                 return a.origin == b.origin and std.mem.eql(TypeId, a.args, b.args);
-            },
-            .signature => |a| {
-                const b = other.signature;
-                return a.is_construct == b.is_construct and
-                    a.is_abstract_construct == b.is_abstract_construct and
-                    a.return_type == b.return_type and
-                    a.this_type == b.this_type and
-                    std.mem.eql(TypeId, a.params, b.params);
             },
         };
     }
@@ -816,9 +789,9 @@ pub const Interner = struct {
         return tp.constraint;
     }
 
-    /// Intern a function signature type: `(p1: T1, p2: T2) => R`.
-    /// `param_types` is consumed via dupe; caller may free its
-    /// original copy.
+    /// Create a distinct function signature: `(p1: T1, p2: T2) => R`.
+    /// Parameter storage is copied. Signatures carry separately attached
+    /// semantic metadata and must not be deduplicated by erased shape.
     pub fn internSignature(self: *Interner, param_types: []const TypeId, return_type: TypeId, is_construct: bool) !TypeId {
         return try self.internSignatureWithAbstract(param_types, return_type, is_construct, false);
     }
@@ -847,37 +820,53 @@ pub const Interner = struct {
         is_abstract_construct: bool,
         this_type: TypeId,
     ) !TypeId {
-        const probe: TypeKey = .{ .signature = .{
-            .params = param_types,
+        // Signatures, like declaration-scoped objects, have identity beyond
+        // their erased parameter/return shape. Predicates, rest/optional
+        // parameters, generics and source provenance are attached by the
+        // checker after creation. Sharing a TypeId here lets one callable's
+        // metadata change another's behavior. Structural compatibility is
+        // the relation engine's job, not proof that these owners are equal.
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        // Rebuilding a signature often borrows signatureParams from this
+        // very column. Preserve its offset before reserve can relocate it.
+        const borrowed_offset: ?usize = blk: {
+            const existing = self.pool.type_arg_pool.items;
+            if (param_types.len == 0 or param_types.len > existing.len) break :blk null;
+            const first = @intFromPtr(existing.ptr);
+            const input = @intFromPtr(param_types.ptr);
+            if (input < first) break :blk null;
+            const bytes = input - first;
+            if (bytes % @sizeOf(TypeId) != 0) break :blk null;
+            const offset = bytes / @sizeOf(TypeId);
+            break :blk if (offset <= existing.len - param_types.len) offset else null;
+        };
+        // Reserve every column before publishing any lengths. Failed
+        // allocation may retain capacity but cannot expose a partial type.
+        try self.pool.type_arg_pool.ensureUnusedCapacity(self.gpa, param_types.len);
+        try self.pool.signature_payloads.ensureUnusedCapacity(self.gpa, 1);
+        try self.pool.headers.ensureUnusedCapacity(self.gpa, 1);
+        const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+        const payload: u32 = @intCast(self.pool.signature_payloads.items.len);
+        const id: TypeId = @intCast(self.pool.headers.items.len);
+        const parameters = if (borrowed_offset) |offset|
+            self.pool.type_arg_pool.items[offset..][0..param_types.len]
+        else
+            param_types;
+        self.pool.type_arg_pool.appendSliceAssumeCapacity(parameters);
+        self.pool.signature_payloads.appendAssumeCapacity(.{
+            .type_params_start = 0,
+            .type_params_len = 0,
+            .params_start = start,
+            .params_len = @intCast(param_types.len),
             .return_type = return_type,
             .is_construct = is_construct,
             .is_abstract_construct = is_abstract_construct and is_construct,
+            .has_this_type = this_type != types.Primitive.none,
             .this_type = this_type,
-        } };
-        const h = probe.hash();
-        const shard_idx = shardIndexFor(h);
-        const shard = &self.shards[shard_idx];
-
-        shard.mu.lockShared();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
-            shard.mu.unlockShared();
-            return found;
-        }
-        shard.mu.unlockShared();
-
-        shard.mu.lock();
-        defer shard.mu.unlock();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
-
-        const owned = try shard.key_arena.allocator().dupe(TypeId, param_types);
-        const owned_key: TypeKey = .{ .signature = .{
-            .params = owned,
-            .return_type = return_type,
-            .is_construct = is_construct,
-            .is_abstract_construct = is_abstract_construct and is_construct,
-            .this_type = this_type,
-        } };
-        return try self.publishKeyLocked(shard, owned_key, .{ .is_signature = true });
+        });
+        self.pool.headers.appendAssumeCapacity(.{ .flags = .{ .is_signature = true }, .symbol = 0, .payload = payload });
+        return id;
     }
 
     /// Look up the return type of a signature TypeId. Returns null
@@ -1057,9 +1046,9 @@ pub const Interner = struct {
     /// owning shard, takes the read lock for an optimistic dedup
     /// probe, and falls through to the write lock + Pool append on a
     /// miss. For keys whose payload contains caller-owned slices
-    /// (union, intersection, template_literal, signature), prefer the
+    /// (union, intersection, template_literal), prefer the
     /// dedicated `internUnion` / `internIntersection` /
-    /// `internTemplateLiteral` / `internSignature` entry points which
+    /// `internTemplateLiteral` entry points which
     /// dupe the slice into the shard arena before publishing.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
         const h = key.hash();
@@ -1251,23 +1240,6 @@ pub const Interner = struct {
                     .origin = inst.origin,
                     .args_start = start,
                     .args_len = @intCast(inst.args.len),
-                });
-                break :blk idx;
-            },
-            .signature => |sig| blk: {
-                const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
-                try self.pool.type_arg_pool.appendSlice(self.gpa, sig.params);
-                const idx: u32 = @intCast(self.pool.signature_payloads.items.len);
-                try self.pool.signature_payloads.append(self.gpa, .{
-                    .type_params_start = 0,
-                    .type_params_len = 0,
-                    .params_start = start,
-                    .params_len = @intCast(sig.params.len),
-                    .return_type = sig.return_type,
-                    .is_construct = sig.is_construct,
-                    .is_abstract_construct = sig.is_abstract_construct,
-                    .has_this_type = sig.this_type != types.Primitive.none,
-                    .this_type = sig.this_type,
                 });
                 break :blk idx;
             },
@@ -1510,6 +1482,43 @@ test "Interner: union flattens multiple nested unions" {
     for (members) |m| {
         try T.expect(!i.pool.flagsOf(m).is_union);
     }
+}
+
+test "Interner: signature identity survives equal shapes and borrowed pool growth" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const params: [260]TypeId = @splat(Primitive.number_t);
+    const first = try i.internSignature(&params, Primitive.boolean_t, false);
+    const second = try i.internSignature(i.signatureParams(first), Primitive.boolean_t, false);
+    try T.expect(first != second);
+    try T.expectEqualSlices(TypeId, &params, i.signatureParams(first));
+    try T.expectEqualSlices(TypeId, &params, i.signatureParams(second));
+    const function = try i.internSignatureWithThisType(&.{Primitive.unknown}, Primitive.boolean_t, false, true, Primitive.string_t);
+    const constructor = try i.internSignatureWithThisType(&.{Primitive.unknown}, Primitive.boolean_t, true, true, Primitive.string_t);
+    try T.expect(!i.pool.signature_payloads.items[i.pool.payloadOf(function)].is_abstract_construct);
+    const construct = i.pool.signature_payloads.items[i.pool.payloadOf(constructor)];
+    try T.expect(construct.is_construct and construct.is_abstract_construct and construct.has_this_type);
+    try T.expectEqual(Primitive.string_t, construct.this_type);
+}
+
+test "Interner: signature allocation failure publishes no partial columns" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var i = try Interner.init(allocator);
+            defer i.deinit();
+            const headers = i.pool.headers.items.len;
+            const signatures = i.pool.signature_payloads.items.len;
+            const arguments = i.pool.type_arg_pool.items.len;
+            const params: [260]TypeId = @splat(Primitive.number_t);
+            _ = i.internSignature(&params, Primitive.boolean_t, false) catch |err| {
+                try T.expectEqual(headers, i.pool.headers.items.len);
+                try T.expectEqual(signatures, i.pool.signature_payloads.items.len);
+                try T.expectEqual(arguments, i.pool.type_arg_pool.items.len);
+                return err;
+            };
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Check.run, .{});
 }
 
 test "Interner: signature accessors ignore folded union signature flags" {

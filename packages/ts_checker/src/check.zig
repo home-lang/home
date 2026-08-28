@@ -30573,7 +30573,10 @@ pub const Checker = struct {
             const relowered = try self.relowerSignatureParametersWithInferences(sig, &subs);
             break :blk self.substituteType(relowered, &subs) catch relowered;
         };
-        const params = self.interner.signatureParams(effective_sig);
+        // Checking earlier arguments can instantiate signatures and grow the
+        // parameter pool. Keep the later argument's context alive across it.
+        const params = try self.gpa.dupe(TypeId, self.interner.signatureParams(effective_sig));
+        defer self.gpa.free(params);
         if (arg_index > 0 and self.callCalleeHasOverloadSet(callee_node)) {
             const prior_count = @min(arg_index, params.len);
             for (args[0..prior_count], params[0..prior_count]) |prior_arg, prior_param_t| {
@@ -30875,16 +30878,12 @@ pub const Checker = struct {
         if (contextual_predicate) |predicate| {
             try self.signature_predicates.put(self.gpa, sig, predicate);
         }
-        // Signature interning is structural. When the inferred source has
-        // exactly the target shape, `sig == target_sig`; attaching the
-        // source arrow's parameter names would then overwrite the target's
-        // declaration names and corrupt assignment diagnostics.
-        if (sig != target_sig) {
-            if (source_t != types.Primitive.none) {
-                try self.copySignatureParamNames(sig, source_t);
-            } else {
-                try self.recordSignatureParamNames(sig, param_nodes);
-            }
+        // The inferred callable has its own identity and source names;
+        // the contextual target's declaration metadata remains unchanged.
+        if (source_t != types.Primitive.none) {
+            try self.copySignatureParamNames(sig, source_t);
+        } else {
+            try self.recordSignatureParamNames(sig, param_nodes);
         }
         self.hir.setType(fn_node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
@@ -36743,20 +36742,21 @@ pub const Checker = struct {
             }
         }
         // Record the predicate so call sites can narrow.
-        if (is_predicate and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+        if (is_predicate) {
             const pred = hir_mod.typePredicateOf(self.hir, f.return_type);
             const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
                 (self.lowererLowerWithTypeParams(pred.target_type) catch types.Primitive.unknown)
             else
                 types.Primitive.unknown;
-            const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
             const fn_pred: FnPredicate = .{
                 .param_index = self.normalizedPredicateParamIndex(hir_mod.fnParams(self.hir, node), pred.param_index),
                 .target_type = target_t,
                 .target_node = pred.target_type,
                 .is_asserts = pred.is_asserts,
             };
-            try self.fn_predicates.put(self.gpa, fn_name, fn_pred);
+            if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                try self.fn_predicates.put(self.gpa, hir_mod.identifierOf(self.hir, f.name).name, fn_pred);
+            }
             try self.signature_predicates.put(self.gpa, sig, fn_pred);
         }
         if (jsdoc_predicate) |pred| {
@@ -126309,6 +126309,8 @@ pub const Checker = struct {
         try self.copySignatureParamNames(sig, fallback);
         if (self.rest_signatures.contains(fallback)) try self.rest_signatures.put(self.gpa, sig, {});
         if (self.signature_min_args.get(fallback)) |min_args| try self.signature_min_args.put(self.gpa, sig, min_args);
+        if (self.generic_signature_params.get(fallback)) |type_params| try self.recordGenericSignatureParams(sig, type_params);
+        if (self.signature_predicates.get(fallback)) |predicate| try self.signature_predicates.put(self.gpa, sig, predicate);
         return sig;
     }
 
@@ -152202,10 +152204,9 @@ pub const Checker = struct {
     /// `'hello' | undefined` parameter) the union is left intact, so the
     /// downstream call-arity check still fires TS2554 for `f()`.
     ///
-    /// Scoped to unions whose every constituent is a bare call signature:
-    /// general union construction is left untouched to avoid perturbing
-    /// unrelated reduction behavior. Returns the (possibly reduced)
-    /// interned type for `members`.
+    /// Also handles objects with callable members using the structural
+    /// subtype relation. General union construction is left untouched.
+    /// Returns the (possibly reduced) interned type for `members`.
     fn internConditionalUnion(self: *Checker, members: []const TypeId) CheckError!TypeId {
         // `any` absorbs the other branch of a conditional expression in
         // TypeScript. Keeping `any | T` here makes downstream calls reject
@@ -152216,12 +152217,13 @@ pub const Checker = struct {
         const u = try self.internUnionReducingStringSubtypes(members);
         if (u >= self.interner.pool.typeCount()) return u;
         if (!self.interner.pool.flagsOf(u).is_union) return u;
-        // Only reduce when every constituent is a bare call signature ÃÂ¢ÃÂÃÂ
-        // the union-of-function-types shape tsc subtype-reduces here.
+        // Methods retain distinct signature identities too. Reduce their
+        // owning object types using the same strict callable relation,
+        // rather than relying on erased signatures sharing a TypeId.
         const union_members = self.interner.unionMembers(u);
         if (union_members.len < 2) return u;
         for (union_members) |m| {
-            if (!self.interner.isSignature(m)) return u;
+            if (!self.interner.isSignature(m) and !self.interner.pool.flagsOf(m).is_object_type) return u;
             if (self.signatureIsConstruct(m)) return u;
         }
         var kept = std.ArrayListUnmanaged(TypeId).empty;
@@ -152235,7 +152237,7 @@ pub const Checker = struct {
             const source = kept.items[i];
             for (kept.items, 0..) |target, j| {
                 if (j == i) continue;
-                if (self.strictCallableSubtype(source, target)) {
+                if (self.strictUnionReductionSubtype(source, target)) {
                     _ = kept.orderedRemove(i);
                     break;
                 }
@@ -153084,71 +153086,98 @@ pub const Checker = struct {
         }
         // Both signatures: match params slot-by-slot and return types.
         if (p_flags.is_signature and a_flags.is_signature) {
-            if (p_payload >= pool.signature_payloads.items.len) return;
-            if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
-            const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
-            defer self.gpa.free(pp);
-            if (self.generic_signature_params.get(arg_t) != null and
-                self.generic_signature_params.get(param_t) == null and
-                self.signatureHasBareGenericRestParam(param_t))
-            {
-                if (self.interner.signatureReturn(param_t)) |return_t| {
-                    if (return_t < pool.typeCount()) {
-                        const return_flags = pool.flagsOf(return_t);
-                        if (return_flags.is_type_parameter and
-                            !return_flags.is_union and
-                            !return_flags.is_intersection and
-                            !return_flags.is_object_type and
-                            !return_flags.is_signature and
-                            !subs.contains(return_t))
-                        {
-                            try subs.put(self.gpa, return_t, types.Primitive.unknown);
-                        }
-                    }
+            if (self.generic_signature_params.get(param_t)) |local_params| {
+                // A generic callback binds its own parameters. Inferences
+                // inside that signature can constrain free outer parameters,
+                // but must not instantiate the callback's local binders.
+                var scoped_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer scoped_subs.deinit(self.gpa);
+                try self.copyInferSubs(subs, &scoped_subs);
+                for (local_params) |local| _ = scoped_subs.remove(local);
+                try self.inferFromSignaturePair(param_t, arg_t, &scoped_subs);
+                var inferred = scoped_subs.iterator();
+                while (inferred.next()) |entry| {
+                    if (std.mem.indexOfScalar(TypeId, local_params, entry.key_ptr.*) != null) continue;
+                    try subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
                 }
                 return;
             }
-            const raw_ap = self.interner.signatureParams(arg_t);
-            var logical_ap: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer logical_ap.deinit(self.gpa);
-            _ = try self.appendLogicalSignatureInferenceParams(arg_t, raw_ap, &logical_ap);
-            const ap = logical_ap.items;
-            try self.inferRestTupleFromSignatureParams(param_t, pp, arg_t, raw_ap, subs);
-            const m = @min(pp.len, ap.len);
-            var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
-            defer source_subs.deinit(self.gpa);
-            for (0..m) |i| {
-                const expected_param = self.substituteType(pp[i], subs) catch pp[i];
-                const actual_param = ap[i];
-                if ((actual_param == types.Primitive.any or actual_param == types.Primitive.unknown) and
-                    self.containsFreeTypeParameter(expected_param))
-                {
-                    continue;
-                }
-                if (actual_param >= pool.typeCount()) continue;
-                const af = pool.flagsOf(actual_param);
-                if (af.is_type_parameter) {
-                    if (!source_subs.contains(actual_param)) {
-                        try source_subs.put(self.gpa, actual_param, expected_param);
-                    }
-                    continue;
-                }
-                try self.inferFromPair(expected_param, actual_param, subs);
-            }
-            if (self.interner.signatureReturn(param_t)) |pr| {
-                if (self.interner.signatureReturn(arg_t)) |ar| {
-                    const actual_ret = self.substituteType(ar, &source_subs) catch ar;
-                    const inferred_param_ret = self.substituteType(pr, subs) catch pr;
-                    const parameter_inference_already_fixed_generator = inferred_param_ret != pr and
-                        self.generator_type_info.contains(inferred_param_ret) and
-                        self.generator_type_info.contains(actual_ret);
-                    if (!parameter_inference_already_fixed_generator) {
-                        try self.inferFromCovariantPair(pr, actual_ret, subs);
+            try self.inferFromSignaturePair(param_t, arg_t, subs);
+        }
+    }
+
+    fn inferFromSignaturePair(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const pool = &self.interner.pool;
+        const p_payload = pool.payloadOf(param_t);
+        if (p_payload >= pool.signature_payloads.items.len) return;
+        if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
+        const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
+        defer self.gpa.free(pp);
+        if (self.generic_signature_params.get(arg_t) != null and
+            self.generic_signature_params.get(param_t) == null and
+            self.signatureHasBareGenericRestParam(param_t))
+        {
+            if (self.interner.signatureReturn(param_t)) |return_t| {
+                if (return_t < pool.typeCount()) {
+                    const return_flags = pool.flagsOf(return_t);
+                    if (return_flags.is_type_parameter and
+                        !return_flags.is_union and
+                        !return_flags.is_intersection and
+                        !return_flags.is_object_type and
+                        !return_flags.is_signature and
+                        !subs.contains(return_t))
+                    {
+                        try subs.put(self.gpa, return_t, types.Primitive.unknown);
                     }
                 }
             }
             return;
         }
+        const raw_ap = self.interner.signatureParams(arg_t);
+        var logical_ap: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer logical_ap.deinit(self.gpa);
+        _ = try self.appendLogicalSignatureInferenceParams(arg_t, raw_ap, &logical_ap);
+        const ap = logical_ap.items;
+        try self.inferRestTupleFromSignatureParams(param_t, pp, arg_t, raw_ap, subs);
+        const m = @min(pp.len, ap.len);
+        var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer source_subs.deinit(self.gpa);
+        for (0..m) |i| {
+            const expected_param = self.substituteType(pp[i], subs) catch pp[i];
+            const actual_param = ap[i];
+            if ((actual_param == types.Primitive.any or actual_param == types.Primitive.unknown) and
+                self.containsFreeTypeParameter(expected_param))
+            {
+                continue;
+            }
+            if (actual_param >= pool.typeCount()) continue;
+            const af = pool.flagsOf(actual_param);
+            if (af.is_type_parameter) {
+                if (!source_subs.contains(actual_param)) {
+                    try source_subs.put(self.gpa, actual_param, expected_param);
+                }
+                continue;
+            }
+            try self.inferFromPair(expected_param, actual_param, subs);
+        }
+        if (self.interner.signatureReturn(param_t)) |pr| {
+            if (self.interner.signatureReturn(arg_t)) |ar| {
+                const actual_ret = self.substituteType(ar, &source_subs) catch ar;
+                const inferred_param_ret = self.substituteType(pr, subs) catch pr;
+                const parameter_inference_already_fixed_generator = inferred_param_ret != pr and
+                    self.generator_type_info.contains(inferred_param_ret) and
+                    self.generator_type_info.contains(actual_ret);
+                if (!parameter_inference_already_fixed_generator) {
+                    try self.inferFromCovariantPair(pr, actual_ret, subs);
+                }
+            }
+        }
+        return;
     }
 
     fn inferFromCovariantPair(
@@ -156922,6 +156951,23 @@ pub const Checker = struct {
                 try self.substituteType(this_t, effective_subs)
             else
                 null;
+            // An unaffected substitution retains this declaration's callable
+            // identity. Equal shapes from different declarations still have
+            // different IDs. Predicate targets live outside the shape and
+            // must take the metadata-substitution path below.
+            const original_type_params = self.generic_signature_params.get(t) orelse &.{};
+            var has_predicate_metadata = self.signature_predicates.contains(t);
+            for (0..@min(params_snapshot.len, @as(usize, std.math.maxInt(u16)) + 1)) |param_ix| {
+                if (self.signature_param_predicates.contains(.{ .signature = t, .param_index = @intCast(param_ix) })) {
+                    has_predicate_metadata = true;
+                    break;
+                }
+            }
+            if (!has_predicate_metadata and
+                std.mem.eql(TypeId, new.items, params_snapshot) and
+                ret == sig_payload.return_type and
+                this_t_opt == self.signatureThisParam(t) and
+                std.mem.eql(TypeId, preserved_params.items, original_type_params)) return t;
             const new_sig = if (this_t_opt) |this_t|
                 self.interner.internSignatureWithThisType(
                     new.items,
@@ -172230,6 +172276,7 @@ pub const Checker = struct {
         if (self.rest_signatures.contains(source_t)) try self.rest_signatures.put(self.gpa, probe, {});
         if (self.signature_min_args.get(source_t)) |min_args| try self.signature_min_args.put(self.gpa, probe, min_args);
         if (relation_this) |this_t| try self.signature_this_params.put(self.gpa, probe, this_t);
+        if (self.signature_predicates.get(source_t)) |predicate| try self.signature_predicates.put(self.gpa, probe, predicate);
         return try self.checkerAssignableTo(probe, target_t);
     }
 
@@ -222150,6 +222197,68 @@ test "checker: empty substitutions preserve type graph identity" {
     try T.expectEqual(type_count, s.checker.interner.pool.typeCount());
 }
 
+test "checker: unaffected substitution retains callable identity without erasing hidden predicates" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const type_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.checker.string_interner.intern("T"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try subs.put(T.allocator, type_param, types.Primitive.string_t);
+    const plain = try s.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.number_t, false);
+    const count = s.ti.pool.typeCount();
+    try T.expectEqual(plain, try s.checker.substituteType(plain, &subs));
+    try T.expectEqual(count, s.ti.pool.typeCount());
+    const distinct = try s.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.number_t, false);
+    try T.expect(plain != distinct);
+
+    const generic = try s.ti.internSignature(&.{type_param}, type_param, false);
+    try s.checker.recordGenericSignatureParams(generic, &.{type_param});
+    const instantiated = try s.checker.substituteType(generic, &subs);
+    try T.expect(instantiated != generic);
+    try T.expectEqual(types.Primitive.string_t, s.ti.signatureReturn(instantiated).?);
+    try T.expect(!s.checker.generic_signature_params.contains(instantiated));
+    try T.expect(s.checker.generic_signature_params.contains(generic));
+
+    const guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    try s.checker.signature_predicates.put(T.allocator, guard, .{
+        .param_index = 0,
+        .target_type = type_param,
+        .target_node = hir_mod.none_node_id,
+        .is_asserts = false,
+    });
+    const instantiated_guard = try s.checker.substituteType(guard, &subs);
+    try T.expect(instantiated_guard != guard);
+    try T.expectEqual(types.Primitive.string_t, s.checker.signature_predicates.get(instantiated_guard).?.target_type);
+    try T.expectEqual(type_param, s.checker.signature_predicates.get(guard).?.target_type);
+}
+
+test "checker: callback inference keeps local binders scoped and infers free outer types" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const name = try s.checker.string_interner.intern("T");
+    const outer = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const source_local = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const target = try s.ti.internSignature(&.{local}, outer, false);
+    try s.checker.recordGenericSignatureParams(target, &.{local});
+    const source = try s.ti.internSignature(&.{source_local}, types.Primitive.string_t, false);
+    try s.checker.recordGenericSignatureParams(source, &.{source_local});
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try s.checker.inferFromPair(target, source, &subs);
+    try T.expectEqual(types.Primitive.string_t, subs.get(outer).?);
+    try T.expect(!subs.contains(local));
+    try T.expect(!subs.contains(source_local));
+    const instantiated = try s.checker.substituteType(target, &subs);
+    try T.expectEqualSlices(TypeId, &.{local}, s.checker.generic_signature_params.get(instantiated).?);
+    try T.expectEqual(types.Primitive.string_t, s.ti.signatureReturn(instantiated).?);
+}
+
 test "checker: call inference only instantiates generic signatures" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -232704,6 +232813,31 @@ test "checker: const tuple paths reduce recursive conditional aliases" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: callable identity keeps boolean properties out of predicate narrowing" {
+    inline for (.{
+        "number(value: unknown): value is number; plain(value: unknown): boolean;",
+        "plain(value: unknown): boolean; number(value: unknown): value is number;",
+    }) |members| {
+        const s = try newBoundSetup("export {}; interface Guards {" ++ members ++ "}\n" ++
+            \\declare const guards: Guards;
+            \\declare let value: unknown;
+            \\const plain = guards.plain;
+            \\if (plain(value)) { const badAlias: number = value; }
+            \\if (guards.plain(value)) { const badDirect: number = value; }
+            \\const box = { p: guards.plain };
+            \\if (box.p(value)) { const badWrapper: number = value; }
+            \\const badGuard: (value: unknown) => value is number = guards.plain;
+            \\const guard = guards.number;
+            \\if (guard(value)) { const good: number = value; }
+        );
+        defer destroyBoundSetup(s);
+        s.base.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+        try s.base.checker.checkSourceFile(s.base.root);
+        try T.expectEqual(@as(usize, 4), checkerCountCode(s.base, TsCodes.type_not_assignable));
+        try T.expectEqual(@as(usize, 4), s.base.checker.diagnostics.items.len);
+    }
 }
 
 test "checker: assertion declarations return void without aliasing boolean guards" {

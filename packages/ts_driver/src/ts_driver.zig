@@ -5261,7 +5261,7 @@ test "driver: checked alias display and arguments own their borrowed leaves" {
     try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
 }
 
-test "driver: checked transfer preserves real declarations and isolated canonical signature semantics" {
+test "driver: checked transfer preserves real declarations and distinct callable identities" {
     const first = try compileSource(T.allocator,
         \\export interface Box<T> { value: T; }
         \\export declare function identity<T extends string = 'seed'>(value: T): Box<T>;
@@ -5297,8 +5297,8 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     defer destination.deinit();
     var strings = try string_interner.Interner.init(T.allocator);
     defer strings.deinit();
-    // Canonical guard shape is deliberately present before either import.
-    const canonical_guard = try destination.internSignature(&.{ts_checker.Primitive.unknown}, ts_checker.Primitive.boolean_t, false);
+    // An identical erased shape must not absorb either imported predicate.
+    const plain_signature = try destination.internSignature(&.{ts_checker.Primitive.unknown}, ts_checker.Primitive.boolean_t, false);
     var origins = source_owners.Registry.init(T.allocator);
     defer origins.deinit();
     const first_owner = try origins.register(try first.sourceOwner("/first.ts"));
@@ -5314,8 +5314,7 @@ test "driver: checked transfer preserves real declarations and isolated canonica
 
     const first_guard = try first_ids.typeId(try testCheckedValueType(first, "guard"));
     const second_guard = try second_ids.typeId(try testCheckedValueType(second, "guard"));
-    try T.expectEqual(canonical_guard, first_guard);
-    try T.expectEqual(canonical_guard, second_guard);
+    try T.expect(plain_signature != first_guard and plain_signature != second_guard and first_guard != second_guard);
     try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
     try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
     const first_handle = first_checked.signature_decl_nodes.get(first_guard).?;
@@ -5388,8 +5387,10 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     try T.expect(!try engine.isAssignableTo(wrong, tuple));
     try T.expect(!try engine.isAssignableTo(tuple, wrong));
     try T.expectEqualStrings("value", strings.get(first_checked.signature_param_names.get(first_identity).?[0]));
-    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(canonical_guard).?.target_type);
-    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(canonical_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
+    try T.expect(!first_checked.signature_predicates.contains(plain_signature));
+    try T.expect(!second_checked.signature_predicates.contains(plain_signature));
 }
 
 test "driver: arrow function" {
