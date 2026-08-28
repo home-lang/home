@@ -1375,3 +1375,79 @@ The ReleaseFast binary SHA-256 is
 The unchanged tuple source SHA-256 is
 `78105a6b28024f5ac1dd32cc81d3aa065a3a99a1972927e1880f0a28eec5324f`;
 both frozen predicate source hashes also match the preceding checkpoint.
+
+### Canonical type-graph transfer (untimed)
+
+Commit [`e4c0a4caa`](https://github.com/home-lang/home/commit/e4c0a4caaf65c3a2177a66f7af65492e3ca0bbf3)
+implements the payload-transfer primitive tracked in
+[#494](https://github.com/home-lang/home/issues/494). It returns an owned
+source-to-destination TypeId map, resolving structural dependencies iteratively
+through the destination's canonical interner. A raw-copy prototype failed an
+actual literal-assignability test because equal literals had different IDs;
+the implementation now reuses canonical structural keys without changing the
+relation engine. Declaration-scoped objects, type parameters, and enum literals
+retain distinct identities across owners.
+
+The caller supplies consistent string-content and declaration-owner mappings.
+The transfer preserves all stored payload kinds, including shared/recursive
+object and parameter edges, generic signature arguments, tuple flags,
+conditional distribution, mapped modifiers, and enum identities. It validates
+references and rejects unsupported unanchored cycles among immutable structural
+keys instead of substituting `any`. Failure removes newly published intern keys
+and enum entries before restoring payload-column lengths. Retained allocation
+capacity and caller-owned string/provenance allocations are not rolled back.
+
+Seven focused tests cover payloads after source destruction, overlapping IDs
+from independent owners, real string/literal/signature relations, reuse of
+fourteen existing structural keys, an 8,192-node forward dependency chain,
+invalid mappings/references, and exhaustive allocation-failure rollback. The
+focused runner passes 8/8 including its module test root.
+
+Fault injection also exposed two initialization leaks, fixed in
+[`99a8b7866`](https://github.com/home-lang/home/commit/99a8b7866b67a39c0c3c83b99cacda7ec5f237dc)
+([#498](https://github.com/home-lang/home/issues/498)). `Pool.init` now cleans up
+partially initialized columns; `Interner.init` releases its pool if initial
+header reservation fails. Before-fix probes leaked 144 bytes on the first
+failing column append and, with pool cleanup alone, 3,072 bytes in 21 allocations
+on header-reservation failure. Both exhaustive initialization tests now pass.
+These are ownership fixes, not measured speedups.
+
+The full suites pass 4,246 checker tests, 178 driver tests, 101 program tests,
+69 CLI tests, and 29 benchmark-harness/report tests. A fresh ReleaseFast binary
+was checked against version-verified TS 6.0.3 and native TS 7.0.2:
+
+| Untimed CLI audit | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Existing positive workloads | 18/18 | 18/18 | 18/18 |
+| Variadic tuple controls | 14/14 | 14/14 | 14/14 |
+| Assertion-return controls | 12/12 | 12/12 | 12/12 |
+| Same-file global declarations | 24/24 | 24/24 | 24/24 |
+| Cross-file global declarations | 20/20 | 20/20 | 6/20 |
+
+Home still passes sixteen workload gates and fails both imported-graph gates;
+the global audit still reports fourteen failures across 132 checks. The transfer
+primitive is **not yet called by program checking**. It does not transfer the
+113 checked-metadata tables, construct real HIR/source provenance, resolve
+imports or global merges, handle module cycles, or invalidate owner-specific
+caches. These are prerequisites to integration under
+[#480](https://github.com/home-lang/home/issues/480) and graph readmission under
+[#487](https://github.com/home-lang/home/issues/487). Neither graph is readmitted,
+and the other timing rows remain provisional.
+
+Local evidence is retained in `bench/vs_tsgo/results/type-transfer.FHPXSf`.
+The final ReleaseFast binary SHA-256 is
+`860760ccee9bd0935b3371da534756bf148c733bce540d51c86714e96dce962c`.
+The tuple and both predicate source hashes match the previous checkpoint.
+No timings were collected during concurrent workstation activity; the published
+timing snapshot is unchanged. Reproduce the focused checks and permanent
+admission audit with:
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker -Dts-checker-test-filter='type transfer'
+./pantry/.bin/zig build test -Dfilter=ts_checker -Dts-checker-test-filter='initialization'
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+```
+
+The last command intentionally exits nonzero while the fourteen known Home
+failures remain; they are not skipped or waived.

@@ -110,8 +110,9 @@ Later generic-callback, declaration, and
 [assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
 have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
-The latest [untimed ownership and tuple-admission checks](./docs/docs/TS_PERFORMANCE.md#semantic-metadata-ownership-and-tuple-admission-untimed)
-report:
+The latest [untimed type-transfer and admission checks](./docs/docs/TS_PERFORMANCE.md#canonical-type-graph-transfer-untimed)
+report the same correctness totals below. Canonical payload transfer is tested,
+but cross-file semantic metadata and source-provenance integration remain open.
 
 | Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
 |---|---:|---:|---:|
