@@ -1198,3 +1198,62 @@ The old `9e45e105d` times and raw observations are retained unchanged. Fixing
 cross-file types and re-running admission are prerequisites to graph retiming,
 not evidence of a speedup themselves. The local evidence directory is
 `bench/vs_tsgo/results/global-audit.TExK7j`.
+
+The implementation checkpoint consists of
+[`98176963c`](https://github.com/home-lang/home/commit/98176963c5ab6422c86e12139cc459f202aa1c05)
+(resolve actual/forward declarations before global-name fallback),
+[`6cba2f248`](https://github.com/home-lang/home/commit/6cba2f248445646302d1df6a02e07a299c4a2c1a)
+(keep narrowed runtime values separate from type lookup), and
+[`8a737cdb2`](https://github.com/home-lang/home/commit/8a737cdb208c0bab3ca518880eaf8c486705ba13)
+(resolve explicit project files relative to the config directory, fixing
+[#483](https://github.com/home-lang/home/issues/483)). The graph gate and
+historical-report correction are in
+[`16f84e743`](https://github.com/home-lang/home/commit/16f84e74365d42296bee71195dc645f5e0def376).
+
+The [reproducible global audit](https://github.com/home-lang/home/blob/50abd827a75cbd94bdb29acb37f79ca39b88f369/bench/vs_tsgo/audit_globals.py)
+uses identical strict/noEmit/noLib/skipLibCheck projects and the shared minimal
+library. Same-file cases cover ordinary/generic methods, aliases, forward
+declarations, merging, type/value-name coexistence, and module-local isolation.
+Cross-file cases cover interfaces, same-named local values, generic static
+methods, declared variables, and merging, each with declarations explicitly
+listed before and after the app. Positive controls retain the declarations and
+remove only the invalid statements. Passes below mean acceptance or the expected
+diagnostic-code multiset, not byte-for-byte diagnostic parity.
+
+| Untimed audit | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Same-file declarations: 12 valid + 12 invalid projects | 24/24 | 24/24 | 24/24 |
+| Cross-file globals: 10 valid + 10 invalid projects | 20/20 | 20/20 | 6/20 |
+| Project/build/positional path controls | 6/6 | 6/6 | 6/6 |
+| Existing generic receiver callback controls | 24/24 | 24/24 | 24/24 |
+
+The default global audit performs 132 checks and intentionally exits nonzero:
+all fourteen failures are Home cross-file cases. It does not waive or hide
+known failures. Both root orders expose the same gaps. The path checks run from
+outside the project, include relative, parent-relative, and absolute file
+entries, and preserve positional-file behavior with explicit `--ignoreConfig`.
+The missing TS5112 diagnostic when that flag is absent is separately tracked in
+[#486](https://github.com/home-lang/home/issues/486).
+
+```sh
+python3 bench/vs_tsgo/audit_globals.py
+python3 bench/vs_tsgo/audit_globals.py --family same-file
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
+
+The final source passes 4,232 checker tests, 101 program tests, 173 driver tests,
+69 CLI tests, and 25 harness/report tests. The ReleaseFast binary's SHA-256 is
+`7fd2c7e10e2471de753e474fca44abba8f00cfe4bf851284fe1b114653c756ce`.
+All eighteen positive workloads still validate. With the stronger gates, Home
+passes sixteen workload admissions and fails both graphs; both TypeScript
+baselines pass all eighteen. The frozen predicate source hashes are unchanged.
+
+[#480](https://github.com/home-lang/home/issues/480) remains open for real
+cross-file declaration/type ownership; a same-file fix does not solve it.
+[#487](https://github.com/home-lang/home/issues/487) tracks graph readmission
+and broader coverage. Promise result erasure and the valid generic async
+projection failure remain reproducible under
+[#475](https://github.com/home-lang/home/issues/475) and
+[#476](https://github.com/home-lang/home/issues/476), with the diagnostic-text
+gap in [#478](https://github.com/home-lang/home/issues/478). Async remains untimed
+under [#473](https://github.com/home-lang/home/issues/473).
