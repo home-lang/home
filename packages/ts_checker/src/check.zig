@@ -3736,6 +3736,58 @@ const PriorJsDocPropertyAssignment = struct {
     section: usize,
 };
 
+/// Owned declaration and signature metadata for a checked source file.
+/// TypeIds/StringIds/NodeIds belong to the accompanying interner and HIR;
+/// consumers must retain that owner rather than treating these as global IDs.
+/// Transient control-flow scopes and in-progress resolution caches stay in
+/// Checker. Moving this result does not allocate or duplicate type graphs.
+pub const CheckedTypes = struct {
+    type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo) = .empty,
+    generic_interfaces_by_decl: std.AutoHashMapUnmanaged(NodeId, GenericAliasInfo) = .empty,
+    generic_interface_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    generic_fns: std.AutoHashMapUnmanaged(hir_mod.StringId, []TypeId) = .empty,
+    generic_signature_params: std.AutoHashMapUnmanaged(TypeId, []TypeId) = .empty,
+    class_instance_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    class_static_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    rest_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    signature_this_params: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    constructor_signature_visibility: std.AutoHashMapUnmanaged(TypeId, ConstructorVisibility) = .empty,
+    signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+    signature_display_min_args: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+    signature_nullish_array_defaults: std.AutoHashMapUnmanaged(TypeId, []bool) = .empty,
+    signature_param_names: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId) = .empty,
+    signature_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    signature_param_nodes: std.AutoHashMapUnmanaged(TypeId, []NodeId) = .empty,
+    signature_param_name_occurrences: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId) = .empty,
+    fn_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty,
+    signature_predicates: std.AutoHashMapUnmanaged(TypeId, FnPredicate) = .empty,
+    member_predicates: std.AutoHashMapUnmanaged(TypeMemberKey, FnPredicate) = .empty,
+    signature_param_predicates: std.AutoHashMapUnmanaged(SignatureParamKey, FnPredicate) = .empty,
+    overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)) = .empty,
+    overload_has_implementation: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    type_parameter_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    type_parameter_placeholder_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    recursive_interface_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    mapped_type_params: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance) = .empty,
+
+    pub fn deinit(self: *CheckedTypes, gpa: std.mem.Allocator) void {
+        inline for (.{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences" }) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| gpa.free(value.*);
+        }
+        inline for (.{ "generic_aliases", "generic_interfaces_by_decl" }) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| gpa.free(value.params);
+        }
+        var overloads = self.overloads.valueIterator();
+        while (overloads.next()) |value| value.deinit(gpa);
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| @field(self, name).deinit(gpa);
+        self.* = .{};
+    }
+};
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -5807,6 +5859,18 @@ pub const Checker = struct {
 
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
+    /// Transfer the checked result into fresh, stable source-file storage
+    /// after all checking and diagnostic rendering. Rebind the relation
+    /// engine in the same operation so it cannot borrow the dying Checker.
+    pub fn takeCheckedTypes(self: *Checker, destination: *CheckedTypes) void {
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            std.debug.assert(@field(destination, name).capacity() == 0);
+            @field(destination, name) = @field(self, name);
+            @field(self, name) = .empty;
+        }
+        self.engine.setRestSignatures(&destination.rest_signatures);
+    }
+
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         // ÃÂÃÂ§4.A.X TS 4.0 ÃÂ¢ÃÂÃÂ give the relation engine a live reference
         // to `rest_signatures` so signature assignability can expand

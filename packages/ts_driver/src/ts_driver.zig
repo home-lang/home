@@ -238,6 +238,9 @@ pub const Compilation = struct {
     type_interner: ts_checker.Interner,
     /// Relation engine — caches assignability/subtype results.
     type_engine: ts_checker.Engine,
+    /// Checked declaration/signature metadata. Its TypeIds and source nodes
+    /// belong to this compilation, and survive the temporary Checker.
+    checked_types: ts_checker.CheckedTypes = .{},
     /// Emitted JavaScript text.
     js: []u8,
     /// All diagnostics from every phase, in source order.
@@ -261,6 +264,7 @@ pub const Compilation = struct {
         self.module.deinit();
         self.gpa.destroy(self.module);
         self.type_engine.deinit();
+        self.checked_types.deinit(self.gpa);
         self.type_interner.deinit();
         self.tokens.deinit(self.gpa);
         self.hir.deinit();
@@ -2433,6 +2437,7 @@ pub fn compileSource(
     // re-walking newlines.
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
 
+    checker.takeCheckedTypes(&c.checked_types);
     return c;
 }
 
@@ -4876,6 +4881,102 @@ test "driver: function with generics" {
     try T.expect(std.mem.indexOf(u8, c.js, "return x;") != null);
     const sym = c.lookupTopLevel("id") orelse return error.NoSym;
     try T.expect(sym.flags.is_function);
+}
+
+fn testCheckedValueType(compilation: *Compilation, name: []const u8) !ts_checker.TypeId {
+    const symbol = compilation.lookupTopLevel(name) orelse return error.TestExpectedEqual;
+    if (symbol.decls.items.len == 0) return error.TestExpectedEqual;
+    const result = compilation.hir.typeOf(symbol.decls.items[0]);
+    try T.expect(result != ts_checker.Primitive.none);
+    return result;
+}
+
+test "driver: checked signature metadata outlives the checker" {
+    const c = try compileSource(T.allocator,
+        \\interface Box<T> { value: T; }
+        \\declare function project<T extends string = 'default'>(value: T): Box<T>;
+        \\declare function tuple(...args: [number, string]): number;
+        \\declare function fixed(n: number, s: string): number;
+        \\declare function wrong(flag: boolean): number;
+        \\declare function optional(this: Box<string>, first: number, second?: string): void;
+        \\declare function isText(value: unknown): value is string;
+        \\declare function assertText(value: unknown): asserts value is string;
+        \\declare function overloaded(value: string): string;
+        \\declare function overloaded(value: number): number;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    // This is queried only after compileSource destroyed its local Checker.
+    try T.expect(c.type_engine.rest_signatures.? == &c.checked_types.rest_signatures);
+    const tuple_sig = try testCheckedValueType(c, "tuple");
+    const fixed_sig = try testCheckedValueType(c, "fixed");
+    const wrong_sig = try testCheckedValueType(c, "wrong");
+    try T.expect(c.checked_types.rest_signatures.contains(tuple_sig));
+    try T.expect(try c.type_engine.isAssignableTo(tuple_sig, fixed_sig));
+    try T.expect(try c.type_engine.isAssignableTo(fixed_sig, tuple_sig));
+    try T.expect(!try c.type_engine.isAssignableTo(wrong_sig, tuple_sig));
+
+    const project_sig = try testCheckedValueType(c, "project");
+    const params = c.checked_types.generic_signature_params.get(project_sig).?;
+    try T.expectEqual(@as(usize, 1), params.len);
+    const param = c.type_interner.pool.type_parameter_payloads.items[c.type_interner.pool.payloadOf(params[0])];
+    try T.expectEqual(ts_checker.Primitive.string_t, param.constraint);
+    try T.expect(param.default != ts_checker.Primitive.none);
+    const return_type = c.type_interner.signatureReturn(project_sig).?;
+    try T.expectEqual(params[0], c.type_interner.objectMember(return_type, c.interner.lookup("value").?).?);
+    const box = c.checked_types.generic_aliases.get(c.interner.lookup("Box").?).?;
+    try T.expectEqual(@as(usize, 1), box.params.len);
+    try T.expect(c.checked_types.type_names.contains(c.interner.lookup("Box").?));
+
+    const optional_sig = try testCheckedValueType(c, "optional");
+    try T.expectEqual(@as(usize, 1), c.checked_types.signature_min_args.get(optional_sig).?);
+    try T.expect(c.checked_types.signature_this_params.contains(optional_sig));
+    const names = c.checked_types.signature_param_names.get(optional_sig).?;
+    try T.expectEqualStrings("first", c.interner.get(names[0]));
+    const declaration = c.checked_types.signature_decl_nodes.get(optional_sig).?;
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, c.hir.kindOf(declaration));
+    const guard = c.checked_types.signature_predicates.get(try testCheckedValueType(c, "isText")).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, guard.target_type);
+    try T.expect(!guard.is_asserts);
+    const assertion = c.checked_types.fn_predicates.get(c.interner.lookup("assertText").?).?;
+    try T.expect(assertion.is_asserts);
+    try T.expectEqual(@as(usize, 2), c.checked_types.overloads.get(c.interner.lookup("overloaded").?).?.items.len);
+}
+
+test "driver: checked type metadata has independent compilation ownership" {
+    const first = try compileSource(T.allocator,
+        \\declare function identity<T extends string>(value: T): T;
+        \\declare function tuple(...args: [string, number]): void;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        first.deinit();
+        T.allocator.destroy(first);
+    }
+    const signature = try testCheckedValueType(first, "identity");
+    const parameter = first.checked_types.generic_signature_params.get(signature).?[0];
+    {
+        const second = try compileSource(T.allocator,
+            \\declare function identity<T extends number>(value: T): T;
+            \\declare function tuple(...args: [number, string]): void;
+        , .{ .strict = true, .no_emit = true });
+        defer {
+            second.deinit();
+            T.allocator.destroy(second);
+        }
+        try T.expect(second.type_engine.rest_signatures.? == &second.checked_types.rest_signatures);
+        try T.expect(first.type_engine.rest_signatures.? != second.type_engine.rest_signatures.?);
+        const second_sig = try testCheckedValueType(second, "identity");
+        const second_param = second.checked_types.generic_signature_params.get(second_sig).?[0];
+        try T.expectEqual(ts_checker.Primitive.number_t, second.type_interner.pool.type_parameter_payloads.items[second.type_interner.pool.payloadOf(second_param)].constraint);
+    }
+    // Destroying a later checker and compilation must not invalidate the
+    // earlier result even when symbol/type IDs happen to have equal numbers.
+    try T.expectEqual(parameter, first.checked_types.generic_signature_params.get(signature).?[0]);
+    try T.expectEqual(ts_checker.Primitive.string_t, first.type_interner.pool.type_parameter_payloads.items[first.type_interner.pool.payloadOf(parameter)].constraint);
+    try T.expect(first.checked_types.rest_signatures.contains(try testCheckedValueType(first, "tuple")));
 }
 
 test "driver: arrow function" {

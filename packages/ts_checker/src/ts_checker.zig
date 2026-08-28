@@ -25,6 +25,7 @@ pub const check = @import("check.zig");
 pub const render = @import("render.zig");
 
 pub const TypeId = types.TypeId;
+pub const CheckedTypes = check.CheckedTypes;
 pub const Primitive = types.Primitive;
 pub const TypeFlags = types.TypeFlags;
 pub const Pool = types.Pool;
