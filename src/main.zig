@@ -2139,47 +2139,6 @@ fn runFileViaVMOpts(
     vm.global.vm().holdAPILock(&VmRunState.instance, callback);
 }
 
-/// Run `home test` natively through Home's `TestCommand.exec` — the bun:test
-/// runner (sets up the Jest runner + VM, scans for test files, runs + reports).
-/// `args` are the raw `home test` args; non-flag entries become test
-/// files/filters (positionals[1..]). Flag parsing is not wired yet, so test
-/// flags are currently ignored. globalExit inside exec makes this noreturn on
-/// success. Gated behind HOME_NATIVE_VM=1.
-/// Minimal bunfig.toml `preload` extractor for the native test runner. Reads
-/// the `preload = "<path>"` / `preload = ["a", "b"]` assignment(s) (top-level
-/// and any `[test]` section) and returns the paths. Intentionally NOT a full
-/// TOML/bunfig parse — Bunfig.parse pulls in unported install/process code.
-fn readBunfigPreloads(allocator: std.mem.Allocator) []const []const u8 {
-    const content = Io.Dir.cwd().readFileAlloc(g_io, "bunfig.toml", allocator, std.Io.Limit.limited(1 << 20)) catch return &.{};
-    defer allocator.free(content);
-    var list: std.ArrayListUnmanaged([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#' or line[0] == '[') continue;
-        if (!std.mem.startsWith(u8, line, "preload")) continue;
-        var rest = std.mem.trim(u8, line["preload".len..], " \t");
-        if (rest.len == 0 or rest[0] != '=') continue;
-        rest = std.mem.trim(u8, rest[1..], " \t");
-        if (rest.len == 0) continue;
-        // Collect every quoted string on the value side (covers both the single
-        // string and the inline-array forms).
-        var i: usize = 0;
-        while (i < rest.len) : (i += 1) {
-            const q = rest[i];
-            if (q != '"' and q != '\'') continue;
-            i += 1;
-            const start = i;
-            while (i < rest.len and rest[i] != q) i += 1;
-            if (i > start) {
-                const dup = allocator.dupe(u8, rest[start..i]) catch continue;
-                list.append(allocator, dup) catch {};
-            }
-        }
-    }
-    return list.toOwnedSlice(allocator) catch &.{};
-}
-
 const bun_resolver_fixture_modules = "packages/home_test/fixtures/bun-resolver-node-modules";
 
 fn argsTargetBunResolverTest(args: []const [:0]const u8) bool {
@@ -2190,6 +2149,10 @@ fn argsTargetBunResolverTest(args: []const [:0]const u8) bool {
     return false;
 }
 
+/// Run `home test` through Home's native option parser, test runner, and VM.
+/// The dispatcher has normalized `args`; the shared parser handles test,
+/// runtime, transpiler, and bunfig configuration before executing user code.
+/// TestCommand exits after reporting results. Gated behind HOME_NATIVE_VM=1.
 fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     _ = allocator_unused;
@@ -2257,67 +2220,17 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
 
-    // Build the process-global Command.Context (TestCommand.exec reads ctx.args,
-    // ctx.positionals, ctx.test_options). Defaults are sane; set the cwd so test
-    // discovery resolves relative to it.
-    const ctx = home_rt.cli.Command.initDefaultContext(allocator, log);
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |p| {
-        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
-        ctx.args.absolute_working_dir = blk: {
-            const buf = allocator.allocSentinel(u8, cwd.len, 0) catch break :blk null;
-            @memcpy(buf, cwd);
-            break :blk buf;
-        };
-    }
-
-    // Honor bunfig.toml's `preload` the way `bun test` does: the runner sets
-    // `vm.preload = ctx.preloads` (test_command.zig), but booting the Context
-    // directly skips bunfig parsing, so a bunfig that preloads a setup module
-    // (e.g. Bun's test harness, which registers custom matchers like `toRun`)
-    // had no effect on test files that don't import it. The full Bunfig parser
-    // drags in unported install/process subsystems, so extract just the
-    // `preload` value here.
-    const cfg_preloads = readBunfigPreloads(allocator);
-    if (cfg_preloads.len > 0) ctx.preloads = cfg_preloads;
-
-    // positionals[0] is the command name; [1..] are file/dir paths or filters.
-    // `--conditions=<name>` (and `--conditions <name>`) add custom package.json
-    // "exports"/"imports" conditions; the test transpiler reads ctx.args.conditions.
-    var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
-    try positionals.append(allocator, "test");
-    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-    var ai: usize = 0;
-    while (ai < args.len) : (ai += 1) {
-        const a = args[ai];
-        if (std.mem.eql(u8, a, "--conditions")) {
-            if (ai + 1 < args.len) {
-                var it = std.mem.splitScalar(u8, args[ai + 1], ',');
-                while (it.next()) |part| {
-                    const t = std.mem.trim(u8, part, " \t");
-                    if (t.len > 0) try conditions.append(allocator, t);
-                }
-                ai += 1;
-            }
-            continue;
-        }
-        if (std.mem.startsWith(u8, a, "--conditions=")) {
-            var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
-            while (it.next()) |part| {
-                const t = std.mem.trim(u8, part, " \t");
-                if (t.len > 0) try conditions.append(allocator, t);
-            }
-            continue;
-        }
-        if (std.mem.eql(u8, a, "--preserve-symlinks")) {
-            ctx.args.preserve_symlinks = true;
-            continue;
-        }
-        if (a.len > 0 and a[0] == '-') continue; // skip other flags (not parsed yet)
-        try positionals.append(allocator, a);
-    }
-    ctx.positionals = try positionals.toOwnedSlice(allocator);
-    if (conditions.items.len > 0) ctx.args.conditions = try conditions.toOwnedSlice(allocator);
+    // Parse the same test/runtime/configuration options as the native CLI.
+    // Keep parser argv separate from process.argv: Home's dispatcher has
+    // already normalized the test command's arguments, but user code must
+    // still observe the original executable and argument list.
+    const parser_argv = try allocator.alloc([:0]const u8, args.len + 2);
+    parser_argv[0] = home_rt.argv[0];
+    parser_argv[1] = "test";
+    @memcpy(parser_argv[2..], args);
+    home_rt.clap.args.setProcessArgs(parser_argv);
+    const ctx = try home_rt.cli.Command.createContextData(allocator, log, .TestCommand);
+    ctx.start_time = home_rt.start_time;
 
     try home_rt.cli.TestCommand.exec(ctx);
 }

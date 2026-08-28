@@ -9,7 +9,7 @@ pub fn noop_resolver(in: string) !string {
 
 pub fn fileReadError(err: anyerror, stderr: anytype, filename: string, kind: string) noreturn {
     stderr.writer().print("Error reading file \"{s}\" for {s}: {s}", .{ filename, kind, @errorName(err) }) catch {};
-    std.process.exit(1);
+    Global.exit(1);
 }
 
 pub fn readFile(
@@ -688,7 +688,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             ctx.test_options.randomize = true;
             ctx.test_options.seed = std.fmt.parseInt(u32, seed_str, 10) catch {
                 Output.prettyErrorln("<red>error<r>: Invalid seed value: {s}", .{seed_str});
-                std.process.exit(1);
+                Global.exit(1);
             };
         }
     }
@@ -1035,7 +1035,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             Bun__Node__ProcessThrowDeprecation = true;
         }
         if (args.option("--title")) |title| {
-            CLI.Bun__Node__ProcessTitle = title;
+            bun.cli.Bun__Node__ProcessTitle = title;
         }
         if (args.flag("--zero-fill-buffers")) {
             Bun__Node__ZeroFillBuffers = true;
@@ -1742,7 +1742,7 @@ const strings = bun.strings;
 const Api = bun.schema.api;
 const RegularExpression = bun.jsc.RegularExpression;
 
-const CLI = bun.cli;
+const CLI = @import("./cli.zig");
 const Command = CLI.Command;
 const DefineColonList = CLI.DefineColonList;
 const LoaderColonList = CLI.LoaderColonList;

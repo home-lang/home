@@ -1,8 +1,7 @@
 // Home Runtime — process-level globals.
 //
 // Mirrors the small subset of Bun's `Global` namespace that the copied
-// cli leaves need: `exit` for fatal error paths, `crash` for panics
-// (no-op in tests).
+// cli leaves need, including flushing diagnostics before fatal exits.
 
 const std = @import("std");
 
@@ -56,11 +55,13 @@ pub fn runExitCallbacks() void {
 
 pub fn exit(code: u8) noreturn {
     runExitCallbacks();
+    @import("output.zig").flush();
     std.process.exit(code);
 }
 
 pub fn crash() noreturn {
-    @panic("home_rt: crash() called");
+    // Upstream Global.crash is an ordinary failed CLI exit, not a panic.
+    exit(1);
 }
 
 pub fn raiseIgnoringPanicHandler(signal: anytype) noreturn {

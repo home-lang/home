@@ -8,6 +8,7 @@ const std = @import("std");
 const Environment = @import("environment.zig");
 
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
 
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
 /// upstream Bun implementation uses native syscalls on Windows; until
@@ -55,6 +56,7 @@ fn BoolEnv(comptime name: []const u8, comptime default: bool) type {
 
 pub const PATH = StringEnv("PATH");
 pub const BUN_OPTIONS = StringEnv("BUN_OPTIONS");
+pub const BUN_INSPECT_PRELOAD = StringEnv("BUN_INSPECT_PRELOAD");
 pub const BUN_CONFIG_HTTP_IDLE_TIMEOUT = IntEnv("BUN_CONFIG_HTTP_IDLE_TIMEOUT", 0);
 pub const BUN_WATCHER_TRACE = StringEnv("BUN_WATCHER_TRACE");
 pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");

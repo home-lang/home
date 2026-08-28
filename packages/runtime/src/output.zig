@@ -19,10 +19,16 @@ pub const ElapsedFormatter = @import("bun_core/output.zig").ElapsedFormatter;
 pub const buffered_stdin = &@import("bun_core/output.zig").buffered_stdin;
 
 const CSI = "\x1b[";
-var error_writer_buffer: [4096]u8 = undefined;
-var error_file_writer: ?std.Io.File.Writer = null;
-var stdout_writer_buffer: [4096]u8 = undefined;
-var stdout_file_writer: ?std.Io.File.Writer = null;
+// Match Bun's per-thread streams: writer()/errorWriter() write directly,
+// while print/pretty helpers select the buffered stream inside a buffering
+// scope. Coverage tables and diagnostic printers use the direct writers.
+threadlocal var error_writer_buffer: [4096]u8 = undefined;
+threadlocal var error_file_writer: ?std.Io.File.Writer = null;
+threadlocal var raw_error_file_writer: ?std.Io.File.Writer = null;
+threadlocal var stdout_writer_buffer: [4096]u8 = undefined;
+threadlocal var stdout_file_writer: ?std.Io.File.Writer = null;
+threadlocal var raw_stdout_file_writer: ?std.Io.File.Writer = null;
+pub var enable_buffering = true;
 
 fn debugIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
@@ -60,12 +66,12 @@ pub const color_map = struct {
 };
 
 pub fn print(comptime fmt: []const u8, args: anytype) void {
-    writer().print(fmt, args) catch {};
+    stdoutDestination().print(fmt, args) catch {};
 }
 
 pub fn println(comptime fmt: []const u8, args: anytype) void {
-    writer().print(fmt ++ "\n", args) catch {};
-    flush();
+    const line = if (fmt.len == 0 or fmt[fmt.len - 1] != '\n') fmt ++ "\n" else fmt;
+    print(line, args);
 }
 
 pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
@@ -73,36 +79,38 @@ pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
     // when stdout colors are enabled, stripping the tags otherwise. Mirrors
     // upstream `bun_core/output.zig` prettyWithPrinter; without this the literal
     // `<green>`-style tags leak into output (e.g. the test runner summary).
+    const line = if (fmt.len == 0 or fmt[fmt.len - 1] != '\n') fmt ++ "\n" else fmt;
     if (enable_ansi_colors_stdout) {
-        writer().print(comptime prettyFmt(fmt ++ "\n", true), args) catch {};
+        print(comptime prettyFmt(line, true), args);
     } else {
-        writer().print(comptime prettyFmt(fmt ++ "\n", false), args) catch {};
+        print(comptime prettyFmt(line, false), args);
     }
-    flush();
 }
 
 pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
+    const line = if (fmt.len == 0 or fmt[fmt.len - 1] != '\n') fmt ++ "\n" else fmt;
     if (enable_ansi_colors_stderr) {
-        std.debug.print(comptime prettyFmt(fmt ++ "\n", true), args);
+        printError(comptime prettyFmt(line, true), args);
     } else {
-        std.debug.print(comptime prettyFmt(fmt ++ "\n", false), args);
+        printError(comptime prettyFmt(line, false), args);
     }
 }
 
 pub fn printError(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt, args);
+    stderrDestination().print(fmt, args) catch {};
 }
 
 pub fn printErrorln(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt ++ "\n", args);
+    const line = if (fmt.len == 0 or fmt[fmt.len - 1] != '\n') fmt ++ "\n" else fmt;
+    printError(line, args);
 }
 
 pub fn printElapsed(elapsed_ms: f64) void {
-    std.debug.print("[{d:.2}ms]", .{elapsed_ms});
+    printError("[{d:.2}ms]", .{elapsed_ms});
 }
 
 pub fn isGithubAction() bool {
-    return std.c.getenv("GITHUB_ACTIONS") != null;
+    return @import("bun_core/env_var.zig").GITHUB_ACTIONS.get() and !isAIAgent();
 }
 
 const RESET: []const u8 = "\x1b[0m";
@@ -197,9 +205,8 @@ pub fn debugWarn(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn flush() void {
-    // Flush both the stdout and stderr buffered writers. `console.log` (via the
-    // VM's ConsoleObject) writes through the stdout writer; without this flush
-    // its buffered output is lost when the process exits.
+    // Flush this thread's buffered stdout/stderr. Direct writers have no
+    // pending bytes; CLI helpers retain output until their scope flushes.
     if (stdout_file_writer) |*w| w.interface.flush() catch {};
     if (error_file_writer) |*w| w.interface.flush() catch {};
 }
@@ -215,14 +222,17 @@ pub fn initTest() void {
 }
 
 pub fn errorWriter() *std.Io.Writer {
+    if (raw_error_file_writer == null) {
+        raw_error_file_writer = std.Io.File.Writer.initStreaming(.stderr(), debugIo(), &.{});
+    }
+    return &raw_error_file_writer.?.interface;
+}
+
+pub fn errorWriterBuffered() *std.Io.Writer {
     if (error_file_writer == null) {
         error_file_writer = std.Io.File.Writer.initStreaming(.stderr(), debugIo(), &error_writer_buffer);
     }
     return &error_file_writer.?.interface;
-}
-
-pub fn errorWriterBuffered() *std.Io.Writer {
-    return errorWriter();
 }
 
 /// Minimal stub for `bun.Output.Visibility`. Upstream uses `.visible` /
@@ -286,6 +296,10 @@ pub fn errGeneric(comptime fmt: []const u8, args: anytype) void {
     prettyErrorln("error: " ++ fmt, args);
 }
 
+pub inline fn errFmt(formatter: anytype) void {
+    return errGeneric("{f}", .{formatter});
+}
+
 pub fn warn(comptime fmt: []const u8, args: anytype) void {
     prettyErrorln("warn: " ++ fmt, args);
 }
@@ -296,18 +310,17 @@ pub fn note(comptime fmt: []const u8, args: anytype) void {
 
 pub fn pretty(comptime fmt: []const u8, args: anytype) void {
     if (enable_ansi_colors_stdout) {
-        writer().print(comptime prettyFmt(fmt, true), args) catch {};
+        print(comptime prettyFmt(fmt, true), args);
     } else {
-        writer().print(comptime prettyFmt(fmt, false), args) catch {};
+        print(comptime prettyFmt(fmt, false), args);
     }
-    flush();
 }
 
 pub fn prettyError(comptime fmt: []const u8, args: anytype) void {
     if (enable_ansi_colors_stderr) {
-        std.debug.print(comptime prettyFmt(fmt, true), args);
+        printError(comptime prettyFmt(fmt, true), args);
     } else {
-        std.debug.print(comptime prettyFmt(fmt, false), args);
+        printError(comptime prettyFmt(fmt, false), args);
     }
 }
 
@@ -325,38 +338,57 @@ pub fn debug(comptime fmt: []const u8, args: anytype) void {
 /// `std.time.nanoTimestamp()` samples. Narrowed port; renders to stdout.
 pub fn printStartEndStdout(start: i128, end: i128) void {
     const elapsed_ms: f64 = @as(f64, @floatFromInt(end - start)) / std.time.ns_per_ms;
-    std.debug.print("[{d:.2}ms]", .{elapsed_ms});
+    print("[{d:.2}ms]", .{elapsed_ms});
 }
 
-pub const printStartEnd = printStartEndStdout;
+pub fn printStartEnd(start: i128, end: i128) void {
+    const elapsed_ms: f64 = @as(f64, @floatFromInt(end - start)) / std.time.ns_per_ms;
+    printElapsed(elapsed_ms);
+}
 
-pub fn enableBuffering() void {}
+pub fn enableBuffering() void {
+    enable_buffering = true;
+}
 pub fn resetTerminalAll() void {}
 pub fn enableBufferingScope() BufferingScope {
+    const previous = enable_buffering;
     enableBuffering();
-    return .{};
+    return .{ .previous = previous };
 }
 
 pub const BufferingScope = struct {
-    pub fn deinit(_: BufferingScope) void {
-        flush();
-        disableBuffering();
+    previous: bool,
+
+    pub fn deinit(this: BufferingScope) void {
+        enable_buffering = this.previous;
     }
 };
 
 pub fn disableBuffering() void {
     flush();
+    enable_buffering = false;
 }
 
 pub fn writer() *std.Io.Writer {
+    if (raw_stdout_file_writer == null) {
+        raw_stdout_file_writer = std.Io.File.Writer.initStreaming(.stdout(), debugIo(), &.{});
+    }
+    return &raw_stdout_file_writer.?.interface;
+}
+
+pub fn writerBuffered() *std.Io.Writer {
     if (stdout_file_writer == null) {
         stdout_file_writer = std.Io.File.Writer.initStreaming(.stdout(), debugIo(), &stdout_writer_buffer);
     }
     return &stdout_file_writer.?.interface;
 }
 
-pub fn writerBuffered() *std.Io.Writer {
-    return writer();
+fn stdoutDestination() *std.Io.Writer {
+    return if (enable_buffering) writerBuffered() else writer();
+}
+
+fn stderrDestination() *std.Io.Writer {
+    return if (enable_buffering) errorWriterBuffered() else errorWriter();
 }
 
 pub fn rawWriter() *std.Io.Writer {

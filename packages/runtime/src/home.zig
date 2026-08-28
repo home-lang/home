@@ -200,6 +200,7 @@ pub const validators = @import("runtime/node/util/validators.zig");
 pub const windows = @import("sys/windows/windows.zig");
 pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
 pub var argv: [][:0]const u8 = &[_][:0]const u8{};
+pub var auto_reload_on_crash = false;
 /// Bindgen namespace (upstream `bun.gen`). Hand-written stand-in until the
 /// bindgen codegen lands; provides `gen.node_os` (node_os.zig references it).
 pub const gen = @import("runtime/node/GeneratedBindings.zig");
@@ -2622,17 +2623,7 @@ pub const cli = struct {
     pub const PackageManagerCommand = @import("runtime/cli/package_manager_command.zig").PackageManagerCommand;
     pub const PublishCommand = @import("runtime/cli/publish_command.zig").PublishCommand;
     pub const PackCommand = @import("runtime/cli/pack_command.zig").PackCommand;
-    pub const Arguments = struct {
-        pub const auto_params = [_]struct {
-            takes_value: enum { none, optional, required },
-            names: struct {
-                long: ?[]const u8 = null,
-                short: ?u8 = null,
-            },
-        }{
-            .{ .takes_value = .required, .names = .{ .long = "eval", .short = 'e' } },
-        };
-    };
+    pub const Arguments = @import("runtime/cli/Arguments.zig");
     // Faithful to upstream `cli/cli.zig:5`: process-title override slot.
     pub var Bun__Node__ProcessTitle: ?[]const u8 = null;
     // Faithful to upstream `cli.Command` (`runtime/cli/cli.zig:306`).
@@ -3730,6 +3721,9 @@ pub const meta = struct {
 // the full crash handler (stack walking, JSC stop-the-world, native
 // signal handlers) re-lands in a later sub-phase.
 pub const crash_handler = struct {
+    // Shared CLI/reporter configuration; keep parsing independent of native
+    // crash-handler exports while the complete reporter is being ported.
+    pub var verbose_error_trace = false;
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
     // NOTE: crash_handler/crash_handler.zig has fork-`**`-spacing issues; its
