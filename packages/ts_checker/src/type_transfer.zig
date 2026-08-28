@@ -90,6 +90,7 @@ fn payloadColumn(flags: types.TypeFlags) Error!Column {
     if (flags.is_signature) return .signature_payloads;
     if (flags.is_object_type) return .object_type_payloads;
     if (flags.is_instantiation) return .instantiation_payloads;
+    if (flags.is_generic_definition) return .generic_definition_payloads;
     return error.InvalidTypeGraph;
 }
 
@@ -143,7 +144,7 @@ const Builder = struct {
     fn dependencies(self: *Builder, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
         const allocator = self.target.gpa;
         switch (try payloadColumn(self.source.pool.flagsOf(id))) {
-            .literal_payloads, .object_type_payloads, .type_parameter_payloads => {},
+            .literal_payloads, .object_type_payloads, .type_parameter_payloads, .generic_definition_payloads => {},
             .union_payloads => {
                 const p = try self.payload(.union_payloads, id);
                 try output.appendSlice(allocator, try self.slice(.member_pool, p.members_start, p.members_len));
@@ -312,6 +313,15 @@ const Builder = struct {
         const target = self.target;
         const mapped_id = try self.typeId(id);
         switch (try payloadColumn(self.source.pool.flagsOf(id))) {
+            .generic_definition_payloads => {
+                const p = try self.payload(.generic_definition_payloads, id);
+                if (p.body == types.Primitive.none) return error.InvalidTypeGraph;
+                const parameters = try self.mappedTypes(try self.slice(.type_arg_pool, p.parameters_start, p.parameters_len));
+                defer target.gpa.free(parameters);
+                try target.completeGenericDefinition(mapped_id, parameters, try self.typeId(p.body));
+                const symbol = self.source.typeSymbol(id);
+                if (symbol != 0) target.setTypeSymbol(mapped_id, try self.node(symbol));
+            },
             .type_parameter_payloads => {
                 const p = try self.payload(.type_parameter_payloads, id);
                 const index = target.pool.payloadOf(mapped_id);
@@ -431,6 +441,10 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     for (types.Primitive.first_dynamic..count) |index| {
         const id: types.TypeId = @intCast(index);
         switch (try payloadColumn(source.pool.flagsOf(id))) {
+            .generic_definition_payloads => {
+                _ = try builder.payload(.generic_definition_payloads, id);
+                relocation.ids[id] = try target.reserveGenericDefinition();
+            },
             .object_type_payloads => {
                 _ = try builder.payload(.object_type_payloads, id);
                 relocation.ids[id] = try target.internObjectType(&.{});
@@ -542,6 +556,9 @@ const TestGraph = struct {
     string_mapping: types.TypeId,
     tuple: types.TypeId,
     instance: types.TypeId,
+    generic_definition: types.TypeId,
+    generic_body: types.TypeId,
+    recursive_instance: types.TypeId,
 };
 
 fn addTestPayload(ti: *interner.Interner, comptime column: Column, payload: anytype, flags: types.TypeFlags) !types.TypeId {
@@ -594,6 +611,14 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     const args_start: u32 = @intCast(ti.pool.type_arg_pool.items.len);
     try ti.pool.type_arg_pool.appendSlice(ti.gpa, &.{ text, tuple });
     const instance = try addTestPayload(ti, .instantiation_payloads, types.InstantiationPayload{ .origin = object, .args_start = args_start, .args_len = 2 }, .{ .is_instantiation = true });
+    const definition = try ti.reserveGenericDefinition();
+    const recursive_instance = try ti.internInstantiation(definition, &.{tuple});
+    const generic_body = try ti.internObjectType(&.{
+        .{ .name = 90, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = 91, .type = recursive_instance, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    try ti.completeGenericDefinition(definition, &.{parameter}, generic_body);
+    ti.setTypeSymbol(definition, 11);
     return .{
         .text = text,
         .number = number,
@@ -612,6 +637,9 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
         .string_mapping = string_mapping,
         .tuple = tuple,
         .instance = instance,
+        .generic_definition = definition,
+        .generic_body = generic_body,
+        .recursive_instance = recursive_instance,
     };
 }
 
@@ -675,6 +703,28 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     const instance = pool.instantiation_payloads.items[pool.payloadOf(try relocation.typeId(graph.instance))];
     try T.expectEqual(object, instance.origin);
     try T.expectEqualSlices(types.TypeId, &.{ text, try relocation.typeId(graph.tuple) }, pool.type_arg_pool.items[instance.args_start .. instance.args_start + instance.args_len]);
+    const definition_id = try relocation.typeId(graph.generic_definition);
+    const definition = destination.genericDefinition(definition_id).?;
+    try T.expectEqual(@as(u32, 1011), destination.typeSymbol(definition_id));
+    try T.expectEqualSlices(types.TypeId, &.{parameter}, pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len]);
+    try T.expectEqual(try relocation.typeId(graph.generic_body), definition.body);
+    try T.expectEqual(parameter, destination.objectMember(definition.body, 190).?);
+    try T.expectEqual(try relocation.typeId(graph.recursive_instance), destination.objectMember(definition.body, 191).?);
+    const recursive = pool.instantiation_payloads.items[pool.payloadOf(try relocation.typeId(graph.recursive_instance))];
+    try T.expectEqual(definition_id, recursive.origin);
+    try T.expectEqualSlices(types.TypeId, &.{try relocation.typeId(graph.tuple)}, pool.type_arg_pool.items[recursive.args_start..][0..recursive.args_len]);
+}
+
+test "type transfer: incomplete generic definitions cannot escape into a destination" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    _ = try source.reserveGenericDefinition();
+    var destination = try interner.Interner.init(T.allocator);
+    defer destination.deinit();
+    const before = poolLengths(&destination.pool);
+    var names: TestNames = .{};
+    try T.expectError(error.InvalidTypeGraph, append(&destination, &source, names.names()));
+    try T.expectEqualDeep(before, poolLengths(&destination.pool));
 }
 
 test "type transfer: every payload kind preserves shared recursive edges and mapped names" {

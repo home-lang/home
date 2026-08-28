@@ -556,6 +556,60 @@ pub const Interner = struct {
         return self.internOwnedGraphKey(.{ .instantiation = .{ .origin = origin, .args = args } }, .{ .is_instantiation = true });
     }
 
+    /// Reserve a declaration identity before constructing its symbolic body.
+    /// Recursive references may point at it during construction, but callers
+    /// must complete the definition before exposing the graph to consumers.
+    /// Unlike structural keys, separate declarations must never deduplicate.
+    pub fn reserveGenericDefinition(self: *Interner) !TypeId {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        try self.pool.generic_definition_payloads.ensureUnusedCapacity(self.gpa, 1);
+        try self.pool.headers.ensureUnusedCapacity(self.gpa, 1);
+        const payload: u32 = @intCast(self.pool.generic_definition_payloads.items.len);
+        const id = self.pool.typeCount();
+        self.pool.generic_definition_payloads.appendAssumeCapacity(.{ .parameters_start = 0, .parameters_len = 0, .body = Primitive.none });
+        self.pool.headers.appendAssumeCapacity(.{ .flags = .{ .is_generic_definition = true }, .symbol = 0, .payload = payload });
+        return id;
+    }
+
+    /// With exclusive ownership of the unpublished definition, complete once,
+    /// publishing parameters and body together after allocation
+    /// succeeds. Parameters are identities, not names, and the pool owns them.
+    pub fn completeGenericDefinition(self: *Interner, definition: TypeId, parameters: []const TypeId, body: TypeId) error{ OutOfMemory, InvalidTypeGraph }!void {
+        const current = self.genericDefinition(definition) orelse return error.InvalidTypeGraph;
+        if (current.body != Primitive.none or body == Primitive.none or body >= self.pool.typeCount()) return error.InvalidTypeGraph;
+        for (parameters, 0..) |parameter, i| {
+            if (parameter >= self.pool.typeCount()) return error.InvalidTypeGraph;
+            const flags = self.pool.flagsOf(parameter);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return error.InvalidTypeGraph;
+            if (std.mem.indexOfScalar(TypeId, parameters[0..i], parameter) != null) return error.InvalidTypeGraph;
+        }
+        // The caller may borrow a slice from this pool. Snapshot it before a
+        // reserve can relocate type_arg_pool; a failed allocation publishes no
+        // parameter slice and leaves the definition safely retryable.
+        const owned = try self.gpa.dupe(TypeId, parameters);
+        defer self.gpa.free(owned);
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        try self.pool.type_arg_pool.ensureUnusedCapacity(self.gpa, owned.len);
+        const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+        self.pool.type_arg_pool.appendSliceAssumeCapacity(owned);
+        self.pool.generic_definition_payloads.items[self.pool.payloadOf(definition)] = .{
+            .parameters_start = if (owned.len == 0) 0 else start,
+            .parameters_len = @intCast(owned.len),
+            .body = body,
+        };
+    }
+
+    pub fn genericDefinition(self: *const Interner, id: TypeId) ?types.GenericDefinitionPayload {
+        if (id >= self.pool.typeCount()) return null;
+        const flags = self.pool.flagsOf(id);
+        if (!flags.is_generic_definition or flags.is_union or flags.is_intersection) return null;
+        const index = self.pool.payloadOf(id);
+        if (index == 0 or index >= self.pool.generic_definition_payloads.items.len) return null;
+        return self.pool.generic_definition_payloads.items[index];
+    }
+
     // These variable-length keys must own their slices just like unions,
     // signatures, and template literals; callers may release their buffers.
     fn internOwnedGraphKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
@@ -1389,6 +1443,65 @@ pub const Interner = struct {
 // =============================================================================
 
 const T = std.testing;
+
+test "interner: generic definitions own parameter identities and recursive reference graphs" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const parameter = try i.internFreshTypeParameterWithVariance(17, Primitive.none, Primitive.none, .covariant);
+    const other_parameter = try i.internFreshTypeParameterWithVariance(17, Primitive.none, Primitive.none, .covariant);
+    const definition = try i.reserveGenericDefinition();
+    const other = try i.reserveGenericDefinition();
+    try T.expect(definition != other);
+    try T.expect(!i.pool.flagsOf(definition).is_object_type);
+    try T.expectEqual(Primitive.none, i.genericDefinition(definition).?.body);
+    const nested = try i.internTupleType(&.{.{ .type = parameter, .is_optional = false, .is_rest = false }});
+    const reference = try i.internInstantiation(definition, &.{nested});
+    const body = try i.internObjectType(&.{.{ .name = 1, .type = reference, .is_optional = true, .is_readonly = false, .is_method = false }});
+    var parameters = [_]TypeId{parameter};
+    try i.completeGenericDefinition(definition, &parameters, body);
+    parameters[0] = other_parameter;
+    const payload = i.genericDefinition(definition).?;
+    try T.expectEqualSlices(TypeId, &.{parameter}, i.pool.type_arg_pool.items[payload.parameters_start..][0..payload.parameters_len]);
+    try T.expectEqual(body, payload.body);
+    try T.expectEqual(reference, i.objectMember(body, 1).?);
+    try T.expectEqual(reference, try i.internInstantiation(definition, &.{nested}));
+    try T.expect(reference != try i.internInstantiation(other, &.{nested}));
+    const union_type = try i.internUnion(&.{ definition, Primitive.undefined_t });
+    try T.expectEqual(null, i.genericDefinition(union_type));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(definition, &.{parameter}, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{Primitive.string_t}, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{ parameter, parameter }, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{parameter}, Primitive.none));
+    try T.expectEqual(Primitive.none, i.genericDefinition(other).?.body);
+    // Borrowing from the same pool remains safe if completion grows its column.
+    try i.completeGenericDefinition(other, i.pool.type_arg_pool.items[payload.parameters_start..][0..payload.parameters_len], body);
+    try T.expectEqual(body, i.genericDefinition(other).?.body);
+}
+
+test "interner: generic definition publication is atomic on allocation failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var i = try Interner.init(allocator);
+            defer i.deinit();
+            const parameter = try i.internFreshTypeParameterWithVariance(1, Primitive.none, Primitive.none, .covariant);
+            const count = i.pool.typeCount();
+            const definitions = i.pool.generic_definition_payloads.items.len;
+            const definition = i.reserveGenericDefinition() catch |err| {
+                try T.expectEqual(count, i.pool.typeCount());
+                try T.expectEqual(definitions, i.pool.generic_definition_payloads.items.len);
+                return err;
+            };
+            const arguments = i.pool.type_arg_pool.items.len;
+            i.completeGenericDefinition(definition, &.{parameter}, parameter) catch |err| {
+                try T.expectEqual(arguments, i.pool.type_arg_pool.items.len);
+                try T.expectEqualDeep(types.GenericDefinitionPayload{ .parameters_start = 0, .parameters_len = 0, .body = Primitive.none }, i.genericDefinition(definition).?);
+                return err;
+            };
+            try T.expectEqual(parameter, i.genericDefinition(definition).?.body);
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
+}
 
 test "Interner: initialization allocation failures release the pool" {
     const Probe = struct {
