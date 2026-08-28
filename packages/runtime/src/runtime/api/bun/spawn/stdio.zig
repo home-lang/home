@@ -67,7 +67,7 @@ pub const Stdio = union(enum) {
                 array_buffer.deinit();
             },
             .blob => |*blob| {
-                blob.detach();
+                releaseUnusedBlob(blob);
             },
             .memfd => |fd| {
                 fd.close();
@@ -139,7 +139,7 @@ pub const Stdio = union(enum) {
 
         switch (this.*) {
             .array_buffer => this.array_buffer.deinit(),
-            .blob => this.blob.detach(),
+            .blob => releaseUnusedBlob(&this.blob),
             else => {},
         }
 
@@ -316,7 +316,7 @@ pub const Stdio = union(enum) {
                     2 => {
                         return globalThis.throwInvalidArguments("ReadableStream cannot be used for stderr yet. For now, do .stderr", .{});
                     },
-                    else => unreachable,
+                    else => return globalThis.throwInvalidArguments("ReadableStream cannot be used for stdio[{d}] yet", .{i}),
                 }
 
                 const stream_value = try body.toReadableStream(globalThis);
@@ -416,7 +416,7 @@ pub const Stdio = union(enum) {
                 0 => "stdin",
                 1 => "stdout",
                 2 => "stderr",
-                else => unreachable,
+                else => return globalThis.throwInvalidArguments("ReadableStream cannot be used for stdio[{d}] yet", .{i}),
             };
 
             if (is_sync) {
@@ -437,10 +437,14 @@ pub const Stdio = union(enum) {
                 return;
             }
 
+            // A Strong keeps the wrapper alive, but cannot prevent caller
+            // mutation or transfer/detachment while the native writer is pending.
+            const copied_value = try jsc.ArrayBuffer.createBuffer(globalThis, array_buffer.byteSlice());
+            const copied = copied_value.asArrayBuffer(globalThis).?;
             out_stdio.* = .{
                 .array_buffer = jsc.ArrayBuffer.Strong{
-                    .array_buffer = array_buffer,
-                    .held = .create(array_buffer.value, globalThis),
+                    .array_buffer = copied,
+                    .held = .create(copied.value, globalThis),
                 },
             };
             return;
@@ -449,7 +453,18 @@ pub const Stdio = union(enum) {
         return globalThis.throwInvalidArguments("stdio must be an array of 'inherit', 'ignore', or null", .{});
     }
 
-    pub fn extractBlob(stdio: *Stdio, globalThis: *jsc.JSGlobalObject, blob: jsc.WebCore.Blob.Any, i: i32) bun.JSError!void {
+    fn releaseUnusedBlob(blob: *jsc.WebCore.Blob.Any) void {
+        switch (blob.*) {
+            .Blob => |*value| value.deinit(),
+            else => blob.detach(),
+        }
+    }
+
+    pub fn extractBlob(stdio: *Stdio, globalThis: *jsc.JSGlobalObject, blob_: jsc.WebCore.Blob.Any, i: i32) bun.JSError!void {
+        // Callers transfer a duplicated Blob or a consumed body/stream here.
+        // Rejection must release its store and metadata, just as Rust Any's Drop does.
+        var blob = blob_;
+        errdefer releaseUnusedBlob(&blob);
         // stdio 0/1/2 map to std_in/out/err; index >= 3 has no standard fd, so
         // keep `fd` optional instead of unwrapping (`.?` panicked on a Blob/file
         // at stdio[>=3]). Ports oven-sh/bun 78f0fff164 (#32363).
@@ -489,17 +504,18 @@ pub const Stdio = union(enum) {
             return globalThis.throwInvalidArguments("Blobs are immutable, and cannot be used for stdout/stderr", .{});
         }
 
+        // Empty inputs need no writer, including at extra stdio indices.
+        if (blob.fastSize() == 0) {
+            releaseUnusedBlob(&blob);
+            stdio.* = .{ .ignore = {} };
+            return;
+        }
+
         // The parent-side writer that pumps Blob bytes into the child pipe is
         // only wired up for stdin; reject in-memory Blobs at any other index
         // instead of producing a broken `.blob` stdio. Ports oven-sh/bun 78f0fff164.
         if (i != 0) {
             return globalThis.throwInvalidArguments("Blob cannot be used for stdio[{d}] yet", .{i});
-        }
-
-        // Instead of writing an empty blob, lets just make it /dev/null
-        if (blob.fastSize() == 0) {
-            stdio.* = .{ .ignore = {} };
-            return;
         }
 
         stdio.* = .{ .blob = blob };

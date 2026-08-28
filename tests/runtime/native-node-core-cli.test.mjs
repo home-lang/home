@@ -116,6 +116,100 @@ try {
   assert.equal(spawnRecovery.status, 0, spawnRecovery.stderr)
   assert.equal(spawnRecovery.stdout.trim(), 'spawn-failures-recovered')
 
+  const stdioRejections = join(directory, 'stdio-rejections.mjs')
+  writeFileSync(stdioRejections, `
+    import assert from 'node:assert/strict';
+    import { readdirSync } from 'node:fs';
+    const fdCount = () => readdirSync(process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd').length;
+    const beforeFDs = process.platform === 'win32' ? 0 : fdCount();
+    const memory = [];
+    for (let batch = 0; batch < 6; batch++) {
+      for (let i = 0; i < 16; i++) {
+        (() => {
+          const blob = new Blob([new Uint8Array(1024 * 1024).fill(65)], { type: 'application/x-home-rejection; version=1' });
+          const value = i % 3 === 0 ? blob : i % 3 === 1 ? new Response(blob) : new Request('http://localhost/', { method: 'POST', body: blob });
+          const bytes = new Uint8Array(1024 * 1024).fill(7);
+          const stdin = i % 2 === 0 ? bytes : new Blob([bytes]);
+          assert.throws(() => Bun.spawn([process.execPath, '-e', ''], {
+            stdio: [stdin, 'ignore', 'ignore', value],
+          }), e => e.code === 'ERR_INVALID_ARG_TYPE' && e.message === 'Blob cannot be used for stdio[3] yet');
+          assert.equal(blob.size, 1024 * 1024, 'rejection detached the caller Blob');
+        })();
+        Bun.gc(true);
+      }
+      await Bun.sleep(0);
+      Bun.gc(true);
+      memory.push(process.memoryUsage().rss);
+    }
+    // Warm the allocator first; retained payloads otherwise grow by far more
+    // than this bound after later option parsing rejects the spawn.
+    assert.ok(memory.at(-1) - memory[0] < 32 * 1024 * 1024, 'rejected Blob stores retained: ' + JSON.stringify(memory));
+    const retained = new Blob(['still readable'], { type: 'text/x-home; charset=utf-8' });
+    assert.throws(() => Bun.spawn([process.execPath, '-e', ''], { stdio: ['ignore', 'ignore', 'ignore', retained] }));
+    assert.equal(await retained.text(), 'still readable');
+    for (let round = 0; round < 16; round++) {
+      for (const fn of [Bun.spawn, Bun.spawnSync]) {
+        for (const kind of ['stream', 'response', 'request']) {
+          let cancelled = false;
+          const stream = new ReadableStream({ cancel() { cancelled = true; } });
+          const value = kind === 'stream' ? stream : kind === 'response' ? new Response(stream) : new Request('http://localhost/', { method: 'POST', body: stream });
+          const expected = fn === Bun.spawnSync && kind !== 'stream' ? 'ReadableStream cannot be used in sync mode' : 'ReadableStream cannot be used for stdio[5] yet';
+          assert.throws(() => fn([process.execPath, '-e', 'throw Error("rejected input executed")'], {
+            stdio: ['ignore', 'ignore', 'ignore', 'ignore', 'ignore', value],
+          }), e => e.code === 'ERR_INVALID_ARG_TYPE' && e.message === expected);
+          assert.equal(cancelled, false);
+          assert.equal(stream.locked, false);
+          await stream.cancel();
+        }
+      }
+    }
+    Bun.gc(true);
+    if (process.platform !== 'win32') assert.ok(fdCount() <= beforeFDs + 2, 'rejected stdio leaked descriptors');
+    const child = Bun.spawnSync([process.execPath, '-e', 'console.log("empty-stdio-ok")'], {
+      stdio: ['ignore', 'pipe', 'pipe', new Blob([]), new Response(''), new Blob([])],
+    });
+    assert.equal(child.exitCode, 0);
+    assert.equal(child.stdout.toString(), 'empty-stdio-ok\\n');
+    assert.equal(child.stderr.toString(), '');
+    console.log('stdio-rejections-recovered');
+  `)
+  const rejectedStdio = run([stdioRejections])
+  assert.equal(rejectedStdio.status, 0, rejectedStdio.stderr)
+  assert.equal(rejectedStdio.stdout.trim(), 'stdio-rejections-recovered')
+
+  const ownedInput = join(directory, 'stdio-owned-input.mjs')
+  writeFileSync(ownedInput, `
+    import assert from 'node:assert/strict';
+    const length = 2 * 1024 * 1024;
+    for (const kind of ['arraybuffer', 'uint8', 'dataview', 'buffer']) {
+      for (const action of ['mutate', 'transfer']) {
+        const offset = kind === 'arraybuffer' ? 0 : 7;
+        const bytes = new Uint8Array(length + offset * 2).fill(7);
+        bytes.subarray(offset, offset + length).fill(65);
+        const input = kind === 'arraybuffer' ? bytes.buffer : kind === 'uint8' ? bytes.subarray(offset, offset + length) : kind === 'dataview' ? new DataView(bytes.buffer, offset, length) : Buffer.from(bytes.buffer, offset, length);
+        const child = Bun.spawn([process.execPath, '-e', 'await Bun.sleep(10); const b = new Uint8Array(await Bun.stdin.arrayBuffer()); let changed = 0; for (const x of b) if (x !== 65) changed++; console.log(JSON.stringify({length: b.length, changed}));'], {
+          stdin: input, stdout: 'pipe', stderr: 'pipe',
+        });
+        if (action === 'mutate') {
+          bytes.fill(66);
+        } else {
+          let transferred = structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+          assert.equal(bytes.buffer.byteLength, 0);
+          transferred = null;
+          Bun.gc(true);
+        }
+        const [stdout, stderr, code] = await Promise.all([child.stdout.text(), child.stderr.text(), child.exited]);
+        assert.equal(code, 0, stderr);
+        assert.equal(stderr, '');
+        assert.deepEqual(JSON.parse(stdout), { length, changed: 0 }, kind + ' ' + action);
+      }
+    }
+    console.log('stdio-owned-input-ok');
+  `)
+  const inputSnapshot = run([ownedInput])
+  assert.equal(inputSnapshot.status, 0, inputSnapshot.stderr)
+  assert.equal(inputSnapshot.stdout.trim(), 'stdio-owned-input-ok')
+
   const fixture = join(directory, 'entry')
   writeFileSync(fixture, 'console.log(JSON.stringify(process.argv.slice(2)));')
   const implicit = run([fixture, 'test', '--no-warnings'])

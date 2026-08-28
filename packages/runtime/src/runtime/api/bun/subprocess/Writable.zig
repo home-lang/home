@@ -131,11 +131,13 @@ pub const Writable = union(enum) {
                 },
 
                 .blob => |blob| {
+                    stdio.* = .ignore; // ownership moves into StaticPipeWriter below
                     return Writable{
                         .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .blob = blob }),
                     };
                 },
                 .array_buffer => |array_buffer| {
+                    stdio.* = .ignore; // ownership moves into StaticPipeWriter below
                     return Writable{
                         .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .array_buffer = array_buffer }),
                     };
@@ -208,11 +210,13 @@ pub const Writable = union(enum) {
             },
 
             .blob => |blob| {
+                stdio.* = .ignore; // ownership moves into StaticPipeWriter below
                 return Writable{
                     .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .blob = blob }),
                 };
             },
             .array_buffer => |array_buffer| {
+                stdio.* = .ignore; // ownership moves into StaticPipeWriter below
                 return Writable{
                     .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .array_buffer = array_buffer }),
                 };
