@@ -127,15 +127,19 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Variadic tuple controls | 14/14 | 14/14 | 14/14 |
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
 | [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
-| Imported-owner controls | 20/20 | 20/20 | 8/20 |
+| Imported-owner controls | 20/20 | 20/20 | 10/20 |
+| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-nominal-identity-without-synthetic-properties-untimed) | 52/52 | 52/52 | 36/52 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |
 | Transitive reference probe | 3/3 | 3/3 | 2/3 |
 
-The latest [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
+The [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
 fixes omitted dependencies and false alias/ambiguity errors. Automatic cross-file
 type transfer is not yet enabled, and both graph timing claims remain ineligible.
+The latest [nominal-identity checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-nominal-identity-without-synthetic-properties-untimed)
+replaces synthetic class-brand properties with declaration metadata. The expanded
+audit improves from 30/52 to 36/52; remaining imported-class failures stay visible.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact

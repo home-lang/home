@@ -2146,3 +2146,81 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_graph_discovery
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_export_origins.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Imported nominal identity without synthetic properties (untimed)
+
+Tracked in [#521](https://github.com/home-lang/home/issues/521), under
+[#487](https://github.com/home-lang/home/issues/487) and
+[#416](https://github.com/home-lang/home/issues/416). The installed baseline
+binaries were verified again as `Version 6.0.3` and `Version 7.0.2`.
+The harness rejects the superseded native dev build; native TS 7 and `tsgo`
+are one competitor, not two separate compiler results.
+
+Audit commits [`ab691caf7`](https://github.com/home-lang/home/commit/ab691caf7)
+and [`e40a4d546`](https://github.com/home-lang/home/commit/e40a4d546) retain the
+failing controls and enforce fairness. The implementation is
+[`4ae69562e`](https://github.com/home-lang/home/commit/4ae69562e).
+
+Home previously added a required `__home_class_origin_...` property to imported
+classes with non-public members. That implementation detail leaked into missing
+property diagnostics (TS2741). The checker now attaches source-qualified origin
+metadata to the real non-public members, without creating a property. Recursive
+identity and assignability checks compare that metadata, including nested
+objects, arrays, signatures, and intersections. Generic substitution preserves
+it, and type transfer relocates its string ID independently of HIR node IDs.
+The legacy source-path/module/class key is length-prefixed to prevent delimiter
+collisions. This does not replace the legacy class projection with complete
+source-owned checked declarations.
+
+The new audit has 52 controls: 13 families, each with positive and appended-only
+negative variants, checked with the app before and after declaration roots.
+All compilers receive identical files, roots, and strict/noEmit/noLib/skipLibCheck
+options. Successful controls must be silent; rejection controls must match the
+exact diagnostic-code multiset. No failure is skipped or relabeled as a pass.
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Imported nominal-identity controls | 52/52 | 52/52 | 30/52 | 36/52 |
+| Existing imported-owner controls | 20/20 | 20/20 | 8/20 | 10/20 |
+| Re-export discovery controls | 28/28 | 28/28 | 28/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 32/32 | 32/32 |
+| Global declaration controls | 56/56 | 56/56 | 32/56 | 32/56 |
+| Bound-global controls | 56/56 | 56/56 | 44/56 | 44/56 |
+| Original imported graph admission | 2/2 | 2/2 | 0/2 | 0/2 |
+
+The six newly passing nominal controls cover direct private/protected identity
+and a public structural object assigned to a private class. The existing nested
+object, array, function, and public-structural controls remain passing. Remaining
+failures cover static-private imports (2 controls), generic arguments (2),
+re-exported class aliases (2), private `keyof` (2), and private/protected inheritance
+(8). Static member metadata is preserved when supplied, but Program's class
+projection still omits the static-private declarations exercised here. Positive
+inheritance failures are counted, not hidden by the corresponding negative case.
+
+Full workload admission remains 16/18 for Home and 18/18 for each baseline.
+Both original imported graphs still accept invalid uses and remain ineligible
+for timing. No new performance measurement or speed claim is made. The new
+member metadata has not yet been evaluated in a fresh timing/memory comparison.
+
+The frozen pre-change binary is `reexport-discovery.rFhIvz/home-final`, SHA-256
+`bff8e072e39c79f0d44e360b0b36ed5b984fd71183debb8e8736efa1aa6e6e3c`.
+Evidence for this checkpoint is in `bench/vs_tsgo/results/nominal-origins.doZaNi`:
+`audit-before-expanded.log` and `audit-final.log` use all 52 controls;
+`audit-before.log` retains the initial 48-case run before static-private controls
+were added. The final binary is `home-final`, SHA-256
+`3cc741571c00fa3682fb3b4c4931273b0f57a910f12a61c022112ed780f7a245`;
+its build log is `release.log`. Audit source SHA-256:
+`98dcd584f5dc651d19c80fe28cd538e34b0bb3de176af87be067e64dbd400ea1`.
+
+The checker suite passes 4,270/4,270, conformance 1,417/1,417, driver 187/187,
+Program 117/117, CLI 69/69, focused origin tests 5/5 (including the test root),
+and the benchmark harness 44/44. Fresh callable-identity and callable-union
+audits remain 56/56 and 256/256 for all three compilers. Zig formatting checks
+pass; targeted Pickier reports zero errors and the pre-existing README
+fragment warning.
+
+```sh
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
