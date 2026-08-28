@@ -9,11 +9,12 @@ import audit_globals
 class ClassBindingAuditTests(unittest.TestCase):
     def test_families_are_retained(self):
         cases = audit_class_bindings.cases()
-        self.assertEqual(44, len(cases))
-        self.assertEqual(44, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(52, len(cases))
+        self.assertEqual(52, len({(case.family, case.name) for case in cases}))
         self.assertEqual({"local-alias", "named-barrel", "star-barrel", "cyclic-barrel", "default-alias",
                           "same-file-alias", "static-instance-domain", "comment-members", "keyword-members",
-                          "explicit-shadow", "namespace-visibility"}, {case.family for case in cases})
+                          "explicit-shadow", "namespace-visibility", "type-only-export", "type-only-import"},
+                         {case.family for case in cases})
 
     def test_only_invalid_uses_differ_between_controls(self):
         cases = audit_class_bindings.cases()

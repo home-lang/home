@@ -39,6 +39,16 @@ def cases() -> list[Case]:
          "declare const original: Secret;\ndeclare const alias: Alias;\ndeclare const other: Other;\n"
          "const fromAlias: Secret = alias;\nconst toAlias: Alias = original;\n",
          "const bad: Alias = other;\n")
+    for family, barrel, code in (
+        ("type-only-export", "export type { Secret as Alias } from './a-owner';\n", "1362"),
+        ("type-only-import", "import type { Secret } from './a-owner'; export { Secret as Alias };\n", "1361"),
+    ):
+        pair(family, {**sources, "d-barrel.ts": barrel},
+             "import { Secret } from './a-owner';\nimport { Secret as Other } from './b-other';\n"
+             "import { Alias } from './d-barrel';\ndeclare const original: Secret;\n"
+             "declare const alias: Alias;\ndeclare const other: Other;\n"
+             "const fromAlias: Secret = alias;\nconst toAlias: Alias = original;\n",
+             "const bad: Alias = other;\nnew Alias();\n", ("2322", code))
     static = "export declare class Secret { private static key: string; static count: number; value: string; }\n"
     pair("static-instance-domain", {"a-owner.ts": static, "b-other.ts": static},
          "import * as first from './a-owner';\nimport * as second from './b-other';\n"
