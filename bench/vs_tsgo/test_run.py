@@ -96,7 +96,46 @@ class AdmissionTests(unittest.TestCase):
         for workload in ("import_graph", "reexport_graph"):
             self.assertEqual("Ineligible (graph types unvalidated)", compare.format_workload_comparison(workload, 1, 2))
             self.assertEqual("**2.00× faster**", compare.format_workload_comparison(workload, 1, 2, 2))
+            self.assertEqual("**2.00× faster**", compare.format_workload_comparison(workload, 1, 2, 3))
         self.assertEqual("**2.00× faster**", compare.format_workload_comparison("startup", 1, 2))
+
+    def test_legacy_tuple_results_require_the_tuple_admission_schema(self):
+        import compare
+        for schema in (None, 1, 2):
+            self.assertEqual("Provisional (tuple controls unvalidated)",
+                             compare.format_workload_comparison("variadic_tuples", 1, 2, schema))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("variadic_tuples", 1, 2, 3))
+
+    def test_tuple_controls_append_to_a_copy_and_require_all_diagnostics(self):
+        diagnostics = "error TS2322: wrong\n" * 5 + "error TS2493: bounds\nerror TS2540: readonly\n"
+        with mock.patch.object(run.shutil, "copytree") as copy, mock.patch.object(
+            run.Path, "read_text", return_value="original source\n"
+        ), mock.patch.object(run, "write") as write, mock.patch.object(
+            run.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, diagnostics, "")
+        ):
+            run.validate_variadic_tuple_negatives({"home": ["home"]})
+            self.assertEqual(run.CORPUS / "variadic_tuples", copy.call_args.args[0])
+            self.assertNotEqual(run.CORPUS / "variadic_tuples/src/variadic-tuples.ts", write.call_args.args[0])
+            self.assertTrue(write.call_args.args[1].startswith("original source\n"))
+            for expression in ("combined0[0]", "Head<Tuple0>", "tail0[0]", "captured0[1]", "tupleResult0.result[2]", "combined0[5]"):
+                self.assertIn(expression, write.call_args.args[1])
+
+    def test_tuple_controls_reject_partial_errors_silent_acceptance_and_crashes(self):
+        complete = "error TS2322: wrong\n" * 5 + "error TS2493: bounds\nerror TS2540: readonly\n"
+        for code, output in ((0, ""), (0, complete), (1, "error TS2322: wrong\n" * 5), (-11, complete), (3, complete)):
+            with mock.patch.object(run.shutil, "copytree"), mock.patch.object(run.Path, "read_text", return_value="source"), mock.patch.object(
+                run, "write"
+            ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")):
+                with self.assertRaisesRegex(SystemExit, "failed variadic_tuples negative controls"):
+                    run.validate_variadic_tuple_negatives({"home": ["home"]})
+
+    def test_positive_tuple_workload_is_followed_by_negative_admission(self):
+        commands = {"home": ["home"]}
+        with mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), mock.patch.object(
+            run, "validate_variadic_tuple_negatives"
+        ) as negatives:
+            run.validate(commands, "variadic_tuples")
+            negatives.assert_called_once_with(commands)
 
     def test_later_failure_stops_before_any_measurement_or_results(self):
         with mock.patch.object(run, "selected_workloads", return_value=["first", "second"]), mock.patch.object(

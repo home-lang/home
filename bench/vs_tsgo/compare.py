@@ -43,8 +43,10 @@ def format_comparison(home_mean: float, competitor_mean: float) -> str:
 
 
 def format_workload_comparison(workload: str, home_mean: float, competitor_mean: float, validation_schema=None) -> str:
-    if workload in ("import_graph", "reexport_graph") and validation_schema != 2:
+    if workload in ("import_graph", "reexport_graph") and validation_schema not in (2, 3):
         return "Ineligible (graph types unvalidated)"
+    if workload == "variadic_tuples" and validation_schema != 3:
+        return "Provisional (tuple controls unvalidated)"
     return format_comparison(home_mean, competitor_mean)
 
 
@@ -114,6 +116,7 @@ def main() -> int:
     print("Times are mean ± sample standard deviation. Comparisons use the faster of tsc and tsgo.")
     print("Ratios rounding to 1.00× are labeled near ties; this is not a statistical significance test.")
     print("Legacy graph rows without schema-2 rejection controls are retained as timings, not fair speed claims (#487).")
+    print("Legacy tuple rows without schema-3 rejection controls are provisional; schema 3 also retains the graph gates.")
     return 0
 
 

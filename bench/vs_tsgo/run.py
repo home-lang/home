@@ -917,6 +917,34 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         validate_type_predicate_negatives(commands, workload)
     elif workload in ("import_graph", "reexport_graph"):
         validate_graph_negatives(commands, workload)
+    elif workload == "variadic_tuples":
+        validate_variadic_tuple_negatives(commands)
+
+
+def validate_variadic_tuple_negatives(commands: dict[str, list[str]]) -> None:
+    # Exercise the actual inferred/conditional/spread results from the timed
+    # workload. Mutations are confined to a temporary copy and are never timed.
+    invalid = """
+const invalidConcatResult: string = combined0[0];
+const invalidConditionalHead: Head<Tuple0> = "wrong";
+const invalidConditionalTail: number = tail0[0];
+const invalidCapturedSpread: number = captured0[1];
+const invalidConsumedResult: string = tupleResult0.result[2];
+combined0[0] = 0;
+const invalidTupleBounds = combined0[5];
+"""
+    with tempfile.TemporaryDirectory(prefix="home-bench-tuples-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "variadic_tuples", project)
+        source_path = project / "src/variadic-tuples.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322"] * 5 + ["2493", "2540"]:
+                raise SystemExit(f"{name} failed variadic_tuples negative controls:\n{details}")
 
 
 def validate_graph_negatives(commands: dict[str, list[str]], workload: str) -> None:
@@ -1043,7 +1071,7 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
-        "validation_schema": 2,
+        "validation_schema": 3,
         "workloads": workloads,
         "compilers": versions,
     }
