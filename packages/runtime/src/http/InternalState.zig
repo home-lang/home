@@ -117,6 +117,10 @@ pub fn isDone(this: *InternalState) bool {
 
 pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *MutableString, is_final_chunk: bool) !void {
     defer this.compressed_body.reset();
+    // A declared Content-Encoding with no body bytes is an empty response,
+    // not a truncated compressed stream. Once any bytes arrive, retain normal
+    // decoder EOF validation even if the final chunk itself is empty.
+    if (buffer.len == 0 and this.total_body_received == 0) return;
     var gzip_timer: bun.Instant = undefined;
 
     if (HTTPClient.extremely_verbose)
@@ -261,3 +265,31 @@ const Decompressor = HTTPClient.Decompressor;
 const Encoding = HTTPClient.Encoding;
 const HTTPRequestBody = HTTPClient.HTTPRequestBody;
 const HTTPResponseMetadata = HTTPClient.HTTPResponseMetadata;
+
+test "empty compressed HTTP bodies do not initialize a decoder" {
+    for ([_]Encoding{ .gzip, .deflate, .brotli, .zstd }) |encoding| {
+        var response = try MutableString.init(std.testing.allocator, 0);
+        defer response.deinit();
+        var state = InternalState.init(.{ .bytes = "" }, &response);
+        state.encoding = encoding;
+        state.flags.received_last_chunk = true;
+        try state.decompressBytes("", &response, true);
+        try std.testing.expect(state.decompressor == .none);
+        try std.testing.expectEqual(@as(usize, 0), response.list.items.len);
+    }
+}
+
+test "empty final HTTP chunk still rejects a started truncated gzip stream" {
+    var response = try MutableString.init(std.testing.allocator, 0);
+    defer response.deinit();
+    var state = InternalState.init(.{ .bytes = "" }, &response);
+    defer state.decompressor.deinit();
+    defer state.compressed_body.deinit();
+    state.encoding = .gzip;
+    state.flags.is_libdeflate_fast_path_disabled = true;
+    const header = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03";
+    state.total_body_received = header.len;
+    try state.decompressBytes(header, &response, false);
+    state.flags.received_last_chunk = true;
+    try std.testing.expectError(error.ZlibError, state.decompressBytes("", &response, true));
+}

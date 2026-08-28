@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createServer } from 'node:net'
 import { basename, join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
@@ -11,6 +12,9 @@ const directory = mkdtempSync(join(tmpdir(), 'home-native-bunx-'))
 const requests = []
 let expectRegistryToken = false
 let server
+let rawRegistry
+const rawSockets = new Set()
+const rawTimers = new Set()
 const children = new Set()
 const env = {
   ...process.env, HOME_NATIVE_VM: '1', HOME_CORPUS_FULL_VM: '1', HOME_NATIVE_RUN: '0',
@@ -235,19 +239,102 @@ try {
   const diagnostic = await run(['-e', diagnosticSource], {
     cwd: runtimeProject, env: { BUN_INSTALL_CACHE_DIR: runtimeCache },
   })
-  assert.equal(diagnostic.code, 0, diagnostic.stderr)
-  assert.equal(diagnostic.signal, null)
-  assert.equal(diagnostic.stderr, '')
-  const diagnosticRecord = JSON.parse(diagnostic.stdout)
-  assert.equal(realpathSync(diagnosticRecord.execPath), realpathSync(process.execPath))
-  assert.equal(diagnosticRecord.errors.length, missingNames.length * 3)
-  for (const error of diagnosticRecord.errors) {
-    assert.equal(error.code, error.kind === 'resolveSync' ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND')
-    const kind = error.specifier.startsWith('@') ? 'module' : 'package'
-    assert.ok(error.message.startsWith(`Cannot find ${kind} '${error.specifier}' from '`), error.message)
-    assert.doesNotMatch(error.message, /GET |404|while resolving/)
+  function checkMissingDiagnostic(result) {
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(result.signal, null)
+    assert.equal(result.stderr, '')
+    const value = JSON.parse(result.stdout)
+    assert.equal(realpathSync(value.execPath), realpathSync(process.execPath))
+    assert.equal(value.errors.length, missingNames.length * 3)
+    for (const error of value.errors) {
+      assert.equal(error.code, error.kind === 'resolveSync' ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND')
+      const kind = error.specifier.startsWith('@') ? 'module' : 'package'
+      assert.ok(error.message.startsWith(`Cannot find ${kind} '${error.specifier}' from '`), error.message)
+      assert.doesNotMatch(error.message, /GET |404|while resolving/)
+    }
   }
+  checkMissingDiagnostic(diagnostic)
   assert.ok(requests.slice(beforeRuntime).includes('/@native-missing%2fpackage'))
+  // A raw registry deliberately omits Content-Length and chunked framing.
+  // Partial bytes are not completion: buffered manifests must wait for EOF.
+  const rawRequests = []
+  let rawOrigin
+  let streamingSocket
+  rawRegistry = createServer(socket => {
+    rawSockets.add(socket)
+    socket.on('close', () => rawSockets.delete(socket))
+    socket.on('error', () => {})
+    let request = ''
+    const onData = chunk => {
+      request += chunk.toString()
+      if (!request.includes('\r\n\r\n')) return
+      socket.off('data', onData)
+      assert.doesNotMatch(request, /\r\nauthorization:/i)
+      const path = request.split('\r\n')[0].split(' ')[1]
+      rawRequests.push(path)
+      if (path === '/stream') {
+        streamingSocket = socket
+        socket.write('HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nfirst')
+        return
+      }
+      if (path === '/release') {
+        assert.ok(streamingSocket)
+        streamingSocket.end('second')
+        socket.end('HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+        return
+      }
+      const entry = packages['native-bunx-dep']['1.0.0']
+      const archive = '/native-bunx-dep/-/native-bunx-dep-1.0.0.tgz'
+      const known = path === '/native-bunx-dep' || path === archive
+      const body = path === archive ? entry.bytes : Buffer.from(path === '/native-bunx-dep' ? JSON.stringify({
+        name: 'native-bunx-dep', 'dist-tags': { latest: '1.0.0' },
+        versions: { '1.0.0': { ...entry.manifest, dist: { tarball: rawOrigin + archive, integrity: 'sha512-' + createHash('sha512').update(entry.bytes).digest('base64') } } },
+      }) : 'unknown package')
+      const middle = Math.floor(body.length / 2)
+      socket.write(`HTTP/1.0 ${known ? '200 OK' : '404 Not Found'}\r\nConnection: close\r\n\r\n`)
+      socket.write(body.subarray(0, middle))
+      const timer = setTimeout(() => {
+        rawTimers.delete(timer)
+        if (!socket.destroyed) socket.end(body.subarray(middle))
+      }, 30)
+      rawTimers.add(timer)
+    }
+    socket.on('data', onData)
+  })
+  await new Promise((resolve, reject) => {
+    rawRegistry.once('error', reject)
+    rawRegistry.listen(0, '127.0.0.1', resolve)
+  })
+  rawOrigin = 'http://127.0.0.1:' + rawRegistry.address().port
+  const rawCache = join(directory, 'raw-cache')
+  mkdirSync(rawCache)
+  const rawEnv = { BUN_INSTALL_CACHE_DIR: rawCache, npm_config_registry: rawOrigin }
+  checkMissingDiagnostic(await run(['-e', diagnosticSource], { cwd: runtimeProject, env: rawEnv }))
+  assert.deepEqual(rawRequests, ['/native-missing-package', '/@native-missing%2fpackage'])
+  const rawInstalled = await run(['-e', 'console.log(JSON.stringify({execPath:process.execPath,answer:require("native-bunx-dep")}))'], { cwd: runtimeProject, env: rawEnv })
+  assert.equal(rawInstalled.code, 0, rawInstalled.stderr)
+  assert.equal(rawInstalled.signal, null)
+  const rawRecord = JSON.parse(rawInstalled.stdout)
+  assert.equal(realpathSync(rawRecord.execPath), realpathSync(process.execPath))
+  assert.equal(rawRecord.answer, 42)
+  assert.deepEqual(rawRequests.slice(2), ['/native-bunx-dep', '/native-bunx-dep/-/native-bunx-dep-1.0.0.tgz'])
+  // A streaming consumer must receive bytes before EOF. The server withholds
+  // the tail until the child acknowledges reading the first part.
+  const streamed = await run(['-e', `
+    const response = await fetch(${JSON.stringify(rawOrigin + '/stream')});
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    await (await fetch(${JSON.stringify(rawOrigin + '/release')})).text();
+    let tail = '';
+    for (;;) { const part = await reader.read(); if (part.done) break; tail += new TextDecoder().decode(part.value); }
+    console.log(JSON.stringify({execPath:process.execPath,first:new TextDecoder().decode(first.value),tail}));
+  `])
+  assert.equal(streamed.code, 0, streamed.stderr)
+  assert.equal(streamed.signal, null)
+  const streamRecord = JSON.parse(streamed.stdout)
+  assert.equal(realpathSync(streamRecord.execPath), realpathSync(process.execPath))
+  assert.equal(streamRecord.first, 'first')
+  assert.equal(streamRecord.tail, 'second')
   if (process.platform !== 'win32' && process.getuid() !== 0) {
     const deniedCwd = join(directory, 'unreadable-cwd')
     mkdirSync(deniedCwd)
@@ -287,6 +374,9 @@ try {
   console.log('native bunx execution, installation, and dependency analysis passed')
 } finally {
   for (const child of children) child.kill('SIGKILL')
+  for (const timer of rawTimers) clearTimeout(timer)
+  for (const socket of rawSockets) socket.destroy()
+  rawRegistry?.close()
   server?.stop(true)
   rmSync(directory, { recursive: true, force: true })
 }

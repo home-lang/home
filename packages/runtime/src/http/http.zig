@@ -2700,7 +2700,10 @@ fn handleResponseBodyFromMultiplePackets(this: *HTTPClient, incoming_data: []con
             progress.setCompletedItems(this.state.total_body_received);
             progress.context.maybeRefresh();
         }
-        return is_done or processed;
+        // EOF-delimited bodies still need incremental decoding, but buffered
+        // consumers must not receive a completion callback before EOF. Only
+        // callers that requested streaming can consume partial body updates.
+        return is_done or (processed and this.signals.get(.response_body_streaming));
     }
     return false;
 }
@@ -3377,4 +3380,31 @@ test "completion reset preserves caller-owned response bytes" {
 
     try std.testing.expectEqualStrings("registry metadata larger than the initial response buffer", response.list.items);
     try std.testing.expect(state.body_out_str.? == &response);
+}
+
+test "buffered EOF bodies wait for completion while streaming bodies report progress" {
+    for ([_]bool{ false, true }) |streaming| {
+        var response = try MutableString.init(std.testing.allocator, 0);
+        defer response.deinit();
+        var signal = std.atomic.Value(bool).init(streaming);
+        var client: HTTPClient = undefined;
+        client.state = InternalState.init(.{ .bytes = "" }, &response);
+        client.signals = .{ .response_body_streaming = &signal };
+        client.progress_node = null;
+
+        try std.testing.expectEqual(streaming, try client.handleResponseBodyFromMultiplePackets("first"));
+        try std.testing.expectEqual(streaming, try client.handleResponseBodyFromMultiplePackets("second"));
+        try std.testing.expectEqualStrings("firstsecond", response.list.items);
+    }
+
+    var response = try MutableString.init(std.testing.allocator, 0);
+    defer response.deinit();
+    var client: HTTPClient = undefined;
+    client.state = InternalState.init(.{ .bytes = "" }, &response);
+    client.state.content_length = 11;
+    client.signals = .{};
+    client.progress_node = null;
+    try std.testing.expect(!try client.handleResponseBodyFromMultiplePackets("first"));
+    try std.testing.expect(try client.handleResponseBodyFromMultiplePackets("second"));
+    try std.testing.expectEqualStrings("firstsecond", response.list.items);
 }

@@ -1,5 +1,7 @@
 const ExtractTarball = @This();
 
+const MAX_DECOMPRESSED_TARBALL_SIZE: usize = 2 * 1024 * 1024 * 1024;
+
 name: strings.StringOrTinyString,
 resolution: Resolution,
 cache_dir: std.Io.Dir,
@@ -240,6 +242,8 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
         if (needs_to_decompress) {
             zlib_pool.data.list.clearRetainingCapacity();
             var zlib_entry = try Zlib.ZlibReaderArrayList.init(tgz_bytes, &zlib_pool.data.list, default_allocator);
+            defer zlib_entry.deinit();
+            zlib_entry.max_output_size = MAX_DECOMPRESSED_TARBALL_SIZE;
             zlib_entry.readAll(true) catch |err| {
                 log.addErrorFmt(
                     null,

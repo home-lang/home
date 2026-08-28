@@ -172,7 +172,7 @@ pub const ZlibReaderArrayList = struct {
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
     state: State = State.Uninitialized,
-    /// Decompression-bomb cap: fail once the output buffer exceeds this size.
+    /// Maximum decompressed output, independent of spare allocation capacity.
     max_output_size: usize = std.math.maxInt(usize),
 
     pub fn deinit(this: *ZlibReader) void {
@@ -275,15 +275,20 @@ pub const ZlibReaderArrayList = struct {
 
         while (this.state == State.Uninitialized or this.state == State.Inflating) {
             if (this.zlib.avail_out == 0) {
-                const initial = this.list.items.len;
-                try this.list.ensureUnusedCapacity(this.list_allocator, 4096);
-                this.list.expandToCapacity();
-                if (this.list.items.len > this.max_output_size) {
+                const produced: usize = @intCast(this.zlib.total_out);
+                const remaining_budget = this.max_output_size -| produced;
+                if (remaining_budget == 0) {
                     this.state = State.Error;
                     return error.ZlibError;
                 }
-                this.zlib.next_out = @ptrCast(&this.list.items[initial]);
-                this.zlib.avail_out = @truncate(this.list.items.len -| initial);
+                this.list.items.len = produced;
+                try this.list.ensureUnusedCapacity(this.list_allocator, @min(remaining_budget, 4096));
+                this.list.expandToCapacity();
+                this.zlib.next_out = @ptrCast(&this.list.items[produced]);
+                // Spare allocation capacity is not decompressed output. Clamp
+                // each inflate call to the remaining limit instead of rejecting
+                // a valid payload merely because the allocator over-reserved.
+                this.zlib.avail_out = @intCast(@min(this.list.items.len - produced, remaining_budget, std.math.maxInt(u32)));
             }
 
             // Try to inflate even if avail_in is 0, as this could be a valid empty gzip stream
@@ -551,9 +556,31 @@ test "zlib wrapper compiles" {
     _ = @typeName(@TypeOf(crc32));
     try std.testing.expectEqual(@as(c_int, 8), MIN_WBITS);
     try std.testing.expectEqual(@as(c_int, 15), MAX_WBITS);
-    try std.testing.expectEqual(@as(u8, 11), @intFromEnum(NodeMode.ZSTD_DECOMPRESS));
+    try std.testing.expectEqual(@as(u8, 11), @backingInt(NodeMode.ZSTD_DECOMPRESS));
     // Default options match the upstream defaults.
     const opts: Options = .{};
     try std.testing.expectEqual(@as(c_int, 6), opts.level);
     try std.testing.expectEqual(@as(c_int, 15), opts.windowBits);
+}
+
+test "zlib output limits count produced bytes, not allocation capacity" {
+    const compressed = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff\xed\xc1\x01\x0d\x00\x00\x00\xc2\xa0\xac\xef\x5f\xc2\x1e\x0e\x28\x00\x00\x00\xe0\xde\x00\x19\x07\x27\x21\x01\x10\x00\x00";
+    for ([_]usize{ 0, 16384 }) |capacity| {
+        for ([_]usize{ 0, 100, 4097, 8192 }) |limit| {
+            var output: std.ArrayListUnmanaged(u8) = .empty;
+            defer output.deinit(std.testing.allocator);
+            try output.ensureTotalCapacityPrecise(std.testing.allocator, capacity);
+            const reader = try ZlibReaderArrayList.init(compressed, &output, std.testing.allocator);
+            defer reader.deinit();
+            reader.max_output_size = limit;
+            if (limit < 4097) {
+                try std.testing.expectError(error.ZlibError, reader.readAll(true));
+                try std.testing.expect(output.items.len <= limit);
+            } else {
+                try reader.readAll(true);
+                try std.testing.expectEqual(@as(usize, 4097), output.items.len);
+                for (output.items) |byte| try std.testing.expectEqual(@as(u8, 'a'), byte);
+            }
+        }
+    }
 }
