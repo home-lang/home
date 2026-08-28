@@ -99,6 +99,39 @@ pub const All = struct {
         timer.state = .CANCELLED;
     }
 
+    /// Release the outgoing file's JS timer pins without running callbacks.
+    /// Snapshot under the heap lock, then cancel unlocked (cancel re-enters
+    /// remove). Native/WTF timers remain owned by their subsystems.
+    pub fn cancelAllTimeoutObjects(this: *All, vm: *VirtualMachine) void {
+        var pending: std.ArrayListUnmanaged(*EventLoopTimer) = .empty;
+        defer pending.deinit(bun.default_allocator);
+        var stack: std.ArrayListUnmanaged(*EventLoopTimer) = .empty;
+        defer stack.deinit(bun.default_allocator);
+        this.lock.lock();
+        for ([_]?*EventLoopTimer{ this.timers.root, this.fake_timers.timers.root }) |root| {
+            if (root) |node| bun.handleOom(stack.append(bun.default_allocator, node));
+        }
+        while (stack.pop()) |node| {
+            if (node.heap.child) |child| bun.handleOom(stack.append(bun.default_allocator, child));
+            if (node.heap.next) |sibling| bun.handleOom(stack.append(bun.default_allocator, sibling));
+            switch (node.tag) {
+                .TimeoutObject, .ImmediateObject, .AbortSignalTimeout => bun.handleOom(pending.append(bun.default_allocator, node)),
+                else => {},
+            }
+        }
+        this.lock.unlock();
+        for (pending.items) |node| {
+            // Each entry is pinned by its heap reference. Cancellation may
+            // destroy it; never read the node again after this dispatch.
+            switch (node.tag) {
+                .TimeoutObject => @as(*TimeoutObject, @fieldParentPtr("event_loop_timer", node)).internals.cancel(vm),
+                .ImmediateObject => @as(*ImmediateObject, @fieldParentPtr("event_loop_timer", node)).internals.cancel(vm),
+                .AbortSignalTimeout => @as(*jsc.AbortSignal.Timeout, @fieldParentPtr("event_loop_timer", node)).cancelForIsolation(vm),
+                else => unreachable,
+            }
+        }
+    }
+
     /// Remove the EventLoopTimer if necessary.
     pub fn update(this: *All, timer: *EventLoopTimer, time: *const timespec) void {
         this.lock.lock();

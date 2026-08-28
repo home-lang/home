@@ -14,6 +14,7 @@ var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_worker_object: ?std.Build.LazyPath = null;
 var cached_worker_scope_object: ?std.Build.LazyPath = null;
 var cached_js_message_port_object: ?std.Build.LazyPath = null;
+var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -85,6 +86,14 @@ pub fn jsMessagePortObject(b: *std.Build, object_root: []const u8) std.Build.Laz
     return object;
 }
 
+pub fn jsAbortSignalObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_js_abort_signal_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-1.cpp", output.path(b, "HomeJSAbortSignalCustom.cpp"));
+    cached_js_abort_signal_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -109,6 +118,10 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.cpp",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.h",
+        "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSAbortSignalCustom.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/AbortSignal.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessagePort.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessagePort.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/MessagePort.cpp",
@@ -135,6 +148,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings-0.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp",
@@ -146,11 +160,13 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     // absolute includes used by isolated build fixtures.
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
+        .{ "UnifiedSource-src_jsc_bindings_webcore-1.cpp", "JSAbortSignalCustom.cpp", "AbortSignal.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "JSWorker.cpp", "JSWorker.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "MessagePortPipe.cpp", "MessagePortPipe.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "Worker.cpp", "Worker.h" },
         .{ "UnifiedSource-src_jsc_bindings-0.cpp", "BunWorkerGlobalScope.cpp", "BunWorkerGlobalScope.h" },
+        .{ "UnifiedSource-src_jsc_bindings-0.cpp", "BunAnalyzeTranspiledModule.cpp", "BunAnalyzeTranspiledModule.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSMessagePort.cpp", "JSMessagePort.h" },
     }) |entry| {
         const unified_path = b.fmt("{s}/unified/{s}", .{ build_root, entry[0] });

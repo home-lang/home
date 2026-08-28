@@ -2605,7 +2605,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     this.eventLoop().drainMicrotasks() catch {};
 
     if (this.rare_data) |rare| {
-        rare.closeAllWatchersForIsolation();
+        rare.closeAllHandlesForIsolation();
     }
 
     {
@@ -2650,6 +2650,11 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     this.auto_killer.clear();
 
     this.test_isolation_generation +%= 1;
+
+    // A long timeout would otherwise retain the outgoing global until its
+    // deadline. Close the watchFile scheduler first while its timer is live.
+    @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdownForIsolation(this);
+    this.timer.cancelAllTimeoutObjects(this);
 
     this.overridden_main.deinit();
     this.entry_point_result.value.deinit();

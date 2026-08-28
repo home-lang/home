@@ -607,6 +607,20 @@ pub const FSWatcher = struct {
         }
     }
 
+    /// Close without emitting user JS during an isolated-file swap. Detaching
+    /// alone leaves the initial pending-activity reference pinning the realm.
+    pub fn closeForIsolation(this: *FSWatcher) void {
+        this.mutex.lock();
+        if (!this.closed) {
+            this.closed = true;
+            this.mutex.unlock();
+            this.detach();
+            this.unrefTask();
+        } else {
+            this.mutex.unlock();
+        }
+    }
+
     // this can be called multiple times
     pub fn detach(this: *FSWatcher) void {
         if (this.ctx.test_isolation_enabled) this.ctx.rareData().removeFSWatcherForIsolation(this);

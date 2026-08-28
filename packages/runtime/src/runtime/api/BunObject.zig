@@ -1101,6 +1101,9 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
                         ServerType.js.routeListSetCached(obj, globalObject, route_list_object);
                     }
                     server.js_value.setStrong(obj, globalObject);
+                    if (vm.test_isolation_enabled) {
+                        vm.rareData().addServerForIsolation(jsc.API.AnyServer.from(server));
+                    }
 
                     if (config.allow_hot) {
                         if (globalObject.bunVM().hotMap()) |hot| {

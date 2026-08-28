@@ -8,7 +8,7 @@ const nativeBuild = path.dirname(process.env.HOME_BUN_OBJ_ROOT || '/Users/chris/
 const available = existsSync(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
 const nativeTest = available ? test : test.skip
 const read = (file: string) => readFileSync(file, 'utf8')
-const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp']
+const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'UnifiedSource-src_jsc_bindings_webcore-1.cpp']
 
 function createNativeFixture(temporary: string) {
   const codegen = path.join(temporary, 'codegen')
@@ -27,8 +27,8 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp'].includes(basename)) {
-        const header = basename.replace(/\.cpp$/, '.h')
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp'].includes(basename)) {
+        const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
         return `#include ${JSON.stringify(path.join(webcore, basename))}`
@@ -71,10 +71,11 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
-    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]]]) {
+    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]], ['JSAbortSignalCustom.cpp', units[6]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
-      const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp'] : [basename]
+      const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp']
+        : basename === 'BunWorkerGlobalScope.cpp' ? [basename, 'BunAnalyzeTranspiledModule.cpp'] : [basename]
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => ownedNames.includes(path.basename(relative))
         ? `#include ${JSON.stringify(path.basename(relative))}`
         : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
@@ -84,7 +85,7 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
       for (const name of ownedNames) {
-        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', name === 'BunWorkerGlobalScope.cpp' ? '' : 'webcore', name)
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', name.startsWith('Bun') ? '' : 'webcore', name)
         expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
       }
     }
@@ -141,13 +142,13 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
   }
 }, 20000)
 
-nativeTest('rejects MessagePort and Worker class-header drift and invalid native ownership before output', () => {
+nativeTest('rejects owned native class-header drift and invalid native ownership before output', () => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
@@ -158,7 +159,7 @@ nativeTest('rejects MessagePort and Worker class-header drift and invalid native
       expect(existsSync(output)).toBe(false)
       writeFileSync(headerPath, original)
     }
-    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]]]) {
+    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]]]) {
       const unit = path.join(temporary, 'unified', unitName)
       const original = read(unit)
       const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`

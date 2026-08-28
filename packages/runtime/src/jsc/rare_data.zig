@@ -67,6 +67,7 @@ node_fs_stat_watcher_scheduler: ?bun.ptr.RefPtr(StatWatcherScheduler) = null,
 listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .empty,
 listening_sockets_for_watch_mode_lock: bun.Mutex = .{},
 
+servers_for_isolation: std.ArrayListUnmanaged(jsc.API.AnyServer) = .empty,
 fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
 stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
 
@@ -356,12 +357,30 @@ pub fn removeStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) voi
     }
 }
 
-pub fn closeAllWatchersForIsolation(this: *RareData) void {
-    while (this.fs_watchers_for_isolation.pop()) |watcher| {
-        watcher.detach();
+pub fn addServerForIsolation(this: *RareData, server: jsc.API.AnyServer) void {
+    bun.handleOom(this.servers_for_isolation.append(bun.default_allocator, server));
+}
+
+pub fn removeServerForIsolation(this: *RareData, server: jsc.API.AnyServer) void {
+    for (this.servers_for_isolation.items, 0..) |entry, i| {
+        if (entry.ptr.ptr() == server.ptr.ptr()) {
+            _ = this.servers_for_isolation.swapRemove(i);
+            return;
+        }
     }
-    while (this.stat_watchers_for_isolation.pop()) |watcher| {
-        watcher.close();
+}
+
+pub fn closeAllHandlesForIsolation(this: *RareData) void {
+    // Pop before closing: native stop callbacks may unregister other handles
+    // or register new ones. Never retain an array element across a callback.
+    while (true) {
+        if (this.fs_watchers_for_isolation.pop()) |watcher| {
+            watcher.closeForIsolation();
+        } else if (this.stat_watchers_for_isolation.pop()) |watcher| {
+            watcher.close();
+        } else if (this.servers_for_isolation.pop()) |server| {
+            server.stop(true);
+        } else break;
     }
 }
 

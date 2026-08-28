@@ -242,7 +242,58 @@ try {
   const concurrent = invoke([concurrency, '--concurrent', '--max-concurrency=2'])
   passed(concurrent, 5)
   assert.match(concurrent.stdout, /PEAK:2/)
-  console.log('native test CLI option regressions passed')
+  // The upstream isolation suite covers ordinary leaked handles. Exercise
+  // the second timer heap, long AbortSignal pins, explicit handle removal,
+  // and watchFile initial work still in flight at a file boundary as well.
+  for (const mode of ['native-handles', 'fake-timers']) {
+    const isolated = join(directory, 'isolated-' + mode)
+    mkdirSync(isolated)
+    for (let i = 0; i < 8; i++) {
+      const leak = mode === 'native-handles'
+        ? `
+          const options = { port: 0, development: ${i % 2 === 0}, fetch: () => new Response('x'), error: () => new Response('error') };
+          const server = Bun.serve(options);
+          server.reload(options); server.reload(options);
+          server.stop(true);
+          const watcher = fs.watch(import.meta.dir, () => {});
+          watcher.close(); watcher.close();
+          fs.watchFile(import.meta.path, { interval: 5 }, () => { throw new Error('stale stat callback'); });
+          const signal = AbortSignal.timeout(3_600_000);
+          signal.addEventListener('abort', () => { throw new Error('stale abort callback'); });
+        `
+        : `
+          jest.useRealTimers();
+          jest.useFakeTimers();
+          expect(jest.isFakeTimers()).toBe(true);
+          expect(jest.getTimerCount()).toBe(0);
+          setTimeout(() => { throw new Error('stale timeout'); }, 3_600_000);
+          setInterval(() => { throw new Error('stale interval'); }, 3_600_000);
+          const signal = AbortSignal.timeout(3_600_000);
+          signal.addEventListener('abort', () => { throw new Error('stale fake abort'); });
+        `
+      writeFileSync(join(isolated, i + '.test.js'), prelude + `
+        import { jest } from 'bun:test';
+        import { heapStats } from 'bun:jsc';
+        import fs from 'node:fs';
+        expect(globalThis.previousIsolatedFile).toBeUndefined();
+        globalThis.previousIsolatedFile = ${i};
+        ${leak}
+        test('isolated ${mode} ${i}', () => {
+          Bun.gc(true); Bun.gc(true);
+          const count = heapStats().objectTypeCounts.GlobalObject;
+          expect(count).toBeGreaterThan(0);
+          expect(count).toBeLessThanOrEqual(4);
+          console.log('ISOLATED:${i}:' + count);
+        });
+      `)
+    }
+    const result = invoke([isolated, '--isolate'])
+    passed(result, 8)
+    const samples = [...result.stdout.matchAll(/ISOLATED:(\d+):(\d+)/g)]
+    assert.equal(samples.length, 8)
+    assert.deepEqual(samples.map(sample => Number(sample[1])).sort(), [0, 1, 2, 3, 4, 5, 6, 7])
+  }
+  console.log('native test CLI option and isolation regressions passed')
 } finally {
   rmSync(directory, { recursive: true })
 }

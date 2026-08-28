@@ -268,7 +268,19 @@ pub fn applyStaticRouteH3(server: AnyServer, app: *uws.H3.App, comptime T: type,
     }
 }
 
+/// Balance the parse-time callback protections. These are owning references,
+/// matching the Strong fields in Bun's current ServerConfig implementation.
+pub fn releaseCallbackRefs(this: *ServerConfig) void {
+    inline for (.{ "onRequest", "onNodeHTTPRequest", "onError" }) |field| {
+        @field(this, field).unprotect();
+        @field(this, field) = .zero;
+    }
+    if (this.websocket) |ws| ws.unprotect();
+    this.websocket = null;
+}
+
 pub fn deinit(this: *ServerConfig) void {
+    this.releaseCallbackRefs();
     this.address.deinit(bun.default_allocator);
 
     for (this.negative_routes.items) |route| {

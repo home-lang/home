@@ -11,6 +11,8 @@ fn statToJSStats(globalThis: *jsc.JSGlobalObject, stats: *const bun.sys.PosixSta
 /// This is a singleton struct that contains the timer used to schedule re-stat calls.
 pub const StatWatcherScheduler = struct {
     current_interval: std.atomic.Value(i32) = .{ .raw = 0 },
+    work_pool_in_flight: std.atomic.Value(bool) = .init(false),
+    is_shutdown: std.atomic.Value(bool) = .init(false),
     task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
     main_thread: std.Thread.Id,
     vm: *bun.jsc.VirtualMachine,
@@ -44,7 +46,7 @@ pub const StatWatcherScheduler = struct {
 
     pub fn append(this: *StatWatcherScheduler, watcher: *StatWatcher) void {
         log("append new watcher {s}", .{watcher.path});
-        bun.assert(watcher.closed == false);
+        bun.assert(!watcher.closed.load(.monotonic));
         bun.assert(watcher.next == null);
 
         watcher.ref();
@@ -63,7 +65,6 @@ pub const StatWatcherScheduler = struct {
 
     /// Update the current interval and set the timer (this function is thread safe)
     fn setInterval(this: *StatWatcherScheduler, interval: i32) void {
-        this.ref();
         this.current_interval.store(interval, .monotonic);
 
         if (this.main_thread == std.Thread.getCurrentId()) {
@@ -77,6 +78,7 @@ pub const StatWatcherScheduler = struct {
 
     /// Set the timer (this function is not thread safe, should be called only from the main thread)
     fn setTimer(this: *StatWatcherScheduler, interval: i32) void {
+        if (interval != 0 and this.is_shutdown.load(.monotonic)) return;
 
         // if the interval is 0 means that we stop the timer
         if (interval == 0) {
@@ -99,9 +101,12 @@ pub const StatWatcherScheduler = struct {
 
             pub fn updateTimer(self: *@This()) void {
                 defer bun.default_allocator.destroy(self);
+                defer self.scheduler.deref();
                 self.scheduler.setTimer(self.scheduler.getInterval());
             }
         };
+        // The singleton may retire before this queued update runs.
+        this.ref();
         const holder = bun.handleOom(bun.default_allocator.create(Holder));
         holder.* = .{
             .scheduler = this,
@@ -116,17 +121,23 @@ pub const StatWatcherScheduler = struct {
         this.event_loop_timer.state = .FIRED;
         this.event_loop_timer.heap = .{};
 
-        if (has_been_cleared) {
+        if (has_been_cleared or this.is_shutdown.load(.monotonic)) return;
+        // The work-pool node is intrusive: scheduling it twice while linked
+        // would corrupt the queue. An initial stat completion can rearm us.
+        if (this.work_pool_in_flight.swap(true, .acq_rel)) {
+            this.setTimer(@max(5, this.getInterval()));
             return;
         }
-
+        this.ref(); // exactly one reference per work-pool hop
         jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
         var this: *StatWatcherScheduler = @alignCast(@fieldParentPtr("task", task));
-        // ref'd when the timer was scheduled
+        // Publish queue writes before isolation can drain it. Keep the
+        // work-pool ref until after publishing; shutdown may drop RareData's.
         defer this.deref();
+        defer this.work_pool_in_flight.store(false, .release);
         // Instant.now will not fail on our target platforms.
         const now = bun.Instant.now() catch unreachable;
 
@@ -137,7 +148,7 @@ pub const StatWatcherScheduler = struct {
         var closest_next_check: u64 = @intCast(min_interval);
         var contain_watchers = false;
         while (iter.next()) |watcher| {
-            if (watcher.closed) {
+            if (watcher.closed.load(.monotonic)) {
                 watcher.deref();
                 continue;
             }
@@ -157,13 +168,35 @@ pub const StatWatcherScheduler = struct {
             log("reinsert watcher {x}", .{@intFromPtr(watcher)});
         }
 
-        if (contain_watchers) {
+        if (this.is_shutdown.load(.monotonic)) {
+            this.current_interval.store(0, .monotonic);
+        } else if (contain_watchers) {
             // choose the smallest interval or the closest time to the next check
             this.setInterval(@min(min_interval, @as(i32, @intCast(closest_next_check))));
         } else {
             // we do not have watchers, we can stop the timer
-            this.setInterval(0);
+            this.current_interval.store(0, .monotonic);
         }
+    }
+
+    /// Retire the outgoing file's scheduler while its VM and timer heap are
+    /// live. A new file creates a new singleton lazily. Runs on the JS thread.
+    pub fn shutdownForIsolation(vm: *VirtualMachine) void {
+        const rare = vm.rare_data orelse return;
+        const owned = rare.node_fs_stat_watcher_scheduler orelse return;
+        rare.node_fs_stat_watcher_scheduler = null;
+        const this = owned.data;
+        bun.assert(this.main_thread == std.Thread.getCurrentId());
+        this.is_shutdown.store(true, .monotonic);
+        this.setTimer(0);
+        while (this.work_pool_in_flight.load(.acquire)) std.atomic.spinLoopHint();
+        var batch = this.watchers.popBatch();
+        var iter = batch.iterator();
+        while (iter.next()) |watcher| {
+            if (!watcher.closed.load(.monotonic)) watcher.close();
+            watcher.deref(); // queue reference from append
+        }
+        owned.deref();
     }
 };
 
@@ -178,7 +211,7 @@ pub const StatWatcher = struct {
     ref_count: RefCount,
 
     /// Closed is set to true to tell the scheduler to remove from list and deref.
-    closed: bool,
+    closed: std.atomic.Value(bool),
     path: [:0]u8,
     persistent: bool,
     bigint: bool,
@@ -232,7 +265,6 @@ pub const StatWatcher = struct {
     pub fn deinit(this: *StatWatcher) void {
         log("deinit {x}", .{@intFromPtr(this)});
 
-        if (this.ctx.test_isolation_enabled) this.ctx.rareData().removeStatWatcherForIsolation(this);
         this.persistent = false;
         if (comptime bun.Environment.allow_assert) {
             if (this.poll_ref.isActive()) {
@@ -240,7 +272,7 @@ pub const StatWatcher = struct {
             }
         }
         this.poll_ref.unref(this.ctx);
-        this.closed = true;
+        this.closed.store(true, .monotonic);
         this.this_value.deinit();
 
         bun.default_allocator.free(this.path);
@@ -312,7 +344,7 @@ pub const StatWatcher = struct {
     };
 
     pub fn doRef(this: *StatWatcher, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        if (!this.closed and !this.persistent) {
+        if (!this.closed.load(.monotonic) and !this.persistent) {
             this.persistent = true;
             this.poll_ref.ref(this.ctx);
         }
@@ -329,11 +361,14 @@ pub const StatWatcher = struct {
 
     /// Stops file watching but does not free the instance.
     pub fn close(this: *StatWatcher) void {
+        // The registry is JS-thread-only. Remove here, before finalization can
+        // leave the last native reference on the work pool.
+        if (this.ctx.test_isolation_enabled) this.ctx.rareData().removeStatWatcherForIsolation(this);
         if (this.persistent) {
             this.persistent = false;
         }
         this.poll_ref.unref(this.ctx);
-        this.closed = true;
+        this.closed.store(true, .monotonic);
         this.this_value.downgrade();
     }
 
@@ -346,7 +381,7 @@ pub const StatWatcher = struct {
     pub fn finalize(this: *StatWatcher) void {
         log("Finalize\n", .{});
         this.this_value.finalize();
-        this.closed = true;
+        this.closed.store(true, .monotonic);
         this.scheduler.deref();
         this.deref(); // but don't deinit until the scheduler drops its reference
     }
@@ -366,7 +401,7 @@ pub const StatWatcher = struct {
             defer bun.destroy(initial_stat_task);
             const this = initial_stat_task.watcher;
 
-            if (this.closed) {
+            if (this.closed.load(.monotonic)) {
                 this.deref(); // Balance the ref() from createAndSchedule().
                 return;
             }
@@ -398,7 +433,7 @@ pub const StatWatcher = struct {
 
     pub fn initialStatSuccessOnMainThread(this: *StatWatcher) void {
         defer this.deref(); // Balance the ref from createAndSchedule().
-        if (this.closed) {
+        if (this.closed.load(.monotonic)) {
             return;
         }
 
@@ -413,7 +448,7 @@ pub const StatWatcher = struct {
 
     pub fn initialStatErrorOnMainThread(this: *StatWatcher) void {
         defer this.deref(); // Balance the ref from createAndSchedule().
-        if (this.closed) {
+        if (this.closed.load(.monotonic)) {
             return;
         }
 
@@ -431,7 +466,7 @@ pub const StatWatcher = struct {
             },
         ) catch |err| globalThis.reportActiveExceptionAsUnhandled(err);
 
-        if (this.closed) {
+        if (this.closed.load(.monotonic)) {
             return;
         }
         this.scheduler.data.append(this);
@@ -484,6 +519,7 @@ pub const StatWatcher = struct {
     /// After a restat found the file changed, this calls the listener function.
     pub fn swapAndCallListenerOnMainThread(this: *StatWatcher) void {
         defer this.deref(); // Balance the ref from restat().
+        if (this.closed.load(.monotonic)) return;
         const js_this = this.this_value.tryGet() orelse return;
         const globalThis = this.globalThis;
         const prev_jsvalue = js.gc.prevStat.get(js_this) orelse .js_undefined;
@@ -531,7 +567,7 @@ pub const StatWatcher = struct {
             .interval = @max(5, args.interval),
             .globalThis = args.global_this,
             .this_value = .empty(),
-            .closed = false,
+            .closed = .init(false),
             .path = alloc_file_path,
             // Instant.now will not fail on our target platforms.
             .last_check = bun.Instant.now() catch unreachable,

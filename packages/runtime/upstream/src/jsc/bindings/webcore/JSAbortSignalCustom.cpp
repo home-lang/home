@@ -28,6 +28,11 @@
 #include <wtf/NeverDestroyed.h>
 #include "JSAbortSignal.h"
 
+// The signal owns its timeout box until destruction, even after Home cancels
+// the timer at an isolated-file boundary. Reading its atomic activity bit
+// keeps a cancelled timeout from pinning the wrapper through opaque roots.
+extern "C" bool Home__AbortSignalTimeout__isActive(const void*);
+
 namespace WebCore {
 
 bool JSAbortSignalOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, JSC::AbstractSlotVisitor& visitor, ASCIILiteral* reason)
@@ -49,7 +54,7 @@ bool JSAbortSignalOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> ha
     }
 
     if (abortSignal.hasAbortEventListener()) {
-        if (abortSignal.hasActiveTimeoutTimer()) {
+        if (auto timeout = abortSignal.getTimeout(); timeout && Home__AbortSignalTimeout__isActive(timeout)) {
             if (reason) [[unlikely]]
                 *reason = "Has Timeout And Abort Event Listener"_s;
             return true;
