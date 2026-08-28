@@ -1,12 +1,8 @@
 // Real-runtime HTTP/2 SERVER regression test.
 //
 // Exercises the actual `node:http2` server implementation (h2_frame_parser.zig)
-// end-to-end against a real client over a real loopback socket — NOT the mocked
-// `__home_http2_*` harness used by the native corpus runner (which cannot open
-// real sockets). This is the regression guard for HTTP/2 server-side parity:
-// the upstream `node-http2.test.js` cannot run under the native JSC corpus
-// runner because it depends on Bun's subprocess-spawning test harness
-// (`bunExe`/`nodeExe`), so this file is how the server path stays covered.
+// end-to-end against a real client over a real loopback socket. These checks
+// supplement the unchanged upstream HTTP/2 corpus run through the native VM.
 //
 // Run via `scripts/runtime-regression.sh` (which probes for a JS-capable build
 // first and skips gracefully on non-JSC targets). Exits 0 iff every assertion
@@ -39,7 +35,7 @@ const settle = () => {
   if (--pending === 0) {
     clearTimeout(watchdog);
     log(failures === 0 ? "ALL PASS" : "FAILURES=" + failures);
-    process.exit(failures === 0 ? 0 : 1);
+    process.exitCode = failures === 0 ? 0 : 1;
   }
 };
 
@@ -50,19 +46,28 @@ track();
   server.on("stream", (stream, headers) => {
     ok(headers[":method"] === "GET", "roundtrip: server saw :method GET");
     ok(headers[":path"] === "/hello", "roundtrip: server saw :path /hello");
-    stream.respond({ ":status": 200, "content-type": "text/plain", "x-custom": "yo" });
+    ok(headers.cookie === "a=1; b=2", "roundtrip: duplicate cookies join with semicolon");
+    ok(headers["x-multi"] === "one, two", "roundtrip: duplicate ordinary headers join with comma");
+    ok(headers.authorization === "secret", "roundtrip: sensitive header value survives");
+    ok(headers[http2.sensitiveHeaders]?.includes("authorization"), "roundtrip: sensitive header names survive");
+    stream.respond({ ":status": 200, "content-type": "text/plain", "x-custom": "yo", "set-cookie": ["a=1", "b=2"] });
     stream.end("world");
   });
   server.listen(0, () => {
     const client = http2.connect("http://localhost:" + server.address().port);
     client.on("error", (e) => ok(false, "roundtrip: client error " + (e && e.message)));
-    const req = client.request({ ":path": "/hello", ":method": "GET" });
+    const req = client.request({
+      ":path": "/hello", ":method": "GET", cookie: ["a=1", "b=2"],
+      "x-multi": ["one", "two"], authorization: "secret",
+      [http2.sensitiveHeaders]: ["authorization"],
+    });
     let data = "";
     let resp = null;
     req.on("response", (h) => { resp = h; });
     req.on("data", (c) => { data += c; });
     req.on("end", () => {
-      ok(resp && resp[":status"] == 200, "roundtrip: client got :status 200");
+      ok(resp && resp[":status"] === 200, "roundtrip: client got numeric :status 200");
+      ok(Array.isArray(resp?.["set-cookie"]) && resp["set-cookie"].join("|") === "a=1|b=2", "roundtrip: set-cookie stays an array");
       ok(resp && resp["x-custom"] === "yo", "roundtrip: client got x-custom header");
       ok(data === "world", "roundtrip: client got body 'world'");
       client.close();
@@ -221,5 +226,45 @@ track();
       });
       req.end();
     }
+  });
+})();
+
+// 8. The native streamStart callback must retain its returned JS stream so
+// headers, data and close events reach the compatibility request/response API.
+// An infinite source exercises backpressure and cancellation, not just EOF.
+track();
+(() => {
+  const { Readable, pipeline } = require("node:stream");
+  let serverPipeline = false;
+  let clientPipeline = false;
+  let responseChunks = 0;
+  const server = http2.createServer((request, response) => {
+    if (typeof Bun !== "undefined") Bun.gc(true);
+    pipeline(request, response, (err) => {
+      serverPipeline = true;
+      ok(err && err.code === "ERR_STREAM_PREMATURE_CLOSE", "pipeline: server observes cancellation");
+    });
+  });
+  server.on("close", () => {
+    ok(serverPipeline && clientPipeline, "pipeline: both callbacks completed before server close");
+    ok(responseChunks >= 10, "pipeline: response data arrived before cancellation");
+    settle();
+  });
+  server.listen(0, () => {
+    const client = http2.connect("http://localhost:" + server.address().port);
+    const request = client.request({ ":method": "POST" });
+    const source = new Readable({ read() { this.push("hello"); } });
+    pipeline(source, request, (err) => {
+      clientPipeline = true;
+      ok(err && err.code === "ERR_STREAM_PREMATURE_CLOSE", "pipeline: client observes cancellation");
+      server.close();
+      client.close();
+    });
+    request.on("data", () => {
+      if (++responseChunks === 10) {
+        if (typeof Bun !== "undefined") Bun.gc(true);
+        source.destroy();
+      }
+    });
   });
 })();

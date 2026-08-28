@@ -49,7 +49,7 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         .ref_count = .init(),
         .globalThis = globalThis,
     });
-    ptr.stream.mode = @enumFromInt(mode_int);
+    ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
     return ptr;
 }
 
@@ -223,7 +223,7 @@ const Context = struct {
     }
 
     pub fn setFlush(this: *Context, flush: c_int) void {
-        this.flush = @enumFromInt(flush);
+        this.flush = @fromBackingInt(@intCast(flush));
     }
 
     pub fn doWork(this: *Context) void {
@@ -260,9 +260,9 @@ const Context = struct {
             },
             .BROTLI_DECODE => {
                 if (this.error_ != .NO_ERROR) {
-                    return Error.init("Decompression failed", @intFromEnum(this.error_), code_for_error(this.error_));
+                    return Error.init("Decompression failed", @backingInt(this.error_), code_for_error(this.error_));
                 } else if (this.flush == .finish and this.last_result.d == .needs_more_input) {
-                    return Error.init("unexpected end of file", @intFromEnum(bun.zlib.ReturnCode.BufError), "Z_BUF_ERROR");
+                    return Error.init("unexpected end of file", @backingInt(bun.zlib.ReturnCode.BufError), "Z_BUF_ERROR");
                 }
                 return Error.ok;
             },
@@ -281,7 +281,9 @@ const Context = struct {
         const values = comptime std.enums.values(E);
         inline for (names, values) |n, v| {
             if (err == v) {
-                return "ERR_BROTLI_DECODER_" ++ n;
+                // NativeBrotli.rs keeps the Brotli enum suffix's leading
+                // underscore after ERR_, including for allocation errors.
+                return "ERR__" ++ n;
             }
         }
         unreachable;

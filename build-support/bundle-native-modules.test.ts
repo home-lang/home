@@ -71,6 +71,11 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
+    const materializer = path.join(root, 'packages/runtime/src/native/H2HeadersMaterializer.cpp')
+    expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
+      .toContain('#include "H2HeadersMaterializer.cpp"')
+    expect(read(path.join(output, 'H2HeadersMaterializer.cpp')))
+      .toBe(`#line 1 ${JSON.stringify(materializer)}\n${read(materializer)}`)
     for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]], ['JSAbortSignalCustom.cpp', units[6]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
