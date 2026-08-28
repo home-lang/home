@@ -78,6 +78,10 @@ def cases() -> list[Case]:
          imports + "declare const value: ns.Box<string>;\nconst good: string = value.value.item;\n"
          "const next: string | undefined = value.value.next?.item;\n",
          "const bad: number = value.value.item;\n")
+    pair("growing-recursive-alias", {"a-owner.ts": "type Link<X> = { item: X; next?: Link<X[]> };\n" + BOX.replace("value: T", "value: Link<T>")},
+         imports + "declare const value: ns.Box<string>;\nconst good: string = value.value.item;\n"
+         "const next: string[] | undefined = value.value.next?.item;\n",
+         "const bad: number[] | undefined = value.value.next?.item;\n")
     return result
 
 
