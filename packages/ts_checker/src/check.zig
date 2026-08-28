@@ -75496,8 +75496,12 @@ pub const Checker = struct {
                         // parameter to a concrete type. The lexical binder
                         // still wins over a same-named runtime value.
                         if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return type_position_t;
-                        if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
-                            !self.visibleTypeDeclarationExistsAt(type_node, r.name))
+                        // A narrowed runtime value does not occupy type
+                        // space. Continue declaration lookup when a local
+                        // or program-global type has the same name.
+                        if (self.findVisibleSameNameValueBinding(type_node, r.name) == null) return t;
+                        if (!self.visibleTypeDeclarationExistsAt(type_node, r.name) and
+                            !self.programHasGlobalTypeName(r.name))
                         {
                             if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |import_t| return import_t;
                             if (try self.importedTypeRefForLocal(r.name, type_node)) |import_t| return import_t;
@@ -75507,7 +75511,6 @@ pub const Checker = struct {
                             try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                             return types.Primitive.any;
                         }
-                        return t;
                     }
                     if (self.enclosingDeclaredTypeParameterType(r.name, type_node)) |t| return t;
                     if (try self.jsDocContainingTemplateParamType(type_node, r.name)) |t| return t;
@@ -75608,7 +75611,8 @@ pub const Checker = struct {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
                     }
-                    if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
+                    const is_program_global_type = self.programHasGlobalTypeName(r.name);
+                    if (!is_program_global_type and self.findVisibleSameNameValueBinding(type_node, r.name) != null and
                         !self.visibleTypeDeclarationExistsAt(type_node, r.name))
                     {
                         if (try self.checkJsDestructuredRequireClassInstanceType(type_node, r.name)) |class_t| {
@@ -75629,7 +75633,7 @@ pub const Checker = struct {
                     // sibling-declaration fallback. It must not erase a
                     // type that this checker can resolve from its own HIR,
                     // including forward and merged declarations.
-                    if (self.programHasGlobalTypeName(r.name)) return types.Primitive.any;
+                    if (is_program_global_type) return types.Primitive.any;
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                         return types.Primitive.any;

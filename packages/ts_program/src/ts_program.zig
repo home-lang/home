@@ -9411,6 +9411,18 @@ test "Program: global name discovery preserves declared interface types" {
     const cases = [_]struct { source: []const u8, codes: []const u16 }{
         .{
             .source =
+            \\const Methods = 1;
+            \\interface Methods { identity(value: string): string; }
+            \\declare var methods: Methods;
+            \\const good: string = methods.identity('ok');
+            \\const bad: number = methods.identity('ok');
+            \\methods.identity(1);
+            \\methods.missing();
+            ,
+            .codes = &.{ 2322, 2345, 2339 },
+        },
+        .{
+            .source =
             \\interface Methods { identity(value: string): string; }
             \\declare var methods: Methods;
             \\const good: string = methods.identity('ok');
@@ -9495,4 +9507,22 @@ test "Program: global name discovery preserves declared interface types" {
             }
         }
     }
+}
+
+test "Program: a local value does not hide the global type namespace" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app_id = try program.add("/app.ts",
+        \\const Methods = 1;
+        \\declare var methods: Methods;
+        \\const good: string = methods.identity('ok');
+    );
+    _ = try program.add("/globals.d.ts", "interface Methods { identity(value: string): string; }\n");
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const app = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 0), app.diagnostics.items.len);
 }
