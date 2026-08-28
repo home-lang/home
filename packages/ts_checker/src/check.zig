@@ -272,6 +272,9 @@ pub const ExternalResolver = struct {
         /// alias `mod.name` cannot reference a type-only export). Additive:
         /// resolvers that don't compute it leave it false.
         type_only_export: bool = false,
+        /// The restriction originates at an `import type` declaration in
+        /// the alias chain (TS1361), rather than an `export type` (TS1362).
+        type_only_import: bool = false,
         /// When `type_only_export` is true: the resolved module's path and
         /// the byte offset of the type-only export declaration within it.
         /// Anchors the TS1377 "'{0}' was exported here" cross-file
@@ -374,6 +377,15 @@ pub const ExternalResolver = struct {
             specifier: []const u8,
             containing_file: []const u8,
         ) ?[]const []const u8 = null,
+        /// Whether two module projections refer to the same actual exported
+        /// declaration. Null means provenance is unavailable, not equality.
+        sameModuleExport: ?*const fn (
+            self: *anyopaque,
+            left_specifier: []const u8,
+            right_specifier: []const u8,
+            containing_file: []const u8,
+            name: []const u8,
+        ) ?bool = null,
         // Declaration-emit portability query for inferred exported
         // variables initialized by an imported call expression. Returns
         // the first type reference in the imported function's declared
@@ -3952,6 +3964,8 @@ pub const CheckedTypes = struct {
     }
 };
 
+const TypeOnlyOriginKind = enum { none, import_type, export_type };
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -4857,11 +4871,11 @@ pub const Checker = struct {
     /// same import node returns `false` to break the cycle. See
     /// `reservedNameOnInterfaceImport.ts`.
     import_equals_runtime_in_progress: std.AutoHashMapUnmanaged(NodeId, void),
-    /// TS1362 memo: maps a plain-imported local name to whether its source
-    /// module exports it via a type-only export. Keyed by name so the
+    /// TS1361/TS1362 memo: preserves the actual restriction's origin kind.
+    /// Keyed by name so the
     /// expensive cross-module `moduleExport` query (which recompiles the
     /// target module) runs at most once per name rather than per value-use.
-    cross_module_type_only_export_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, bool),
+    cross_module_type_only_export_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeOnlyOriginKind),
     /// Cycle guard for `typeOfPatternBindingFromSource`. A
     /// self-referential destructuring binding (`const [a,b] = [...args]`
     /// / `const {...rest} = rest`) resolves the binding's type by
@@ -15416,6 +15430,9 @@ pub const Checker = struct {
                 if (std.mem.eql(u8, name, "default") or explicit_names.contains(name)) continue;
                 if (projected_by.get(name)) |previous| {
                     if (std.mem.eql(u8, previous.identity, identity)) continue;
+                    if (resolver.vtable.sameModuleExport) |same_export| {
+                        if (same_export(resolver.ptr, previous.specifier, specifier, self.importer_path, name) orelse false) continue;
+                    }
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Module \"{s}\" has already exported a member named '{s}'. Consider explicitly re-exporting to resolve the ambiguity.",
@@ -63664,6 +63681,8 @@ pub const Checker = struct {
     /// (`cross_module_type_only_export_cache`) so the module-recompiling
     /// `moduleExport` query runs at most once per name, not per value-use.
     fn nameIsCrossModuleTypeOnlyExport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections())
+            return self.externalTypeOnlyOriginKind(name, anchor) == .export_type;
         const import = self.plainNamedImport(name, anchor) orelse return false;
         const spec = self.string_interner.get(import.module);
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
@@ -63671,13 +63690,35 @@ pub const Checker = struct {
             const status = self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, import.imported) catch .unknown;
             return status == .type_only_alias;
         }
+        return false;
+    }
+
+    fn externalTypeOnlyOriginKind(self: *Checker, name: hir_mod.StringId, anchor: NodeId) TypeOnlyOriginKind {
+        if (self.sourceHasVirtualFilenameSections()) return .none;
+        const import = self.plainNamedImport(name, anchor) orelse return .none;
+        // The module-level alias's cached restriction does not apply to a
+        // nearer value binding. Check scope before consulting the name cache.
+        if (self.module) |module| {
+            for (module.scopes.items) |scope| {
+                if (scope != module.root and scope.values.contains(name) and
+                    self.nodeIsAncestorOf(scope.introducing_node, anchor)) return .none;
+            }
+        }
+        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return .none;
+        var parent = self.hir.parentOf(anchor);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            const kind = self.hir.kindOf(parent);
+            if ((kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) and
+                self.functionParametersDeclareName(parent, name)) return .none;
+        }
         if (self.cross_module_type_only_export_cache.get(name)) |cached| return cached;
+        const spec = self.string_interner.get(import.module);
         const imported_text = self.string_interner.get(import.imported);
-        var result = false;
+        var result: TypeOnlyOriginKind = .none;
         if (self.external_resolver) |resolver| {
             if (resolver.moduleExport(spec, self.importer_path, imported_text)) |info| {
                 const bare_type_value_export = info.exported_value and std.mem.eql(u8, imported_text, "type");
-                result = info.type_only_export and !bare_type_value_export;
+                result = if (info.type_only_import) .import_type else if (info.type_only_export and !bare_type_value_export) .export_type else .none;
             }
         }
         self.cross_module_type_only_export_cache.put(self.gpa, name, result) catch {};
@@ -130311,10 +130352,18 @@ pub const Checker = struct {
             }) catch return types.Primitive.any;
             return types.Primitive.any;
         }
+        const external_type_only_origin = if (!self.isDeclNameSlot(node) and
+            !self.nodeHasAncestorKind(node, .typeof_type) and
+            !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isTypeOnlyValueUseInAmbientClassHeritage(node))
+            self.externalTypeOnlyOriginKind(id.name, node)
+        else
+            TypeOnlyOriginKind.none;
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and
             !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
-            (self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null)
+            ((self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null or
+                external_type_only_origin == .import_type))
         {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -130334,7 +130383,7 @@ pub const Checker = struct {
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             !self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node) and
-            self.nameIsCrossModuleTypeOnlyExport(id.name, node))
+            (if (self.sourceHasVirtualFilenameSections()) self.nameIsCrossModuleTypeOnlyExport(id.name, node) else external_type_only_origin == .export_type))
         {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -190615,11 +190664,18 @@ test "checker: virtual file export stars do not use single-source conflict heuri
 
 const ExportNameSetResolver = struct {
     overlapping: bool,
+    same_origin: ?bool = null,
 
     const vtable = ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExportNames = moduleExportNamesImpl,
+        .sameModuleExport = sameModuleExportImpl,
     };
+
+    fn sameModuleExportImpl(ptr: *anyopaque, _: []const u8, _: []const u8, _: []const u8, _: []const u8) ?bool {
+        const self: *ExportNameSetResolver = @ptrCast(@alignCast(ptr));
+        return self.same_origin;
+    }
 
     fn resolveImpl(_: *anyopaque, specifier: []const u8, _: []const u8) ?ExternalResolver.Resolution {
         const path = if (std.mem.eql(u8, specifier, "./a-alias")) "./a" else specifier;
@@ -190668,6 +190724,21 @@ test "checker: external export stars report real projected name conflicts" {
     s.checker.setImporterPath("/index.ts");
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: external export stars require proven same declaration origins" {
+    for ([_]?bool{ true, false, null }) |same_origin| {
+        const s = try newSetup(
+            \\export * from "./a";
+            \\export * from "./c";
+        );
+        defer destroySetup(s);
+        var resolver = ExportNameSetResolver{ .overlapping = true, .same_origin = same_origin };
+        s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+        s.checker.setImporterPath("/index.ts");
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (same_origin orelse false) 0 else 1), checkerCountCode(s, TsCodes.export_star_conflict));
+    }
 }
 
 test "checker: explicit export resolves external star ambiguity" {
@@ -253043,6 +253114,27 @@ test "checker: tsgo parity follow-up bare type value export overrides alias meta
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
 }
 
+test "checker: cross-module import-type origin reports TS1361 without a spurious call error" {
+    const s = try newSetup(
+        \\import { fn } from "./alias";
+        \\type Signature = typeof fn;
+        \\fn(1);
+        \\function local(fn: (value: number) => number) { return fn(1); }
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"alias\"",
+        .exported_name = "fn",
+        .exported_type = false,
+        .exported_value = true,
+        .type_only_export = true,
+        .type_only_import = true,
+    };
+    try runCrossModuleCheck(s, &stub);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.type_only_import_used_as_value, s.checker.diagnostics.items[0].code);
+}
+
 test "checker: ambiguous type-only export specifiers publish aliases without TS2661" {
     const b = try newBoundSetup(
         \\// @filename: /imports.ts
@@ -259410,6 +259502,7 @@ const CrossModuleStubResolver = struct {
     /// When true, the canned name is reported as a TYPE-ONLY export
     /// (`export type { name }`) — drives TS1379/TS1362.
     type_only_export: bool = false,
+    type_only_import: bool = false,
     ambient_module: bool = false,
     ambient_module_exports_known: bool = false,
     unsafe_symbol_name: []const u8 = "",
@@ -259452,6 +259545,7 @@ const CrossModuleStubResolver = struct {
                 (!self.exported_type and !self.cannot_be_named and !self.type_only_export)),
             .cannot_be_named = self.cannot_be_named and matches,
             .type_only_export = is_type_only,
+            .type_only_import = self.type_only_import and matches,
             .export_path = if (is_type_only) "/dep.ts" else "",
             .export_pos = 0,
             .ambient_module = self.ambient_module,

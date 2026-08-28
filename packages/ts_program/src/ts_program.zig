@@ -28,6 +28,7 @@ const StringInterner = ts_driver.StringInterner;
 const source_owners = ts_driver.source_owners;
 
 pub const FileId = u32;
+pub const export_origins = @import("export_origins.zig");
 
 const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
@@ -5125,6 +5126,8 @@ pub const ModuleExportFacts = struct {
     exported_value_readonly: bool = false,
     ambient_const_enum: bool = false,
     type_only_pos: ?u32 = null,
+    type_only_path: []const u8 = "",
+    type_only_import: bool = false,
     export_assignment_type_only: bool = false,
     default_export_member_readonly: bool = false,
     generic_function: bool = false,
@@ -5586,6 +5589,29 @@ fn moduleExportFactsFromCompilationDepth(
                 const export_spec = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
                 if (export_spec.local != name_id) continue;
                 if (specifier.len == 0) {
+                    if (compilation.module.root.lookupLocal(export_spec.imported)) |local| {
+                        if (local.flags.is_import) {
+                            var query = export_origins.Query.init(gpa, resolver);
+                            defer query.deinit();
+                            try query.borrow(module_path, compilation);
+                            const origins = try query.resolve(module_path, name);
+                            if (origins.complete and !origins.ambiguous) {
+                                facts.exported_type = facts.exported_type or origins.type != null or origins.namespace != null;
+                                facts.exported_value = facts.exported_value or origins.value != null or origins.type_only_value != null;
+                                if (origins.value orelse origins.type_only_value) |origin| {
+                                    facts.generic_function = facts.generic_function or origin.generic_function;
+                                    facts.call_only_function = facts.call_only_function or origin.call_only_function;
+                                }
+                                if (origins.value == null) {
+                                    if (origins.restriction) |restriction| {
+                                        facts.type_only_pos = restriction.position;
+                                        facts.type_only_path = restriction.path;
+                                        facts.type_only_import = restriction.kind == .import_type;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (moduleRootDeclaresValueBinding(
                         &compilation.hir,
                         compilation.root,
@@ -5614,6 +5640,11 @@ fn moduleExportFactsFromCompilationDepth(
                     facts.exported_value_readonly = facts.exported_value_readonly or nested.exported_value_readonly;
                     facts.generic_function = facts.generic_function or nested.generic_function;
                     facts.call_only_function = facts.call_only_function or nested.call_only_function;
+                    if (facts.type_only_pos == null and nested.type_only_pos != null) {
+                        facts.type_only_pos = nested.type_only_pos;
+                        facts.type_only_path = if (nested.type_only_path.len != 0) nested.type_only_path else target.path;
+                        facts.type_only_import = nested.type_only_import;
+                    }
                 }
             }
         }
@@ -5635,6 +5666,11 @@ fn moduleExportFactsFromCompilationDepth(
         facts.exported_value_readonly = facts.exported_value_readonly or nested.exported_value_readonly;
         facts.generic_function = facts.generic_function or nested.generic_function;
         facts.call_only_function = facts.call_only_function or nested.call_only_function;
+        if (facts.type_only_pos == null and nested.type_only_pos != null) {
+            facts.type_only_pos = nested.type_only_pos;
+            facts.type_only_path = if (nested.type_only_path.len != 0) nested.type_only_path else target.path;
+            facts.type_only_import = nested.type_only_import;
+        }
     }
     return facts;
 }
@@ -6828,6 +6864,28 @@ pub fn moduleStem(path: []const u8) []const u8 {
 // =============================================================================
 
 const T = std.testing;
+
+test "Program: export origin resolver" {
+    _ = export_origins;
+}
+
+test "Program: re-export facts retain the original import-type restriction" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/leaf.ts", "export function fn<T>(value: T): T { return value; }");
+    try vfs.addFile("/alias.ts", "import type { fn } from './leaf'; export { fn };");
+    try vfs.addFile("/named.ts", "export { fn } from './alias';");
+    try vfs.addFile("/star.ts", "export * from './named';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    for ([_][]const u8{ "/alias.ts", "/named.ts", "/star.ts" }) |path| {
+        const facts = moduleExportFactsFromResolvedModule(T.allocator, &resolver, path, "fn");
+        try T.expect(facts.exported_value and !facts.exported_type);
+        try T.expect(facts.generic_function and facts.call_only_function);
+        try T.expect(facts.type_only_import and facts.type_only_pos != null);
+        try T.expectEqualStrings("/alias.ts", facts.type_only_path);
+    }
+}
 
 fn compilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32) bool {
     for (c.diagnostics.items) |d| {

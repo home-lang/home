@@ -228,7 +228,7 @@ const CheckerResolverAdapter = struct {
             self.moduleTypeOnlyExportInfoFromSource(src, module_path, name, is_tsx)
         else
             null;
-        const type_only_pos = if (type_only_info) |info| info.pos else null;
+        const type_only_pos = resolved_facts.type_only_pos orelse if (type_only_info) |info| info.pos else null;
         const module_name = if (effective_resolved != null)
             ts_program.renderModuleDisplayName(arena, module_path) catch return null
         else
@@ -236,7 +236,7 @@ const CheckerResolverAdapter = struct {
         const effective_type_only_pos = if (ambient) |query| query.facts.type_only_pos orelse type_only_pos else type_only_pos;
         const effective_type_only_path = if (ambient) |query|
             if (query.facts.type_only_pos != null) query.type_only_path else if (type_only_info) |info| info.path else module_path
-        else if (type_only_info) |info| info.path else module_path;
+        else if (resolved_facts.type_only_path.len != 0) resolved_facts.type_only_path else if (type_only_info) |info| info.path else module_path;
         const export_path = if (effective_type_only_pos != null) (arena.dupe(u8, effective_type_only_path) catch return null) else "";
         return .{
             .module_name = module_name,
@@ -246,6 +246,7 @@ const CheckerResolverAdapter = struct {
             .ambient_const_enum = ambient_const_enum or if (ambient) |query| query.facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
             .type_only_export = effective_type_only_pos != null,
+            .type_only_import = resolved_facts.type_only_import,
             .export_path = export_path,
             .export_pos = effective_type_only_pos orelse 0,
             .export_assignment_type_only = resolved_facts.export_assignment_type_only,
@@ -281,7 +282,7 @@ const CheckerResolverAdapter = struct {
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
         const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, resolved.path, name);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
+        const type_only_pos = facts.type_only_pos orelse ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
         const arena = self.resolver.arena.allocator();
         return .{
             .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
@@ -289,7 +290,8 @@ const CheckerResolverAdapter = struct {
             .exported_value = facts.exported_value,
             .ambient_const_enum = facts.ambient_const_enum,
             .type_only_export = type_only_pos != null,
-            .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
+            .type_only_import = facts.type_only_import,
+            .export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else resolved.path) catch return null) else "",
             .export_pos = type_only_pos orelse 0,
             .module_is_external = facts.module_is_external,
         };

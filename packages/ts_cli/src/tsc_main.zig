@@ -2109,15 +2109,20 @@ const CheckerResolverAdapter = struct {
     module_export_cache: ModuleExportCache = .empty,
     module_compilation_cache: std.StringHashMapUnmanaged(*ts_driver.Compilation) = .empty,
     module_export_names_cache: std.StringHashMapUnmanaged([]const []const u8) = .empty,
+    // Immutable source views for declaration-origin queries. Guarded by
+    // resolver_mutex; shared across names so wide barrels are parsed once.
+    export_origin_query: ts_program.export_origins.Query,
 
     fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) CheckerResolverAdapter {
         return .{
             .resolver = resolver,
             .cache_arena = std.heap.ArenaAllocator.init(gpa),
+            .export_origin_query = ts_program.export_origins.Query.init(gpa, resolver),
         };
     }
 
     fn deinit(self: *CheckerResolverAdapter) void {
+        self.export_origin_query.deinit();
         var compilations = self.module_compilation_cache.valueIterator();
         while (compilations.next()) |compilation| {
             const source = compilation.*.source;
@@ -2229,9 +2234,32 @@ const CheckerResolverAdapter = struct {
         .moduleExport = moduleExportImpl,
         .moduleExportWithMode = moduleExportWithModeImpl,
         .moduleExportNames = moduleExportNamesImpl,
+        .sameModuleExport = sameModuleExportImpl,
         .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
+
+    fn sameModuleExportImpl(
+        self_ptr: *anyopaque,
+        left_specifier: []const u8,
+        right_specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?bool {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const left = self.resolveModule(left_specifier, containing_file) orelse return null;
+        const right = self.resolveModule(right_specifier, containing_file) orelse return null;
+        const left_compilation = self.moduleCompilation(left.path) orelse return null;
+        const right_compilation = self.moduleCompilation(right.path) orelse return null;
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        const query = &self.export_origin_query;
+        if (!query.files.contains(left.path)) query.borrow(left.path, left_compilation) catch return null;
+        if (!query.files.contains(right.path)) query.borrow(right.path, right_compilation) catch return null;
+        const a = query.resolve(left.path, name) catch return null;
+        const b = query.resolve(right.path, name) catch return null;
+        return a.sameDeclaration(b);
+    }
 
     fn moduleExportNamesImpl(
         self_ptr: *anyopaque,
@@ -2353,7 +2381,7 @@ const CheckerResolverAdapter = struct {
             // The resolver's arena outlives every checker call.
             const arena = self.resolver.arena.allocator();
             const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-            const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
+            const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else r.path) catch return null) else "";
             break :blk .{
                 .module_name = module_name,
                 .exported_type = exported,
@@ -2362,6 +2390,7 @@ const CheckerResolverAdapter = struct {
                 .ambient_const_enum = facts.ambient_const_enum,
                 .cannot_be_named = cannot_be_named,
                 .type_only_export = type_only_pos != null,
+                .type_only_import = facts.type_only_import,
                 .export_path = export_path,
                 .export_pos = type_only_pos orelse 0,
                 .export_assignment_type_only = facts.export_assignment_type_only,
@@ -2420,7 +2449,8 @@ const CheckerResolverAdapter = struct {
                 .exported_value = facts.exported_value,
                 .ambient_const_enum = facts.ambient_const_enum,
                 .type_only_export = type_only_pos != null,
-                .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
+                .type_only_import = facts.type_only_import,
+                .export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else resolved.path) catch return null) else "",
                 .export_pos = type_only_pos orelse 0,
                 .module_is_external = facts.module_is_external,
             };
