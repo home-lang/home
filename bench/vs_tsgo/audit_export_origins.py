@@ -28,7 +28,26 @@ def cases() -> list[Case]:
             "import { exposed } from './alias'; export { exposed };\n",
             "import { missing } from './alias';\n", ("2305",),
         ),
+        "type-only-alias": (
+            {"leaf.ts": "export function fn(value: number): number { return value; }\n",
+             "alias.ts": "import type { fn } from './leaf'; export { fn };\n"},
+            "import type { fn } from './alias';\n",
+            "import type { missing } from './alias';\n", ("2305",),
+        ),
+        "type-only-runtime": (
+            {"leaf.ts": "export function fn(value: number): number { return value; }\n",
+             "alias.ts": "import type { fn } from './leaf'; export { fn };\n"},
+            "import { fn } from './alias';\n", "fn(1);\n", ("1361",),
+        ),
     }
+    for projection, source in (("named", "export { fn } from './alias';\n"),
+                               ("star", "export * from './alias';\n")):
+        graphs[f"type-only-runtime-{projection}"] = (
+            {"leaf.ts": "export function fn(value: number): number { return value; }\n",
+             "alias.ts": "import type { fn } from './leaf'; export { fn };\n",
+             "barrel.ts": source},
+            "import { fn } from './barrel';\n", "fn(1);\n", ("1361",),
+        )
     result = []
     for family, (files, valid, invalid, expected) in graphs.items():
         for root_mode, roots in (("entry-only", ("entry.ts",)), ("all-files", None)):

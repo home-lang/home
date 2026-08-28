@@ -8,8 +8,8 @@ import audit_export_origins
 class ExportOriginAuditTests(unittest.TestCase):
     def test_pairs_only_append_invalid_uses_to_identical_projects(self):
         cases = audit_export_origins.cases()
-        self.assertEqual(16, len(cases))
-        self.assertEqual({"2305", "2308"}, {code for case in cases for code in case.expected})
+        self.assertEqual(32, len(cases))
+        self.assertEqual({"1361", "2305", "2308"}, {code for case in cases for code in case.expected})
         for positive, negative in zip(cases[::2], cases[1::2]):
             self.assertEqual(positive.roots, negative.roots)
             self.assertEqual((), positive.expected)
