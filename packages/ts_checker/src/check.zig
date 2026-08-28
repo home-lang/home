@@ -2853,8 +2853,8 @@ pub const TsCodes = struct {
 
 /// Per-alias generic info: the type-parameter TypeIds in
 /// declaration order plus the body TypeId those parameters
-/// substitute into. Owned by the checker; the slice lives in the
-/// checker's diag/scratch arena.
+/// substitute into. The parameter slice is allocator-owned and moves
+/// from Checker to CheckedTypes together with the alias table.
 pub const GenericAliasInfo = struct {
     params: []TypeId,
     body: TypeId,
@@ -3740,9 +3740,11 @@ const PriorJsDocPropertyAssignment = struct {
 /// TypeIds/StringIds/NodeIds belong to the accompanying interner and HIR;
 /// consumers must retain that owner rather than treating these as global IDs.
 /// Transient control-flow scopes and in-progress resolution caches stay in
-/// Checker. Moving this result does not allocate or duplicate type graphs.
-/// This is not yet a complete foreign-type context: interpretation tables
-/// such as NoInfer/this markers still need ownership coverage before import.
+/// Checker. Type graphs and allocator-owned containers move without copying.
+/// Structural payloads alone are insufficient: retain inference markers,
+/// tuple layouts, index signatures, nominal origins, and declaration metadata.
+/// Borrowed display strings/type-argument slices are copied on capture; the
+/// diagnostic arena and transient flow/resolution state are not retained.
 pub const CheckedTypes = struct {
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo) = .empty,
@@ -3774,8 +3776,153 @@ pub const CheckedTypes = struct {
     mapped_type_params: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance) = .empty,
 
+    commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
+    checkjs_object_expando_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
+    merged_class_instance_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    class_this_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    class_static_type_by_node: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_name_by_instance: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    interface_extends_visibility_class: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty,
+    class_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    decl_single_base: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    relation_display_base: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    class_name_by_static: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    class_parent: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty,
+    abstract_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    private_constructor_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    protected_constructor_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    class_accessor_setter_types: std.AutoHashMapUnmanaged(ClassAccessorKey, TypeId) = .empty,
+    named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    last_iface_decl_for_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+    recursive_indexed_access_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    recursive_mapped_index_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    namespace_value_object_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    jsdoc_constrained_type_params: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    string_named_export_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    type_alias_bodies: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    unknown_empty_object_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64) = .empty,
+    enum_member_string_values: std.AutoHashMapUnmanaged(MemberKey, hir_mod.StringId) = .empty,
+    enum_member_string_syntax: std.AutoHashMapUnmanaged(MemberKey, bool) = .empty,
+    const_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    enum_nominal_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    enum_nominal_decls: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    ambient_const_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    numeric_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    var_decl_types: std.AutoHashMapUnmanaged(VarDeclKey, TypeId) = .empty,
+    var_decl_explicit: std.AutoHashMapUnmanaged(VarDeclKey, bool) = .empty,
+    var_decl_jsdoc_type_names: std.AutoHashMapUnmanaged(VarDeclKey, hir_mod.StringId) = .empty,
+    var_decl_annotation_nodes: std.AutoHashMapUnmanaged(VarDeclKey, NodeId) = .empty,
+    this_type_markers: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    no_infer_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    index_param_names: std.AutoHashMapUnmanaged(TypeId, IndexParamNames) = .empty,
+    generator_type_info: std.AutoHashMapUnmanaged(TypeId, GeneratorTypeInfo) = .empty,
+    tuple_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    array_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    normalized_object_literal_unions: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    tuple_trailing_rest_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    tuple_trailing_variadic_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    infer_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    jsdoc_generic_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    jsdoc_typedef_object_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    jsdoc_callback_signatures: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    interface_merge_predecessor: std.AutoHashMapUnmanaged(NodeId, NodeId) = .empty,
+    module_augmentation_callback_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    module_augmented_interface_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    class_constructor_overload_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)) = .empty,
+    overload_decls: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)) = .empty,
+    class_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_instance_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_abstract_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_abstract_members_order: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(hir_mod.StringId),
+    ) = .empty,
+    class_abstract_property_origins: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId),
+    ) = .empty,
+    class_property_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_accessor_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_getter_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_getter_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_private_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_private_set_only_accessors: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_set_only_accessors: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    pattern_index_signatures: std.AutoHashMapUnmanaged(TypeId, []PatternIndexSignature) = .empty,
+    symbolic_tuple_layouts: std.AutoHashMapUnmanaged(TypeId, []const SymbolicTupleSegment) = .empty,
+    jsdoc_constraint_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
+    builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+
+    // Checker borrows these values from its arena, source, interner, or
+    // program inputs. CheckedTypes owns independent copies of every slice.
+    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "qualified_alias_diagnostic_names", "alias_type_args", "builtin_object_names" };
+    const owned_slices = .{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences", "pattern_index_signatures", "symbolic_tuple_layouts" };
+    const nested_containers = .{ "overloads", "class_constructor_overload_sigs", "overload_decls", "class_private_members", "class_protected_members", "class_static_private_members", "class_static_protected_members", "class_instance_member_names", "class_static_member_names", "class_abstract_members", "class_abstract_members_order", "class_abstract_property_origins", "class_property_members", "class_accessor_members", "class_getter_members", "class_static_getter_members", "class_method_members", "class_private_method_members", "class_static_private_method_members", "class_private_set_only_accessors", "class_static_private_set_only_accessors" };
+
     pub fn deinit(self: *CheckedTypes, gpa: std.mem.Allocator) void {
-        inline for (.{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences" }) |name| {
+        inline for (owned_slices ++ borrowed_slices) |name| {
             var values = @field(self, name).valueIterator();
             while (values.next()) |value| gpa.free(value.*);
         }
@@ -3783,8 +3930,10 @@ pub const CheckedTypes = struct {
             var values = @field(self, name).valueIterator();
             while (values.next()) |value| gpa.free(value.params);
         }
-        var overloads = self.overloads.valueIterator();
-        while (overloads.next()) |value| value.deinit(gpa);
+        inline for (nested_containers) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| value.deinit(gpa);
+        }
         inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| @field(self, name).deinit(gpa);
         self.* = .{};
     }
@@ -5862,12 +6011,36 @@ pub const Checker = struct {
     /// Transfer the checked result into fresh, stable source-file storage
     /// after all checking and diagnostic rendering. Rebind the relation
     /// engine in the same operation so it cannot borrow the dying Checker.
-    pub fn takeCheckedTypes(self: *Checker, destination: *CheckedTypes) void {
+    /// On allocation failure both the checker and destination are unchanged.
+    /// Only borrowed leaf slices are copied, never interned type graphs.
+    pub fn takeCheckedTypes(self: *Checker, destination: *CheckedTypes) !void {
         inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
             std.debug.assert(@field(destination, name).capacity() == 0);
-            @field(destination, name) = @field(self, name);
+        }
+        var prepared: CheckedTypes = .{};
+        errdefer prepared.deinit(self.gpa);
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            const from = &@field(self, name);
+            const to = &@field(prepared, name);
+            try to.ensureTotalCapacity(self.gpa, from.count());
+            var entries = from.iterator();
+            while (entries.next()) |entry| {
+                const Element = @typeInfo(@TypeOf(entry.value_ptr.*)).pointer.child;
+                const copy = try self.gpa.dupe(Element, entry.value_ptr.*);
+                to.putAssumeCapacity(entry.key_ptr.*, copy);
+            }
+        }
+        // All fallible work is finished. Move owned containers intact and
+        // release the original borrowed-slice maps without freeing their leaves.
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            @field(self, name).deinit(self.gpa);
+            @field(self, name) = @field(prepared, name);
+        }
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            @field(prepared, name) = @field(self, name);
             @field(self, name) = .empty;
         }
+        destination.* = prepared;
         self.engine.setRestSignatures(&destination.rest_signatures);
     }
 
@@ -188363,6 +188536,57 @@ fn newSetup(source: []const u8) !*TestSetup {
     s.checker.setSource(source);
     s.checker.setTsx(true);
     return s;
+}
+
+fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    // Map allocations, capture, and cleanup all use the same allocator.
+    s.checker.gpa = allocator;
+    defer destroySetup(s);
+    var label = [_]u8{ 'A', 'l', 'i', 'a', 's' };
+    var args = [_]TypeId{ types.Primitive.string_t, types.Primitive.number_t };
+    inline for (CheckedTypes.borrowed_slices) |name| {
+        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+            try @field(s.checker, name).put(allocator, types.Primitive.string_t, &args);
+        } else {
+            try @field(s.checker, name).put(allocator, types.Primitive.string_t, &label);
+        }
+    }
+    try s.checker.no_infer_types.put(allocator, types.Primitive.string_t, types.Primitive.number_t);
+    try s.checker.rest_signatures.put(allocator, types.Primitive.string_t, {});
+    s.engine.setRestSignatures(&s.checker.rest_signatures);
+    var result: CheckedTypes = .{};
+    defer result.deinit(allocator);
+    s.checker.takeCheckedTypes(&result) catch |err| {
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            try T.expectEqual(@as(usize, 0), @field(result, name).capacity());
+        }
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            try T.expectEqual(@as(usize, 1), @field(s.checker, name).count());
+        }
+        try T.expect(s.checker.no_infer_types.contains(types.Primitive.string_t));
+        try T.expect(s.checker.rest_signatures.contains(types.Primitive.string_t));
+        try T.expect(s.engine.rest_signatures.? == &s.checker.rest_signatures);
+        return err;
+    };
+    @memset(&label, '!');
+    args[0] = types.Primitive.never;
+    inline for (CheckedTypes.borrowed_slices) |name| {
+        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+            try T.expectEqualSlices(TypeId, &.{ types.Primitive.string_t, types.Primitive.number_t }, @field(result, name).get(types.Primitive.string_t).?);
+        } else {
+            try T.expectEqualStrings("Alias", @field(result, name).get(types.Primitive.string_t).?);
+        }
+    }
+    inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+        try T.expectEqual(@as(usize, 0), @field(s.checker, name).capacity());
+    }
+    try T.expectEqual(types.Primitive.number_t, result.no_infer_types.get(types.Primitive.string_t).?);
+    try T.expect(s.engine.rest_signatures.? == &result.rest_signatures);
+}
+
+test "checker: checked type capture owns borrowed slices and is transactional on OOM" {
+    try std.testing.checkAllAllocationFailures(T.allocator, testCheckedTypesCapture, .{});
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {

@@ -2437,7 +2437,7 @@ pub fn compileSource(
     // re-walking newlines.
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
 
-    checker.takeCheckedTypes(&c.checked_types);
+    try checker.takeCheckedTypes(&c.checked_types);
     return c;
 }
 
@@ -4977,6 +4977,125 @@ test "driver: checked type metadata has independent compilation ownership" {
     try T.expectEqual(parameter, first.checked_types.generic_signature_params.get(signature).?[0]);
     try T.expectEqual(ts_checker.Primitive.string_t, first.type_interner.pool.type_parameter_payloads.items[first.type_interner.pool.payloadOf(parameter)].constraint);
     try T.expect(first.checked_types.rest_signatures.contains(try testCheckedValueType(first, "tuple")));
+}
+
+test "driver: checked interpretation metadata outlives the checker" {
+    const c = try compileSource(T.allocator,
+        \\declare function choose<T>(first: T, second: NoInfer<T>): T;
+        \\type Context = ThisType<{ label: string }>;
+        \\interface ReadonlyMap { readonly [entry: string]: number; }
+        \\interface Attributes { [key: `data-${string}`]: string; }
+        \\type Tail = [number, ...string[]];
+        \\type Repeated<T extends unknown[]> = [...T, number, ...T];
+        \\type List = number[];
+        \\declare function stream(): Generator<string, number, boolean>;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    const choose = try testCheckedValueType(c, "choose");
+    const params = c.type_interner.signatureParams(choose);
+    try T.expectEqual(params[0], c.checked_types.no_infer_types.get(params[1]).?);
+    const context = c.checked_types.type_names.get(c.interner.lookup("Context").?).?;
+    const receiver = c.checked_types.this_type_markers.get(context).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(receiver, c.interner.lookup("label").?).?);
+    const readonly = c.checked_types.type_names.get(c.interner.lookup("ReadonlyMap").?).?;
+    try T.expect(c.checked_types.readonly_index_types.contains(readonly));
+    const index = c.checked_types.index_param_names.get(readonly).?;
+    try T.expectEqualStrings("entry", c.interner.get(index.string));
+    try T.expect(index.string_decl != hir_mod.none_node_id);
+    const attributes = c.checked_types.type_names.get(c.interner.lookup("Attributes").?).?;
+    const patterns = c.checked_types.pattern_index_signatures.get(attributes).?;
+    try T.expectEqual(@as(usize, 1), patterns.len);
+    try T.expectEqual(ts_checker.Primitive.string_t, patterns[0].value_type);
+    try T.expect(patterns[0].decl_node != hir_mod.none_node_id);
+    try T.expect(patterns[0].key_type < c.type_interner.pool.typeCount());
+    const tail = c.checked_types.type_names.get(c.interner.lookup("Tail").?).?;
+    try T.expect(c.checked_types.tuple_origin_types.contains(tail));
+    try T.expectEqual(ts_checker.Primitive.string_t, c.checked_types.tuple_trailing_rest_types.get(tail).?);
+    const repeated = c.checked_types.generic_aliases.get(c.interner.lookup("Repeated").?).?;
+    const segments = c.checked_types.symbolic_tuple_layouts.get(repeated.body).?;
+    try T.expectEqual(@as(usize, 3), segments.len);
+    try T.expect(segments[0].is_variadic and !segments[1].is_variadic and segments[2].is_variadic);
+    try T.expectEqual(repeated.params[0], segments[0].type);
+    try T.expectEqual(ts_checker.Primitive.number_t, segments[1].type);
+    try T.expectEqual(repeated.params[0], segments[2].type);
+    const list = c.checked_types.type_names.get(c.interner.lookup("List").?).?;
+    try T.expect(c.checked_types.array_origin_types.contains(list));
+    const generator = c.type_interner.signatureReturn(try testCheckedValueType(c, "stream")).?;
+    const slots = c.checked_types.generator_type_info.get(generator).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, slots.yield_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, slots.return_type);
+    try T.expectEqual(ts_checker.Primitive.boolean_t, slots.next_type);
+}
+
+test "driver: checked nominal origins and nested class metadata outlive the checker" {
+    const c = try compileSource(T.allocator,
+        \\declare abstract class Base {
+        \\  private secret: string;
+        \\  protected data: number;
+        \\  protected static shared: string;
+        \\  abstract read(): string;
+        \\  get value(): string;
+        \\  set value(input: string | number);
+        \\  constructor(value: string);
+        \\  constructor(value: number);
+        \\}
+        \\declare class Derived extends Base { read(): string; }
+        \\enum State { Ready = 3, Done = 5 }
+        \\declare const state: State;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    const base_name = c.interner.lookup("Base").?;
+    const derived_name = c.interner.lookup("Derived").?;
+    const base = c.checked_types.class_instance_types.get(base_name).?;
+    const derived = c.checked_types.class_instance_types.get(derived_name).?;
+    const declaration = c.checked_types.class_decl_by_instance.get(base).?;
+    try T.expectEqual(hir_mod.NodeKind.class_decl, c.hir.kindOf(declaration));
+    try T.expectEqual(base_name, c.checked_types.class_name_by_instance.get(base).?);
+    try T.expectEqual(base_name, c.checked_types.class_parent.get(derived_name).?);
+    try T.expectEqual(base, c.checked_types.decl_single_base.get(derived).?);
+    try T.expect(c.checked_types.abstract_classes.contains(base_name));
+    try T.expect(c.checked_types.class_private_members.get(base_name).?.contains(c.interner.lookup("secret").?));
+    try T.expect(c.checked_types.class_protected_members.get(base_name).?.contains(c.interner.lookup("data").?));
+    try T.expect(c.checked_types.class_static_protected_members.get(base_name).?.contains(c.interner.lookup("shared").?));
+    try T.expect(c.checked_types.class_abstract_members.get(base_name).?.contains(c.interner.lookup("read").?));
+    try T.expectEqualStrings("read", c.interner.get(c.checked_types.class_abstract_members_order.get(base_name).?.items[0]));
+    try T.expect(c.checked_types.class_getter_members.get(base_name).?.contains(c.interner.lookup("value").?));
+    try T.expect(c.checked_types.class_accessor_setter_types.count() > 0);
+    try T.expectEqual(@as(usize, 2), c.checked_types.class_constructor_overload_sigs.get(base_name).?.items.len);
+    const state_name = c.interner.lookup("State").?;
+    const state = try testCheckedValueType(c, "state");
+    try T.expectEqual(state_name, c.checked_types.enum_nominal_names.get(state).?);
+    try T.expectEqual(hir_mod.NodeKind.enum_decl, c.hir.kindOf(c.checked_types.enum_nominal_decls.get(state).?));
+    try T.expectEqual(@as(f64, 3), c.checked_types.enum_member_values.get(.{ .obj_name = state_name, .prop_name = c.interner.lookup("Ready").? }).?);
+}
+
+test "driver: checked alias display and arguments own their borrowed leaves" {
+    const c = blk: {
+        const source = try T.allocator.dupe(u8,
+            \\type Result<T> = { value: T };
+            \\declare const output: Result<string>;
+        );
+        defer T.allocator.free(source);
+        break :blk try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    };
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    // result storage must outlive both the checker arena and caller's source.
+    const output = try testCheckedValueType(c, "output");
+    try T.expectEqualStrings("Result<string>", c.checked_types.alias_display_names.get(output).?);
+    try T.expectEqualSlices(ts_checker.TypeId, &.{ts_checker.Primitive.string_t}, c.checked_types.alias_type_args.get(output).?);
+    try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
 }
 
 test "driver: arrow function" {
