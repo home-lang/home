@@ -50,6 +50,7 @@ try {
   writeFileSync(spawnFailures, `
     const assert = require('node:assert/strict');
     const { spawnSync, spawn } = require('node:child_process');
+    const { getCounters } = require('bun:internal-for-testing');
     const { join } = require('node:path');
     const fs = require('node:fs');
     const missing = join(__dirname, 'missing-executable');
@@ -57,6 +58,10 @@ try {
     fs.writeFileSync(denied, '#!/bin/sh\\nexit 91\\n', { mode: 0o644 });
     const countFDs = () => fs.readdirSync(process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd').length;
     const before = process.platform === 'win32' ? 0 : countFDs();
+    const countersBefore = getCounters();
+    assert.deepEqual(Object.keys(countersBefore).sort(), ['spawnSync_blocking', 'spawn_memfd']);
+    assert.ok(Number.isInteger(countersBefore.spawnSync_blocking));
+    assert.ok(Number.isInteger(countersBefore.spawn_memfd));
     let ticked = false;
     process.nextTick(() => { ticked = true; });
     for (let round = 0; round < 32; round++) {
@@ -73,6 +78,11 @@ try {
       assert.equal(failed.signal, null);
       assert.notEqual(failed.status, 0);
       assert.throws(() => Bun.spawnSync([process.execPath, '-e', 'throw Error("unreachable")'], { cwd: missing }), e => e.code === 'ENOENT');
+      if (process.platform !== 'win32') {
+        const extraSockets = { stdio: ['ignore', 'ignore', 'ignore', 'socket-fd', 'socket-fd'] };
+        assert.throws(() => Bun.spawn([missing], extraSockets), e => e.code === 'ENOENT');
+        assert.throws(() => Bun.spawn([process.execPath, '-e', ''], { stdio: [...extraSockets.stdio, 10240] }), e => e.code === 'EBADF');
+      }
     }
     if (process.platform !== 'win32') {
       assert.throws(() => fs.fstatSync(10240));
@@ -83,13 +93,26 @@ try {
       assert.throws(() => spawn(process.execPath, ['-e', 'throw Error("invalid fd executed")'], options), e => e.code === 'EBADF');
       assert.ok(countFDs() <= before + 2, 'failed spawn leaked descriptors');
     }
-    const recovered = Bun.spawnSync([process.execPath, '-e', 'console.log("recovered")']);
+    const countersAfterFailures = getCounters();
+    assert.equal(countersAfterFailures.spawnSync_blocking, countersBefore.spawnSync_blocking, 'failed spawns entered the blocking fast path');
+    // Linux may create memfds before the OS rejects the executable.
+    if (process.platform !== 'linux') assert.equal(countersAfterFailures.spawn_memfd, countersBefore.spawn_memfd);
+    const fast = Bun.spawnSync([process.execPath, '-e', ''], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
+    assert.equal(fast.exitCode, 0);
+    const countersAfterFast = getCounters();
+    assert.equal(countersAfterFast.spawnSync_blocking, countersBefore.spawnSync_blocking + (process.platform === 'win32' ? 0 : 1));
+    assert.equal(countersAfterFast.spawn_memfd, countersAfterFailures.spawn_memfd);
+    const recovered = Bun.spawnSync([process.execPath, '-e', 'console.log("recovered")'], { maxBuffer: 1024 });
     assert.equal(recovered.exitCode, 0);
     assert.equal(recovered.stdout.toString(), 'recovered\\n');
+    assert.deepEqual(getCounters(), countersAfterFast, 'buffered spawn entered the blocking fast path');
+    countersAfterFast.spawnSync_blocking = -100;
+    assert.notEqual(getCounters().spawnSync_blocking, -100, 'snapshot mutation changed native counters');
+    assert.notEqual(getCounters(), getCounters(), 'counter snapshots alias');
     assert.equal(ticked, false, 'spawnSync re-entered user microtasks');
     setImmediate(() => { assert.equal(ticked, true); console.log('spawn-failures-recovered'); });
   `)
-  const spawnRecovery = run([spawnFailures])
+  const spawnRecovery = run([spawnFailures], { env: { ...env, BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING: '1' } })
   assert.equal(spawnRecovery.status, 0, spawnRecovery.stderr)
   assert.equal(spawnRecovery.stdout.trim(), 'spawn-failures-recovered')
 

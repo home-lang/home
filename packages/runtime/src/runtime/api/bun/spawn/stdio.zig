@@ -12,6 +12,9 @@ pub const Stdio = union(enum) {
     array_buffer: jsc.ArrayBuffer.Strong,
     memfd: bun.FD,
     pipe,
+    /// Extra socketpair whose parent fd transfers to the caller after setup.
+    /// node:child_process gives it to net.Socket, which then owns the fd.
+    socket_fd,
     ipc,
     readable_stream: jsc.WebCore.ReadableStream,
 
@@ -187,6 +190,7 @@ pub const Stdio = union(enum) {
                 },
                 .dup2 => .{ .dup2 = .{ .out = stdio.dup2.out, .to = stdio.dup2.to } },
                 .capture, .pipe, .array_buffer, .readable_stream => .{ .buffer = {} },
+                .socket_fd => .socket_fd,
                 .ipc => .{ .ipc = {} },
                 .fd => |fd| .{ .pipe = fd },
                 .memfd => |fd| .{ .pipe = fd },
@@ -239,7 +243,8 @@ pub const Stdio = union(enum) {
                     break :brk .{ .buffer = createZeroedPipe() };
                 },
                 .ipc => .{ .ipc = createZeroedPipe() },
-                .capture, .pipe, .array_buffer, .readable_stream => .{ .buffer = createZeroedPipe() },
+                // Windows exposes uv::Pipe handles rather than POSIX fds.
+                .capture, .pipe, .socket_fd, .array_buffer, .readable_stream => .{ .buffer = createZeroedPipe() },
                 .fd => |fd| .{ .pipe = fd },
                 .dup2 => .{ .dup2 = .{ .out = stdio.dup2.out, .to = stdio.dup2.to } },
                 .path => |pathlike| .{ .path = pathlike.slice() },
@@ -345,6 +350,10 @@ pub const Stdio = union(enum) {
                 out_stdio.* = Stdio{ .ignore = {} };
             } else if (str.eqlComptime("pipe") or str.eqlComptime("overlapped")) {
                 out_stdio.* = Stdio{ .pipe = {} };
+            } else if (str.eqlComptime("socket-fd")) {
+                if (i < 3) return globalThis.throwInvalidArguments("stdio: 'socket-fd' is only supported at indices >= 3", .{});
+                if (is_sync) return globalThis.throwInvalidArguments("stdio: 'socket-fd' cannot be used with spawnSync", .{});
+                out_stdio.* = .socket_fd;
             } else if (str.eqlComptime("ipc")) {
                 out_stdio.* = Stdio{ .ipc = {} };
             } else {

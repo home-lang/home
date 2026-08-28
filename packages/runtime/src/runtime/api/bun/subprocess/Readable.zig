@@ -67,6 +67,7 @@ pub const Readable = union(enum) {
             .array_buffer, .blob => Output.panic("TODO: implement ArrayBuffer & Blob support in Stdio readable", .{}),
             .capture => Output.panic("TODO: implement capture support in Stdio readable", .{}),
             .readable_stream => Readable{ .ignore = {} }, // ReadableStream is handled separately
+            .socket_fd => unreachable, // only valid at extra stdio indices
         };
     }
 

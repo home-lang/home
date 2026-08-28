@@ -1,14 +1,8 @@
 // Copied from bun/src/jsc/Counters.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// JSC-bridge surface omitted:
-//   - `toJS`                  (needs jsc.JSObject.create + JSGlobalObject)
-//   - `createCountersObject`  (needs jsc.CallFrame + JSGlobalObject + bunVM())
-// These re-land alongside the rest of the JSC binding surface in Phase 12.2.
-//
-// What survives is the pure-Zig counter struct plus the saturating-increment
-// `mark` helper, which is the bit other Home subsystems use to record
-// observability events.
+// Native snapshots read the invoking VM's counters; the returned object does
+// not share mutable state with the runtime or subsequent snapshots.
 
 const Counters = @This();
 
@@ -19,9 +13,19 @@ pub fn mark(this: *Counters, comptime tag: Field) void {
     @field(this, @tagName(tag)) +|= 1;
 }
 
+pub fn toJS(this: *const Counters, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+    return (try jsc.JSObject.create(this.*, globalObject)).toJS();
+}
+
+pub fn createCountersObject(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    return globalObject.bunVM().counters.toJS(globalObject);
+}
+
 const Field = std.meta.FieldEnum(Counters);
 
 const std = @import("std");
+const bun = @import("bun");
+const jsc = bun.jsc;
 
 test "Counters.mark increments named fields saturating" {
     var c: Counters = .{};

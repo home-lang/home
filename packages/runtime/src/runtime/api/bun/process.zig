@@ -1095,6 +1095,8 @@ pub const PosixSpawnOptions = struct {
         inherit: void,
         ignore: void,
         buffer: void,
+        /// Keep the new socketpair owned until fallible JS setup completes.
+        socket_fd: void,
         ipc: void,
         pipe: bun.FD,
         // TODO: remove this entry, it doesn't seem to be used
@@ -1219,8 +1221,8 @@ pub const PosixSpawnResult = struct {
         /// We created this fd (e.g. socketpair for `"pipe"`); expose it via
         /// `Subprocess.stdio[N]` and close it in `finalizeStreams`.
         owned_fd: bun.FD,
-        /// The caller supplied this fd in the stdio array; expose it via
-        /// `Subprocess.stdio[N]` but never close it — the caller retains ownership.
+        /// The caller supplied this fd or requested a transferred socket-fd;
+        /// expose it via `Subprocess.stdio[N]` but never close it.
         unowned_fd: bun.FD,
         /// Nothing to expose for this slot (`"ignore"`, `"inherit"`, a path, or
         /// the IPC channel after ownership has been transferred to uSockets).
@@ -1554,6 +1556,7 @@ pub fn spawnProcessPosix(
                 try actions.dup2(fd.native(), fileno.native());
                 stdio.* = fd;
             },
+            .socket_fd => unreachable, // rejected at stdin/stdout/stderr by Stdio.extract
         }
     }
 
@@ -1579,7 +1582,7 @@ pub fn spawnProcessPosix(
                 try actions.open(fileno.native(), path, bun.O.RDWR | bun.O.CREAT, 0o664);
                 try extra_fds.append(.unavailable);
             },
-            .ipc, .buffer => {
+            .ipc, .buffer, .socket_fd => {
                 const fds: [2]bun.FD = try bun.sys.socketpair(
                     std.posix.AF.UNIX,
                     std.posix.SOCK.STREAM,
@@ -1587,11 +1590,11 @@ pub fn spawnProcessPosix(
                     if (ipc == .ipc) .nonblocking else .blocking,
                 ).unwrap();
 
-                if (!options.sync and ipc == .buffer)
-                    try bun.sys.setNonblocking(fds[0]).unwrap();
-
                 try to_close_at_end.append(fds[1]);
                 try to_close_on_error.append(fds[0]);
+
+                if (!options.sync and ipc != .ipc)
+                    try bun.sys.setNonblocking(fds[0]).unwrap();
 
                 try actions.dup2(fds[1].native(), fileno.native());
                 if (fds[1] != fileno)

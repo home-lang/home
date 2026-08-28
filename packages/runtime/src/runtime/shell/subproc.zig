@@ -178,6 +178,7 @@ pub const ShellSubprocess = struct {
                     .ipc, .capture => {
                         return Writable{ .ignore = {} };
                     },
+                    .socket_fd => unreachable, // only valid at extra subprocess stdio indices
                 }
             }
             switch (stdio) {
@@ -220,6 +221,7 @@ pub const ShellSubprocess = struct {
                     // The shell never uses this
                     @panic("Unimplemented stdin readable_stream");
                 },
+                .socket_fd => unreachable, // only valid at extra subprocess stdio indices
             }
         }
 
@@ -369,6 +371,7 @@ pub const ShellSubprocess = struct {
                     },
                     .capture => Readable{ .pipe = PipeReader.create(event_loop, process, result, shellio, out_type) },
                     .readable_stream => Readable{ .ignore = {} }, // Shell doesn't use readable_stream
+                    .socket_fd => unreachable, // only valid at extra subprocess stdio indices
                 };
             }
 
@@ -391,6 +394,7 @@ pub const ShellSubprocess = struct {
                 },
                 .capture => Readable{ .pipe = PipeReader.create(event_loop, process, result, shellio, out_type) },
                 .readable_stream => Readable{ .ignore = {} }, // Shell doesn't use readable_stream
+                .socket_fd => unreachable, // only valid at extra subprocess stdio indices
             };
         }
 

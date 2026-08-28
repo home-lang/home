@@ -195,6 +195,8 @@ fn lazyErr(comptime f: fn (*JSGlobalObject) callconv(.auto) bun.JSError!JSValue)
 }
 
 comptime {
+    @export(&host_fn.toJSHostFn(@import("./Counters.zig").createCountersObject), .{ .name = "JS2Zig___src_jsc_Counters_zig__createCountersObject" });
+
     // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
     @export(&bindgen_BunObject_dispatchGc1_impl, .{ .name = "bindgen_BunObject_dispatchGc1" });

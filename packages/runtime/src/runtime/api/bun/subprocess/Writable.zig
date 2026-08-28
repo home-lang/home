@@ -155,6 +155,7 @@ pub const Writable = union(enum) {
                 .ipc, .capture => {
                     return Writable{ .ignore = {} };
                 },
+                .socket_fd => unreachable, // only valid at extra stdio indices
             }
         }
 
@@ -232,6 +233,7 @@ pub const Writable = union(enum) {
             .ipc, .capture => {
                 return Writable{ .ignore = {} };
             },
+            .socket_fd => unreachable, // only valid at extra stdio indices
         }
     }
 

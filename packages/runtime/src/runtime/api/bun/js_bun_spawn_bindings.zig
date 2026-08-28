@@ -963,6 +963,20 @@ pub fn spawnMaybeSync(
 
     should_close_memfd = false;
 
+    // Keep socket-fd entries owned through every fallible setup path above.
+    // Only now can JS receive .stdio[i] and take sole ownership of the fd.
+    if (comptime Environment.isPosix and !is_sync) {
+        for (extra_fds.items, 0..) |option, i| {
+            if (option == .socket_fd and i < subprocess.stdio_pipes.items.len) {
+                const slot = &subprocess.stdio_pipes.items[i];
+                if (slot.* == .owned_fd) {
+                    const fd = slot.owned_fd;
+                    slot.* = .{ .unowned_fd = fd };
+                }
+            }
+        }
+    }
+
     // Once everything is set up, we can add the abort listener
     // Adding the abort listener may call the onAbortSignal callback immediately if it was already aborted
     // Therefore, we must do this at the very end.
