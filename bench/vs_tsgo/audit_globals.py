@@ -23,6 +23,7 @@ class Case:
     # None keeps the historical all-files root set. Explicit roots exercise
     # discovery without granting one compiler a different source graph.
     roots: tuple[str, ...] | None = None
+    check_js: bool = False
 
 
 METHODS = "interface Methods { identity(value: string): string; }\n"
@@ -97,7 +98,7 @@ def diagnostics_match(result: subprocess.CompletedProcess[str], expected: tuple[
 
 
 def project_config(case: Case) -> str:
-    config = json.loads(bench.shared_config())
+    config = json.loads(bench.shared_config(check_js=case.check_js))
     del config["include"]
     # Explicit roots make the declaration-before/after-app checks independent
     # of directory traversal or glob ordering in the three compilers.
