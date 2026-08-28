@@ -2136,8 +2136,9 @@ without diagnostics by Home, so neither graph is readmitted for timing.
 Runs marked TERM were stopped after source revisions and are not counted as
 successful final verification. No new timings are reported here.
 
-The final checker suite passes 4,266/4,266, Program 117/117, and the benchmark
-harness 41/41. Zig formatting checks pass. Targeted Pickier reports no errors
+The final checker suite passes 4,266/4,266, conformance 1,417/1,417,
+Program 117/117, driver 187/187, CLI 69/69, and the benchmark harness 41/41.
+Zig formatting checks pass. Targeted Pickier reports no errors
 and one pre-existing README fragment warning.
 
 ```sh
