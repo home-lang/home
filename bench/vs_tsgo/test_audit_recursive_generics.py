@@ -9,15 +9,15 @@ import audit_recursive_generics
 class RecursiveGenericAuditTests(unittest.TestCase):
     def test_families_and_placements_are_retained(self):
         cases = audit_recursive_generics.cases()
-        self.assertEqual(216, len(cases))
-        self.assertEqual(216, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(288, len(cases))
+        self.assertEqual(288, len({(case.family, case.name) for case in cases}))
         self.assertEqual({"direct-parameter", "nonrecursive-member", "fixed-depth-8", "growing-array-depth-1", "growing-array-depth-4",
                           "growing-array-depth-12", "growing-object-depth-4", "mutual-growing-depth-4",
                           "flipped-parameters", "recursive-return", "recursive-array-member",
                           "recursive-optional-union", "recursive-indexed-access", "recursive-keyof",
                           "recursive-inference", "recursive-destructuring", "finite-structural-target",
                           "distinct-recursive-origins"}, {case.family for case in cases})
-        self.assertEqual({"local", "named", "namespace"}, {case.name.split("/")[0] for case in cases})
+        self.assertEqual({"local", "local-private", "named", "namespace"}, {case.name.split("/")[0] for case in cases})
 
     def test_negative_controls_only_append_invalid_uses(self):
         cases = audit_recursive_generics.cases()

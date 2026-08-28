@@ -16,9 +16,9 @@ def cases() -> list[Case]:
         if mirror:
             owner += "type Mirror<X> = { item: X; next: Mirror<X[]> };\n"
             owner += "export declare class MirrorBox<T> { value: Mirror<T>; }\n"
-        for placement in ("local", "named", "namespace"):
-            if placement == "local":
-                imports = owner
+        for placement in ("local", "local-private", "named", "namespace"):
+            if placement in ("local", "local-private"):
+                imports = owner if placement == "local" else "export {};\n" + owner.replace("export declare class", "declare class")
                 sources = {"a-owner.ts": "export {};\n"}
                 prefix = ""
             elif placement == "named":
