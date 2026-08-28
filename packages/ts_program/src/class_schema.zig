@@ -146,12 +146,17 @@ const Builder = struct {
 
     fn functionType(self: *Builder, context: Context, nodes: []const hir.NodeId, result: hir.NodeId) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
-        const params = try self.arena.alloc(schema.Element, nodes.len);
-        for (nodes, params) |node, *param| {
+        var params: std.ArrayListUnmanaged(schema.Element) = .empty;
+        var this_type: ?*const schema.Expression = null;
+        for (nodes, 0..) |node, i| {
             const value = hir.parameterOf(&c.hir, node);
-            param.* = .{ .type = try self.lower(context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest };
+            if (i == 0 and c.hir.kindOf(value.name) == .identifier and std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, value.name).name), "this")) {
+                this_type = try self.lower(context, value.type_annotation);
+                continue;
+            }
+            try params.append(self.arena, .{ .type = try self.lower(context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
-        return self.expression(.{ .function = .{ .parameters = params, .result = try self.lower(context, result) } });
+        return self.expression(.{ .function = .{ .parameters = try params.toOwnedSlice(self.arena), .result = try self.lower(context, result), .this_type = this_type } });
     }
 
     fn lower(self: *Builder, context: Context, node: hir.NodeId) error{OutOfMemory}!*const schema.Expression {
@@ -468,4 +473,16 @@ test "class schema: variance and const parameters remain declaration metadata" {
     defer result.deinit(T.allocator);
     try T.expect(result.declaration.parameters[0].is_const);
     try T.expectEqual(@as(u8, 3), result.declaration.parameters[1].variance);
+}
+
+test "class schema: explicit this is a receiver rather than a positional parameter" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "export declare class Box<T> { value: T; identity(this: { value: T }, value: T): T; }" }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Box");
+    defer result.deinit(T.allocator);
+    const function = result.declaration.body.?.object[1].type.function;
+    try T.expectEqual(@as(usize, 1), function.parameters.len);
+    try T.expectEqualStrings("value", function.this_type.?.object[0].name);
+    try T.expect(function.this_type.?.object[0].type.parameter == &result.declaration.parameters[0]);
+    try T.expect(try result.isSupported(T.allocator));
 }

@@ -22,7 +22,7 @@ pub const Member = struct {
 };
 
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
-pub const Function = struct { parameters: []const Element, result: *const Expression };
+pub const Function = struct { parameters: []const Element, result: *const Expression, this_type: ?*const Expression = null };
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
@@ -59,5 +59,50 @@ pub const Schema = struct {
     pub fn deinit(self: *Schema, gpa: std.mem.Allocator) void {
         self.arena.deinit();
         gpa.destroy(self);
+    }
+
+    /// Keep unsupported projections out of the concrete instantiator. Walk
+    /// declaration graphs by identity, so recursive aliases terminate without
+    /// truncating their bodies or imposing an arbitrary depth limit.
+    pub fn isSupported(self: *const Schema, gpa: std.mem.Allocator) !bool {
+        var pending: std.ArrayListUnmanaged(*const Expression) = .empty;
+        defer pending.deinit(gpa);
+        var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
+        defer visited.deinit(gpa);
+        try appendDeclaration(gpa, &pending, self.declaration);
+        while (pending.pop()) |expr| {
+            const entry = try visited.getOrPut(gpa, expr);
+            if (entry.found_existing) continue;
+            switch (expr.*) {
+                .unsupported => return false,
+                .primitive, .parameter, .string, .number, .boolean => {},
+                .array, .readonly_array => |element| try pending.append(gpa, element),
+                .object => |members| for (members) |member| {
+                    try pending.append(gpa, member.type);
+                },
+                .tuple => |elements| for (elements) |element| {
+                    try pending.append(gpa, element.type);
+                },
+                .union_type, .intersection => |members| try pending.appendSlice(gpa, members),
+                .function => |function| {
+                    if (function.this_type) |receiver| try pending.append(gpa, receiver);
+                    for (function.parameters) |param| try pending.append(gpa, param.type);
+                    try pending.append(gpa, function.result);
+                },
+                .reference => |ref| {
+                    try appendDeclaration(gpa, &pending, ref.declaration);
+                    try pending.appendSlice(gpa, ref.arguments);
+                },
+            }
+        }
+        return true;
+    }
+
+    fn appendDeclaration(gpa: std.mem.Allocator, pending: *std.ArrayListUnmanaged(*const Expression), declaration: *const Declaration) !void {
+        if (declaration.body) |body| try pending.append(gpa, body);
+        for (declaration.parameters) |param| {
+            if (param.constraint) |constraint| try pending.append(gpa, constraint);
+            if (param.default) |default| try pending.append(gpa, default);
+        }
     }
 };
