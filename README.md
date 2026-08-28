@@ -128,7 +128,8 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
 | [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
 | Imported-owner controls | 20/20 | 20/20 | 10/20 |
-| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-nominal-identity-without-synthetic-properties-untimed) | 52/52 | 52/52 | 36/52 |
+| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#bound-class-declarations-and-export-aliases-untimed) | 52/52 | 52/52 | 40/52 |
+| [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#bound-class-declarations-and-export-aliases-untimed) | 52/52 | 52/52 | 48/52 |
 | [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
 | Export-origin controls | 32/32 | 32/32 | 32/32 |
 | Imported graph admission | 2/2 | 2/2 | 0/2 |
@@ -137,9 +138,10 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 The [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
 fixes omitted dependencies and false alias/ambiguity errors. Automatic cross-file
 type transfer is not yet enabled, and both graph timing claims remain ineligible.
-The latest [nominal-identity checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-nominal-identity-without-synthetic-properties-untimed)
-replaces synthetic class-brand properties with declaration metadata. The expanded
-audit improves from 30/52 to 36/52; remaining imported-class failures stay visible.
+The latest [bound-class checkpoint](./docs/docs/TS_PERFORMANCE.md#bound-class-declarations-and-export-aliases-untimed)
+uses declaration owners for class exports and aliases. Its paired controls improve
+from 22/52 to 48/52; the nominal audit improves from 36/52 to 40/52. Static-value,
+generic, and inheritance failures remain visible; these are not timing results.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact

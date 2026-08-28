@@ -2224,3 +2224,80 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Bound class declarations and export aliases (untimed)
+
+Tracked in [#522](https://github.com/home-lang/home/issues/522), under
+[#521](https://github.com/home-lang/home/issues/521),
+[#487](https://github.com/home-lang/home/issues/487), and
+[#416](https://github.com/home-lang/home/issues/416). All runs below verify the
+installed compilers as TS **6.0.3** and native TS **7.0.2**. The old native
+`7.0.0-dev.20260707.2` build is rejected, not treated as another competitor.
+
+Audit commits [`79f43d107`](https://github.com/home-lang/home/commit/79f43d107)
+and [`cce32867b`](https://github.com/home-lang/home/commit/cce32867b) define 52
+controls across 13 families. Each has a valid program and an appended-only
+negative variant, with identical inputs/options for all compilers and both app
+root orders. Valid controls must be silent; invalid controls must match the
+exact diagnostic-code multiset. Type-only aliases must preserve class identity
+without permitting runtime construction.
+
+Implementation commits
+[`226da3863`](https://github.com/home-lang/home/commit/226da3863) and
+[`b45b038e0`](https://github.com/home-lang/home/commit/b45b038e0) replace the
+source-text class scanner with already-bound declaration traversal. Export
+binding names/paths are separate from declaration names/paths/positions. Alias
+queries and a visited star-export candidate worklist retain the actual owner
+through renaming, defaults, cycles, and explicit shadows. Class fields use HIR
+static/visibility flags; comments are not members and quoted keyword names are
+ordinary public properties. Namespace declaration context is retained in HIR,
+and `keyof` excludes non-public class members.
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Bound-class export controls | 52/52 | 52/52 | 22/52 | 48/52 |
+| Imported nominal-identity controls | 52/52 | 52/52 | 36/52 | 40/52 |
+| Existing imported-owner controls | 20/20 | 20/20 | 10/20 | 10/20 |
+| Re-export discovery controls | 28/28 | 28/28 | 28/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 32/32 | 32/32 |
+| Global declaration controls | 56/56 | 56/56 | 32/56 | 32/56 |
+| Original imported graph admission | 2/2 | 2/2 | 0/2 | 0/2 |
+
+The four remaining class-export failures are negative static-member and
+merged-namespace visibility uses, each in both root orders. The collected facts
+are retained, but the consumer still falls back to `any` for these imported
+values. The nominal audit still fails private-static identity (2 controls),
+generic arguments (2), and private/protected inheritance (8). Alias identity
+and private `keyof` now pass. Full workload admission remains 16/18 for Home
+and 18/18 for each baseline; the two original graphs remain ineligible for timing.
+
+This is not complete cross-file checked-type transfer. Complex member types,
+method/constructor signatures, generic constraints, heritage, ambient class
+export aliases, and computed names still need source-owned semantic linkage.
+The existing relative module namespace-augmentation text collector remains a
+separate legacy boundary. No new timings or speed/memory claims are made.
+
+Raw evidence is in `bench/vs_tsgo/results/bound-classes.8s4Xq1`.
+`bindings-before-type-only.log` and `bindings-v1.log` contain the final 52-case
+before/after audit; earlier 40/44-case runs are retained but are not mixed into
+the table. The frozen baseline is `nominal-origins.doZaNi/home-final`, SHA-256
+`3cc741571c00fa3682fb3b4c4931273b0f57a910f12a61c022112ed780f7a245`.
+The final ReleaseFast binary is `bound-classes.8s4Xq1/home-v1`, SHA-256
+`7f71d18f3a1648032b346183267382573f02475b824f5db8c30e0cc463568bd2`;
+its successful build log is `release-final.log`. Other audit logs use `-v1.log`.
+Audit source SHA-256:
+`97f9bdc75c50957c33e4139f05b66eb21750fad2fa51741a990b6525449ea6ea`.
+Debug, failed, interrupted, and superseded runs remain separately labeled and
+are not counted as final release verification.
+
+The checker suite passes 4,271/4,271, conformance 1,417/1,417, Program 119/119,
+driver 187/187, CLI 69/69, parser 897/897, HIR 12/12, and benchmark harness
+47/47. Fresh bound-global controls remain 44/56 for Home and 56/56 for each
+baseline. Callable-identity and callable-union controls remain 56/56 and 256/256
+for all three compilers. Zig formatting checks pass.
+
+```sh
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_class_bindings.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
