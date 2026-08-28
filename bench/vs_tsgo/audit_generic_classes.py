@@ -87,6 +87,9 @@ def cases() -> list[Case]:
          imports + "import * as other from './b-other';\ndeclare const value: ns.Box<string>;\n"
          "const compatible: ns.Box<number> = value;\n",
          "const bad: other.Box<string> = value;\n")
+    pair("explicit-this-method", {"a-owner.ts": BOX.replace("value: T;", "value: T; identity(this: { value: T }, value: T): T;")},
+         imports + "declare const value: ns.Box<string>;\nconst good: string = value.identity('ok');\n"
+         "const detached = value.identity;\n", "detached('ok');\n", ("2684",))
     return result
 
 
