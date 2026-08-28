@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -50,11 +51,46 @@ def format_workload_comparison(workload: str, home_mean: float, competitor_mean:
     return format_comparison(home_mean, competitor_mean)
 
 
+def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
+    if metadata.get("schedule") != "round-robin interleaved":
+        return
+    runs = metadata.get("runs")
+    workloads = metadata.get("workloads", [])
+    names = list(metadata.get("compilers", {}))
+    if (type(runs) is not int or runs < 1 or not workloads or len(set(workloads)) != len(workloads)
+            or set(names) != {"tsc", "tsgo", "home"}):
+        raise ValueError("invalid interleaved measurement metadata")
+    expected = {f"{workload}-round-{index:03d}.json" for workload in workloads for index in range(runs)}
+    actual = {path.name for path in directory.glob("*.json") if path.name != "metadata.json"}
+    if actual != expected:
+        raise ValueError(f"incomplete or unexpected round set: {len(expected - actual)} missing, {len(actual - expected)} extra")
+    for workload in workloads:
+        for index in range(runs):
+            path = directory / f"{workload}-round-{index:03d}.json"
+            results = json.loads(path.read_text(encoding="utf-8")).get("results", [])
+            offset = index % len(names)
+            order = names[offset:] + names[:offset]
+            if [result.get("command") for result in results] != [f"{name} {workload}" for name in order]:
+                raise ValueError(f"incorrect compiler coverage/order in {path.name}")
+            for result in results:
+                times = result.get("times", [])
+                if (result.get("exit_codes") != [0] or len(times) != 1 or type(times[0]) not in (int, float)
+                        or not math.isfinite(times[0]) or times[0] <= 0):
+                    raise ValueError(f"invalid or unsuccessful sample in {path.name}")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"usage: {Path(sys.argv[0]).name} <results-directory>", file=sys.stderr)
         return 2
     directory = Path(sys.argv[1])
+    metadata_path = directory / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+        validate_interleaved_rounds(directory, metadata)
+    except (ValueError, OSError) as error:
+        print(f"cannot report {directory}: {error}", file=sys.stderr)
+        return 1
     rows: dict[str, dict[str, dict]] = {}
     interleaved: dict[str, dict[str, list[float]]] = {}
     for path in sorted(directory.glob("*.json")):
@@ -84,8 +120,6 @@ def main() -> int:
         print(f"no benchmark results found in {directory}", file=sys.stderr)
         return 1
 
-    metadata_path = directory / "metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
     print(f"# TypeScript frontend benchmark — {directory.name}")
     print()
     if metadata:
