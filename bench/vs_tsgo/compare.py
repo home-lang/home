@@ -42,6 +42,12 @@ def format_comparison(home_mean: float, competitor_mean: float) -> str:
     return f"**{rounded}× faster**" if speedup > 1 else f"{rounded}× slower"
 
 
+def format_workload_comparison(workload: str, home_mean: float, competitor_mean: float, validation_schema=None) -> str:
+    if workload in ("import_graph", "reexport_graph") and validation_schema != 2:
+        return "Ineligible (graph types unvalidated)"
+    return format_comparison(home_mean, competitor_mean)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"usage: {Path(sys.argv[0]).name} <results-directory>", file=sys.stderr)
@@ -97,7 +103,7 @@ def main() -> int:
         home = compilers.get("home")
         competitors = [result["mean"] for result in (tsc, tsgo) if result]
         if home and competitors:
-            comparison = format_comparison(home["mean"], min(competitors))
+            comparison = format_workload_comparison(workload, home["mean"], min(competitors), metadata.get("validation_schema"))
         else:
             comparison = "—"
         print(
@@ -107,6 +113,7 @@ def main() -> int:
     print()
     print("Times are mean ± sample standard deviation. Comparisons use the faster of tsc and tsgo.")
     print("Ratios rounding to 1.00× are labeled near ties; this is not a statistical significance test.")
+    print("Legacy graph rows without schema-2 rejection controls are retained as timings, not fair speed claims (#487).")
     return 0
 
 

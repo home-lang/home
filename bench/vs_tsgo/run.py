@@ -915,6 +915,30 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         validate_destructuring_negatives(commands)
     elif workload in ("type_predicates", "type_predicates_large"):
         validate_type_predicate_negatives(commands, workload)
+    elif workload in ("import_graph", "reexport_graph"):
+        validate_graph_negatives(commands, workload)
+
+
+def validate_graph_negatives(commands: dict[str, list[str]], workload: str) -> None:
+    # Exercise the imported generic shape itself, not a locally declared
+    # equivalent. Accepting the positive graph with imported `any` is not
+    # equivalent semantic work and cannot qualify for timing (#487).
+    invalid = {
+        "import_graph": "\nexport const invalidImportedProperty: number = result.current;\nresult.missing;\n",
+        "reexport_graph": "\nexport const invalidImportedProperty: string = value0.value;\nvalue0.missing;\n",
+    }[workload]
+    with tempfile.TemporaryDirectory(prefix="home-bench-graph-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / workload, project)
+        source_path = project / "src/index.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322", "2339"]:
+                raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
 
 
 def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: str) -> None:
@@ -1003,6 +1027,11 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         cmd_corpus()
     commands = compiler_commands()
     versions = verified_compiler_versions(commands)
+    # Validate the entire selection before creating a result directory or
+    # timing any workload. A later admission failure must not leave an
+    # apparently complete report containing only the earlier/easier cases.
+    for workload in workloads:
+        validate(commands, workload)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = RESULTS / stamp
     output.mkdir(parents=True)
@@ -1014,12 +1043,12 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
+        "validation_schema": 2,
         "workloads": workloads,
         "compilers": versions,
     }
     write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
     for workload in workloads:
-        validate(commands, workload)
         config = CORPUS / workload / "tsconfig.json"
         benchmarks = {
             name: command + ["--noEmit", "-p", str(config)]

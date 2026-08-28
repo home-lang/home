@@ -10,6 +10,17 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+**Admission correction:** the `import_graph` and `reexport_graph` speed claims
+are withdrawn throughout this document, including historical snapshots.
+Home accepts invalid imported-property assignments and missing-member reads
+that TS 6.0.3 and native TS 7.0.2 reject. The measurements are retained, but they
+do not establish equivalent semantic work; see [#487](https://github.com/home-lang/home/issues/487)
+and the [untimed admission audit](#global-declaration-and-graph-admission-audit-untimed).
+The previous all-18 leadership statement is therefore not a fair benchmark-win
+claim. Other rows remain provisional pending broader rejection-control
+coverage; the existing predicate/destructuring controls do not establish parity
+for every other feature.
+
 Measured 2026-08-27 at commit `9e45e105d` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
@@ -26,8 +37,8 @@ do not establish universal superiority.
 | `startup` | 64.4 ± 1.8 ms | 42.2 ± 11.3 ms | **3.9 ± 2.7 ms** | **10.82× faster** |
 | `many_files` | 213.2 ± 14.8 ms | 53.5 ± 3.1 ms | **30.0 ± 1.5 ms** | **1.78× faster** |
 | `deep_types` | 127.9 ± 2.2 ms | 52.6 ± 1.5 ms | **12.9 ± 0.3 ms** | **4.09× faster** |
-| `import_graph` | 129.2 ± 1.9 ms | 45.0 ± 0.9 ms | **25.8 ± 1.1 ms** | **1.75× faster** |
-| `reexport_graph` | 94.7 ± 3.0 ms | 40.7 ± 0.9 ms | **26.8 ± 0.6 ms** | **1.52× faster** |
+| `import_graph` | 129.2 ± 1.9 ms | 45.0 ± 0.9 ms | 25.8 ± 1.1 ms | Ineligible: #487 |
+| `reexport_graph` | 94.7 ± 3.0 ms | 40.7 ± 0.9 ms | 26.8 ± 0.6 ms | Ineligible: #487 |
 | `tsx_components` | 159.1 ± 1.2 ms | 46.3 ± 0.9 ms | **21.3 ± 0.3 ms** | **2.17× faster** |
 | `generic_calls` | 177.5 ± 4.4 ms | 55.4 ± 11.2 ms | **22.0 ± 1.8 ms** | **2.52× faster** |
 | `control_flow` | 212.2 ± 127.9 ms | 63.1 ± 22.3 ms | **32.9 ± 3.8 ms** | **1.92× faster** |
@@ -1154,3 +1165,36 @@ exceptions. Those issues and the async diagnostic-text issue
 [#478](https://github.com/home-lang/home/issues/478) remain open under
 [#473](https://github.com/home-lang/home/issues/473). Async remains untimed, and
 the accepted workload count remains 18.
+
+### Global declaration and graph admission audit (untimed)
+
+The cross-file audit exposed a flaw in the earlier admission evidence: positive
+projects can pass when imported types have been erased to `any`. Two existing
+workloads fail direct negative controls, tracked in
+[#487](https://github.com/home-lang/home/issues/487):
+
+| Existing workload, invalid statements appended to a temporary copy | TS 6.0.3 / native TS 7.0.2 | Home |
+|---|---|---|
+| `import_graph`: assign `result.current` to `number`; read `result.missing` | TS2322 and TS2339 | Incorrectly accepts |
+| `reexport_graph`: assign `value0.value` to `string`; read `value0.missing` | TS2322 and TS2339 | Incorrectly accepts |
+
+The original projects are unchanged. These controls exercise the imported
+generic types, not locally redeclared substitutes. Both controls are now part
+of workload validation. The full selection must pass before any timing,
+warmup, result directory, or metadata is created. The actual default run was
+checked to stop at `import_graph` without creating results. The graph workloads
+remain in the default suite; they are not silently removed to produce a pass.
+
+New runs record admission schema 2 after validation. The report generator
+retains all old graph measurements but labels pre-schema-2 graph comparisons
+ineligible. The main table and README withdraw those two speed claims, and the
+same correction applies to historical tables above. Other workloads need
+broader rejection coverage; the remaining sixteen rows are not a claim of
+sixteen proven-equivalent semantic workloads. The predicate and destructuring
+controls remain useful evidence for their specific checks.
+
+No new timing results were collected under the concurrent workstation load.
+The old `9e45e105d` times and raw observations are retained unchanged. Fixing
+cross-file types and re-running admission are prerequisites to graph retiming,
+not evidence of a speedup themselves. The local evidence directory is
+`bench/vs_tsgo/results/global-audit.TExK7j`.

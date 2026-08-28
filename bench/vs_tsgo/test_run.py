@@ -1,6 +1,7 @@
 """Benchmark preflight regressions; run with unittest discovery in this directory."""
 
 import unittest
+import subprocess
 from unittest import mock
 
 import run
@@ -87,6 +88,49 @@ class WorkloadSelectionTests(unittest.TestCase):
             self.assertEqual([], results.mock_calls)
             validate.assert_not_called()
             commands.assert_not_called()
+
+
+class AdmissionTests(unittest.TestCase):
+    def test_legacy_graph_report_does_not_claim_an_unvalidated_win(self):
+        import compare
+        for workload in ("import_graph", "reexport_graph"):
+            self.assertEqual("Ineligible (graph types unvalidated)", compare.format_workload_comparison(workload, 1, 2))
+            self.assertEqual("**2.00× faster**", compare.format_workload_comparison(workload, 1, 2, 2))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("startup", 1, 2))
+
+    def test_later_failure_stops_before_any_measurement_or_results(self):
+        with mock.patch.object(run, "selected_workloads", return_value=["first", "second"]), mock.patch.object(
+            run.shutil, "which", return_value="hyperfine"
+        ), mock.patch.object(run, "CORPUS"), mock.patch.object(run, "compiler_commands", return_value={}), mock.patch.object(
+            run, "verified_compiler_versions", return_value={}
+        ), mock.patch.object(run, "validate", side_effect=[None, SystemExit("admission failed")]) as validate, mock.patch.object(
+            run, "RESULTS"
+        ) as results, mock.patch.object(run.subprocess, "run") as process:
+            with self.assertRaisesRegex(SystemExit, "admission failed"):
+                run.cmd_cold(30, 3)
+            self.assertEqual([mock.call({}, "first"), mock.call({}, "second")], validate.call_args_list)
+            self.assertEqual([], results.mock_calls)
+            process.assert_not_called()
+
+    def test_graph_controls_append_to_a_copy_and_require_both_diagnostics(self):
+        for workload in ("import_graph", "reexport_graph"):
+            with mock.patch.object(run.shutil, "copytree") as copy, mock.patch.object(
+                run.Path, "read_text", return_value="original source\n"
+            ), mock.patch.object(run, "write") as write, mock.patch.object(
+                run.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, "error TS2339: missing\nerror TS2322: wrong\n", "")
+            ):
+                run.validate_graph_negatives({"home": ["home"]}, workload)
+                self.assertEqual(run.CORPUS / workload, copy.call_args.args[0])
+                self.assertNotEqual(run.CORPUS / workload / "src/index.ts", write.call_args.args[0])
+                self.assertTrue(write.call_args.args[1].startswith("original source\n"))
+
+    def test_graph_controls_reject_silent_acceptance_missing_errors_and_crashes(self):
+        for code, output in ((0, ""), (1, "error TS2322: wrong\n"), (-11, "error TS2322: wrong\nerror TS2339: missing\n")):
+            with mock.patch.object(run.shutil, "copytree"), mock.patch.object(run.Path, "read_text", return_value="source"), mock.patch.object(
+                run, "write"
+            ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")):
+                with self.assertRaisesRegex(SystemExit, "failed import_graph negative controls"):
+                    run.validate_graph_negatives({"home": ["home"]}, "import_graph")
 
 
 if __name__ == "__main__":

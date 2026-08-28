@@ -82,8 +82,8 @@ three warmups; lower is better):
 | Startup | 64.4 ms | 42.2 ms | **3.9 ms** | **10.82× faster** |
 | 256 files | 213.2 ms | 53.5 ms | **30.0 ms** | **1.78× faster** |
 | Deep types | 127.9 ms | 52.6 ms | **12.9 ms** | **4.09× faster** |
-| 128-module import graph | 129.2 ms | 45.0 ms | **25.8 ms** | **1.75× faster** |
-| 64-leaf barrel graph | 94.7 ms | 40.7 ms | **26.8 ms** | **1.52× faster** |
+| 128-module import graph | 129.2 ms | 45.0 ms | 25.8 ms | Ineligible: type checks fail |
+| 64-leaf barrel graph | 94.7 ms | 40.7 ms | 26.8 ms | Ineligible: type checks fail |
 | 256 typed TSX components | 159.1 ms | 46.3 ms | **21.3 ms** | **2.17× faster** |
 | 256 generic call groups | 177.5 ms | 55.4 ms | **22.0 ms** | **2.52× faster** |
 | 256 exhaustive control-flow functions | 212.2 ms | 63.1 ms | **32.9 ms** | **1.92× faster** |
@@ -100,11 +100,14 @@ three warmups; lower is better):
 
 These are local synthetic means, with substantial variance in several rows;
 they are not a claim of universal benchmark leadership.
+Both graph speed claims are withdrawn: Home accepts invalid imported-property
+checks rejected by TS 6 and TS 7 ([audit and remaining gaps](./docs/docs/TS_PERFORMANCE.md#global-declaration-and-graph-admission-audit-untimed)).
+Other rows remain provisional pending broader rejection-control coverage.
 The large-predicate lead was independently confirmed at **1.08×**
 in an additional 30-round run.
 This snapshot is from `9e45e105d` and includes stronger return-type checks.
-Later [generic-callback fixes](./docs/docs/TS_PERFORMANCE.md#generic-receiver-callback-validation-untimed)
-have passed correctness checks but have not yet been retimed. Async/await
+Later generic-callback and declaration fixes have passed correctness checks
+but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
