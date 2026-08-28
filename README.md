@@ -110,14 +110,16 @@ Later generic-callback, declaration, and
 [assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
 have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
-The latest [untimed type-transfer and admission checks](./docs/docs/TS_PERFORMANCE.md#canonical-type-graph-transfer-untimed)
-report the same correctness totals below. Canonical payload transfer is tested,
-but cross-file semantic metadata and source-provenance integration remain open.
+The latest [untimed semantic-transfer and imported-owner checks](./docs/docs/TS_PERFORMANCE.md#owner-scoped-semantic-transfer-and-imported-owner-audit-untimed)
+test canonical payloads and owner-separated metadata. Source-aware program
+integration remains open; the broader imported-owner audit exposes twelve
+additional failing Home cases:
 
 | Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
 |---|---:|---:|---:|
 | Variadic tuple controls | 14/14 | 14/14 | 14/14 |
 | Global declaration controls | 44/44 | 44/44 | 30/44 |
+| Imported-owner controls | 20/20 | 20/20 | 8/20 |
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact

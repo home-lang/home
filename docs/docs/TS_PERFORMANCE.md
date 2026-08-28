@@ -1451,3 +1451,94 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
 
 The last command intentionally exits nonzero while the fourteen known Home
 failures remain; they are not skipped or waived.
+
+### Owner-scoped semantic transfer and imported-owner audit (untimed)
+
+Commit [`778597026`](https://github.com/home-lang/home/commit/7785970261d70ff50b2be710d09d78015a44a3c7)
+adds a deep, owner-scoped clone of all 113 retained checked-metadata tables
+([#500](https://github.com/home-lang/home/issues/500)). An exhaustive schema
+distinguishes type, string, and declaration IDs from parameter positions,
+argument counts, flags, and source-relative virtual-section offsets. Adding an
+unclassified table or nested record field fails compilation. Slices, display
+text, and nested containers are independently owned. Invalid references,
+unmapped names/nodes, and many-to-one keys within a table fail explicitly;
+the source stays unchanged and no partial result is returned. Callback
+allocations and the previously transferred type pool remain caller-owned.
+
+Each result must stay associated with its source owner. Canonical structural
+signatures do not uniquely identify declaration-specific predicates or source
+locations. Commit
+[`84dc71ca5`](https://github.com/home-lang/home/commit/84dc71ca522ed33d0262aa5c3dbba25956eae960)
+tests two independently compiled modules with same-named declarations against
+one destination type interner. Both guards reuse an existing canonical
+`(unknown) => boolean` signature, while their string/number predicates and real
+source-owner/node references remain separate. It also checks constrained
+generics, private class and enum origins, `NoInfer`, readonly pattern indexes,
+symbolic tuple layouts, and positive/negative rest-signature assignability
+after destroying the source semantic tables. Source HIR and text stay alive
+for provenance lookup; registry handles are not fabricated local HIR nodes.
+
+The focused checker runner passes 4/4 (three tests plus its module root),
+including every table populated, exhaustive allocation-failure injection,
+source destruction, mixed key fields, sentinel preservation, invalid mappings,
+collisions, and successful retry. The full checker suite passes 4,249/4,249,
+driver 179/179, program 101/101, CLI 69/69, and benchmark-harness/report 33/33
+tests.
+
+Commit [`50ff4add4`](https://github.com/home-lang/home/commit/50ff4add4552ef64e01826f00a59e9bd1c5f78ca)
+adds the permanent [imported-owner audit](https://github.com/home-lang/home/blob/50ff4add4552ef64e01826f00a59e9bd1c5f78ca/bench/vs_tsgo/audit_owners.py).
+Each family imports same-named declarations from two real modules. Valid and
+invalid projects share every declaration and compiler option; only invalid
+statements are appended to the negative app. Each pair runs with the app
+explicitly listed before and after both declaration files. All three compilers
+receive identical strict/noEmit/noLib/skipLibCheck inputs and the same minimal
+library. Success requires acceptance of valid inputs or the exact expected
+diagnostic-code multiset and failure exit status, not merely any rejection.
+
+| Imported-owner audit: valid + invalid, both root orders | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Constrained generic results and arguments | 4/4 | 4/4 | 2/4 |
+| Distinct predicates on same-shaped signatures | 4/4 | 4/4 | 0/4 |
+| Private class declaration origins | 4/4 | 4/4 | 2/4 |
+| Ordered rest-tuple arguments | 4/4 | 4/4 | 2/4 |
+| Readonly and mutable imported members | 4/4 | 4/4 | 2/4 |
+
+Both the preceding `e4c0a4caa` binary and the fresh ReleaseFast audit find twelve
+Home failures across sixty checks. Generic, rest, and readonly invalid programs
+are incorrectly accepted. Valid predicate narrowing is rejected; invalid
+predicate cases have extra/wrong diagnostics because values remain `unknown`.
+Private-class assignments are rejected with TS2741 rather than the required
+TS2322, so those failures are diagnostic mismatches, not false acceptance.
+Both root orders produce the same outcomes. These are untimed correctness
+controls, not additional speed rows or evidence that program integration works.
+
+Neither transfer operation is called by program checking yet. The next step
+must connect real source-aware declaration lookup and owner-scoped semantic
+records to typed resolution, including merging, cycles, and invalidation under
+[#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487). Blindly merging these
+records or treating their provenance handles as local HIR nodes would be
+incorrect. Publication must also coordinate the separately transactional type
+payload transfer and metadata clone; a failed metadata clone does not roll back
+the caller's previously transferred type pool. The broader owner audit remains
+part of readmission evidence; known failures are not waived. Historical timings
+remain unchanged.
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker -Dts-checker-test-filter='checked transfer'
+./pantry/.bin/zig build test -Dfilter=ts_driver
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```
+
+Local evidence is retained in `bench/vs_tsgo/results/checked-transfer.IO4A4Q`.
+The final ReleaseFast binary SHA-256 is
+`4ad8003e751e1471db6f7ea855c3bf8a3822063e89ddb793b85d3714efe93393`.
+The fresh release also passes all 42 tuple controls and 36 assertion controls;
+the global audit remains 30/44 for Home versus 44/44 for each TypeScript baseline
+(fourteen failures across 132 total checks). All eighteen existing positive
+workloads pass; Home passes sixteen workload gates and still fails both graph
+gates. Neither graph is readmitted, and passing sixteen gates does not establish
+sixteen equivalent semantic workloads. The tuple and both predicate source
+hashes are unchanged. No timing run was made during concurrent workstation
+activity.
