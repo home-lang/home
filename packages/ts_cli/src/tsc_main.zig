@@ -2382,10 +2382,13 @@ const CheckerResolverAdapter = struct {
             const arena = self.resolver.arena.allocator();
             const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
             const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else r.path) catch return null) else "";
+            const origins = self.boundExportOrigins(r.path, compilation, name);
             break :blk .{
                 .module_name = module_name,
                 .exported_type = exported,
                 .exported_value = facts.exported_value,
+                .namespace_module_path = namespaceExportOwner(origins) orelse "",
+                .runtime_value = if (origins) |known| known.value != null else null,
                 .exported_value_readonly = facts.exported_value_readonly,
                 .ambient_const_enum = facts.ambient_const_enum,
                 .cannot_be_named = cannot_be_named,
@@ -2443,10 +2446,13 @@ const CheckerResolverAdapter = struct {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
             const arena = self.resolver.arena.allocator();
+            const origins = self.boundExportOrigins(resolved.path, compilation, name);
             break :blk .{
                 .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
                 .exported_type = facts.exported_type,
                 .exported_value = facts.exported_value,
+                .namespace_module_path = namespaceExportOwner(origins) orelse "",
+                .runtime_value = if (origins) |known| known.value != null else null,
                 .ambient_const_enum = facts.ambient_const_enum,
                 .type_only_export = type_only_pos != null,
                 .type_only_import = facts.type_only_import,
@@ -2457,6 +2463,25 @@ const CheckerResolverAdapter = struct {
         };
         self.cacheModuleExport(cache_key, result);
         return result;
+    }
+
+    /// Called while holding resolver_mutex. Origins distinguish a module
+    /// namespace alias from an ordinary same-named namespace declaration.
+    fn boundExportOrigins(self: *CheckerResolverAdapter, path: []const u8, compilation: *ts_driver.Compilation, name: []const u8) ?ts_program.export_origins.Origins {
+        // The bound ESM query does not model CommonJS assignment exports.
+        // Leave those shapes unknown rather than claiming an empty module.
+        if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".cjs") or std.mem.endsWith(u8, path, ".mjs")) return null;
+        const query = &self.export_origin_query;
+        if (!query.files.contains(path)) query.borrow(path, compilation) catch return null;
+        const origins = query.resolve(path, name) catch return null;
+        if (!origins.complete or origins.ambiguous) return null;
+        return origins;
+    }
+
+    fn namespaceExportOwner(origins: ?ts_program.export_origins.Origins) ?[]const u8 {
+        const origin = (origins orelse return null).value orelse return null;
+        return if (origin.kind == .namespace) origin.path else null;
     }
 
     fn commonJsExportPrivateNameImpl(

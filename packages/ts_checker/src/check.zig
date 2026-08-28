@@ -250,6 +250,12 @@ pub const ExternalResolver = struct {
         // and enums are both type/value exports; interfaces and type
         // aliases are type-only declarations.
         exported_value: bool = false,
+        /// For an exported module namespace alias, the actual module owner.
+        /// Empty for ordinary declarations and type-only value projections.
+        namespace_module_path: []const u8 = "",
+        /// Exact value-space availability from a complete bound export query.
+        /// Null means the resolver cannot safely close a namespace's shape.
+        runtime_value: ?bool = null,
         /// True when the queried CommonJS value export was declared by a
         /// getter-only or non-writable `Object.defineProperty` descriptor.
         exported_value_readonly: bool = false,
@@ -5261,6 +5267,9 @@ pub const Checker = struct {
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
+    free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
@@ -5483,6 +5492,7 @@ pub const Checker = struct {
     /// honor `// @ts-ignore` and `// @ts-expect-error` directives.
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.source = source;
         self.source_facts = .{};
         self.source_markers = source_markers_mod.Index.scan(source);
@@ -5719,10 +5729,12 @@ pub const Checker = struct {
     }
 
     pub fn setProgramExportedClasses(self: *Checker, classes: []const ProgramExportedClass) void {
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_classes = classes;
     }
 
     pub fn setProgramExportedValues(self: *Checker, values: []const ProgramExportedValue) void {
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_values = values;
     }
 
@@ -5771,6 +5783,9 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.narrow_scopes.deinit(self.gpa);
+        self.program_module_namespace_types.deinit(self.gpa);
+        self.free_type_parameter_pending.deinit(self.gpa);
+        self.free_type_parameter_visited.deinit(self.gpa);
         for (self.member_narrow_scopes.items) |*scope| {
             var s = scope.*;
             s.deinit(self.gpa);
@@ -29420,7 +29435,7 @@ pub const Checker = struct {
     }
 
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (!self.sourceHasVirtualFilenameSections()) return self.programModuleNamespaceType(self.string_interner.get(specifier), anchor);
         const spec = self.string_interner.get(specifier);
         const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
@@ -61476,6 +61491,20 @@ pub const Checker = struct {
             if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec_text = self.string_interner.get(imp.module);
+            // Bound program declarations carry actual value types; a later
+            // external presence-only fallback must not erase them to `any`.
+            if (try self.programExportedClassTypeForImportBinding(stmt, local_name, anchor)) |class_t| return class_t;
+            if (try self.programExportedValueTypeForImportBinding(stmt, local_name)) |value_t| return value_t;
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (imported.local != local_name) continue;
+                if (self.external_resolver) |resolver| {
+                    if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |info| {
+                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceType(info.namespace_module_path, anchor);
+                    }
+                }
+            }
             if (self.importDeclIsRequireAssignment(stmt) and
                 imp.default_binding != hir_mod.none_node_id and
                 self.hir.kindOf(imp.default_binding) == .identifier and
@@ -81445,63 +81474,55 @@ pub const Checker = struct {
     }
 
     fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return true;
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_object_type) {
-            const members = self.interner.objectMembers(t);
-            for (members) |m| if (self.containsFreeTypeParameter(m.type)) return true;
-            const string_idx = self.interner.objectStringIndex(t);
-            if (string_idx != types.Primitive.none and self.containsFreeTypeParameter(string_idx)) return true;
-            const number_idx = self.interner.objectNumberIndex(t);
-            if (number_idx != types.Primitive.none and self.containsFreeTypeParameter(number_idx)) return true;
-            return false;
-        }
-        if (flags.is_signature) {
-            const params = self.interner.signatureParams(t);
-            for (params) |p| if (self.containsFreeTypeParameter(p)) return true;
-            if (self.interner.signatureReturn(t)) |r| if (self.containsFreeTypeParameter(r)) return true;
-            return false;
-        }
-        if (flags.is_keyof) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
-            const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            return self.containsFreeTypeParameter(k.operand);
-        }
-        if (flags.is_indexed_access) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
-            const ia = self.interner.pool.indexed_access_payloads.items[payload_idx];
-            return self.containsFreeTypeParameter(ia.object) or self.containsFreeTypeParameter(ia.index);
-        }
-        if (flags.is_conditional) {
-            const c = self.interner.conditionalPayload(t);
-            return self.containsFreeTypeParameter(c.check_type) or
-                self.containsFreeTypeParameter(c.extends_type) or
-                self.containsFreeTypeParameter(c.true_branch) or
-                self.containsFreeTypeParameter(c.false_branch);
-        }
-        if (flags.is_mapped) {
-            const m = self.interner.mappedPayload(t);
-            return self.containsFreeTypeParameter(m.constraint) or self.containsFreeTypeParameter(m.template);
-        }
-        if (flags.is_template_literal) {
-            for (self.interner.templateLiteralTypes(t)) |part| {
-                if (self.containsFreeTypeParameter(part)) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        // Type graphs can contain cycles. Visit each identity once instead of
+        // recurring into a namespace/object indefinitely. This walk does not
+        // call back into checking, so its scratch storage is reusable between
+        // queries. Allocation failure conservatively means unknown.
+        if (self.interner.pool.flagsOf(t).is_type_parameter) return true;
+        const allocator = self.gpa;
+        const pending = &self.free_type_parameter_pending;
+        const visited = &self.free_type_parameter_visited;
+        pending.clearRetainingCapacity();
+        visited.clearRetainingCapacity();
+        pending.append(allocator, t) catch return true;
+        while (pending.pop()) |current| {
+            if (current < types.Primitive.first_dynamic or current >= self.interner.pool.typeCount()) continue;
+            const entry = visited.getOrPut(allocator, current) catch return true;
+            if (entry.found_existing) continue;
+            const flags = self.interner.pool.flagsOf(current);
+            if (flags.is_type_parameter) return true;
+            if (flags.is_union) {
+                pending.appendSlice(allocator, self.interner.unionMembers(current)) catch return true;
+            } else if (flags.is_intersection) {
+                pending.appendSlice(allocator, self.interner.intersectionMembers(current)) catch return true;
+            } else if (flags.is_object_type) {
+                for (self.interner.objectMembers(current)) |member| pending.append(allocator, member.type) catch return true;
+                pending.appendSlice(allocator, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current) }) catch return true;
+            } else if (flags.is_signature) {
+                pending.appendSlice(allocator, self.interner.signatureParams(current)) catch return true;
+                if (self.interner.signatureReturn(current)) |result| pending.append(allocator, result) catch return true;
+            } else if (flags.is_keyof) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.keyof_payloads.items.len)
+                    pending.append(allocator, self.interner.pool.keyof_payloads.items[index].operand) catch return true;
+            } else if (flags.is_indexed_access) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.indexed_access_payloads.items.len) {
+                    const access = self.interner.pool.indexed_access_payloads.items[index];
+                    pending.appendSlice(allocator, &.{ access.object, access.index }) catch return true;
+                }
+            } else if (flags.is_conditional) {
+                const conditional = self.interner.conditionalPayload(current);
+                pending.appendSlice(allocator, &.{ conditional.check_type, conditional.extends_type, conditional.true_branch, conditional.false_branch }) catch return true;
+            } else if (flags.is_mapped) {
+                const mapped = self.interner.mappedPayload(current);
+                pending.appendSlice(allocator, &.{ mapped.constraint, mapped.template }) catch return true;
+            } else if (flags.is_template_literal) {
+                pending.appendSlice(allocator, self.interner.templateLiteralTypes(current)) catch return true;
+            } else if (flags.is_string_mapping) {
+                pending.append(allocator, self.interner.stringMappingPayload(current).inner) catch return true;
             }
-            return false;
-        }
-        if (flags.is_string_mapping) {
-            return self.containsFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
         }
         return false;
     }
@@ -106053,20 +106074,98 @@ pub const Checker = struct {
                 matched = value;
             }
             if (matched) |value| {
-                return switch (value.kind) {
-                    .variable => try self.programTypeReferenceType(value.result),
-                    .function => blk: {
-                        var params: std.ArrayListUnmanaged(TypeId) = .empty;
-                        defer params.deinit(self.gpa);
-                        for (value.parameters) |param| {
-                            try params.append(self.gpa, try self.programTypeReferenceType(param));
-                        }
-                        const result = try self.programTypeReferenceType(value.result);
-                        break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
-                    },
-                };
+                return try self.programExportedValueType(value);
             }
         }
+        return null;
+    }
+
+    fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!TypeId {
+        return switch (value.kind) {
+            .variable => try self.programTypeReferenceType(value.result),
+            .function => blk: {
+                var params: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer params.deinit(self.gpa);
+                for (value.parameters) |param| try params.append(self.gpa, try self.programTypeReferenceType(param));
+                const result = try self.programTypeReferenceType(value.result);
+                break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
+            },
+        };
+    }
+
+    /// Construct the whole runtime export shape, not a class-only namespace.
+    /// Reserve all reachable namespace identities before publishing any of
+    /// them, so namespace aliases/cycles retain types through ordinary object
+    /// consumption (captures, element access and destructuring included).
+    fn programModuleNamespaceType(self: *Checker, spec: []const u8, anchor: NodeId) CheckError!?TypeId {
+        const resolver = self.external_resolver orelse return null;
+        if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
+        const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
+        const root_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
+        if (self.program_module_namespace_types.get(root_path)) |cached| return if (cached == types.Primitive.none) null else cached;
+        const root_info = resolver.moduleExport(resolved.path, self.importer_path, "default") orelse return null;
+        if (root_info.runtime_value == null) return self.unavailableProgramModuleNamespace(root_path);
+        const Pending = struct { path: hir_mod.StringId, type: TypeId };
+        var pending: std.ArrayListUnmanaged(Pending) = .empty;
+        defer pending.deinit(self.gpa);
+        var reserved: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty;
+        defer reserved.deinit(self.gpa);
+        const root_type = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        try reserved.put(self.gpa, root_path, root_type);
+        try pending.append(self.gpa, .{ .path = root_path, .type = root_type });
+        var cursor: usize = 0;
+        while (cursor < pending.items.len) : (cursor += 1) {
+            const item = pending.items[cursor];
+            const path = self.string_interner.get(item.path);
+            // Enumeration must be complete. If facts are unavailable, do not
+            // publish a partial closed shape that invents missing properties.
+            const names = resolver.moduleExportNames(path, self.importer_path) orelse return self.unavailableProgramModuleNamespace(root_path);
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            for (0..names.len + 1) |index| {
+                const name = if (index < names.len) names[index] else "default";
+                const info = resolver.moduleExport(path, self.importer_path, name) orelse return self.unavailableProgramModuleNamespace(root_path);
+                if (!(info.runtime_value orelse return self.unavailableProgramModuleNamespace(root_path))) continue;
+                const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+                var member_type: TypeId = types.Primitive.any;
+                if (info.namespace_module_path.len != 0) {
+                    const namespace_path = self.string_interner.intern(info.namespace_module_path) catch return error.OutOfMemory;
+                    const cached = self.program_module_namespace_types.get(namespace_path);
+                    if (cached == types.Primitive.none) return self.unavailableProgramModuleNamespace(root_path);
+                    member_type = cached orelse reserved.get(namespace_path) orelse blk: {
+                        const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                        try reserved.put(self.gpa, namespace_path, fresh);
+                        try pending.append(self.gpa, .{ .path = namespace_path, .type = fresh });
+                        break :blk fresh;
+                    };
+                } else {
+                    for (self.program_exported_classes) |class| {
+                        if (class.ambient_module_name.len != 0 or !std.mem.eql(u8, class.target_path, path) or
+                            !std.mem.eql(u8, class.exportedName(), name)) continue;
+                        const class_name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
+                        member_type = try self.syntheticProgramClassStaticType(class, class_name, null, anchor);
+                        break;
+                    } else {
+                        for (self.program_exported_values) |value| {
+                            if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
+                            member_type = try self.programExportedValueType(value);
+                            break;
+                        }
+                    }
+                }
+                try members.append(self.gpa, .{ .name = member_name, .type = member_type, .is_optional = false, .is_readonly = true, .is_method = false });
+            }
+            try self.interner.completeFreshObjectType(item.type, members.items);
+        }
+        try self.program_module_namespace_types.ensureUnusedCapacity(self.gpa, @intCast(pending.items.len));
+        for (pending.items) |item| self.program_module_namespace_types.putAssumeCapacity(item.path, item.type);
+        return root_type;
+    }
+
+    fn unavailableProgramModuleNamespace(self: *Checker, path: hir_mod.StringId) CheckError!?TypeId {
+        // Unknown is cached separately from a valid empty namespace, avoiding
+        // repeated allocation/query work for unsupported external shapes.
+        try self.program_module_namespace_types.put(self.gpa, path, types.Primitive.none);
         return null;
     }
 
@@ -106205,7 +106304,7 @@ pub const Checker = struct {
         self: *Checker,
         exported_class: ProgramExportedClass,
         class_name: hir_mod.StringId,
-        local_name: hir_mod.StringId,
+        local_name: ?hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!TypeId {
         _ = anchor;
@@ -106254,6 +106353,7 @@ pub const Checker = struct {
         if (class_params.items.len > 0) try self.recordGenericSignatureParams(construct_sig, class_params.items);
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer static_members.deinit(self.gpa);
         try static_members.append(self.gpa, .{
@@ -106266,6 +106366,13 @@ pub const Checker = struct {
         try static_members.append(self.gpa, .{
             .name = name_name,
             .type = types.Primitive.string_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+        try static_members.append(self.gpa, .{
+            .name = prototype_name,
+            .type = instance_t,
             .is_optional = false,
             .is_readonly = true,
             .is_method = false,
@@ -106296,19 +106403,13 @@ pub const Checker = struct {
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
-        try self.class_instance_types.put(self.gpa, local_name, instance_t);
-        try self.class_static_types.put(self.gpa, local_name, static_t);
-        try self.putTypeName(local_name, instance_t);
-        if (class_name != local_name) {
-            try self.class_instance_types.put(self.gpa, class_name, instance_t);
-            try self.class_static_types.put(self.gpa, class_name, static_t);
-            try self.putTypeName(class_name, instance_t);
-        }
-        if (class_params.items.len > 0) {
-            try self.registerSyntheticProgramClassGeneric(local_name, class_params.items, instance_t);
-            if (class_name != local_name) {
-                try self.registerSyntheticProgramClassGeneric(class_name, class_params.items, instance_t);
-            }
+        // Namespace members do not introduce unqualified names in the
+        // importing scope. Only an actual local import binding does.
+        if (local_name) |binding| {
+            try self.class_instance_types.put(self.gpa, binding, instance_t);
+            try self.class_static_types.put(self.gpa, binding, static_t);
+            try self.putTypeName(binding, instance_t);
+            if (class_params.items.len > 0) try self.registerSyntheticProgramClassGeneric(binding, class_params.items, instance_t);
         }
         return static_t;
     }
@@ -208404,6 +208505,87 @@ test "checker: program ambient require namespaces retain private class origin" {
     s.checker.setProgramExportedClasses(&classes);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+const StaticValueModuleResolver = struct {
+    const vtable = ExternalResolver.VTable{ .resolve = resolve, .moduleExport = moduleExport, .moduleExportNames = names };
+
+    fn resolve(_: *anyopaque, spec: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        const path = if (std.mem.eql(u8, spec, "./a")) "/a.ts" else if (std.mem.eql(u8, spec, "./b")) "/b.ts" else spec;
+        return .{ .path = path, .is_declaration = true };
+    }
+
+    fn names(_: *anyopaque, _: []const u8, _: []const u8) ?[]const []const u8 {
+        return &.{ "Secret", "peer", "label", "TypeOnly" };
+    }
+
+    fn moduleExport(_: *anyopaque, spec: []const u8, _: []const u8, name: []const u8) ?ExternalResolver.ModuleExport {
+        const peer = std.mem.eql(u8, name, "peer");
+        const value = peer or std.mem.eql(u8, name, "Secret") or std.mem.eql(u8, name, "label");
+        return .{
+            .module_name = "\"fixture\"",
+            .exported_type = std.mem.eql(u8, name, "Secret") or std.mem.eql(u8, name, "TypeOnly"),
+            .exported_value = value,
+            .runtime_value = value,
+            .namespace_module_path = if (peer) (if (std.mem.eql(u8, spec, "/a.ts")) "/b.ts" else "/a.ts") else "",
+        };
+    }
+};
+
+test "checker: free type parameter queries traverse cycles without losing reachable parameters" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const name = try s.sint.intern("T");
+    const parameter = try s.ti.internFreshTypeParameterWithFlags(name, types.Primitive.unknown, types.Primitive.none, .bivariant, false);
+    inline for (.{ false, true }) |has_parameter| {
+        const a = try s.ti.internObjectType(&.{});
+        const b = try s.ti.internObjectType(&.{});
+        try s.ti.completeFreshObjectType(a, &.{.{ .name = name, .type = b, .is_optional = false, .is_readonly = false, .is_method = false }});
+        try s.ti.completeFreshObjectType(b, &.{
+            .{ .name = name, .type = if (has_parameter) parameter else types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = try s.sint.intern("peer"), .type = a, .is_optional = false, .is_readonly = false, .is_method = false },
+        });
+        try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(a));
+        try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(b));
+    }
+}
+
+test "checker: program static values survive namespace consumption without leaking names" {
+    const s = try newSetup(
+        \\import { Secret as Named } from './a';
+        \\import * as ns from './a';
+        \\class Secret { local!: number; }
+        \\const count: number = Named.count;
+        \\Named.missing;
+        \\const copy = ns;
+        \\const badCopy: string = copy.Secret.count;
+        \\const { Secret: Alias } = ns;
+        \\const badAlias: string = Alias.count;
+        \\const goodLabel: string = copy.label;
+        \\const badLabel: number = copy.label;
+        \\const badCycle: string = copy.peer.peer.Secret.count;
+        \\const local: Secret = { local: 1 };
+        \\copy.TypeOnly;
+    );
+    defer destroySetup(s);
+    var resolver: StaticValueModuleResolver = .{};
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &StaticValueModuleResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    const members = [_]ProgramExportedClassMember{.{ .name = "count", .type_name = "number" }};
+    const classes = [_]ProgramExportedClass{
+        .{ .target_path = "/a.ts", .class_name = "Secret", .static_members = &members },
+        .{ .target_path = "/b.ts", .class_name = "Secret", .static_members = &members },
+    };
+    const values = [_]ProgramExportedValue{
+        .{ .target_path = "/a.ts", .export_name = "label", .kind = .variable, .result = .{ .name = "string" } },
+        .{ .target_path = "/b.ts", .export_name = "label", .kind = .variable, .result = .{ .name = "string" } },
+    };
+    s.checker.setProgramExportedClasses(&classes);
+    s.checker.setProgramExportedValues(&values);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
 }
 
 test "checker: keyof exposes only public class members through mapped types" {
