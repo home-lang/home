@@ -2059,3 +2059,89 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_bound_globals.py
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
 ```
+
+### Re-export discovery and declaration origins (untimed)
+
+Issue [#520](https://github.com/home-lang/home/issues/520) isolates two
+prerequisites for the typed graph work in
+[#487](https://github.com/home-lang/home/issues/487): loading the complete
+static dependency graph and recognizing the actual declaration behind an
+export. These controls are not additional timed workloads.
+
+The discovery audit has 28 cases: imports, named/star/namespace/type-only
+re-exports, cycles, and diamonds, each tested with entry-only and all-files
+roots. A negative case only appends a wrong local assignment in the leaf.
+This detects an omitted source file without depending on imported type
+inference. Pre-change Home passes 13/28; both pinned TypeScript baselines
+pass 28/28. Commit
+[`d440dbee6`](https://github.com/home-lang/home/commit/d440dbee6) loads static
+re-export targets and rebuilds unique, current dependency edges. Program
+tests also check repeated resolution, source replacement, and include
+provenance.
+
+The origin audit has 32 paired cases. It accepts two paths to the same
+declaration while retaining genuine TS2308 conflicts and TS2305 missing-name
+errors. It also checks default-import aliases, type-only function identity,
+and runtime rejection through direct, named-barrel, and star-barrel aliases.
+Local parameters that shadow an import remain usable. Both baselines pass
+32/32; pre-change Home passes 4/32. Every compiler receives identical source
+files, roots, and strict/noEmit/noLib/skipLibCheck options. Positive cases
+must succeed silently; negative cases must match the diagnostic-code
+multiset, not merely exit unsuccessfully.
+
+The final ReleaseFast binary passes both new audits:
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Re-export discovery controls | 28/28 | 28/28 | 13/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 4/32 | 32/32 |
+| Original imported graph admission | 2/2 | 2/2 | 0/2 | 0/2 |
+
+The unchanged global, bound-global, and imported-owner audits remain
+32/56, 44/56, and 8/20 for Home; both TypeScript baselines pass every case.
+Full workload admission remains 16/18 for Home and 18/18 for each baseline,
+with only the two original imported graph failures. No new timing run was
+started, and no workload or negative control was removed to improve the result.
+
+Commit [`2e1f795f9`](https://github.com/home-lang/home/commit/2e1f795f9)
+implements the origin resolver and its checker/CLI integration. It uses a
+visited worklist over source paths, names, lookup
+mode, and value visibility. It follows aliases and cycles in the declaration's
+own bound source, with a 96-module-chain regression test. Same-origin equality
+requires actual overlapping declaration meanings; missing, incomplete, or
+ambiguous resolutions cannot prove equality. The CLI retains immutable bound
+source views across origin queries. Type-only paths retain symbol identity
+for `typeof`, while recording whether the runtime restriction originated at
+`import type` (TS1361) or `export type` (TS1362). Restriction positions retain
+their source path, rather than becoming fabricated local node IDs.
+
+This is **not automatic cross-file checked-type transfer**. The existing
+legacy export-fact/name enumeration paths still have separate recursion
+limits; the worklist test does not establish unlimited resolution throughout
+the CLI. Generic parameters, predicates, nominal identity, and declaration
+merging still require source-owned semantic linkage. The original graph
+negative controls remain mandatory before either graph timing is eligible.
+
+Raw evidence is retained in
+`bench/vs_tsgo/results/reexport-discovery.rFhIvz`, including pre-change,
+intermediate, failed, and superseded runs. `audit-before.log` is the discovery
+baseline; `origins-before-final.log` is the final 32-case origin baseline.
+The frozen pre-change binary is `global-consumer.xZ8NXj/home-final`, SHA-256
+`f401735aa016d571c2aa4def48f47f4ff435a100af98c3d37c5d61afab392f09`.
+The final binary is `reexport-discovery.rFhIvz/home-final`, SHA-256
+`bff8e072e39c79f0d44e360b0b36ed5b984fd71183debb8e8736efa1aa6e6e3c`.
+Its successful build log is `release-v4.log`; final audit logs use the
+`-final.log` suffix. The original imported graph negatives are still accepted
+without diagnostics by Home, so neither graph is readmitted for timing.
+Runs marked TERM were stopped after source revisions and are not counted as
+successful final verification. No new timings are reported here.
+
+The final checker suite passes 4,266/4,266, Program 117/117, and the benchmark
+harness 41/41. Zig formatting checks pass. Targeted Pickier reports no errors
+and one pre-existing README fragment warning.
+
+```sh
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_graph_discovery.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_export_origins.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```

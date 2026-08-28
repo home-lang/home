@@ -128,11 +128,14 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
 | [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
 | Imported-owner controls | 20/20 | 20/20 | 8/20 |
+| [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 32/32 |
+| Imported graph admission | 2/2 | 2/2 | 0/2 |
 | Transitive reference probe | 3/3 | 3/3 | 2/3 |
 
-The latest [checked-owner and typed-global checkpoint](./docs/docs/TS_PERFORMANCE.md#checked-owner-lifetime-and-typed-global-consumer-contract-untimed)
-preserves these global/import audit counts; automatic cross-file type transfer
-is not yet enabled, and both graph timing claims remain ineligible.
+The latest [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
+fixes omitted dependencies and false alias/ambiguity errors. Automatic cross-file
+type transfer is not yet enabled, and both graph timing claims remain ineligible.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
