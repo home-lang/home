@@ -75549,7 +75549,6 @@ pub const Checker = struct {
                     if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
-                    if (self.programHasGlobalTypeName(r.name)) return types.Primitive.any;
                     if (std.mem.eql(u8, name_str, "Object")) {
                         if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     }
@@ -75626,6 +75625,11 @@ pub const Checker = struct {
                         if (self.type_names.get(r.name)) |t| return t;
                         return try self.lowerer.lower(type_node);
                     }
+                    // Program-wide name discovery is only an unresolved
+                    // sibling-declaration fallback. It must not erase a
+                    // type that this checker can resolve from its own HIR,
+                    // including forward and merged declarations.
+                    if (self.programHasGlobalTypeName(r.name)) return types.Primitive.any;
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                         return types.Primitive.any;

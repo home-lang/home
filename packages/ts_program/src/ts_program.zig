@@ -9406,3 +9406,93 @@ test "Program: sibling script interfaces contribute global type names" {
         try T.expect(diagnostic.code != 2693);
     }
 }
+
+test "Program: global name discovery preserves declared interface types" {
+    const cases = [_]struct { source: []const u8, codes: []const u16 }{
+        .{
+            .source =
+            \\interface Methods { identity(value: string): string; }
+            \\declare var methods: Methods;
+            \\const good: string = methods.identity('ok');
+            \\const bad: number = methods.identity('ok');
+            \\methods.identity(1);
+            \\methods.missing();
+            ,
+            .codes = &.{ 2322, 2345, 2339 },
+        },
+        .{
+            .source =
+            \\declare var methods: Methods;
+            \\const good: string = methods.identity('ok');
+            \\const bad: number = methods.identity('ok');
+            \\methods.identity(1);
+            \\methods.missing();
+            \\interface Methods { identity(value: string): string; }
+            ,
+            .codes = &.{ 2322, 2345, 2339 },
+        },
+        .{
+            .source =
+            \\interface DeferredConstructor { identity<T>(value: T): T; }
+            \\declare var Deferred: DeferredConstructor;
+            \\const good: string = Deferred.identity('ok');
+            \\const bad: number = Deferred.identity('ok');
+            ,
+            .codes = &.{2322},
+        },
+        .{
+            .source =
+            \\interface Methods { identity(value: string): string; }
+            \\interface Methods { count(value: number): number; }
+            \\declare var methods: Methods;
+            \\const good: string = methods.identity('ok');
+            \\const count: number = methods.count(1);
+            \\const bad: number = methods.identity('ok');
+            \\methods.count('bad');
+            \\methods.missing();
+            ,
+            .codes = &.{ 2322, 2345, 2339 },
+        },
+        .{
+            .source =
+            \\interface Methods { identity(value: string): string; }
+            \\type Alias = Methods;
+            \\declare var methods: Alias;
+            \\const good: string = methods.identity('ok');
+            \\const bad: number = methods.identity('ok');
+            \\methods.identity(1);
+            ,
+            .codes = &.{ 2322, 2345 },
+        },
+        .{
+            .source =
+            \\interface Methods { identity(value: string): string; }
+            \\declare var methods: Methods;
+            \\const good: string = methods.identity('ok');
+            ,
+            .codes = &.{},
+        },
+    };
+    for (cases) |case| {
+        for ([_][]const u8{ "", "export {};\n" }) |prefix| {
+            const source = try std.mem.concat(T.allocator, u8, &.{ prefix, case.source });
+            defer T.allocator.free(source);
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const app_id = try program.add("/app.ts", source);
+            // A sibling script with the same type name must not replace
+            // a module-local declaration with an untyped global name.
+            if (prefix.len != 0) _ = try program.add("/globals.d.ts", "interface Methods { identity(value: number): number; }\n");
+            try program.compileAll(.{ .no_emit = true, .strict = true });
+            const app = program.fileById(app_id).compilation.?;
+            try T.expectEqual(case.codes.len, app.diagnostics.items.len);
+            for (case.codes, app.diagnostics.items) |code, diagnostic| {
+                try T.expectEqual(code, diagnostic.code);
+            }
+        }
+    }
+}
