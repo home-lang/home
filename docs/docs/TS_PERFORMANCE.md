@@ -2990,5 +2990,153 @@ all **30 rounds / 60 successful samples** are retained in
 The newer binary loses all thirty paired rounds. This diagnostic is not averaged
 into the three-compiler table and says nothing about the old binary's eligibility
 for the graph workloads. Source inspection identifies repeated whole-block
-export-name scans as a candidate cost to investigate under #537; optimization
-and its verification remain pending.
+export-name scans as a candidate cost to investigate under #537. The subsequent
+indexed-export checkpoint below implements and verifies that optimization.
+
+### Indexed export queries and variable-list ownership
+
+Commit `b7b9dd9ee`, follow-up [#537](https://github.com/home-lang/home/issues/537), replaces repeated
+whole-source export/import scans with an index of each prepared owner's bound
+declarations and unresolved alias/star edges. The index is built once per owner;
+queries still traverse relevant edges with their own visibility and cycle state.
+It does not cache a permissive answer or skip type checking. Lexical edge order,
+explicit-export precedence, default exports, type-only restrictions, merged
+symbols and declaration provenance are preserved.
+
+An operation-count regression proves the repeated work independently of timing:
+resolving 128 exports from a 256-statement source previously visited **65,536**
+root statements; the indexed query visits **256**, including subsequent missing
+and hidden-name queries. Test-only accounting is absent from production builds.
+The original failing test output is retained as
+`export-index.NVcIdu/program-before.log`; the indexed/ownership Program suite
+passes **137/137**, including ambiguity, cycles, destructured declarations,
+provenance and allocation-failure cleanup.
+
+Those tests also exposed an existing parser bug: trailing declarators in
+`export const first = 1, second = 2` were emitted as unexported siblings.
+Commit `d6878e880` ([#538](https://github.com/home-lang/home/issues/538)) preserves export ownership
+for every declarator, without inferring it from source text in the index.
+The parser suite passes **891/891** tests.
+
+The new `audit_export_lists.py` has 96 untimed cases across const/let/var/declare-var,
+named/namespace/two-hop barrel imports, both root orders, and identical positives
+with appended wrong-type or hidden-binding negatives. Both pinned TypeScript
+compilers pass all cases. Frozen Home `de8fe28f1` fails all 96; the new candidate
+passes **80/96**, with the expected diagnostic codes unchanged:
+
+| Export-list control | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Valid trailing-member consumption | 32/32 | 32/32 | 0/32 | 32/32 |
+| Wrong trailing-member type | 32/32 | 32/32 | 0/32 | 32/32 |
+| Hidden name through a barrel | 16/16 | 16/16 | 0/16 | 16/16 |
+| Hidden name imported directly | 16/16 | 16/16 | 0/16 | 0/16 |
+
+The remaining direct hidden imports are rejected, but with TS2305 instead of
+TS2459. They remain failures, tracked by
+[#540](https://github.com/home-lang/home/issues/540); currently the more precise
+local-declaration diagnostic is available for virtual same-HIR modules but not
+real external owners. Evidence: `export-index.NVcIdu/export-lists-before.log`
+and `export_lists-v3.log`.
+
+All **19/19 workloads pass admission**. Existing release audits retain their
+previous scores: factory 240/240, recursive 288/288, generic classes 120/120,
+static 84/84, bound classes 52/52, callable identity 56/56, callable unions 256/256,
+graph discovery 28/28, export origins 32/32, owners 12/20, nominal origins 44/52,
+globals 32/56 and bound globals 44/56. No pre-existing failure is removed.
+Relevant suites pass: checker **4,286/4,286**, conformance **1,417/1,417**,
+Program **137/137**, parser **891/891**, driver **187/187**, CLI **69/69**,
+emitter **499/499**, and benchmark harness **72/72**. Disk-space-failed build logs
+are retained; successful retries are separately named `*-v3-retry.log`.
+
+The frozen ReleaseFast binary is
+`export-index.NVcIdu/release-v3/bin/home-tsc`, SHA-256
+`615e9fa1f78c2cad17a0b8911b897ede73c00422138d6ecbb2b74801d4564f14`.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/audit_export_lists.py
+HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+```
+
+The controlled large-predicate before/after run uses frozen `de8fe28f1` and
+`b7b9dd9ee`, both of which first pass this workload and its unchanged predicate
+rejection controls. After three warmups per binary, thirty rounds alternate the
+before/after process order. All **30 round files / 60 successful finite samples**
+are retained in `export-index.NVcIdu/predicate-ab-v3/`, with paths, versions and
+SHA-256 hashes; console summary: `predicate-ab-v3.log`.
+
+The previous build averages **525.6 ± 12.4 ms** and the indexed build
+**353.5 ± 10.5 ms**: **32.7% less time**, with the new build faster in **30/30**
+paired rounds. This comparison is restricted to an input on which both builds
+pass the same semantic controls. It is separate from the earlier regression
+measurement and from the full three-compiler run; results are not averaged
+together. The operation-count test and same-correctness measurement support
+removing the repeated export-query scans, not skipping semantic work.
+
+### Indexed-export checkpoint performance
+
+The complete `b7b9dd9ee` checkpoint, `20260828T231439Z`, uses the frozen binary
+above on an Apple M3 Pro, arm64, macOS 27.0 shared workstation. The harness
+verifies **TS 6.0.3 and native TS 7.0.2** before admission; TS 7 and `tsgo` are
+one competitor. All 19 positive workloads and their unchanged rejection gates
+pass on all three compilers before measurement. After three warmups, 30 rounds
+rotate compiler order for every workload. Integrity validation accepts all
+**570 round files / 1,710 successful finite samples**. Fresh generation after
+timing matches all **513 measured corpus files byte-for-byte**.
+
+Own builds, tests and audits had finished before timing, but unrelated shared-host
+activity remained. Load averages before/after were 5.51 / 15.13 / 14.10 and
+4.72 / 10.21 / 12.23. No rounds or outliers were discarded. Times below are
+mean ± sample standard deviation; ratios use unrounded means and the faster
+competitor (native TS 7 for every row).
+
+| Workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `startup` | 65.3 ± 3.2 ms | 39.5 ± 2.9 ms | 3.3 ± 0.2 ms | 11.82× faster |
+| `many_files` | 216.5 ± 18.0 ms | 57.0 ± 4.9 ms | 38.1 ± 12.4 ms | 1.50× faster |
+| `deep_types` | 137.5 ± 12.3 ms | 55.2 ± 4.3 ms | 28.2 ± 2.6 ms | 1.96× faster |
+| `import_graph` | 140.7 ± 14.4 ms | 49.2 ± 5.8 ms | 33.3 ± 4.4 ms | 1.48× faster |
+| `reexport_graph` | 99.1 ± 4.3 ms | 44.1 ± 8.9 ms | 25.6 ± 3.1 ms | 1.72× faster |
+| `tsx_components` | 162.8 ± 6.6 ms | 47.5 ± 1.3 ms | 23.8 ± 3.3 ms | 1.99× faster |
+| `generic_calls` | 181.4 ± 13.4 ms | 56.1 ± 4.2 ms | 23.0 ± 0.8 ms | 2.44× faster |
+| `control_flow` | 194.3 ± 10.4 ms | 61.3 ± 7.7 ms | 36.5 ± 1.9 ms | 1.68× faster |
+| `type_predicates` | 248.1 ± 8.2 ms | 74.0 ± 1.8 ms | 45.4 ± 1.2 ms | 1.63× faster |
+| `type_predicates_large` | 1053.4 ± 204.0 ms | 377.7 ± 66.4 ms | 371.6 ± 125.5 ms | 1.02× lower mean; noisy |
+| `null_safe_access` | 189.6 ± 8.8 ms | 61.1 ± 23.1 ms | 39.7 ± 1.0 ms | 1.54× faster |
+| `destructuring` | 145.0 ± 20.3 ms | 49.5 ± 9.2 ms | 36.6 ± 6.8 ms | 1.35× faster |
+| `overload_resolution` | 194.1 ± 4.0 ms | 62.5 ± 1.5 ms | 29.1 ± 0.8 ms | 2.15× faster |
+| `class_hierarchy` | 178.9 ± 19.5 ms | 50.6 ± 1.9 ms | 28.2 ± 3.0 ms | 1.79× faster |
+| `structural_objects` | 180.0 ± 14.9 ms | 56.2 ± 1.2 ms | 29.2 ± 0.9 ms | 1.92× faster |
+| `interface_composition` | 191.7 ± 1.7 ms | 60.4 ± 1.1 ms | 42.9 ± 0.4 ms | 1.41× faster |
+| `variadic_tuples` | 242.4 ± 6.7 ms | 76.1 ± 2.7 ms | 42.9 ± 1.3 ms | 1.77× faster |
+| `checkjs_jsdoc` | 204.9 ± 6.4 ms | 54.7 ± 2.4 ms | 38.0 ± 1.5 ms | 1.44× faster |
+| `recursive_generics` | 157.2 ± 10.9 ms | 73.9 ± 3.5 ms | 30.2 ± 1.7 ms | 2.45× faster |
+
+Home has lower means on **19/19**, but this is not universal or statistically
+established benchmark leadership. Large predicates lead by only 1.02× with
+substantial variance and **25/30 paired wins** over TS 7. Import graph, re-export
+graph and many-files paired wins are 29/30, 30/30 and 29/30 respectively.
+Real projects, additional platforms and the outstanding correctness gaps above
+remain unvalidated. The earlier losing checkpoint stays documented separately.
+
+An independent large-predicate confirmation, `20260828T231856Z`, uses the same
+binary, unchanged controls, three warmups and 30 rotating-order rounds. All
+**30 round files / 90 successful samples** validate. Home has the lower time
+in **29/30 paired rounds**; the margin remains narrow. This targeted run is
+reported separately, not substituted for the full-run row or pooled with it:
+
+| Confirmation workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `type_predicates_large` | 950.2 ± 6.6 ms | 331.4 ± 4.6 ms | 320.4 ± 2.8 ms | 1.03× faster |
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T231439Z
+HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3 --workload type_predicates_large
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T231856Z
+```
+
+Full-run, confirmation and input-integrity logs are retained locally as
+`export-index.NVcIdu/timing-v3.log`, `confirmation-v3.log` and
+`corpus-verified-v3.log`. Raw round files and metadata remain in their named
+result directories under `bench/vs_tsgo/results/`; they are not combined with
+any earlier checkpoint.
