@@ -1822,3 +1822,101 @@ so this checkpoint makes no speedup or universal-leadership claim. Actual
 cross-file type resolution remains open in
 [#480](https://github.com/home-lang/home/issues/480) and
 [#487](https://github.com/home-lang/home/issues/487).
+
+### Callable union predicates and receivers (untimed)
+
+The follow-up audit in
+[`79d9ce2ca`](https://github.com/home-lang/home/commit/79d9ce2ca), tracked in
+[#511](https://github.com/home-lang/home/issues/511), tests the semantic work
+required when choosing between callable values. Distinct callable identities
+alone do not prevent an erased-shape subtype check from discarding a branch:
+
+```ts
+declare function guard(value: unknown): value is number;
+declare function plain(value: unknown): boolean;
+declare let value: unknown;
+const selected = [guard, plain];
+if (selected[0](value)) { const bad: number = value; } // TS2322
+```
+
+The previous Home binary accepts this invalid narrowing. Conversely, unions
+of genuine guards lose their shared narrowing information in several paths,
+rejecting valid uses. A callable union also requires a receiver satisfying
+every possible branch, rather than any one branch as for an overload set.
+
+The permanent audit contains four families, each tested with declaration and
+branch order varied independently, arrays and conditional expressions, bare
+callables and object wrappers, script/module scope, and valid/invalid pairs.
+That is 64 cases per family and 256 per compiler. Negative projects only append
+an invalid use to the corresponding positive project. Files, compiler flags,
+and minimal library are identical for all three compilers. Exact installed
+versions, exit statuses, and diagnostic-code multisets are checked; no failures
+are waived. These are untimed controls, not new timed workloads.
+
+| Callable union family | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Predicate plus ordinary boolean | 64/64 | 64/64 | 60/64 | 64/64 |
+| Different predicate targets | 64/64 | 64/64 | 12/64 | 64/64 |
+| Same predicate target | 64/64 | 64/64 | 16/64 | 64/64 |
+| Explicit receiver requirements | 64/64 | 64/64 | 32/64 | 64/64 |
+| Total | 256/256 | 256/256 | 120/256 | 256/256 |
+
+Commit [`7d16f7ab8`](https://github.com/home-lang/home/commit/7d16f7ab8)
+consults predicate and receiver metadata before reducing
+callable unions. Resolved signatures combine predicate targets only when
+every branch promises a compatible predicate kind and argument position.
+Combined targets have no fabricated source annotation. Receiver checking uses
+the union's combined signatures, which intersect receiver requirements; the
+zero-argument and two-branch restrictions are removed. A previous receiver
+substitution based on accidentally shared signature identity is also removed.
+Arity is captured before interning can invalidate borrowed parameter storage,
+and union-member traversal retains its own stable IDs. Matching retains the
+selected common parameter contract instead of substituting a longer branch's
+parameters, preserving required/minimum and maximum argument counts. Result
+overloads are deduplicated by their complete parameter/receiver contracts,
+not by the partial compatibility used to find cross-branch candidates.
+
+The two baseline versions agree on every audit case. A separate diagnostic
+probe found that a direct, non-union receiver missing one required property
+produces TS2684 in TS 6 and TS2741 in native TS 7. The existing native-style
+elaboration is retained; this disagreement is not hidden by relaxing the audit.
+
+The final release also passes all 56 callable-identity controls, 14 tuple
+controls and 12 assertion controls. Four additional checker-fixture comparisons
+cover five-way union arity, valid optional/rest calls, conditional minimum
+arity, and three-way predicate/receiver composition: all twelve compiler/fixture
+checks match the pinned baselines. All eighteen positive workloads pass and
+sixteen rejection gates pass. The two graph gates still fail; global controls
+remain 32/56, imported-owner controls 8/20, and transitive-reference checks 2/3
+for Home. Those gaps are not waived by the new callable results.
+
+The full checker suite passes 4,261/4,261, including the original arity
+regressions unchanged and the new predicate/receiver tests. Conformance passes
+1,417/1,417. Driver passes
+186/186, program 105/105, CLI 69/69, and harness 37/37. Repository-wide Pickier
+aborts at its 100,000-file safety limit (177,457 files discovered); targeted
+lint has no errors and one pre-existing README fragment warning.
+
+Raw evidence is retained in `bench/vs_tsgo/results/callable-unions.2pCgVc`;
+final compiler verification logs use the `-v5.log` suffix. The frozen pre-change binary
+is `signature-identity.6jiDkG/home-final`, SHA-256
+`d7ecf960b76ef1f61b3e9acf4ebb97cad70fc3d087db20c5a5cdce03d82e6ffc`.
+The final ReleaseFast binary is `callable-unions.2pCgVc/home-v5`, SHA-256
+`462eaf0f83137f05205ac50705c5b4878c0e24f18a7b69fcb1804dc1a03a30dc`.
+Earlier candidate runs, including failed regression runs, are retained too.
+Predicate and tuple workload hashes are unchanged. No new timings were
+collected and both graph speed claims remain ineligible. Actual typed global
+and imported declaration linkage remains open in
+[#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487).
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker
+./pantry/.bin/zig build test -Dfilter=ts_conformance
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_callable_unions.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_callables.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```

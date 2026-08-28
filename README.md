@@ -113,14 +113,17 @@ coverage is still undergoing validation and is not included in these timings.
 The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
 verify that checking uses the completed graph without reparsing bound sources.
 False reference/global-presence errors are fixed, but cross-file type linkage
-remains incomplete. The latest [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#callable-identity-and-scoped-inference-untimed)
-improves from **26/56 to 56/56** after isolating callable metadata and nested
-generic inference. These are correctness results; the timing snapshot above
+remains incomplete. The [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#callable-identity-and-scoped-inference-untimed)
+passes **56/56** after isolating callable metadata and nested generic inference.
+The latest [callable-union audit](./docs/docs/TS_PERFORMANCE.md#callable-union-predicates-and-receivers-untimed)
+improves from **120/256 to 256/256** after fixing predicate composition and
+receiver requirements. These are correctness results; the timing snapshot above
 has not been refreshed. Expanded controls keep remaining failures visible:
 
 | Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
 |---|---:|---:|---:|
 | Callable identity controls | 56/56 | 56/56 | 56/56 |
+| Callable union controls | 256/256 | 256/256 | 256/256 |
 | Variadic tuple controls | 14/14 | 14/14 | 14/14 |
 | Global declaration controls | 56/56 | 56/56 | 32/56 |
 | Imported-owner controls | 20/20 | 20/20 | 8/20 |
