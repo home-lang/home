@@ -1724,6 +1724,13 @@ pub const RunCommand = struct {
         if (!ctx.debug.loaded_bunfig) {
             bun.cli.Arguments.loadConfigPath(ctx.allocator, true, "bunfig.toml", ctx, .RunCommand) catch {};
         }
+        if (ctx.filters.len > 0 or ctx.workspaces) {
+            ctx.args.target = .bun;
+            @import("./filter_run.zig").runScriptsWithFilter(ctx) catch |err| {
+                Output.prettyErrorln("<r><red>error<r>: {s}", .{@errorName(err)});
+                Global.exit(1);
+            };
+        }
         var bundle: transpiler.Transpiler = undefined;
         const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = false });
         if (target_name.len == 0) {

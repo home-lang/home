@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -298,7 +298,7 @@ HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
     try {
       const rejected = run(['run', '--bun', 'native'])
       assert.equal(rejected.status, 1)
-      assert.match(rejected.stderr, /UnsafeNodeShimDirectory/)
+      assert.equal(rejected.stderr, 'error: UnsafeNodeShimDirectory\n')
       assert.equal(rejected.stdout, '')
     } finally {
       chmodSync(cache, 0o700)
@@ -308,11 +308,114 @@ HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
     try {
       const rejected = run(['run', '--bun', 'native'])
       assert.equal(rejected.status, 1)
-      assert.match(rejected.stderr, /UnsafeNodeShimTarget/)
+      assert.equal(rejected.stderr, 'error: UnsafeNodeShimTarget\n')
       assert.equal(rejected.stdout, '')
     } finally {
       rmSync(record.node)
       symlinkSync(realpathSync(process.execPath), record.node)
+    }
+  }
+  const workspace = join(directory, 'workspace-filter')
+  mkdirSync(workspace)
+  writeFileSync(join(workspace, 'package.json'), JSON.stringify({
+    name: 'filter-root', workspaces: ['packages/*'], scripts: { record: 'echo ROOT-MUST-NOT-RUN' },
+  }))
+  writeFileSync(join(workspace, 'record.cjs'), 'console.log(JSON.stringify({execPath: process.execPath, cwd: process.cwd(), args: process.argv.slice(2)}));')
+  writeFileSync(join(workspace, 'burst.cjs'), 'for (let i = 0; i < 20; i++) console.log("log_line");')
+  for (const name of ['a', 'b']) {
+    const packageDirectory = join(workspace, 'packages', name)
+    mkdirSync(packageDirectory, { recursive: true })
+    writeFileSync(join(packageDirectory, 'package.json'), JSON.stringify({
+      name: 'pkg-' + name,
+      scripts: { record: 'bun ../../record.cjs', interrupt: 'bun ../../hold.cjs', instant: 'printf instant', burst: 'bun ../../burst.cjs', ...(name === 'a' ? { partial: 'echo only-a' } : {}) },
+    }))
+  }
+  for (const prefix of [
+    ['--filter', 'pkg-*'], ['run', '--filter', 'pkg-*'],
+    ['--workspaces'], ['run', '--workspaces'], ['--bun', 'run', '--filter', 'pkg-*'],
+  ]) {
+    const result = success([...prefix, 'record', ...args], { cwd: workspace })
+    assert.equal(result.stderr, '')
+    assert.doesNotMatch(result.stdout, /ROOT-MUST-NOT-RUN/)
+    const records = result.stdout.split('\n').filter(line => /^pkg-[ab] record: \{/.test(line))
+    assert.equal(records.length, 2, result.stdout)
+    for (const line of records) {
+      const name = line[4]
+      const record = JSON.parse(line.slice('pkg-a record: '.length))
+      assert.equal(realpathSync(record.execPath), realpathSync(process.execPath))
+      assert.equal(realpathSync(record.cwd), realpathSync(join(workspace, 'packages', name)))
+      assert.deepEqual(record.args, args)
+      assert.match(result.stdout, new RegExp(`pkg-${name} record: Exited with code 0`))
+    }
+  }
+  const noMatch = run(['run', '--filter', 'absent-package', 'record'], { cwd: workspace })
+  assert.equal(noMatch.status, 1)
+  assert.match(noMatch.stderr, /No packages matched the filter/)
+  const optional = success(['run', '--filter', 'absent-package', '--if-present', 'record'], { cwd: workspace })
+  assert.equal(optional.stdout + optional.stderr, '')
+  assert.match(success(['run', '--workspaces', '--if-present', 'partial'], { cwd: workspace }).stdout, /pkg-a partial: only-a/)
+  const missingWorkspaceScript = run(['run', '--workspaces', 'partial'], { cwd: workspace })
+  assert.equal(missingWorkspaceScript.status, 1)
+  assert.match(missingWorkspaceScript.stderr, /Missing 'partial' script/)
+  if (process.platform !== 'win32') {
+    // Exit may be reported before pipe readability. Preserve even a fast,
+    // unterminated final chunk before printing the process completion line.
+    for (let i = 0; i < 20; i++) {
+      assert.equal(success(['run', '--filter', 'pkg-a', 'instant'], { cwd: workspace }).stdout,
+        'pkg-a: instant\npkg-a instant: Exited with code 0\n')
+    }
+    const colorArgs = ['run', '--filter', 'pkg-a', '--elide-lines', '15', 'burst']
+    const colored = success(colorArgs, { cwd: workspace, env: { ...env, FORCE_COLOR: '1', NO_COLOR: '1' } })
+    assert.match(colored.stdout, /\[5 lines elided\]/)
+    assert.match(colored.stdout, /\u001B\[/)
+    const plain = success(colorArgs, { cwd: workspace, env: { ...env, FORCE_COLOR: '0', NO_COLOR: '1' } })
+    assert.doesNotMatch(plain.stdout, /\u001B\[|lines elided/)
+    assert.equal(plain.stdout.match(/log_line/g).length, 20)
+    writeFileSync(join(workspace, 'hold.cjs'), `
+      process.on('SIGINT', () => { console.log('FILTER_STOP'); process.exit(0); });
+      console.log('FILTER_READY');
+      setInterval(() => {}, 1000);
+    `)
+    const child = spawn(process.execPath, ['run', '--filter', 'pkg-a', 'interrupt'], {
+      cwd: workspace, env, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let readyTimer
+    let exitTimer
+    const closed = new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', (code, signal) => resolve({ code, signal }))
+    })
+    const ready = new Promise((resolve, reject) => {
+      readyTimer = setTimeout(() => reject(new Error('filter child did not become ready')), 10000)
+      child.stdout.on('data', chunk => {
+        stdout += chunk
+        if (stdout.includes('FILTER_READY')) {
+          clearTimeout(readyTimer)
+          resolve()
+        }
+      })
+      child.once('error', reject)
+      child.once('close', () => {
+        if (!stdout.includes('FILTER_READY')) reject(new Error('filter exited before readiness: ' + stderr))
+      })
+    })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    try {
+      await ready
+      assert.equal(child.kill('SIGINT'), true)
+      exitTimer = setTimeout(() => child.kill('SIGKILL'), 10000)
+      const result = await closed
+      assert.deepEqual(result, { code: 0, signal: null }, stderr)
+      assert.match(stdout, /FILTER_STOP/)
+      assert.equal(stderr, '')
+    }
+    finally {
+      clearTimeout(readyTimer)
+      clearTimeout(exitTimer)
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      await closed.catch(() => {})
     }
   }
   console.log('native package-script dispatch passed')

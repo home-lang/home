@@ -2536,7 +2536,16 @@ fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime 
         }
         return false;
     }
-    if (try home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand)) home_rt.Global.exit(0);
+    const handled = home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand) catch |err| switch (err) {
+        // These are expected CLI validation failures, not internal faults.
+        // Report them without walking the native compiler's debug metadata.
+        error.UnsafeNodeShimDirectory, error.UnsafeNodeShimTarget => {
+            home_rt.Output.prettyErrorln("<r><red>error<r>: {s}", .{@errorName(err)});
+            home_rt.Global.exit(1);
+        },
+        else => return err,
+    };
+    if (handled) home_rt.Global.exit(0);
     return false;
 }
 
