@@ -74,6 +74,9 @@ def cases(family: str | None = None) -> list[Case]:
         pair(f"sibling-{kind}", "cross-file", "", "const good: number = lexicalValue;\n",
              "const bad: string = lexicalValue;\n", ("2322",),
              siblings={"globals.d.ts": f"declare {kind} lexicalValue: number;\n"})
+    pair("sibling-global-this", "cross-file", "", "const good: number = globalThis.sharedValue;\n",
+         "const bad: string = globalThis.sharedValue;\n", ("2322",),
+         siblings={"globals.d.ts": "declare var sharedValue: number;\n"})
     pair("sibling-merge", "cross-file", METHODS + VARIABLE, MERGED_GOOD, MERGED_BAD, CODES,
          siblings={"globals.d.ts": COUNT})
     return [case for case in result if family is None or case.family == family]
