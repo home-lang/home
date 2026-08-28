@@ -1722,3 +1722,103 @@ and import type resolution, declaration merging, and module-cycle semantics
 remain open in [#480](https://github.com/home-lang/home/issues/480) and
 [#487](https://github.com/home-lang/home/issues/487), under the performance
 tracker [#416](https://github.com/home-lang/home/issues/416).
+
+### Callable identity and scoped inference (untimed)
+
+The audit added in [`d4e63ff6c`](https://github.com/home-lang/home/commit/d4e63ff6c)
+exposes a declaration-identity bug tracked in
+[#507](https://github.com/home-lang/home/issues/507): signatures with equal
+parameter and return types shared a TypeId even though their predicates,
+optional/rest parameters, generic binders, and declaration metadata differed.
+For example, the predicate and ordinary boolean methods below must not share
+narrowing behavior:
+
+```ts
+interface Guards {
+  number(value: unknown): value is number;
+  plain(value: unknown): boolean;
+}
+declare const guards: Guards;
+declare let value: unknown;
+const plain = guards.plain;
+if (plain(value)) { const bad: number = value; } // TS2322
+```
+
+The earlier Home binary accepts that invalid assignment; both pinned TS
+compilers reject it. The permanent audit has seven families: predicate aliases,
+direct calls, wrapper objects, predicate assignments, rest parameters, optional
+parameters, and generic arity. Every family includes valid/invalid pairs in
+both declaration orders and script/module scopes: 56 cases per compiler.
+Only invalid statements are appended to each positive project. All compilers
+receive identical files, flags, and the minimal library; exit status and exact
+diagnostic-code multisets must agree. No failures are skipped and no timings
+are taken by this audit.
+
+Commit [`15f050f23`](https://github.com/home-lang/home/commit/15f050f23)
+changes callable creation to allocate distinct identities without an erased-shape
+hash entry. Structural relations still decide compatibility. Creation reserves
+all pool columns before publishing lengths, and retains offsets when its input
+parameters borrow the same pool. Type transfer preserves distinct imported
+callables while still deduplicating immutable keys.
+
+Related checker corrections explicitly preserve predicates/generic metadata
+during inference, prevent local generic callback binders from becoming outer
+inference candidates, retain identity for unaffected substitutions, and use
+structural subtype reduction for conditional objects with callable members.
+Argument context snapshots remain valid while checking earlier arguments grows
+the signature pool. These replace dependencies on accidental TypeId sharing;
+they do not add name-specific or benchmark-specific exceptions.
+
+| Callable family | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Predicate alias | 8/8 | 8/8 | 4/8 | 8/8 |
+| Predicate direct call | 8/8 | 8/8 | 4/8 | 8/8 |
+| Predicate wrapper | 8/8 | 8/8 | 4/8 | 8/8 |
+| Predicate assignment | 8/8 | 8/8 | 4/8 | 8/8 |
+| Rest parameters | 8/8 | 8/8 | 4/8 | 8/8 |
+| Optional parameters | 8/8 | 8/8 | 2/8 | 8/8 |
+| Generic arity | 8/8 | 8/8 | 4/8 | 8/8 |
+| Total | 56/56 | 56/56 | 26/56 | 56/56 |
+
+The fresh release also passes all 14 tuple controls and 12 assertion controls.
+The global and imported-owner audits remain at 32/56 and 8/20 respectively;
+their individual pass/fail results and diagnostic-code multisets are unchanged.
+All eighteen positive benchmark workloads pass, but Home still accepts the
+invalid imported-property controls for both module graphs. Both graph timing
+claims remain ineligible. Passing the other sixteen admission gates does not
+establish semantic equivalence for all their language features.
+
+The checker suite passes 4,257/4,257, conformance 1,417/1,417, driver 186/186,
+program 105/105, CLI 69/69, and harness tests 35/35. Tests cover distinct callable identities, pool growth,
+allocation-failure publication, transfer relations and metadata, unaffected
+substitution, hidden predicate targets, and scoped callback binders. The two
+existing overload-context fixtures also match both pinned compilers' complete
+diagnostic-code multisets in a separate CLI probe (six checks, no failures).
+The transitive-reference probe remains at 2/3 for Home and 3/3 for each TS
+baseline. Repository-wide Pickier aborted at its 100,000-file safety limit
+(177,405 files discovered); targeted lint of the changed files passes with
+one pre-existing README link-fragment warning.
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker
+./pantry/.bin/zig build test -Dfilter=ts_driver
+./pantry/.bin/zig build test -Dfilter=ts_program
+./pantry/.bin/zig build test -Dfilter=ts_conformance
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_callables.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```
+
+Local raw evidence is retained in
+`bench/vs_tsgo/results/signature-identity.6jiDkG`. The before binary SHA-256 is
+`a3eddac96fe1b07d7876defc63a2cda06b9f13210b333e8dc57e2b38e8a0ea12`;
+the fresh ReleaseFast binary is
+`d7ecf960b76ef1f61b3e9acf4ebb97cad70fc3d087db20c5a5cdce03d82e6ffc`.
+Both installed baseline versions were verified exactly before the audits.
+Predicate and tuple corpus hashes are unchanged. No new timings were collected,
+so this checkpoint makes no speedup or universal-leadership claim. Actual
+cross-file type resolution remains open in
+[#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487).
