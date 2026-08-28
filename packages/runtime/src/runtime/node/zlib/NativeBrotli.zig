@@ -20,7 +20,6 @@ pub const finalize = impl.finalize;
 ref_count: RefCount,
 globalThis: *jsc.JSGlobalObject,
 stream: Context = .{},
-write_result: ?[*]u32 = null,
 poll_ref: CountedKeepAlive = .{},
 this_value: jsc.Strong.Optional = .empty,
 write_in_progress: bool = false,
@@ -70,9 +69,8 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
         return globalThis.ERR(.MISSING_ARGS, "init(params, writeResult, writeCallback)", .{}).throw();
     }
 
-    // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    // updateWriteResult writes two u32s through this pointer, so the
-    // caller-supplied array must be a Uint32Array with at least 2 elements.
+    // Completion re-resolves this cached view before writing, so validate the
+    // initial value's element type and minimum length here.
     const write_result_buf = arguments[1].asArrayBuffer(globalThis) orelse
         return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[1]);
     if (write_result_buf.typed_array_type != .Uint32Array)
@@ -81,10 +79,7 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     if (write_result_slice.len < 2) {
         return globalThis.ERR(.INVALID_ARG_VALUE, "writeResult must be a Uint32Array with at least 2 elements", .{}).throw();
     }
-    const writeResult = write_result_slice.ptr;
     const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[2]);
-
-    this.write_result = writeResult;
 
     // Validate params (arg[0]) before any native state is initialized so the
     // error path needs no cleanup. The setParams loop reads u32 elements, so
@@ -95,6 +90,7 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
         return globalThis.throwInvalidArgumentTypeValue("params", "Uint32Array", arguments[0]);
     const params_ = params_buf.asU32();
 
+    js.writeResultSetCached(this_value, globalThis, arguments[1]);
     js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));
 
     var err = this.stream.init();

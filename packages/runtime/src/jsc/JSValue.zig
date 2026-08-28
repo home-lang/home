@@ -1206,6 +1206,8 @@ pub const JSValue = enum(i64) {
     }
 
     extern fn JSC__JSValue__asArrayBuffer(this: JSValue, global: *JSGlobalObject, out: *ArrayBuffer) bool;
+    extern fn JSC__JSValue__pinArrayBuffer(this: JSValue) bool;
+    extern fn JSC__JSValue__unpinArrayBuffer(this: JSValue) void;
 
     pub fn asArrayBuffer(this: JSValue, global: *JSGlobalObject) ?ArrayBuffer {
         var out: ArrayBuffer = undefined;
@@ -1213,6 +1215,18 @@ pub const JSValue = enum(i64) {
             return out;
         }
         return null;
+    }
+
+    /// Materializes and pins this value's backing ArrayBuffer against transfer.
+    /// Pinning does not keep the JavaScript value alive; callers also need a GC root.
+    pub fn asPinnedArrayBuffer(this: JSValue, global: *JSGlobalObject) ?ArrayBuffer {
+        if (!JSC__JSValue__pinArrayBuffer(this)) return null;
+        return this.asArrayBuffer(global);
+    }
+
+    /// Balances a successful `asPinnedArrayBuffer` call.
+    pub fn unpinArrayBuffer(this: JSValue) void {
+        JSC__JSValue__unpinArrayBuffer(this);
     }
     extern fn JSC__JSValue__fromInt64NoTruncate(globalObject: *JSGlobalObject, i: i64) JSValue;
     /// This always returns a JS BigInt

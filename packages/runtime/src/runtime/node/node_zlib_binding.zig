@@ -61,9 +61,6 @@ pub fn CompressionStream(comptime T: type) type {
             var out_off: u32 = 0;
             var out_len: u32 = 0;
             var flush: u32 = 0;
-            var in: ?[]const u8 = null;
-            var out: ?[]u8 = null;
-
             const this_value = callframe.this();
 
             if (arguments[0].isUndefined()) {
@@ -76,7 +73,6 @@ pub fn CompressionStream(comptime T: type) type {
 
             if (arguments[1].isNull()) {
                 // just a flush
-                in = null;
                 in_len = 0;
                 in_off = 0;
             } else {
@@ -88,7 +84,6 @@ pub fn CompressionStream(comptime T: type) type {
                 if (in_buf.byte_len < @as(usize, in_off) + @as(usize, in_len)) {
                     return globalThis.ERR(.OUT_OF_RANGE, "in_off + in_len ({d}) exceeds input buffer length ({d})", .{ @as(usize, in_off) + @as(usize, in_len), in_buf.byte_len }).throw();
                 }
-                in = in_buf.byteSlice()[in_off..][0..in_len];
             }
 
             const out_buf = arguments[4].asArrayBuffer(globalThis) orelse {
@@ -99,16 +94,34 @@ pub fn CompressionStream(comptime T: type) type {
             if (out_buf.byte_len < @as(usize, out_off) + @as(usize, out_len)) {
                 return globalThis.ERR(.OUT_OF_RANGE, "out_off + out_len ({d}) exceeds output buffer length ({d})", .{ @as(usize, out_off) + @as(usize, out_len), out_buf.byte_len }).throw();
             }
-            out = out_buf.byteSlice()[out_off..][0..out_len];
-
             if (this.write_in_progress) {
                 return globalThis.ERR(.INVALID_STATE, "Write already in progress", .{}).throw();
             }
             if (this.pending_close) {
                 return globalThis.ERR(.INVALID_STATE, "Pending close", .{}).throw();
             }
+
+            // Materializing a FastTypedArray's backing store can move its bytes,
+            // so pin first and resolve both slices again afterwards. A pin blocks
+            // transfer/detachment but does not keep the JS value alive; the
+            // generated cached fields below provide the independent GC roots.
+            var pinned_input: jsc.ArrayBuffer = undefined;
+            const in: ?[]const u8 = if (arguments[1].isNull()) null else blk: {
+                pinned_input = arguments[1].asPinnedArrayBuffer(globalThis) orelse
+                    return globalThis.throwOutOfMemory();
+                break :blk pinned_input.byteSlice()[in_off..][0..in_len];
+            };
+            var pinned_output = arguments[4].asPinnedArrayBuffer(globalThis) orelse {
+                if (!arguments[1].isNull()) arguments[1].unpinArrayBuffer();
+                return globalThis.throwOutOfMemory();
+            };
+            const out: ?[]u8 = pinned_output.byteSlice()[out_off..][0..out_len];
+
             this.write_in_progress = true;
             this.ref();
+
+            T.js.pendingInputSetCached(this_value, globalThis, arguments[1]);
+            T.js.pendingOutputSetCached(this_value, globalThis, arguments[4]);
 
             this.stream.setBuffers(in, out);
             this.stream.setFlush(@intCast(flush));
@@ -157,11 +170,26 @@ pub fn CompressionStream(comptime T: type) type {
 
             this_value.ensureStillAlive();
 
+            // Release both detachment pins and GC roots before any error or
+            // write callback. A callback may synchronously schedule a new write;
+            // old completion cleanup must not clear that new write's ownership.
+            for ([2]?jsc.JSValue{
+                T.js.pendingInputGetCached(this_value),
+                T.js.pendingOutputGetCached(this_value),
+            }) |pending| {
+                const value = pending orelse continue;
+                if (value.isCell() and value.asArrayBuffer(global) != null) {
+                    value.unpinArrayBuffer();
+                }
+            }
+            T.js.pendingInputSetCached(this_value, global, .zero);
+            T.js.pendingOutputSetCached(this_value, global, .zero);
+
             if (!(checkError(this, global, this_value))) {
                 return;
             }
 
-            this.stream.updateWriteResult(&this.write_result.?[1], &this.write_result.?[0]);
+            flushWriteResult(this, global, this_value);
             this_value.ensureStillAlive();
 
             const write_callback: jsc.JSValue = T.js.writeCallbackGetCached(this_value).?;
@@ -237,7 +265,7 @@ pub fn CompressionStream(comptime T: type) type {
 
             this.stream.doWork();
             if (checkError(this, globalThis, this_value)) {
-                this.stream.updateWriteResult(&this.write_result.?[1], &this.write_result.?[0]);
+                flushWriteResult(this, globalThis, this_value);
                 this.write_in_progress = false;
             }
             this.deref();
@@ -301,6 +329,18 @@ pub fn CompressionStream(comptime T: type) type {
             if (!err.isError()) return true;
             emitError(this, globalThis, this_value, err);
             return false;
+        }
+
+        /// Resolve the JS-owned write state for every completion. Its backing
+        /// store may have been transferred since init(), so retaining a raw
+        /// pointer here would write into detached or freed memory.
+        fn flushWriteResult(this: *T, globalThis: *jsc.JSGlobalObject, this_value: jsc.JSValue) void {
+            const value = T.js.writeResultGetCached(this_value) orelse return;
+            if (!value.isCell()) return;
+            var buffer = value.asArrayBuffer(globalThis) orelse return;
+            const result = buffer.asU32();
+            if (result.len < 2) return;
+            this.stream.updateWriteResult(&result[1], &result[0]);
         }
 
         pub fn emitError(this: *T, globalThis: *jsc.JSGlobalObject, this_value: jsc.JSValue, err_: Error) void {

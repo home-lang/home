@@ -20,7 +20,6 @@ pub const finalize = impl.finalize;
 ref_count: RefCount,
 globalThis: *jsc.JSGlobalObject,
 stream: Context = .{},
-write_result: ?[*]u32 = null,
 poll_ref: CountedKeepAlive = .{},
 this_value: jsc.Strong.Optional = .empty,
 write_in_progress: bool = false,
@@ -73,13 +72,13 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
 
     const writeState = writeState_value.asArrayBuffer(globalThis) orelse return globalThis.throwInvalidArgumentTypeValue("writeState", "Uint32Array", writeState_value);
     if (writeState.typed_array_type != .Uint32Array) return globalThis.throwInvalidArgumentTypeValue("writeState", "Uint32Array", writeState_value);
-    // flushWriteResult writes two u32s through this pointer, so the
-    // caller-supplied array must hold at least 2 elements.
+    // Completion re-resolves this cached view before writing, so validate the
+    // initial value's element type and minimum length here.
     const write_state_slice = writeState.asU32();
     if (write_state_slice.len < 2) {
         return globalThis.ERR(.INVALID_ARG_VALUE, "writeState must be a Uint32Array with at least 2 elements", .{}).throw();
     }
-    this.write_result = write_state_slice.ptr;
+    js.writeResultSetCached(this_value, globalThis, writeState_value);
 
     const write_js_callback = try validators.validateFunction(globalThis, "processCallback", processCallback_value);
     js.writeCallbackSetCached(this_value, globalThis, write_js_callback.withAsyncContextIfNeeded(globalThis));
@@ -118,6 +117,7 @@ pub fn params(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.C
 }
 
 fn deinit(this: *@This()) void {
+    this.this_value.deinit();
     this.poll_ref.deinit();
     switch (this.stream.mode) {
         .ZSTD_COMPRESS, .ZSTD_DECOMPRESS => this.stream.close(),

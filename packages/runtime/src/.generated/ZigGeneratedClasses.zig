@@ -12337,16 +12337,88 @@ extern fn NativeBrotliPrototype__dictionarySetCachedValue(jsc.JSValue, *jsc.JSGl
         }
 
     
+    extern fn NativeBrotliPrototype__pendingInputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeBrotliPrototype__pendingInputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeBrotli.pendingInput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeBrotliPrototype__pendingInputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeBrotli.pendingInput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeBrotliPrototype__pendingInputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeBrotliPrototype__pendingOutputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeBrotliPrototype__pendingOutputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeBrotli.pendingOutput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeBrotliPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeBrotli.pendingOutput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeBrotliPrototype__pendingOutputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeBrotliPrototype__writeResultSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeBrotliPrototype__writeResultGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeBrotli.writeResult` setter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeBrotliPrototype__writeResultSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeBrotli.writeResult` getter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeBrotliPrototype__writeResultGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
     pub const gc = enum (u8) {
       writeCallback,
 errorCallback,
 dictionary,
+pendingInput,
+pendingOutput,
+writeResult,
 
         pub fn get(comptime field: gc, thisValue: jsc.JSValue) ?jsc.JSValue {
           const value = switch (field) {
                 .writeCallback => NativeBrotliPrototype__writeCallbackGetCachedValue(thisValue),
             .errorCallback => NativeBrotliPrototype__errorCallbackGetCachedValue(thisValue),
             .dictionary => NativeBrotliPrototype__dictionaryGetCachedValue(thisValue),
+            .pendingInput => NativeBrotliPrototype__pendingInputGetCachedValue(thisValue),
+            .pendingOutput => NativeBrotliPrototype__pendingOutputGetCachedValue(thisValue),
+            .writeResult => NativeBrotliPrototype__writeResultGetCachedValue(thisValue),
           };
 
           if (value == .zero) {
@@ -12365,6 +12437,9 @@ dictionary,
                 .writeCallback => NativeBrotliPrototype__writeCallbackSetCachedValue(thisValue, globalObject, value),
     .errorCallback => NativeBrotliPrototype__errorCallbackSetCachedValue(thisValue, globalObject, value),
     .dictionary => NativeBrotliPrototype__dictionarySetCachedValue(thisValue, globalObject, value),
+    .pendingInput => NativeBrotliPrototype__pendingInputSetCachedValue(thisValue, globalObject, value),
+    .pendingOutput => NativeBrotliPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value),
+    .writeResult => NativeBrotliPrototype__writeResultSetCachedValue(thisValue, globalObject, value),
           }
         }
     };
@@ -12613,16 +12688,88 @@ extern fn NativeZlibPrototype__dictionarySetCachedValue(jsc.JSValue, *jsc.JSGlob
         }
 
     
+    extern fn NativeZlibPrototype__pendingInputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZlibPrototype__pendingInputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZlib.pendingInput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZlibPrototype__pendingInputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZlib.pendingInput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZlibPrototype__pendingInputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeZlibPrototype__pendingOutputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZlibPrototype__pendingOutputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZlib.pendingOutput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZlibPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZlib.pendingOutput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZlibPrototype__pendingOutputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeZlibPrototype__writeResultSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZlibPrototype__writeResultGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZlib.writeResult` setter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZlibPrototype__writeResultSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZlib.writeResult` getter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZlibPrototype__writeResultGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
     pub const gc = enum (u8) {
       writeCallback,
 errorCallback,
 dictionary,
+pendingInput,
+pendingOutput,
+writeResult,
 
         pub fn get(comptime field: gc, thisValue: jsc.JSValue) ?jsc.JSValue {
           const value = switch (field) {
                 .writeCallback => NativeZlibPrototype__writeCallbackGetCachedValue(thisValue),
             .errorCallback => NativeZlibPrototype__errorCallbackGetCachedValue(thisValue),
             .dictionary => NativeZlibPrototype__dictionaryGetCachedValue(thisValue),
+            .pendingInput => NativeZlibPrototype__pendingInputGetCachedValue(thisValue),
+            .pendingOutput => NativeZlibPrototype__pendingOutputGetCachedValue(thisValue),
+            .writeResult => NativeZlibPrototype__writeResultGetCachedValue(thisValue),
           };
 
           if (value == .zero) {
@@ -12641,6 +12788,9 @@ dictionary,
                 .writeCallback => NativeZlibPrototype__writeCallbackSetCachedValue(thisValue, globalObject, value),
     .errorCallback => NativeZlibPrototype__errorCallbackSetCachedValue(thisValue, globalObject, value),
     .dictionary => NativeZlibPrototype__dictionarySetCachedValue(thisValue, globalObject, value),
+    .pendingInput => NativeZlibPrototype__pendingInputSetCachedValue(thisValue, globalObject, value),
+    .pendingOutput => NativeZlibPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value),
+    .writeResult => NativeZlibPrototype__writeResultSetCachedValue(thisValue, globalObject, value),
           }
         }
     };
@@ -12889,16 +13039,88 @@ extern fn NativeZstdPrototype__dictionarySetCachedValue(jsc.JSValue, *jsc.JSGlob
         }
 
     
+    extern fn NativeZstdPrototype__pendingInputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZstdPrototype__pendingInputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZstd.pendingInput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZstdPrototype__pendingInputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZstd.pendingInput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingInputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZstdPrototype__pendingInputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeZstdPrototype__pendingOutputSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZstdPrototype__pendingOutputGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZstd.pendingOutput` setter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZstdPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZstd.pendingOutput` getter
+        /// This value will be visited by the garbage collector.
+        pub fn pendingOutputGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZstdPrototype__pendingOutputGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
+    extern fn NativeZstdPrototype__writeResultSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn NativeZstdPrototype__writeResultGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `NativeZstd.writeResult` setter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          NativeZstdPrototype__writeResultSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `NativeZstd.writeResult` getter
+        /// This value will be visited by the garbage collector.
+        pub fn writeResultGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = NativeZstdPrototype__writeResultGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
     pub const gc = enum (u8) {
       writeCallback,
 errorCallback,
 dictionary,
+pendingInput,
+pendingOutput,
+writeResult,
 
         pub fn get(comptime field: gc, thisValue: jsc.JSValue) ?jsc.JSValue {
           const value = switch (field) {
                 .writeCallback => NativeZstdPrototype__writeCallbackGetCachedValue(thisValue),
             .errorCallback => NativeZstdPrototype__errorCallbackGetCachedValue(thisValue),
             .dictionary => NativeZstdPrototype__dictionaryGetCachedValue(thisValue),
+            .pendingInput => NativeZstdPrototype__pendingInputGetCachedValue(thisValue),
+            .pendingOutput => NativeZstdPrototype__pendingOutputGetCachedValue(thisValue),
+            .writeResult => NativeZstdPrototype__writeResultGetCachedValue(thisValue),
           };
 
           if (value == .zero) {
@@ -12917,6 +13139,9 @@ dictionary,
                 .writeCallback => NativeZstdPrototype__writeCallbackSetCachedValue(thisValue, globalObject, value),
     .errorCallback => NativeZstdPrototype__errorCallbackSetCachedValue(thisValue, globalObject, value),
     .dictionary => NativeZstdPrototype__dictionarySetCachedValue(thisValue, globalObject, value),
+    .pendingInput => NativeZstdPrototype__pendingInputSetCachedValue(thisValue, globalObject, value),
+    .pendingOutput => NativeZstdPrototype__pendingOutputSetCachedValue(thisValue, globalObject, value),
+    .writeResult => NativeZstdPrototype__writeResultSetCachedValue(thisValue, globalObject, value),
           }
         }
     };

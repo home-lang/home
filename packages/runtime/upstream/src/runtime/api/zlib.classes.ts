@@ -1,4 +1,4 @@
-import { define } from "../../codegen/class-definitions";
+import { define } from '../../codegen/class-definitions';
 
 function generate(name: string) {
   return define({
@@ -9,19 +9,19 @@ function generate(name: string) {
     configurable: false,
     estimatedSize: true,
     klass: {},
-    JSType: "0b11101110",
-    values: ["writeCallback", "errorCallback", "dictionary"],
+    JSType: '0b11101110',
+    values: ['writeCallback', 'errorCallback', 'dictionary', 'pendingInput', 'pendingOutput', 'writeResult'],
 
     proto: {
-      init: { fn: "init" },
-      write: { fn: "write" },
-      writeSync: { fn: "writeSync" },
-      params: { fn: "params" },
-      reset: { fn: "reset" },
-      close: { fn: "close" },
-      onerror: { setter: "setOnError", this: true, getter: "getOnError" },
+      init: { fn: 'init' },
+      write: { fn: 'write' },
+      writeSync: { fn: 'writeSync' },
+      params: { fn: 'params' },
+      reset: { fn: 'reset' },
+      close: { fn: 'close' },
+      onerror: { setter: 'setOnError', this: true, getter: 'getOnError' },
     },
   });
 }
 
-export default [generate("NativeZlib"), generate("NativeBrotli"), generate("NativeZstd")];
+export default [generate('NativeZlib'), generate('NativeBrotli'), generate('NativeZstd')];
