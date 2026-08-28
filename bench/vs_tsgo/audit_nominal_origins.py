@@ -27,6 +27,11 @@ def cases(family: str | None = None) -> list[Case]:
 
     pair("private-direct", PRIVATE, PRIVATE, VALUES + "const copy: first.Secret = left;\n",
          "const bad: first.Secret = right;\n")
+    static = PRIVATE.replace("private key", "private static key")
+    pair("private-static", static, static,
+         "declare const left: typeof first.Secret;\ndeclare const right: typeof second.Secret;\n"
+         "const copy: typeof first.Secret = left;\n",
+         "const bad: typeof first.Secret = right;\n")
     pair("private-nested", PRIVATE, PRIVATE,
          VALUES + "const good: { inner: { item: first.Secret } } = { inner: { item: left } };\n",
          "const bad: { inner: { item: first.Secret } } = { inner: { item: right } };\n")
