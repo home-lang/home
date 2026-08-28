@@ -88,7 +88,7 @@ pub const Transpiler = struct {
 
     pub const isCacheEnabled = false;
 
-    pub inline fn getPackageManager(this: *Transpiler) *PackageManager {
+    pub inline fn getPackageManager(this: *Transpiler) !*PackageManager {
         return this.resolver.getPackageManager();
     }
 

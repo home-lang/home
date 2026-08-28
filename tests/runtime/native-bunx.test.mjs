@@ -218,6 +218,72 @@ try {
   assert.ok(requests.slice(beforeRuntime).includes('/native-bunx-dep'))
   assert.ok(requests.slice(beforeRuntime).some(path => path.endsWith('/native-bunx-dep-1.0.0.tgz')))
   assert.ok(requests.slice(beforeRuntime).includes('/native-missing-package'))
+  // A real registry 404 must retain the resolver's public error contract,
+  // including scoped names, instead of exposing a generic installer log.
+  const missingNames = ['native-missing-package', '@native-missing/package']
+  const diagnosticSource = `
+    export {};
+    const errors = [];
+    for (const specifier of ${JSON.stringify(missingNames)}) {
+      for (const [kind, resolve] of [['require', s => require(s)], ['require.resolve', s => require.resolve(s)], ['resolveSync', s => import.meta.resolveSync(s)]]) {
+        try { resolve(specifier); process.exit(99); }
+        catch (error) { errors.push({specifier, kind, code:error.code, message:error.message}); }
+      }
+    }
+    console.log(JSON.stringify({execPath:process.execPath, errors}));
+  `
+  const diagnostic = await run(['-e', diagnosticSource], {
+    cwd: runtimeProject, env: { BUN_INSTALL_CACHE_DIR: runtimeCache },
+  })
+  assert.equal(diagnostic.code, 0, diagnostic.stderr)
+  assert.equal(diagnostic.signal, null)
+  assert.equal(diagnostic.stderr, '')
+  const diagnosticRecord = JSON.parse(diagnostic.stdout)
+  assert.equal(realpathSync(diagnosticRecord.execPath), realpathSync(process.execPath))
+  assert.equal(diagnosticRecord.errors.length, missingNames.length * 3)
+  for (const error of diagnosticRecord.errors) {
+    assert.equal(error.code, error.kind === 'resolveSync' ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND')
+    const kind = error.specifier.startsWith('@') ? 'module' : 'package'
+    assert.ok(error.message.startsWith(`Cannot find ${kind} '${error.specifier}' from '`), error.message)
+    assert.doesNotMatch(error.message, /GET |404|while resolving/)
+  }
+  assert.ok(requests.slice(beforeRuntime).includes('/@native-missing%2fpackage'))
+  if (process.platform !== 'win32' && process.getuid() !== 0) {
+    const deniedCwd = join(directory, 'unreadable-cwd')
+    mkdirSync(deniedCwd)
+    const outsideEntry = join(runtimeProject, 'outside.mjs')
+    writeFileSync(outsideEntry, `
+      const specifier = ['native', 'missing'].join('-');
+      const errors = [];
+      for (let i = 0; i < 3; i++) {
+        try { import.meta.resolveSync(specifier); process.exit(99); }
+        catch (error) { errors.push({code:error.code, message:error.message}); }
+      }
+      console.log(JSON.stringify({execPath:process.execPath, errors}));
+    `)
+    const beforeDeniedCwd = requests.length
+    chmodSync(deniedCwd, 0o111)
+    try {
+      for (const prefix of [[], ['run']]) {
+        for (const entry of [outsideEntry, '../runtime-install/outside.mjs']) {
+          const denied = await run([...prefix, entry], { cwd: deniedCwd })
+          assert.equal(denied.code, 0, denied.stderr)
+          assert.equal(denied.signal, null)
+          assert.equal(denied.stderr, '')
+          const value = JSON.parse(denied.stdout)
+          assert.equal(realpathSync(value.execPath), realpathSync(process.execPath))
+          assert.equal(value.errors.length, 3)
+          for (const error of value.errors) {
+            assert.equal(error.code, 'ERR_MODULE_NOT_FOUND')
+            assert.match(error.message, /^Cannot read directory "[^"]+": E[A-Z]+ while resolving "native-missing"$/)
+          }
+        }
+      }
+      assert.equal(requests.length, beforeDeniedCwd)
+    } finally {
+      chmodSync(deniedCwd, 0o755)
+    }
+  }
   console.log('native bunx execution, installation, and dependency analysis passed')
 } finally {
   for (const child of children) child.kill('SIGKILL')

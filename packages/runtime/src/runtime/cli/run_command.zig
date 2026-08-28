@@ -1731,17 +1731,17 @@ pub const RunCommand = struct {
                 Global.exit(1);
             };
         }
-        var bundle: transpiler.Transpiler = undefined;
-        const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = false });
-        if (target_name.len == 0) {
-            printHelp(root.enclosing_package_json);
-            return true;
-        }
         // AutoCommand tries an existing runnable file before a same-named
         // package script. A missing .js file must still fall through to script
         // lookup; resolving its .ts replacement here would change precedence.
-        const auto_file = blk: {
-            if (!bin_dirs_only) break :blk false;
+        // Explicit relative/absolute paths also bypass package-script lookup.
+        // Open before reading cwd: a readable script outside an unlistable cwd
+        // must reach the VM, where auto-install failures remain catchable.
+        const direct_file = blk: {
+            if (target_name.len == 0) break :blk false;
+            if (!bin_dirs_only and target_name[0] != '.' and !std.fs.path.isAbsolute(target_name)) break :blk false;
+            // Custom loaders still need the full entrypoint preflight below.
+            if (ctx.args.loaders != null) break :blk false;
             const loader = options.defaultLoaders.get(std.fs.path.extension(target_name)) orelse break :blk false;
             if (!loader.canBeRunByBun() and loader != .md) break :blk false;
             // The pinned fast path opens the file. A stat alone would prefer
@@ -1754,7 +1754,14 @@ pub const RunCommand = struct {
                 .err => false,
             };
         };
-        const skip_script = auto_file or target_name[0] == '.' or std.fs.path.isAbsolute(target_name);
+        if (direct_file) return false;
+        var bundle: transpiler.Transpiler = undefined;
+        const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = false });
+        if (target_name.len == 0) {
+            printHelp(root.enclosing_package_json);
+            return true;
+        }
+        const skip_script = target_name[0] == '.' or std.fs.path.isAbsolute(target_name);
         if (!skip_script) if (root.enclosing_package_json) |package_json| {
             if (package_json.scripts) |scripts| if (scripts.contains(target_name)) {
                 try configurePathForRun(ctx, root, &bundle, null, root.abs_path, ctx.debug.run_in_bun);

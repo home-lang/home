@@ -33,7 +33,9 @@ pub const bun_install_js_bindings = struct {
         }
 
         // as long as we aren't migration from `package-lock.json`, leaving this undefined is okay
-        const manager = globalObject.bunVM().transpiler.resolver.getPackageManager();
+        const manager = globalObject.bunVM().transpiler.resolver.getPackageManager() catch |err| {
+            return globalObject.throw("failed to initialize package manager: {s}", .{@errorName(err)});
+        };
 
         const load_result: Lockfile.LoadResult = lockfile.loadFromDir(.fromStdDir(dir), manager, allocator, &log, true);
 

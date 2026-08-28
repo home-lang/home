@@ -535,10 +535,10 @@ pub const Resolver = struct {
     /// When this is null, it is as if it is set to `&.{ path.dirname(referrer) }`.
     custom_dir_paths: ?[]const bun.String = null,
 
-    pub fn getPackageManager(this: *Resolver) *PackageManager {
+    pub fn getPackageManager(this: *Resolver) !*PackageManager {
         return this.package_manager orelse brk: {
             bun.HTTPThread.init(&.{});
-            const pm = PackageManager.initWithRuntime(
+            const pm = try PackageManager.initWithRuntime(
                 this.log,
                 this.opts.install,
 
@@ -651,7 +651,7 @@ pub const Resolver = struct {
         if (r.debug_logs) |*debug| {
             if (flush_mode == DebugLogs.FlushMode.fail) {
                 try r.log.addRangeDebugWithNotes(null, logger.Range{ .loc = logger.Loc{} }, debug.what, try debug.notes.toOwnedSlice());
-            } else if (@intFromEnum(r.log.level) <= @intFromEnum(logger.Log.Level.verbose)) {
+            } else if (@backingInt(r.log.level) <= @backingInt(logger.Log.Level.verbose)) {
                 try r.log.addVerboseWithNotes(null, logger.Loc.Empty, debug.what, try debug.notes.toOwnedSlice());
             }
         }
@@ -1984,7 +1984,18 @@ pub const Resolver = struct {
             load_module_from_cache: {
                 // If the source directory doesn't have a node_modules directory, we can
                 // check the global cache directory for a package.json file.
-                const manager = r.getPackageManager();
+                const manager = r.getPackageManager() catch |err| {
+                    r.log.addResolveError(
+                        null,
+                        logger.Range.None,
+                        r.allocator,
+                        "Cannot read directory \"{1s}\": {2s} while resolving \"{0s}\"",
+                        .{ import_path, r.fs.top_level_dir, @errorName(err) },
+                        kind,
+                        err,
+                    ) catch bun.outOfMemory();
+                    return .{ .failure = err };
+                };
                 var dependency_version = Dependency.Version{};
                 var dependency_behavior: Dependency.Behavior = .{ .prod = true };
                 var string_buf = esm.version;
@@ -2373,7 +2384,7 @@ pub const Resolver = struct {
         }
 
         const input_package_id = input_package_id_.*;
-        var pm = r.getPackageManager();
+        var pm = r.getPackageManager() catch |err| return .{ .failure = err };
         if (comptime Environment.allow_assert) {
             // we should never be trying to resolve a dependency that is already resolved
             assert(pm.lockfile.resolvePackageFromNameAndVersion(esm.name, version) == null);
