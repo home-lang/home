@@ -160,7 +160,7 @@ pub const TypeKey = union(Kind) {
 
     pub fn hash(self: TypeKey) u64 {
         var hasher = std.hash.Wyhash.init(0xC73C73C73C73C73C);
-        hasher.update(&[_]u8{@intFromEnum(@as(Kind, self))});
+        hasher.update(&[_]u8{@backingInt(@as(Kind, self))});
         switch (self) {
             .string_lit => |id| hasher.update(std.mem.asBytes(&id)),
             .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
@@ -169,7 +169,7 @@ pub const TypeKey = union(Kind) {
             .enum_lit => |e| {
                 hasher.update(std.mem.asBytes(&e.enum_name));
                 hasher.update(std.mem.asBytes(&e.member_name));
-                hasher.update(&[_]u8{@intFromEnum(@as(types.LiteralTag, e.value))});
+                hasher.update(&[_]u8{@backingInt(@as(types.LiteralTag, e.value))});
                 switch (e.value) {
                     .string_lit => |sid| hasher.update(std.mem.asBytes(&sid)),
                     .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
@@ -189,8 +189,8 @@ pub const TypeKey = union(Kind) {
             .mapped => |m| {
                 hasher.update(std.mem.asBytes(&m.constraint));
                 hasher.update(std.mem.asBytes(&m.template));
-                hasher.update(std.mem.asBytes(&@intFromEnum(m.readonly)));
-                hasher.update(std.mem.asBytes(&@intFromEnum(m.optional)));
+                hasher.update(std.mem.asBytes(&@backingInt(m.readonly)));
+                hasher.update(std.mem.asBytes(&@backingInt(m.optional)));
             },
             .indexed_access => |ia| {
                 hasher.update(std.mem.asBytes(&ia.object));
@@ -203,7 +203,7 @@ pub const TypeKey = union(Kind) {
                 for (tl.types) |t| hasher.update(std.mem.asBytes(&t));
             },
             .string_mapping => |sm| {
-                hasher.update(&[_]u8{@intFromEnum(sm.kind)});
+                hasher.update(&[_]u8{@backingInt(sm.kind)});
                 hasher.update(std.mem.asBytes(&sm.inner));
             },
             .tuple => |elems| {
@@ -218,7 +218,7 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&tp.name));
                 hasher.update(std.mem.asBytes(&tp.constraint));
                 hasher.update(std.mem.asBytes(&tp.default));
-                hasher.update(&[_]u8{@intFromEnum(tp.variance)});
+                hasher.update(&[_]u8{@backingInt(tp.variance)});
                 hasher.update(&[_]u8{@intFromBool(tp.is_const)});
             },
             .instantiation => |inst| {
@@ -902,6 +902,21 @@ pub const Interner = struct {
     /// `objectMember(id, name)` to get a property's type.
     pub fn internObjectType(self: *Interner, members: []const types.ObjectMember) !TypeId {
         return self.internObjectTypeWithIndex(members, types.Primitive.none, types.Primitive.none);
+    }
+
+    /// Complete a fresh, unpublished empty object. Reserving object identities
+    /// before filling their members permits cyclic module namespace graphs.
+    /// The caller must own the object exclusively until the graph is complete.
+    pub fn completeFreshObjectType(self: *Interner, id: TypeId, members: []const types.ObjectMember) !void {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        std.debug.assert(self.pool.flagsOf(id).is_object_type);
+        const index = self.pool.payloadOf(id);
+        std.debug.assert(self.pool.object_type_payloads.items[index].members_len == 0);
+        const start: u32 = @intCast(self.pool.object_member_pool.items.len);
+        try self.pool.object_member_pool.appendSlice(self.gpa, members);
+        self.pool.object_type_payloads.items[index].members_start = start;
+        self.pool.object_type_payloads.items[index].members_len = @intCast(members.len);
     }
 
     /// Like `internObjectType` but also wires `string`-key and
@@ -1638,6 +1653,17 @@ test "Interner: const type parameter flag participates in identity" {
     try T.expectEqual(konst, konst_again);
     try T.expect(!i.typeParameterIsConst(normal));
     try T.expect(i.typeParameterIsConst(konst));
+}
+
+test "Interner: fresh recursive objects retain reserved identities" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internObjectType(&.{});
+    const b = try i.internObjectType(&.{});
+    try i.completeFreshObjectType(a, &.{.{ .name = 1, .type = b, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try i.completeFreshObjectType(b, &.{.{ .name = 2, .type = a, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try T.expectEqual(b, i.objectMember(a, 1).?);
+    try T.expectEqual(a, i.objectMember(b, 2).?);
 }
 
 test "Interner: fresh type parameters preserve declaration identity" {
