@@ -1971,17 +1971,58 @@ fn runInlineEvalModeViaVM(allocator: std.mem.Allocator, code: []const u8, extra_
     try runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra_args), true, code, print_result);
 }
 
-/// Preload modules named via `--require`/`-r`/`--preload` on the implicit-run
-/// command line; consumed by runFileViaVMOpts (set into `vm.preload`).
-var g_user_preloads: []const []const u8 = &.{};
+/// Package lookup may fall through to a module. Reuse its parsed context:
+/// parsing twice would apply a relative --cwd twice and lose loaded bunfig data.
+var g_native_runtime_context: ?home_rt.cli.Command.Context = null;
 
-/// Custom export/import conditions named via `--conditions=<name>` on the
-/// implicit-run command line; appended to the resolver's ESM condition set in
-/// runFileViaVMOpts so `package.json` "exports"/"imports" match them.
-var g_user_conditions: []const []const u8 = &.{};
+fn nativeRuntimeContext(inline_eval: bool) !home_rt.cli.Command.Context {
+    if (g_native_runtime_context) |ctx| return ctx;
+    const allocator = home_rt.default_allocator;
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    const log = try allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(allocator);
 
-/// Preserve the lexical path of imported modules instead of resolving symlinks.
-var g_user_preserve_symlinks = false;
+    const raw = home_rt.argv;
+    var parser_args: std.ArrayListUnmanaged([:0]const u8) = .empty;
+    if (inline_eval) {
+        // The eval dispatcher already owns source and trailing script args.
+        // Only parse the leading runtime options, never flags in user argv.
+        try parser_args.append(allocator, raw[0]);
+        var i: usize = 1;
+        while (i < raw.len) : (i += 1) {
+            const arg = raw[i];
+            if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--eval") or
+                std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--print") or
+                arg.len == 0 or arg[0] != '-') break;
+            try parser_args.append(allocator, arg);
+            if (runtimeFlagTakesValue(arg) and i + 1 < raw.len) {
+                i += 1;
+                try parser_args.append(allocator, raw[i]);
+            }
+        }
+        // Use a recognized module extension so bunfig loads before CLI
+        // overrides are applied. This is parser input, not the VM entry path.
+        try parser_args.append(allocator, "[eval].ts");
+    } else if (leadingRuntimeRunIndex(raw)) |run_index| {
+        try parser_args.appendSlice(allocator, &.{ raw[0], "run" });
+        try parser_args.appendSlice(allocator, raw[1..run_index]);
+        try parser_args.appendSlice(allocator, raw[run_index + 1 ..]);
+    } else {
+        try parser_args.appendSlice(allocator, raw);
+    }
+    home_rt.clap.args.setProcessArgs(parser_args.items);
+    const is_run = !inline_eval and parser_args.items.len > 1 and std.mem.eql(u8, parser_args.items[1], "run");
+    const ctx = if (is_run)
+        try home_rt.cli.Command.createContextData(allocator, log, .RunCommand)
+    else
+        try home_rt.cli.Command.createContextData(allocator, log, .AutoCommand);
+    if (!ctx.debug.loaded_bunfig) {
+        try home_rt.cli.Arguments.loadConfigPath(allocator, true, "bunfig.toml", ctx, .RunCommand);
+    }
+    g_native_runtime_context = ctx;
+    return ctx;
+}
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false);
@@ -1996,6 +2037,10 @@ fn runFileViaVMOpts(
     print_result: bool,
 ) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
+
+    // Parse before resolving the entry: --cwd changes both module resolution
+    // and config discovery. Keep Command.get() pointing at this real context.
+    const ctx = try nativeRuntimeContext(std.mem.eql(u8, file_path, "[eval]"));
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
@@ -2019,13 +2064,19 @@ fn runFileViaVMOpts(
     // This frame never returns before globalExit, so a local arena stays valid.
     var arena = home_rt.MimallocArena.init();
 
-    const log = try allocator.create(home_rt.logger.Log);
-    log.* = home_rt.logger.Log.init(allocator);
-    var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
+    var args = ctx.args;
     args.disable_hmr = true;
     args.target = home_rt.schema.api.Target.bun;
-    args.preserve_symlinks = g_user_preserve_symlinks;
-    args.absolute_working_dir = home_rt.dupeZ(allocator, u8, cwd) catch null;
+    // Preserve Home's existing repeated/comma-separated condition support.
+    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (args.conditions) |value| {
+        var it = std.mem.splitScalar(u8, value, ',');
+        while (it.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t");
+            if (trimmed.len > 0) try conditions.append(allocator, trimmed);
+        }
+    }
+    args.conditions = conditions.items;
 
     // Build the preload list and WRITE any temp preload file to disk BEFORE the
     // VM (and its resolver) is initialized. `bun -e`/`--eval` exposes the node
@@ -2054,20 +2105,17 @@ fn runFileViaVMOpts(
         try preload_list.append(allocator, owned_preload_path.?);
     }
     // User `--require`/`-r`/`--preload` modules (run before the entry).
-    for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
-
-    // Engine code (e.g. ConsoleObject) reads the process-global Command.Context
-    // via `Command.get()`. We boot the VM directly (not through Command.start),
-    // so initialize that context with defaults first or those reads dereference
-    // undefined memory.
-    _ = home_rt.cli.Command.initDefaultContext(allocator, log);
+    try preload_list.appendSlice(allocator, ctx.preloads);
 
     const vm = try home_rt.jsc.VirtualMachine.init(.{
         .allocator = arena.allocator(),
         .args = args,
-        .log = log,
+        .log = ctx.log,
         .is_main_thread = true,
         .eval = print_result,
+        .smol = ctx.runtime_options.smol,
+        .debugger = ctx.runtime_options.debugger,
+        .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
     });
 
     var b = &vm.transpiler;
@@ -2100,20 +2148,26 @@ fn runFileViaVMOpts(
     // loadEntryPoint runs them when `vm.preload` is non-empty.
     if (preload_list.items.len > 0) vm.preload = try preload_list.toOwnedSlice(allocator);
 
-    // Resolver/transpiler config mirrored from Run.boot (defaults for the install
-    // knobs since there's no CLI context here).
+    // The native entry uses the same parsed resolver/transpiler settings as Run.boot.
+    b.options.install = ctx.install;
+    b.resolver.opts.install = ctx.install;
+    b.resolver.opts.global_cache = ctx.debug.global_cache;
+    b.resolver.opts.prefer_offline_install = (ctx.debug.offline_mode_setting orelse .online) == .offline;
+    b.resolver.opts.prefer_latest_install = (ctx.debug.offline_mode_setting orelse .online) == .latest;
+    b.options.global_cache = b.resolver.opts.global_cache;
+    b.options.prefer_offline_install = b.resolver.opts.prefer_offline_install;
+    b.options.prefer_latest_install = b.resolver.opts.prefer_latest_install;
     b.resolver.env_loader = b.env;
+    b.options.minify_identifiers = ctx.bundler_options.minify_identifiers;
+    b.options.minify_whitespace = ctx.bundler_options.minify_whitespace;
+    b.options.ignore_dce_annotations = ctx.bundler_options.ignore_dce_annotations;
+    b.resolver.opts.minify_identifiers = ctx.bundler_options.minify_identifiers;
+    b.resolver.opts.minify_whitespace = ctx.bundler_options.minify_whitespace;
     b.options.env.behavior = .load_all_without_inlining;
-
-    // Custom `--conditions=<name>` from the command line: append to the ESM
-    // condition set so package.json "exports"/"imports" match them (mirrors
-    // build_command appending "development"/"react-server").
-    if (g_user_conditions.len > 0) {
-        // The resolver carries its OWN copy of the options (b.resolver.opts is not
-        // b.options), so the condition maps must be appended on the resolver's
-        // copy — that's the set consulted during exports/imports matching.
-        b.resolver.opts.conditions.appendSlice(g_user_conditions) catch {};
-        b.options.conditions.appendSlice(g_user_conditions) catch {};
+    switch (ctx.debug.macros) {
+        .disable => b.options.no_macros = true,
+        .map => |macros| b.options.macro_remap = macros,
+        .unspecified => {},
     }
 
     b.configureDefines() catch return error.ConfigureDefinesFailed;
@@ -2458,7 +2512,7 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
 fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: home_rt.cli.Command.Tag) !bool {
     if (comptime !build_options.enable_jsc) return false;
     if (!envFlagSet("HOME_NATIVE_VM")) return false;
-    if (std.mem.eql(u8, target, "-") or (target.len > 0 and isHomeSourceFile(target))) return false;
+    if (target.len > 0 and isHomeSourceFile(target)) return false;
     const allocator = home_rt.default_allocator;
     home_rt.ast.Expr.Data.Store.create();
     home_rt.ast.Stmt.Data.Store.create();
@@ -2466,6 +2520,13 @@ fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime 
     log.* = home_rt.logger.Log.init(allocator);
     home_rt.clap.args.setProcessArgs(args);
     const ctx = try home_rt.cli.Command.createContextData(allocator, log, tag);
+    g_native_runtime_context = ctx;
+    if (std.mem.eql(u8, target, "-")) {
+        if (!ctx.debug.loaded_bunfig) {
+            try home_rt.cli.Arguments.loadConfigPath(allocator, true, "bunfig.toml", ctx, .RunCommand);
+        }
+        return false;
+    }
     var resolved_module = false;
     if (try home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand, &resolved_module)) home_rt.Global.exit(0);
     if (resolved_module) return false;
@@ -2493,54 +2554,12 @@ fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void
     // VM; we only need to locate the entrypoint here. Previously the target
     // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
     // module and failed with "Module not found '--bun'".
-    var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer preloads.deinit(allocator);
-    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer conditions.deinit(allocator);
     var experimental_stream_iter = false;
     var ri: usize = 2;
     while (ri < args.len) : (ri += 1) {
         const a = args[ri];
-        if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
-            if (ri + 1 < args.len) {
-                preloads.append(allocator, args[ri + 1]) catch {};
-                ri += 1;
-            }
-            continue;
-        }
-        if (std.mem.startsWith(u8, a, "--require=")) {
-            preloads.append(allocator, a["--require=".len..]) catch {};
-            continue;
-        }
-        if (std.mem.startsWith(u8, a, "--preload=")) {
-            preloads.append(allocator, a["--preload=".len..]) catch {};
-            continue;
-        }
-        if (std.mem.eql(u8, a, "--conditions")) {
-            if (ri + 1 < args.len) {
-                var it = std.mem.splitScalar(u8, args[ri + 1], ',');
-                while (it.next()) |part| {
-                    const trimmed = std.mem.trim(u8, part, " \t");
-                    if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-                }
-                ri += 1;
-            }
-            continue;
-        }
-        if (std.mem.startsWith(u8, a, "--conditions=")) {
-            var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
-            while (it.next()) |part| {
-                const trimmed = std.mem.trim(u8, part, " \t");
-                if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-            }
-            continue;
-        }
         if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
             experimental_stream_iter = true;
-            continue;
-        }
-        if (std.mem.eql(u8, a, "--preserve-symlinks")) {
-            g_user_preserve_symlinks = true;
             continue;
         }
         // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
@@ -2568,8 +2587,6 @@ fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void
         return;
     }
 
-    g_user_preloads = preloads.items;
-    g_user_conditions = conditions.items;
     if (experimental_stream_iter) {
         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
     }
@@ -5857,25 +5874,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (has_file and (native_vm or std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
-            // `--require`/`-r`/`--preload <file>` (and `--require=<file>`) name
-            // PRELOAD modules, not the entry. Collect them and skip them when
-            // choosing the entry (otherwise the first one is picked as the file
-            // to run and the real main never executes).
-            var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
-            // `--conditions=<name>` (and `--conditions <name>`) add custom
-            // package.json "exports"/"imports" conditions (comma-separated values
-            // and repeated flags both accepted, matching Bun).
-            var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
             var experimental_stream_iter = false;
-            const addConditions = struct {
-                fn call(list: *std.ArrayListUnmanaged([]const u8), alloc: std.mem.Allocator, csv: []const u8) void {
-                    var it = std.mem.splitScalar(u8, csv, ',');
-                    while (it.next()) |part| {
-                        const trimmed = std.mem.trim(u8, part, " \t");
-                        if (trimmed.len > 0) list.append(alloc, trimmed) catch {};
-                    }
-                }
-            }.call;
             var if_present = false;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
@@ -5884,38 +5883,8 @@ pub fn main(init: std.process.Init) !void {
                     if_present = true;
                     continue;
                 }
-                if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
-                    if (i + 1 < args.len) {
-                        preloads.append(allocator, args[i + 1]) catch {};
-                        i += 1;
-                    }
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--require=")) {
-                    preloads.append(allocator, a["--require=".len..]) catch {};
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--preload=")) {
-                    preloads.append(allocator, a["--preload=".len..]) catch {};
-                    continue;
-                }
-                if (std.mem.eql(u8, a, "--conditions")) {
-                    if (i + 1 < args.len) {
-                        addConditions(&conditions, allocator, args[i + 1]);
-                        i += 1;
-                    }
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--conditions=")) {
-                    addConditions(&conditions, allocator, a["--conditions=".len..]);
-                    continue;
-                }
                 if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
                     experimental_stream_iter = true;
-                    continue;
-                }
-                if (std.mem.eql(u8, a, "--preserve-symlinks")) {
-                    g_user_preserve_symlinks = true;
                     continue;
                 }
                 if (runtimeFlagTakesValue(a)) {
@@ -5927,8 +5896,6 @@ pub fn main(init: std.process.Init) !void {
                     if (experimental_stream_iter) {
                         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
                     }
-                    g_user_preloads = preloads.items;
-                    g_user_conditions = conditions.items;
                     if ((!looksLikeRunnableFile(a) or if_present) and try tryNativePackageRun(args, a, .AutoCommand)) return;
                     try runCommand(allocator, a, args[i + 1 ..]);
                     return;
@@ -5953,9 +5920,6 @@ fn looksLikeRunnableFile(s: []const u8) bool {
 }
 
 fn runtimeFlagTakesValue(flag: []const u8) bool {
-    // Node corpus children use this compatibility flag, which is not in
-    // Bun\'s auto_params. Home\'s eval module supports both CJS and ESM syntax.
-    if (std.mem.eql(u8, flag, "--input-type")) return true;
     inline for (home_rt.cli.Arguments.auto_params) |param| {
         if (comptime param.takes_value != .none) {
             if (comptime param.names.long) |name| {

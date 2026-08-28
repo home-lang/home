@@ -78,6 +78,30 @@ try {
     ['--cwd', directory, 'echo'],
   ]) assert.equal(success(argv, { cwd: join(directory, 'subdirectory') }).stdout, 'package-script\n')
   assert.equal(success(['run', 'echo'], { cwd: join(directory, 'subdirectory') }).stdout, 'package-script\n')
+  // Package lookup must pass its context to the VM, not apply relative --cwd
+  // twice or discard module flags/configuration when the target is not a script.
+  writeFileSync(join(directory, 'subdirectory', '.env'), 'HOME_MODULE_CONFIG_VALUE=module\n')
+  writeFileSync(join(directory, 'subdirectory', 'entry.js'), 'console.log(JSON.stringify([process.env.HOME_MODULE_CONFIG_VALUE, process.argv.slice(2)]));')
+  const configEnv = { ...env }
+  delete configEnv.HOME_MODULE_CONFIG_VALUE
+  for (const prefix of [[], ['run'], ['--bun', 'run']]) {
+    const result = success([...prefix, '--cwd', 'subdirectory', '--no-env-file', 'entry.js', '--cwd', 'missing'], { env: configEnv })
+    assert.equal(result.stdout, '[null,["--cwd","missing"]]\n')
+  }
+  assert.equal(success(['run', '--cwd', 'subdirectory', 'entry'], { env: configEnv }).stdout, '["module",[]]\n')
+  mkdirSync(join(directory, 'node_modules', 'native-condition'))
+  writeFileSync(join(directory, 'node_modules', 'native-condition', 'package.json'), JSON.stringify({
+    name: 'native-condition', exports: { 'native-config': './custom.js', default: './default.js' },
+  }))
+  writeFileSync(join(directory, 'node_modules', 'native-condition', 'custom.js'), 'module.exports = "custom";')
+  writeFileSync(join(directory, 'node_modules', 'native-condition', 'default.js'), 'module.exports = "default";')
+  writeFileSync(join(directory, 'conditions.js'), 'import value from "native-condition"; console.log(value, require("native-condition"));')
+  assert.equal(success(['conditions.js']).stdout, 'default default\n')
+  for (const flags of [['--conditions=native-config'], ['--conditions', 'unused', '--conditions', 'native-config'], ['--conditions=unused, native-config']]) {
+    for (const prefix of [[], ['run']]) assert.equal(success([...prefix, ...flags, 'conditions.js']).stdout, 'custom custom\n')
+  }
+  writeFileSync(join(directory, 'loader.fixture'), 'const value: number = 42; console.log(value);')
+  for (const prefix of [[], ['run']]) assert.equal(success([...prefix, '--loader', '.fixture:ts', './loader.fixture']).stdout, '42\n')
   writeFileSync(join(directory, 'echo'), 'console.log("file-entry");')
   assert.equal(success(['run', 'echo']).stdout, 'package-script\n')
   assert.equal(success(['run', './echo']).stdout, 'file-entry\n')

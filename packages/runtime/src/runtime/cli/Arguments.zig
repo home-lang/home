@@ -102,6 +102,9 @@ pub const runtime_params_ = [_]ParamType{
     clap.parseParam("-i                                Auto-install dependencies during execution. Equivalent to --install=fallback.") catch unreachable,
     clap.parseParam("-e, --eval <STR>                  Evaluate argument as a script") catch unreachable,
     clap.parseParam("-p, --print <STR>                 Evaluate argument as a script and print the result") catch unreachable,
+    // Home's existing Node-compatible eval dispatcher accepts both CJS and ESM.
+    // Consume the value here so following runtime options are still parsed.
+    clap.parseParam("--input-type <STR>                Input type for inline scripts (Node.js compatibility)") catch unreachable,
     clap.parseParam("--prefer-offline                  Skip staleness checks for packages in the Bun runtime and resolve from disk") catch unreachable,
     clap.parseParam("--prefer-latest                   Use the latest matching versions of packages in the Bun runtime, always checking npm") catch unreachable,
     clap.parseParam("--port <STR>                      Set the default port for Bun.serve") catch unreachable,

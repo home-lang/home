@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -88,6 +88,32 @@ try {
   const exitCode = run(['-p', 'process.exitCode = 7; 42'])
   assert.equal(exitCode.status, 7)
   assert.equal(exitCode.stdout.trim(), '42')
+
+  // Native eval retains parsed configuration without reparsing script argv.
+  const configDirectory = join(directory, 'config')
+  mkdirSync(configDirectory)
+  writeFileSync(join(configDirectory, '.env'), 'HOME_EVAL_CONFIG_VALUE=default\n')
+  writeFileSync(join(configDirectory, '.env.explicit'), 'HOME_EVAL_CONFIG_VALUE=explicit\n')
+  writeFileSync(join(configDirectory, 'preload.js'), 'globalThis.nativeConfigPreload = (globalThis.nativeConfigPreload || 0) + 1;')
+  writeFileSync(join(configDirectory, 'import.js'), 'globalThis.nativeConfigImport = true;')
+  writeFileSync(join(configDirectory, 'bunfig.toml'), 'preload = ["./preload.js"]\n[define]\nHOME_EVAL_DEFINE = "42"\n')
+  const configOptions = { cwd: directory, env: { ...env } }
+  delete configOptions.env.HOME_EVAL_CONFIG_VALUE
+  const inspectConfig = 'JSON.stringify([process.env.HOME_EVAL_CONFIG_VALUE, nativeConfigPreload, HOME_EVAL_DEFINE, nativeConfigImport])'
+  for (const input of [[], ['--input-type', 'module']]) {
+    success([...input, '--cwd', 'config', '--import', './import.js', '-p', inspectConfig], '["default",1,42,true]', configOptions)
+    success([...input, '--cwd', 'config', '--no-env-file', '--import', './import.js', '-p', inspectConfig], '[null,1,42,true]', configOptions)
+    success([...input, '--cwd', 'config', '--no-env-file', '--env-file', '.env.explicit', '--import', './import.js', '-p', inspectConfig], '["explicit",1,42,true]', configOptions)
+  }
+  success(['--cwd', 'config', '--define', 'HOME_EVAL_DEFINE:43', '-p', 'HOME_EVAL_DEFINE'], '43', configOptions)
+  for (const mode of ['-e', '-p']) {
+    const value = 'JSON.stringify([process.env.HOME_EVAL_CONFIG_VALUE, process.argv.slice(1)])'
+    const source = mode === '-p' ? value : 'console.log(' + value + ')'
+    success(['--cwd', 'config', mode, source, '--no-env-file', '--cwd', 'missing', '--define', 'HOME_EVAL_DEFINE:0'], '["default",["--no-env-file","--cwd","missing","--define","HOME_EVAL_DEFINE:0"]]', configOptions)
+  }
+  writeFileSync(join(configDirectory, 'bunfig.toml'), 'env = false\n')
+  success(['--cwd', 'config', '-p', 'process.env.HOME_EVAL_CONFIG_VALUE'], 'undefined', configOptions)
+  success(['--cwd', 'config', '--env-file', '.env.explicit', '-p', 'process.env.HOME_EVAL_CONFIG_VALUE'], 'explicit', configOptions)
 } finally {
   rmSync(directory, { recursive: true })
 }
