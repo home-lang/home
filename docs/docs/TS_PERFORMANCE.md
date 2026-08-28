@@ -2301,3 +2301,100 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_class_bindings.
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins.py
 python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
 ```
+
+### Imported static values and module namespace consumers (untimed)
+
+Tracked in [#523](https://github.com/home-lang/home/issues/523), following
+[#522](https://github.com/home-lang/home/issues/522), under
+[#521](https://github.com/home-lang/home/issues/521),
+[#487](https://github.com/home-lang/home/issues/487), and
+[#416](https://github.com/home-lang/home/issues/416). The harness verifies
+TS **6.0.3** and native TS **7.0.2** before every run. Native TS 7 and `tsgo`
+remain one competitor; the superseded dev build is rejected.
+
+The main implementation is
+[`cdcb60b41`](https://github.com/home-lang/home/commit/cdcb60b41).
+
+Audit commits [`232961504`](https://github.com/home-lang/home/commit/232961504),
+[`170613d01`](https://github.com/home-lang/home/commit/170613d01), and
+[`89698128c`](https://github.com/home-lang/home/commit/89698128c) define the final
+84 controls: 21 families, each with positive and appended-only negative variants
+in both app root orders. All compilers receive identical files, roots, and
+strict/noEmit/noLib/skipLibCheck options. Positive controls must be silent;
+negative controls must match the exact diagnostic-code multiset.
+
+The audit covers named/default imports, aliases, module namespaces, captured
+namespaces and constructors, destructuring, element access, mixed exports,
+lexical shadowing, unqualified-name isolation, static-private identity,
+merged-namespace visibility, type-only restrictions, constructor prototypes,
+cyclic namespace aliases, and a 41-link star-export chain. Neither cycles nor
+long chains are omitted when they expose a failure.
+
+Named imports now use known class/value facts before presence-only `any`
+fallbacks. Module namespace values contain the complete known runtime export
+inventory, including non-class exports and default exports. Bound export queries
+separate value availability from type-only bindings and identify namespace alias
+owners. Namespace class members do not register bare class names in the importing
+scope. Constructor values retain their instance type through `prototype`.
+
+Namespace identities are reserved and completed before publication, preserving
+cycles through ordinary object consumption. A cycle exposed a non-terminating
+free-type-parameter walk; it now uses a visited worklist with reusable scratch
+storage. Export-name enumeration also uses a visited worklist rather than a
+fixed depth limit ([`bca0fad95`](https://github.com/home-lang/home/commit/bca0fad95)).
+Recursive object completion is separately tested
+([`c2331bab6`](https://github.com/home-lang/home/commit/c2331bab6)).
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+|---|---:|---:|---:|---:|
+| Imported static-value controls | 84/84 | 84/84 | 52/84 | 84/84 |
+| Bound-class export controls | 52/52 | 52/52 | 48/52 | 52/52 |
+| Imported nominal-identity controls | 52/52 | 52/52 | 40/52 | 42/52 |
+| Existing imported-owner controls | 20/20 | 20/20 | 10/20 | 10/20 |
+| Re-export discovery controls | 28/28 | 28/28 | 28/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 32/32 | 32/32 |
+| Global declaration controls | 56/56 | 56/56 | 32/56 | 32/56 |
+| Bound-global controls | 56/56 | 56/56 | 44/56 | 44/56 |
+| Original imported graph admission | 2/2 | 2/2 | 0/2 | 0/2 |
+
+The nominal audit still fails generic arguments (2 controls) and
+private/protected inheritance (8); both positive and negative inheritance
+failures are retained. Full workload admission remains **16/18 for Home** and
+**18/18 for each baseline**. Both original graph negative controls are still
+accepted without diagnostics by Home, so neither graph is eligible for timing.
+No new speed or memory claim is made.
+
+This remains a projection of supported source-owned facts, not automatic
+cross-file checked-type transfer. Complex members, method/constructor signatures,
+generic constraints and heritage still need semantic linkage. Unsupported
+exported value types retain their existing limits; a known export inventory is
+not proof that every member has a complete checked type. Unavailable namespace
+shapes, including JavaScript files outside the bound query's coverage, are kept
+unknown and cached as such, not published as incomplete empty objects.
+
+Evidence is retained in `bench/vs_tsgo/results/static-values.csYPot`.
+`audit-before-final.log` and `static_values-final.log` use all 84 controls.
+Earlier 68/76-case and Debug runs are retained separately; they are not mixed
+into the table. The initial cyclic test was stopped after non-termination;
+`focused-sample.txt` records its recursive traversal. The passing replacement
+is recorded in `checker-focused-v2.log`.
+
+The frozen pre-change binary is `bound-classes.8s4Xq1/home-v1`, SHA-256
+`7f71d18f3a1648032b346183267382573f02475b824f5db8c30e0cc463568bd2`.
+The final ReleaseFast binary is `static-values.csYPot/home-final`, SHA-256
+`9fb67479dbd422678c617facf686d4a09317658e7c4a871084db906bf12572c1`;
+its build log is `release.log`. Other final audit logs use `-final.log`.
+Audit source SHA-256:
+`301fe1b661ab781e6cde0c4ee3eac8074d14d653361d682329c5a7a9239812e5`.
+
+The checker suite passes 4,274/4,274, conformance 1,417/1,417, Program 120/120,
+driver 187/187, CLI 69/69, and the benchmark harness 50/50. Fresh callable-identity and callable-union audits
+remain 56/56 and 256/256 for all three compilers. Zig formatting checks pass;
+targeted Pickier reports no errors and one pre-existing README fragment warning.
+
+```sh
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_static_values.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_class_bindings.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_nominal_origins.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
