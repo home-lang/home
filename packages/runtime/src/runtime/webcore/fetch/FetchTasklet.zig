@@ -340,19 +340,22 @@ pub const FetchTasklet = struct {
                     );
                 }
             }
-            if (this.sink) |sink| {
-                if (js_err == .zero) {
-                    js_err = err.toJS(globalThis);
-                    js_err.ensureStillAlive();
-                }
-                sink.cancel(js_err);
-                return;
+            // Failure is terminal for both directions. An active upload must
+            // not leave a buffered response-body promise pending forever.
+            if (this.sink != null and js_err == .zero) {
+                js_err = err.toJS(globalThis);
+                js_err.ensureStillAlive();
             }
             // if we are buffering resolve the promise
             if (this.getCurrentResponse()) |response| {
                 need_deinit = false; // body value now owns the error
                 const body = response.getBodyValue();
                 try body.toErrorInstance(err, globalThis);
+            }
+            // Cancel last and re-read the sink: its synchronous JavaScript
+            // cancellation callback may re-enter the tasklet.
+            if (js_err != .zero) {
+                if (this.sink) |sink| sink.cancel(js_err);
             }
             return;
         }
