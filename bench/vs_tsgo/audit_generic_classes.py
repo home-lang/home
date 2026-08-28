@@ -82,6 +82,11 @@ def cases() -> list[Case]:
          imports + "declare const value: ns.Box<string>;\nconst good: string = value.value.item;\n"
          "const next: string[] | undefined = value.value.next?.item;\n",
          "const bad: number[] | undefined = value.value.next?.item;\n")
+    phantom = "export declare class Box<T> { private key: string; }\n"
+    pair("phantom-parameter", {"a-owner.ts": phantom, "b-other.ts": phantom},
+         imports + "import * as other from './b-other';\ndeclare const value: ns.Box<string>;\n"
+         "const compatible: ns.Box<number> = value;\n",
+         "const bad: other.Box<string> = value;\n")
     return result
 
 
