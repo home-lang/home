@@ -5162,7 +5162,13 @@ pub fn moduleExportNamesFromResolvedModule(
         while (it.next()) |path| gpa.free(path.*);
         visited.deinit(gpa);
     }
-    try collectModuleExportNames(gpa, resolver, module_path, &names, &visited, 0);
+    var pending: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer pending.deinit(gpa);
+    try pending.append(gpa, module_path);
+    var cursor: usize = 0;
+    while (cursor < pending.items.len) : (cursor += 1) {
+        try collectModuleExportNames(gpa, resolver, pending.items[cursor], &names, &visited, &pending);
+    }
 
     const result = try gpa.alloc([]const u8, names.count());
     var index: usize = 0;
@@ -5181,9 +5187,9 @@ fn collectModuleExportNames(
     module_path: []const u8,
     names: *std.StringHashMapUnmanaged(void),
     visited: *std.StringHashMapUnmanaged(void),
-    depth: u8,
+    pending: *std.ArrayListUnmanaged([]const u8),
 ) !void {
-    if (depth >= 32 or visited.contains(module_path)) return;
+    if (visited.contains(module_path)) return;
     const stored_path = try gpa.dupe(u8, module_path);
     visited.put(gpa, stored_path, {}) catch |err| {
         gpa.free(stored_path);
@@ -5229,9 +5235,12 @@ fn collectModuleExportNames(
         if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
         const specifier = compilation.interner.get(ex.module);
         if (specifier.len == 0) continue;
-        const target = resolver.resolve(specifier, module_path) catch continue;
+        const target = resolver.resolve(specifier, module_path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
         if (std.mem.eql(u8, target.path, module_path)) continue;
-        try collectModuleExportNames(gpa, resolver, target.path, names, visited, depth + 1);
+        try pending.append(gpa, target.path);
     }
 }
 
@@ -7382,6 +7391,28 @@ test "Program: final closure check sees late declarations without replacing prep
     try T.expect(std.mem.indexOf(u8, prepared.diagnostics.items[0].message, "missingValue") != null);
     try T.expectEqual(@as(u32, 2322), prepared.diagnostics.items[1].code);
     for (p.files.items) |f| try T.expect(f.compilation.?.checked_types_ready);
+}
+
+test "Program: export name enumeration traverses long cyclic star graphs" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    for (0..48) |index| {
+        const path = try std.fmt.allocPrint(T.allocator, "/p/m{d}.ts", .{index});
+        defer T.allocator.free(path);
+        const source = try std.fmt.allocPrint(T.allocator, "export * from './m{d}';", .{index + 1});
+        defer T.allocator.free(source);
+        try vfs.addFile(path, source);
+    }
+    try vfs.addFile("/p/m48.ts", "export class Deep {} export * from './m0'; export default Deep;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const names = try moduleExportNamesFromResolvedModule(T.allocator, &resolver, "/p/m0.ts");
+    defer {
+        for (names) |name| T.allocator.free(name);
+        T.allocator.free(names);
+    }
+    try T.expectEqual(@as(usize, 1), names.len);
+    try T.expectEqualStrings("Deep", names[0]);
 }
 
 test "Program: serial parallel and streaming checks reuse the prepared graph" {
