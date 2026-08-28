@@ -27,6 +27,7 @@ pub const StrictFlags = ts_checker.StrictFlags;
 pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const source_owners = @import("source_owners.zig");
+pub const StringInterner = string_interner.Interner;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
@@ -307,6 +308,10 @@ pub const Compilation = struct {
 };
 
 pub const CompileOptions = struct {
+    /// Optional program-wide name keyspace. Preparation retains its own
+    /// handle; caller and compilation lifetimes may end independently.
+    /// HIR nodes, binder scopes and TypeIds remain owned by each source.
+    shared_strings: ?*const string_interner.Interner = null,
     /// File id for diagnostics + module identity.
     file_id: u32 = 0,
     /// JS emit options (indent, newline, semicolon style).
@@ -1946,7 +1951,10 @@ pub fn prepareSource(
         .has_errors = false,
     };
 
-    c.interner = string_interner.Interner.init(gpa) catch return error.OutOfMemory;
+    c.interner = if (options.shared_strings) |shared|
+        shared.share()
+    else
+        string_interner.Interner.init(gpa) catch return error.OutOfMemory;
     errdefer c.interner.deinit();
 
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
@@ -4246,6 +4254,31 @@ test "driver: prepared source checks and emits once without replacing bound owne
     try checkPreparedSource(c, options);
     try T.expect(c.js.ptr == output);
     try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+}
+
+test "driver: prepared sources retain shared names independently of the caller" {
+    var names = try StringInterner.init(T.allocator);
+    const c = prepareSource(T.allocator, "export const shared: string = 1;", .{ .shared_strings = &names }) catch |err| {
+        names.deinit();
+        return err;
+    };
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const shared_storage = c.interner.sharesStorageWith(&names);
+    names.deinit();
+    try T.expect(shared_storage);
+    try T.expect(c.lookupTopLevel("shared") != null);
+    try checkPreparedSource(c, .{ .no_emit = true });
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+
+    // A preparation failure after retaining the store releases its handle.
+    // The surviving compilation can still use the same keyspace.
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 1 });
+    try T.expectError(error.OutOfMemory, prepareSource(failing.allocator(), "", .{ .shared_strings = &c.interner }));
+    try T.expectEqual(c.interner.lookup("shared").?, try c.interner.intern("shared"));
 }
 
 test "driver: prepared sources retain parser recovery after parser destruction" {

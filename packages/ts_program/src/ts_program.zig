@@ -24,6 +24,7 @@ const ts_cache = @import("ts_cache");
 const tsconfig_mod = @import("tsconfig");
 const hir_mod_ns = @import("hir");
 const binder = @import("binder");
+const StringInterner = ts_driver.StringInterner;
 
 pub const FileId = u32;
 
@@ -182,6 +183,9 @@ pub const ProgramError = error{
 
 pub const Program = struct {
     gpa: std.mem.Allocator,
+    /// All source owners use this name keyspace, but retain independent HIR,
+    /// symbols and type pools. Initialize before launching any workers.
+    strings: ?StringInterner = null,
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
@@ -218,6 +222,7 @@ pub const Program = struct {
             self.gpa.destroy(f);
         }
         self.files.deinit(self.gpa);
+        if (self.strings) |*strings| strings.deinit();
 
         var it = self.by_path.iterator();
         while (it.next()) |e| self.gpa.free(e.key_ptr.*);
@@ -373,11 +378,18 @@ pub const Program = struct {
         return !options.bind_only and (c.check_state == .bound or c.check_state == .unavailable);
     }
 
+    fn prepareNameStore(self: *Program) ProgramError!void {
+        if (self.strings == null) {
+            self.strings = StringInterner.init(self.gpa) catch return error.OutOfMemory;
+        }
+    }
+
     /// All execution modes share the same per-file identity and lifecycle.
     /// A failed check cannot leave a partially checked source available for
     /// retry; successful preparation preserves the actual binder/HIR owner.
     fn compileFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ts_driver.CompileError!void {
         var per_file = options;
+        per_file.shared_strings = &self.strings.?;
         per_file.is_tsx = options.is_tsx or f.is_tsx;
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
@@ -399,6 +411,7 @@ pub const Program = struct {
     ///   2. Walk imports and resolve specifiers — populating the
     ///      `imports` adjacency list.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        try self.prepareNameStore();
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
             for (self.files.items) |f| {
@@ -564,6 +577,7 @@ pub const Program = struct {
         ctx: anytype,
         comptime callback: fn (ctx_t: @TypeOf(ctx), file_path: []const u8, diags: []const ts_driver.Diagnostic) void,
     ) ProgramError!void {
+        try self.prepareNameStore();
         self.prepareSourceMarkers();
         defer self.clearSourceMarkers();
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
@@ -2990,6 +3004,7 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        try self.prepareNameStore();
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
             try self.compileFilesParallel(options, workers);
@@ -3049,6 +3064,7 @@ pub const Program = struct {
     }
 
     fn compileFilesParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        try self.prepareNameStore();
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = @max(1, workers orelse @min(cpu_count, 8));
 
@@ -7586,6 +7602,64 @@ test "Program: serial parallel and streaming checks reuse the prepared graph" {
         try T.expectEqual(@as(usize, 1), sink.errors);
         try T.expect(p.fileById(id).compilation.? == prepared);
     }
+}
+
+test "Program: fresh execution modes share names without merging module symbols" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const left = try p.add("/left.ts", "export const shared: string = 1;");
+        const right = try p.add("/right.ts", "export const shared: number = 1;");
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        const options: ts_driver.CompileOptions = .{ .no_emit = true };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const a = p.fileById(left).compilation.?;
+        const b = p.fileById(right).compilation.?;
+        try T.expect(a.interner.sharesStorageWith(&b.interner));
+        try T.expect(a.interner.sharesStorageWith(&p.strings.?));
+        const shared = a.interner.lookup("shared").?;
+        try T.expectEqual(shared, b.interner.lookup("shared").?);
+        try T.expect(a.module.root.values.get(shared).? != b.module.root.values.get(shared).?);
+        try T.expectEqual(@as(usize, 1), a.diagnostics.items.len);
+        try T.expectEqual(@as(u32, 2322), a.diagnostics.items[0].code);
+        try T.expectEqual(@as(usize, 0), b.diagnostics.items.len);
+        try p.recompileAll(options);
+        try T.expectEqual(shared, p.fileById(left).compilation.?.interner.lookup("shared").?);
+        try T.expectEqual(@as(usize, 1), p.fileById(left).compilation.?.diagnostics.items.len);
+        try T.expectEqual(@as(usize, 0), p.fileById(right).compilation.?.diagnostics.items.len);
+    }
+}
+
+test "Program: retained names outlive every file and the program" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var retained = blk: {
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/a.ts", "interface PersistentName {}");
+        try p.compileAll(.{ .bind_only = true });
+        break :blk p.strings.?.share();
+    };
+    defer retained.deinit();
+    try T.expectEqualStrings("PersistentName", retained.get(retained.lookup("PersistentName").?));
+    var independent = Program.init(T.allocator, &resolver);
+    defer independent.deinit();
+    try independent.compileAll(.{ .bind_only = true });
+    try T.expect(!retained.sharesStorageWith(&independent.strings.?));
+    try T.expect(independent.strings.?.lookup("PersistentName") == null);
 }
 
 test "Program: expanding an already checked graph invalidates early diagnostics" {

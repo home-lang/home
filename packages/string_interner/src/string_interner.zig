@@ -168,21 +168,31 @@ const Shard = struct {
 
 pub const Interner = struct {
     allocator: std.mem.Allocator,
-    shards: [N_SHARDS]Shard,
+    shards: *[N_SHARDS]Shard,
+    storage: *Storage,
+
+    const Storage = struct {
+        owners: std.atomic.Value(usize),
+        shards: [N_SHARDS]Shard,
+    };
 
     /// Construct an interner. Allocates per-shard hash-map metadata via
     /// `parent` and per-shard string bytes via per-shard arenas. The
     /// empty string is pre-interned at `init` so `empty_string_id` is
     /// always valid.
     pub fn init(parent: std.mem.Allocator) !Interner {
+        const storage = try parent.create(Storage);
+        storage.owners = std.atomic.Value(usize).init(1);
         var self: Interner = .{
             .allocator = parent,
-            .shards = undefined,
+            .shards = &storage.shards,
+            .storage = storage,
         };
         var i: u32 = 0;
         while (i < N_SHARDS) : (i += 1) {
             self.shards[i] = Shard.init(parent);
         }
+        errdefer self.deinit();
         // Pre-intern the empty string in shard 0 so it gets ID
         // `(0 << 26) | 0 = 0` deterministically.
         const eid = try self.internAt(0, "");
@@ -191,10 +201,28 @@ pub const Interner = struct {
     }
 
     pub fn deinit(self: *Interner) void {
-        var i: u32 = 0;
-        while (i < N_SHARDS) : (i += 1) {
-            self.shards[i].deinit(self.allocator);
+        if (self.storage.owners.fetchSub(1, .acq_rel) == 1) {
+            var i: u32 = 0;
+            while (i < N_SHARDS) : (i += 1) {
+                self.shards[i].deinit(self.allocator);
+            }
+            self.allocator.destroy(self.storage);
         }
+        self.* = undefined;
+    }
+
+    /// Retain the same keyspace without copying strings, maps or locks.
+    /// Each returned handle must be deinitialized exactly once. Ordinary
+    /// value copies transfer ownership; use share() for an additional owner.
+    /// The source handle must remain alive for the duration of this call.
+    pub fn share(self: *const Interner) Interner {
+        const previous = self.storage.owners.fetchAdd(1, .monotonic);
+        std.debug.assert(previous != 0 and previous != std.math.maxInt(usize));
+        return self.*;
+    }
+
+    pub fn sharesStorageWith(self: *const Interner, other: *const Interner) bool {
+        return self.storage == other.storage;
     }
 
     /// Hash bytes for shard selection.
@@ -255,7 +283,7 @@ pub const Interner = struct {
     }
 
     /// Resolve a `StringId` to its underlying bytes. The returned slice
-    /// is owned by the interner and is valid until `deinit` is called.
+    /// is owned by the shared store and remains valid while any owner lives.
     pub fn get(self: *const Interner, id: StringId) []const u8 {
         const shard_idx = shardOfId(id);
         const local = localOfId(id);
@@ -273,7 +301,8 @@ pub const Interner = struct {
     }
 
     /// Resolve a `StringId` if it is present in this interner.
-    /// Returns null for stale ids or ids from another interner.
+    /// Returns null for out-of-bounds IDs. IDs do not encode store identity:
+    /// callers must not mix independent keyspaces, even if an ID is in bounds.
     pub fn getOptional(self: *const Interner, id: StringId) ?[]const u8 {
         const shard_idx = shardOfId(id);
         const local = localOfId(id);
@@ -322,6 +351,79 @@ pub const Interner = struct {
 // =============================================================================
 // Tests
 // =============================================================================
+
+test "Interner: shared owners retain one keyspace beyond the original handle" {
+    const t = std.testing;
+    var first = try Interner.init(t.allocator);
+    const anchor = first.intern("anchor") catch |err| {
+        first.deinit();
+        return err;
+    };
+    const bytes = first.get(anchor);
+    var second = first.share();
+    defer second.deinit();
+    var third = second.share();
+    defer third.deinit();
+    const shares_storage = first.sharesStorageWith(&second);
+    first.deinit();
+    try t.expect(shares_storage);
+    const next = try third.intern("next");
+    try t.expectEqual(anchor, try second.intern("anchor"));
+    try t.expectEqual(next, second.lookup("next").?);
+    try t.expectEqualStrings("anchor", bytes);
+    try t.expectEqual(@as(usize, 3), third.count());
+
+    var independent = try Interner.init(t.allocator);
+    defer independent.deinit();
+    try t.expect(!independent.sharesStorageWith(&second));
+    try t.expect(independent.lookup("anchor") == null);
+}
+
+fn testSharedAllocationFailures(allocator: std.mem.Allocator) !void {
+    var first = try Interner.init(allocator);
+    defer first.deinit();
+    var second = first.share();
+    defer second.deinit();
+    const name = try second.intern("shared-declaration");
+    try std.testing.expectEqual(name, first.lookup("shared-declaration").?);
+}
+
+test "Interner: initialization and shared writes clean up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testSharedAllocationFailures, .{});
+}
+
+test "Interner: independently retained worker handles share locks and identities" {
+    const t = std.testing;
+    var first = try Interner.init(t.allocator);
+    var survivor = first.share();
+    defer survivor.deinit();
+    first.deinit();
+    const Worker = struct {
+        fn run(owned: Interner) void {
+            var names = owned;
+            defer names.deinit();
+            for (0..200) |index| {
+                var buffer: [32]u8 = undefined;
+                const name = std.fmt.bufPrint(&buffer, "declaration-{d}", .{index}) catch unreachable;
+                _ = names.intern(name) catch unreachable;
+            }
+        }
+    };
+    var threads: [8]std.Thread = undefined;
+    var started: usize = 0;
+    defer for (threads[0..started]) |thread| thread.join();
+    for (&threads) |*thread| {
+        var owned = survivor.share();
+        thread.* = std.Thread.spawn(.{}, Worker.run, .{owned}) catch |err| {
+            owned.deinit();
+            return err;
+        };
+        started += 1;
+    }
+    for (threads[0..started]) |thread| thread.join();
+    started = 0;
+    try t.expectEqual(@as(usize, 201), survivor.count());
+}
 
 test "Interner: basic intern and get" {
     const t = std.testing;
