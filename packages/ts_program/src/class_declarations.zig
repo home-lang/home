@@ -115,6 +115,30 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         class.is_default = std.mem.eql(u8, binding.name, "default");
         try out.append(gpa, class);
     }
+    // Use the same declaration-owned generic graph for local references.
+    // Export visibility is separate metadata; adding a local declaration here
+    // must not make it available through a module import or namespace value.
+    var represented_classes: std.AutoHashMapUnmanaged(Declaration, void) = .empty;
+    defer represented_classes.deinit(gpa);
+    for (out.items) |class| {
+        if (class.declaration_pos) |position| {
+            if (by_path.get(class.declaration_path)) |owner| try represented_classes.put(gpa, .{ .source = owner, .position = position }, {});
+        }
+    }
+    for (sources, 0..) |source, source_index| {
+        const c = source.compilation;
+        for (c.hir.kinds.items, 0..) |kind, index| {
+            if (kind != .class_decl) continue;
+            const node: hir.NodeId = @intCast(index);
+            if (hir.classOf(&c.hir, node).type_params_len == 0) continue;
+            const position = c.hir.spanOf(node).start;
+            if (represented_classes.contains(.{ .source = source_index, .position = position })) continue;
+            var class = try classFacts(gpa, resolver, sources, source, node);
+            errdefer freeClass(gpa, class);
+            class.local_only = true;
+            try out.append(gpa, class);
+        }
+    }
     return out.toOwnedSlice(gpa);
 }
 

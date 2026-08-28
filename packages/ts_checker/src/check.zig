@@ -525,6 +525,9 @@ pub const ModuleInterfaceAugmentation = struct {
 
 pub const ProgramExportedClass = struct {
     target_path: []const u8,
+    /// Source-owned local declarations share generic metadata, but must never
+    /// be surfaced as exports merely because an importer spells their name.
+    local_only: bool = false,
     /// Export binding location may differ from the owning class declaration.
     export_name: []const u8 = "",
     declaration_path: []const u8 = "",
@@ -546,19 +549,12 @@ pub const ProgramExportedClass = struct {
 
 pub const ProgramClassSchema = @import("program_schema.zig");
 
-const ProgramInstantiationKey = struct {
-    declaration: *const ProgramClassSchema.Declaration,
-    arguments: []const TypeId,
-};
-const ProgramInstantiationContext = struct {
-    pub fn hash(_: ProgramInstantiationContext, key: ProgramInstantiationKey) u64 {
-        const owner = std.hash.Wyhash.hash(key.declaration.position, key.declaration.path);
-        return std.hash.Wyhash.hash(owner, std.mem.sliceAsBytes(key.arguments));
+const ProgramDeclarationContext = struct {
+    pub fn hash(_: ProgramDeclarationContext, key: *const ProgramClassSchema.Declaration) u64 {
+        return std.hash.Wyhash.hash(key.position, key.path);
     }
-    pub fn eql(_: ProgramInstantiationContext, a: ProgramInstantiationKey, b: ProgramInstantiationKey) bool {
-        return a.declaration.position == b.declaration.position and
-            std.mem.eql(u8, a.declaration.path, b.declaration.path) and
-            std.mem.eql(TypeId, a.arguments, b.arguments);
+    pub fn eql(_: ProgramDeclarationContext, a: *const ProgramClassSchema.Declaration, b: *const ProgramClassSchema.Declaration) bool {
+        return a.position == b.position and std.mem.eql(u8, a.path, b.path);
     }
 };
 const ProgramTypeError = CheckError || error{UnsupportedProgramType};
@@ -5289,8 +5285,13 @@ pub const Checker = struct {
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
-    program_generic_instances: std.HashMapUnmanaged(ProgramInstantiationKey, TypeId, ProgramInstantiationContext, 80) = .empty,
-    program_generic_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
+    program_generic_definitions: std.HashMapUnmanaged(*const ProgramClassSchema.Declaration, TypeId, ProgramDeclarationContext, 80) = .empty,
+    program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
+    program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
+    program_local_class_names_built: bool = false,
+    generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    generic_instance_origins: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
@@ -5815,8 +5816,18 @@ pub const Checker = struct {
         self.narrow_scopes.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
         self.clearProgramGenericInstances();
-        self.program_generic_instances.deinit(self.gpa);
-        self.program_generic_active.deinit(self.gpa);
+        self.program_generic_definitions.deinit(self.gpa);
+        self.program_definition_classes.deinit(self.gpa);
+        self.program_local_class_names.deinit(self.gpa);
+        self.generic_instances.deinit(self.gpa);
+        self.generic_instance_origins.deinit(self.gpa);
+        self.generic_expansion_active.deinit(self.gpa);
+        if (self.engine.type_resolver) |resolver| {
+            if (resolver.context == @as(*anyopaque, @ptrCast(self))) {
+                self.engine.type_resolver = null;
+                self.engine.generic_instance_origins = null;
+            }
+        }
         self.program_generic_defaults_active.deinit(self.gpa);
         self.program_schema_support.deinit(self.gpa);
         self.free_type_parameter_pending.deinit(self.gpa);
@@ -75293,7 +75304,7 @@ pub const Checker = struct {
         if (self.typeNodeHasArraySyntax(type_node)) {
             try self.array_origin_types.put(self.gpa, result, {});
         }
-        return result;
+        return self.resolveGenericType(result);
     }
 
     fn typeNodeHasResolutionError(self: *Checker, type_node: NodeId) bool {
@@ -90648,6 +90659,9 @@ pub const Checker = struct {
     }
 
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        const resolved_source = try self.resolveGenericType(source_t);
+        const resolved_target = try self.resolveGenericType(target_t);
+        if (resolved_source != source_t or resolved_target != target_t) return self.checkerAssignableTo(resolved_source, resolved_target);
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
         if ((self.synthetic_program_class_origins.contains(source_t) or
@@ -102064,6 +102078,8 @@ pub const Checker = struct {
     }
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const expanded_object = try self.resolveGenericType(obj_t);
+        if (expanded_object != obj_t) return self.lookupObjectMember(expanded_object, name);
         if (self.module_augmented_interface_types.get(obj_t)) |merged_t| {
             if (merged_t != obj_t) return try self.lookupObjectMember(merged_t, name);
         }
@@ -102453,6 +102469,10 @@ pub const Checker = struct {
     }
 
     fn refreshedGenericAliasObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        // These members already come from their owning definition. A display
+        // name is not authority to reinstantiate them from this file's alias
+        // table (which may name a different declaration or an older body).
+        if (self.generic_instance_origins.contains(obj_t)) return null;
         const args = self.alias_type_args.get(obj_t) orelse return null;
         const display = self.alias_display_names.get(obj_t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
@@ -106201,6 +106221,7 @@ pub const Checker = struct {
                     };
                 } else {
                     for (self.program_exported_classes) |class| {
+                        if (class.local_only) continue;
                         if (class.ambient_module_name.len != 0 or !std.mem.eql(u8, class.target_path, path) or
                             !std.mem.eql(u8, class.exportedName(), name)) continue;
                         const class_name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
@@ -106239,6 +106260,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, reference.name, "unknown")) return types.Primitive.unknown;
         if (reference.target_path.len == 0) return types.Primitive.any;
         for (self.program_exported_classes) |exported_class| {
+            if (exported_class.local_only) continue;
             if (!std.mem.eql(u8, exported_class.target_path, reference.target_path)) continue;
             if (reference.is_default and !exported_class.is_default) continue;
             if (!reference.is_default and !std.mem.eql(u8, exported_class.exportedName(), reference.name)) continue;
@@ -106249,9 +106271,105 @@ pub const Checker = struct {
     }
 
     fn clearProgramGenericInstances(self: *Checker) void {
-        var keys = self.program_generic_instances.keyIterator();
-        while (keys.next()) |key| self.gpa.free(key.arguments);
-        self.program_generic_instances.clearRetainingCapacity();
+        self.program_generic_definitions.clearRetainingCapacity();
+        self.program_definition_classes.clearRetainingCapacity();
+        self.program_local_class_names.clearRetainingCapacity();
+        self.program_local_class_names_built = false;
+        self.generic_instances.clearRetainingCapacity();
+        self.generic_instance_origins.clearRetainingCapacity();
+    }
+
+    fn resolveGenericTypeForEngine(context: *anyopaque, t: TypeId) anyerror!TypeId {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        return self.resolveGenericType(t);
+    }
+
+    /// Expand only the requested surface. Substitution retains nested generic
+    /// references, so a growing recursive body never requires eager unrolling.
+    fn resolveGenericType(self: *Checker, t: TypeId) CheckError!TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_instantiation) return t;
+        if (self.generic_instances.get(t)) |result| return result;
+        if (self.generic_expansion_active.contains(t)) return t;
+        try self.generic_expansion_active.put(self.gpa, t, {});
+        defer _ = self.generic_expansion_active.remove(t);
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            const snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(snapshot);
+            for (snapshot) |*member| member.* = try self.resolveGenericType(member.*);
+            const result = if (flags.is_union) try self.interner.internUnion(snapshot) else try self.interner.internIntersection(snapshot);
+            try self.generic_instances.put(self.gpa, t, result);
+            return result;
+        }
+        const index = self.interner.pool.payloadOf(t);
+        if (index >= self.interner.pool.instantiation_payloads.items.len) return t;
+        const reference = self.interner.pool.instantiation_payloads.items[index];
+        const definition = self.interner.genericDefinition(reference.origin) orelse return t;
+        if (definition.body == types.Primitive.none or definition.parameters_len != reference.args_len) return t;
+        const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+        defer self.gpa.free(args);
+        const parameters = self.interner.pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len];
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        for (parameters, args) |parameter, arg| try subs.put(self.gpa, parameter, arg);
+        const substituted = try self.substituteType(definition.body, &subs);
+        const result = try self.resolveGenericType(substituted);
+        // A non-productive alias cycle remains symbolic; never publish a
+        // guessed body as a completed instantiation.
+        if (result == t) return t;
+        try self.generic_instances.put(self.gpa, t, result);
+        // Only a directly materialized object body belongs to this definition.
+        // Identity/reference aliases reuse another type; recording their name
+        // as its origin would make recursion identity depend on lookup order.
+        if (self.interner.pool.flagsOf(definition.body).is_object_type and result == substituted)
+            try self.generic_instance_origins.put(self.gpa, result, reference.origin);
+        if (self.program_definition_classes.get(reference.origin)) |class| {
+            try self.synthetic_program_class_origins.put(self.gpa, result, class.origin);
+            try self.class_name_by_instance.put(self.gpa, result, class.name);
+            if (args.len > 0) try self.alias_type_args.put(self.gpa, result, try self.diag_arena.allocator().dupe(TypeId, args));
+            try self.registerAliasDisplayNameInner(result, class.name, args, true);
+        }
+        return result;
+    }
+
+    fn programGenericDefinition(self: *Checker, declaration: *const ProgramClassSchema.Declaration) ProgramTypeError!TypeId {
+        if (self.program_generic_definitions.get(declaration)) |definition| return definition;
+        const definition = try self.interner.reserveGenericDefinition();
+        try self.program_generic_definitions.put(self.gpa, declaration, definition);
+        errdefer self.clearProgramGenericInstances();
+        const parameters = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(parameters);
+        for (declaration.parameters, parameters) |parameter, *id| {
+            id.* = try self.interner.internFreshTypeParameterWithFlags(
+                self.string_interner.intern(parameter.name) catch return error.OutOfMemory,
+                types.Primitive.none,
+                types.Primitive.none,
+                types.Variance.fromHirBits(parameter.variance),
+                parameter.is_const,
+            );
+        }
+        for (declaration.parameters, parameters) |parameter, id| {
+            const constraint = if (parameter.constraint) |expression| try self.lowerProgramExpression(expression, declaration, parameters) else types.Primitive.none;
+            const default = if (parameter.default) |expression| try self.lowerProgramExpression(expression, declaration, parameters) else types.Primitive.none;
+            const payload = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(id)];
+            payload.constraint = constraint;
+            payload.default = default;
+        }
+        const expression = declaration.body orelse return error.UnsupportedProgramType;
+        const body = try self.lowerProgramExpression(expression, declaration, parameters);
+        self.interner.completeGenericDefinition(definition, parameters, body) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidTypeGraph => return error.UnsupportedProgramType,
+        };
+        if (declaration.is_class) try self.program_definition_classes.put(self.gpa, definition, .{
+            .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
+            .origin = try self.programSchemaDeclarationOrigin(declaration),
+        });
+        self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+        self.engine.generic_instance_origins = &self.generic_instance_origins;
+        return definition;
     }
 
     fn programSchemaSupported(self: *Checker, schema: *const ProgramClassSchema.Schema) CheckError!bool {
@@ -106300,10 +106418,11 @@ pub const Checker = struct {
         };
     }
 
-    /// Instantiate from source-owned expressions, not from consumer name
-    /// tables or an already-substituted object. Reserving each object identity
-    /// before its members keeps recursive aliases concrete all the way down.
     fn instantiateProgramDeclaration(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
+        return self.resolveGenericType(try self.programDeclarationReference(declaration, supplied, arg_nodes));
+    }
+
+    fn programDeclarationReference(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
         const params = declaration.parameters;
         if (supplied.len > params.len) return error.UnsupportedProgramType;
         const args = try self.gpa.alloc(TypeId, params.len);
@@ -106325,51 +106444,12 @@ pub const Checker = struct {
         for (params, 0..) |param, i| {
             if (i >= arg_nodes.len or self.diagnosticExists(arg_nodes[i], TsCodes.type_does_not_satisfy_constraint)) continue;
             const expression = param.constraint orelse continue;
-            const constraint = try self.lowerProgramExpression(expression, declaration, args);
+            const constraint = try self.resolveGenericType(try self.lowerProgramExpression(expression, declaration, args));
             const name = self.string_interner.intern(param.name) catch return error.OutOfMemory;
             const parameter = try self.interner.internTypeParameterWithFlags(name, constraint, types.Primitive.none, types.Variance.fromHirBits(param.variance), param.is_const);
             try self.checkTypeArgSatisfiesConstraintImpl(arg_nodes[i], parameter, args[i], !self.typeNodeHasResolutionError(arg_nodes[i]));
         }
-        const key: ProgramInstantiationKey = .{ .declaration = declaration, .arguments = args };
-        if (self.program_generic_instances.get(key)) |cached| {
-            if (cached == types.Primitive.none) return error.UnsupportedProgramType;
-            return cached;
-        }
-        // A repeated declaration with different arguments describes a growing
-        // recursive type. It needs lazy parameterized expansion, not a finite
-        // object graph. Keep that unsupported case explicit instead of
-        // truncating it, substituting an unsubstituted body, or recursing forever.
-        if (self.program_generic_active.contains(declaration)) return error.UnsupportedProgramType;
-        try self.program_generic_active.put(self.gpa, declaration, {});
-        defer _ = self.program_generic_active.remove(declaration);
-        const body = declaration.body orelse return error.UnsupportedProgramType;
-        const reserved = if (body.* == .object) try self.interner.internObjectType(&.{}) else types.Primitive.none;
-        const owned_args = try self.gpa.dupe(TypeId, args);
-        self.program_generic_instances.put(self.gpa, .{ .declaration = declaration, .arguments = owned_args }, reserved) catch |err| {
-            self.gpa.free(owned_args);
-            return err;
-        };
-        // A failed graph must never leave a partially completed object in the
-        // cache for a later successful lookup.
-        errdefer self.clearProgramGenericInstances();
-        const instance = if (body.* == .object) blk: {
-            const members = try self.programExpressionMembers(body.object, declaration, args);
-            defer self.gpa.free(members);
-            try self.interner.completeFreshObjectType(reserved, members);
-            break :blk reserved;
-        } else try self.lowerProgramExpression(body, declaration, args);
-        self.program_generic_instances.getPtr(key).?.* = instance;
-        if (declaration.is_class) {
-            const origin = try self.programSchemaDeclarationOrigin(declaration);
-            try self.synthetic_program_class_origins.put(self.gpa, instance, origin);
-            const name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory;
-            try self.class_name_by_instance.put(self.gpa, instance, name);
-            // Argument identity is semantic metadata. Retain it even when a
-            // display name cannot be rendered or is deliberately deferred.
-            if (args.len > 0) try self.alias_type_args.put(self.gpa, instance, try self.diag_arena.allocator().dupe(TypeId, args));
-            try self.registerAliasDisplayNameInner(instance, name, args, true);
-        }
-        return instance;
+        return self.interner.internInstantiation(try self.programGenericDefinition(declaration), args);
     }
 
     fn programSchemaDeclarationOrigin(self: *Checker, declaration: *const ProgramClassSchema.Declaration) CheckError!hir_mod.StringId {
@@ -106451,7 +106531,7 @@ pub const Checker = struct {
                 const values = try self.gpa.alloc(TypeId, ref.arguments.len);
                 defer self.gpa.free(values);
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
-                return self.instantiateProgramDeclaration(ref.declaration, values, &.{});
+                return self.programDeclarationReference(ref.declaration, values, &.{});
             },
         }
     }
@@ -106470,6 +106550,7 @@ pub const Checker = struct {
             hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
         {
             for (self.program_exported_classes) |exported_class| {
+                if (exported_class.local_only) continue;
                 if (self.importDeclIsRequireAssignment(import_node)) {
                     if (!exported_class.is_export_assignment_target or
                         !self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) continue;
@@ -106486,6 +106567,7 @@ pub const Checker = struct {
             if (sp.local != local_name) continue;
             const imported_name_text = self.string_interner.get(sp.imported);
             for (self.program_exported_classes) |exported_class| {
+                if (exported_class.local_only) continue;
                 if (!std.mem.eql(u8, exported_class.exportedName(), imported_name_text)) continue;
                 if (std.mem.startsWith(u8, spec, ".")) {
                     if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
@@ -106510,15 +106592,34 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.program_exported_classes.len == 0) return null;
-        // Most type references in a project are not imports. Use the bound
-        // root table before doing lexical scans or resolving module paths.
+        // Reject unrelated names before lexical scans. Local classes use an
+        // owner-specific name index so nested declarations are not limited to
+        // the module root table; lexical lookup below still proves visibility.
         if (self.module) |module| {
             if (!self.sourceHasVirtualFilenameSections()) {
-                const symbol = module.root.types.get(local_name) orelse module.root.values.get(local_name) orelse return null;
-                if (!symbol.flags.is_import) return null;
+                const symbol = module.root.types.get(local_name) orelse module.root.values.get(local_name);
+                if (symbol == null or !symbol.?.flags.is_import) {
+                    if (!self.program_local_class_names_built) {
+                        for (self.program_exported_classes) |class| {
+                            if (class.schema != null and std.mem.eql(u8, class.declaration_path, self.importer_path))
+                                try self.program_local_class_names.put(self.gpa, class.class_name, {});
+                        }
+                        self.program_local_class_names_built = true;
+                    }
+                    if (!self.program_local_class_names.contains(self.string_interner.get(local_name))) return null;
+                }
             }
         }
-        if (self.nameHasEnclosingTypeParameter(local_name, anchor) or self.findVisibleNamedTypeDecl(anchor, local_name) != null) return null;
+        if (self.nameHasEnclosingTypeParameter(local_name, anchor)) return null;
+        if (self.findVisibleNamedTypeDecl(anchor, local_name)) |declaration| {
+            if (self.hir.kindOf(declaration) != .class_decl) return null;
+            const position = self.hir.spanOf(declaration).start;
+            for (self.program_exported_classes) |class| {
+                if (class.declaration_pos != position or !std.mem.eql(u8, class.declaration_path, self.importer_path)) continue;
+                return self.programGenericClassReference(class, anchor);
+            }
+            return null;
+        }
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
@@ -106575,6 +106676,7 @@ pub const Checker = struct {
         const spec = self.string_interner.get(specifier);
         const class_name_text = self.string_interner.get(class_name);
         for (self.program_exported_classes) |exported_class| {
+            if (exported_class.local_only) continue;
             if (!std.mem.eql(u8, exported_class.exportedName(), class_name_text)) continue;
             if (std.mem.startsWith(u8, spec, ".")) {
                 if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
@@ -113326,7 +113428,7 @@ pub const Checker = struct {
             },
             else => types.Primitive.any,
         };
-        const result_t = (try self.inlineJsDocCastType(node, t)) orelse t;
+        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, t)) orelse t);
         try self.checkJsDocSatisfiesExpression(node, result_t);
         self.hir.setType(node, result_t);
         return result_t;
@@ -157456,6 +157558,21 @@ pub const Checker = struct {
             const result = self.interner.internIntersection(new.items) catch return t;
             return try self.finishSubstitutedMappedType(t, result, subs);
         }
+        if (flags.is_instantiation) {
+            const reference = self.interner.pool.instantiation_payloads.items[payload_idx];
+            const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+            defer self.gpa.free(args);
+            for (args) |*arg| arg.* = try self.substituteType(arg.*, subs);
+            // Substitute the argument graph, never expand the referenced body.
+            return self.interner.internInstantiation(reference.origin, args);
+        }
+        if (flags.is_tuple) {
+            const tuple = self.interner.pool.tuple_payloads.items[payload_idx];
+            const elements = try self.gpa.dupe(types.TupleElement, self.interner.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len]);
+            defer self.gpa.free(elements);
+            for (elements) |*element| element.type = try self.substituteType(element.type, subs);
+            return self.interner.internTupleType(elements);
+        }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const params = self.interner.signatureParams(t);
@@ -167160,6 +167277,8 @@ pub const Checker = struct {
     }
 
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
+        const expanded_object = try self.resolveGenericType(object_t);
+        if (expanded_object != object_t) return self.resolveObjectIndexedAccessType(expanded_object, index_t);
         const obj = (try self.nonNullableIntersectionConstraint(object_t)) orelse
             self.typeParameterConstraint(object_t) orelse
             object_t;
@@ -196783,6 +196902,28 @@ test "checker: ambient export assignment class is a require alias type" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
+test "checker: source-owned local class metadata is not an import binding" {
+    const s = try newSetup("import { Hidden } from './owner';");
+    defer destroySetup(s);
+    s.checker.setImporterPath("/app.ts");
+    s.checker.setProgramExportedClasses(&.{.{ .target_path = "/owner.ts", .class_name = "Hidden", .local_only = true }});
+    const import_node = hir_mod.blockStmts(&s.hir, s.root)[0];
+    try T.expectEqual(null, try s.checker.programExportedClassForImportBinding(import_node, try s.sint.intern("Hidden")));
+    try T.expectEqual(null, try s.checker.programExportedClassInstanceTypeForImportPath(import_node, try s.sint.intern("./owner"), try s.sint.intern("Hidden"), import_node));
+}
+
+test "checker: source-owned instantiated members do not refresh from display-name aliases" {
+    const s = try newSetup("class Box<T> { value!: number; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "value", .type = &parameter }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body, .is_class = true };
+    const instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    try T.expectEqual(types.Primitive.string_t, (try s.checker.lookupObjectMember(instance, try s.sint.intern("value"))).?);
+}
+
 test "checker: source-owned generic instances retain concrete recursive arguments and owners" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -196805,8 +196946,8 @@ test "checker: source-owned generic instances retain concrete recursive argument
     try T.expect(!try s.checker.checkerAssignableTo(first, other_args));
     try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(first, item).?);
     try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(other_args, item).?);
-    try T.expectEqual(first, s.ti.objectMember(first, next).?);
-    try T.expectEqual(other_args, s.ti.objectMember(other_args, next).?);
+    try T.expectEqual(first, try s.checker.resolveGenericType(s.ti.objectMember(first, next).?));
+    try T.expectEqual(other_args, try s.checker.resolveGenericType(s.ti.objectMember(other_args, next).?));
     try T.expect(s.ti.objectMemberInfo(first, next).?.is_optional);
     try T.expectEqual(s.ti.objectMemberInfo(first, item).?.declaration_origin, s.ti.objectMemberInfo(other_args, item).?.declaration_origin);
     // A separately collected alias of the same declaration shares its cache
@@ -196818,7 +196959,7 @@ test "checker: source-owned generic instances retain concrete recursive argument
     try T.expect(s.ti.objectMemberInfo(first, item).?.declaration_origin != s.ti.objectMemberInfo(other_owner, item).?.declaration_origin);
 }
 
-test "checker: source-owned growing recursion remains unsupported without poisoning instance caches" {
+test "checker: source-owned growing recursion expands only requested surfaces" {
     const s = try newSetup("");
     defer destroySetup(s);
     var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
@@ -196826,15 +196967,44 @@ test "checker: source-owned growing recursion remains unsupported without poison
     const array: ProgramClassSchema.Expression = .{ .array = &parameter };
     var declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 7, .name = "Link", .parameters = &params };
     const ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&array} } };
-    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "next", .type = &ref }} };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{ .{ .name = "item", .type = &parameter }, .{ .name = "next", .type = &ref } } };
     declaration.body = &body;
-    try T.expectError(error.UnsupportedProgramType, s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{}));
-    try T.expectEqual(@as(u32, 0), s.checker.program_generic_instances.count());
-    try T.expectEqual(@as(u32, 0), s.checker.program_generic_active.count());
-    const valid: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "item", .type = &parameter }} };
-    declaration.body = &valid;
+    var instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const item = try s.sint.intern("item");
+    const next = try s.sint.intern("next");
+    try T.expectEqual(@as(u32, 1), s.checker.generic_instances.count());
+    for (0..64) |depth| {
+        var element = s.ti.objectMember(instance, item).?;
+        for (0..depth) |_| element = s.ti.objectNumberIndex(element);
+        try T.expectEqual(types.Primitive.string_t, element);
+        const reference = s.ti.objectMember(instance, next).?;
+        instance = try s.checker.resolveGenericType(reference);
+        try T.expectEqual(instance, try s.checker.resolveGenericType(reference));
+    }
+    try T.expectEqual(@as(u32, 65), s.checker.generic_instances.count());
+    try T.expectEqual(@as(u32, 1), s.checker.program_generic_definitions.count());
+    try T.expectEqual(@as(u32, 0), s.checker.generic_expansion_active.count());
+}
+
+test "checker: source-owned transparent aliases preserve the expanded object's origin" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "item", .type = &parameter }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body, .is_class = true };
     const instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
-    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(instance, try s.sint.intern("item")).?);
+    const origin = s.checker.generic_instance_origins.get(instance).?;
+    const identity: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 1, .name = "Identity", .parameters = &params, .body = &parameter };
+    try T.expectEqual(instance, try s.checker.instantiateProgramDeclaration(&identity, &.{instance}, &.{}));
+    try T.expectEqual(origin, s.checker.generic_instance_origins.get(instance).?);
+    const reference: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&parameter} } };
+    const alias: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 2, .name = "Alias", .parameters = &params, .body = &reference };
+    try T.expectEqual(instance, try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{}));
+    try T.expectEqual(origin, s.checker.generic_instance_origins.get(instance).?);
+    const plain = try s.ti.internObjectType(&.{});
+    try T.expectEqual(plain, try s.checker.instantiateProgramDeclaration(&identity, &.{plain}, &.{}));
+    try T.expect(!s.checker.generic_instance_origins.contains(plain));
 }
 
 test "checker: source-owned dependent defaults use earlier effective arguments" {

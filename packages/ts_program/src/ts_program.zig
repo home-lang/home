@@ -4575,6 +4575,26 @@ fn moduleDefinePropertyDescriptorObject(
     return null;
 }
 
+test "Program: generic local declarations retain schemas without becoming exports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/classes.ts", "class Hidden<T> { value!: T; } export class Visible<T> { value!: T; } function nested() { class Inner<T> { value!: T; } }");
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    try T.expectEqual(@as(usize, 3), classes.len);
+    for (classes) |class| {
+        try T.expect(class.schema != null);
+        try T.expectEqualStrings("/classes.ts", class.declaration_path);
+        try T.expectEqual(!std.mem.eql(u8, class.class_name, "Visible"), class.local_only);
+    }
+}
+
 test "Program: bound class facts separate static members and ignore source trivia" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

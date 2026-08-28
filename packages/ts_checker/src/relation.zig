@@ -307,6 +307,14 @@ pub const Engine = struct {
     gpa: std.mem.Allocator,
     interner: *Interner,
     cache: RelationCache,
+    /// Type expansion belongs to the checker, which also owns callable and
+    /// declaration metadata. Relations request the same cached surface used by
+    /// property/indexed-access consumers rather than an erased second copy.
+    type_resolver: ?struct {
+        context: *anyopaque,
+        resolve: *const fn (*anyopaque, TypeId) anyerror!TypeId,
+    } = null,
+    generic_instance_origins: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
     /// When true, function-type parameters are checked
     /// contravariantly (sound — matches `strictFunctionTypes`).
     /// When false (TS default for method declarations), parameters
@@ -535,6 +543,11 @@ pub const Engine = struct {
     /// True if `a` and `b` are structurally identical.
     pub fn isIdenticalTo(self: *Engine, a: TypeId, b: TypeId) anyerror!bool {
         if (a == b) return true; // interner identity short-circuit
+        if (self.type_resolver) |resolver| {
+            const left = try resolver.resolve(resolver.context, a);
+            const right = try resolver.resolve(resolver.context, b);
+            if (left != a or right != b) return self.isIdenticalTo(left, right);
+        }
         switch (self.cache.lookup(.identity, a, b)) {
             .yes => return true,
             .no => return false,
@@ -601,6 +614,11 @@ pub const Engine = struct {
     /// the *fundamental* rules; conformance hardening lands in Phase 6.
     pub fn isAssignableTo(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         if (source == target) return true;
+        if (self.type_resolver) |resolver| {
+            const left = try resolver.resolve(resolver.context, source);
+            const right = try resolver.resolve(resolver.context, target);
+            if (left != source or right != target) return self.isAssignableTo(left, right);
+        }
 
         // `any` is assignable to any type and any type is assignable
         // to `any` (per tsc; this is the source of most "TS doesn't
@@ -816,10 +834,13 @@ pub const Engine = struct {
         return false;
     }
 
-    const RecursionIdentity = u32;
+    const RecursionIdentity = u64;
 
     fn recursionIdentity(self: *Engine, t: TypeId) ?RecursionIdentity {
         if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return null;
+        if (self.generic_instance_origins) |origins| {
+            if (origins.get(t)) |origin| return (@as(u64, origin) << 1) | 1;
+        }
         const flags = self.pool().flagsOf(t);
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
@@ -835,7 +856,7 @@ pub const Engine = struct {
         }
         if (!flags.is_object_type) return null;
         const symbol = self.interner.typeSymbol(t);
-        if (symbol != 0) return symbol;
+        if (symbol != 0) return @as(u64, symbol) << 1;
         return null;
     }
 
