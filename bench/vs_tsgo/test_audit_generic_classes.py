@@ -9,15 +9,15 @@ import audit_globals
 class GenericClassAuditTests(unittest.TestCase):
     def test_families_are_retained(self):
         cases = audit_generic_classes.cases()
-        self.assertEqual(112, len(cases))
-        self.assertEqual(112, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(120, len(cases))
+        self.assertEqual(120, len({(case.family, case.name) for case in cases}))
         self.assertEqual({"named", "namespace", "renamed", "default", "reexport", "array-member",
                           "readonly-array-member", "object-member", "tuple-member", "union-member",
                           "function-member", "method-member", "owner-identity", "local-name-isolation",
                           "default-argument", "dependent-default", "constraint", "dependent-constraint",
                           "required-arity", "excess-arity", "default-arity", "owner-local-alias",
                           "owner-imported-alias", "owner-local-constraint", "recursive-alias", "growing-recursive-alias",
-                          "phantom-parameter", "explicit-this-method"},
+                          "phantom-parameter", "explicit-this-method", "unknown-constraint", "weak-constraint"},
                          {case.family for case in cases})
 
     def test_negative_controls_only_append_invalid_uses(self):

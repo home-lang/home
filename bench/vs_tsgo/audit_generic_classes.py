@@ -90,6 +90,12 @@ def cases() -> list[Case]:
     pair("explicit-this-method", {"a-owner.ts": BOX.replace("value: T;", "value: T; identity(this: { value: T }, value: T): T;")},
          imports + "declare const value: ns.Box<string>;\nconst good: string = value.identity('ok');\n"
          "const detached = value.identity;\n", "detached('ok');\n", ("2684",))
+    pair("unknown-constraint", {"a-owner.ts": BOX.replace("<T>", "<T extends { id: string }>")},
+         imports + "type Unknown = unknown;\ndeclare const top: ns.Box<any>;\ndeclare const bottom: ns.Box<never>;\n",
+         "declare const bad: ns.Box<unknown>;\ndeclare const alias: ns.Box<Unknown>;\n", ("2344", "2344"))
+    pair("weak-constraint", {"a-owner.ts": BOX.replace("<T>", "<T extends { optional?: string }>")},
+         imports + "declare const objectValue: ns.Box<object>;\ndeclare const bigintValue: ns.Box<bigint>;\n",
+         "declare const bad: ns.Box<{ optional: number }>;\n", ("2344",))
     return result
 
 
