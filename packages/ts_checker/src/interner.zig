@@ -409,6 +409,7 @@ pub const Interner = struct {
             .pool = try Pool.init(gpa),
             .shards = undefined,
         };
+        errdefer self.pool.deinit();
         // Pre-reserve generous header capacity so concurrent readers
         // never observe a reallocation in flight.
         try self.pool.headers.ensureTotalCapacity(gpa, POOL_INITIAL_CAPACITY);
@@ -1371,6 +1372,16 @@ pub const Interner = struct {
 // =============================================================================
 
 const T = std.testing;
+
+test "Interner: initialization allocation failures release the pool" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var value = try Interner.init(allocator);
+            defer value.deinit();
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
+}
 const string_interner = @import("string_interner");
 
 test "Interner: primitive ids round-trip without allocation" {

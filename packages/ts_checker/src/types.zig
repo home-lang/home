@@ -395,6 +395,7 @@ pub const Pool = struct {
             .signature_param_pool = .empty,
             .object_member_pool = .empty,
         };
+        errdefer p.deinit();
         // Reserve slot 0 in every payload column ("no payload").
         try p.literal_payloads.append(gpa, .{ .boolean_lit = false });
         try p.union_payloads.append(gpa, .{ .members_start = 0, .members_len = 0 });
@@ -515,4 +516,14 @@ test "Pool: typeCount starts at first_dynamic" {
 
 test "TypeFlags: 4 bytes" {
     try T.expectEqual(@as(usize, 4), @sizeOf(TypeFlags));
+}
+
+test "Pool: initialization allocation failures release partial columns" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var pool = try Pool.init(allocator);
+            defer pool.deinit();
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
 }
