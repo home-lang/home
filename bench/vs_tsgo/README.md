@@ -31,6 +31,9 @@ python3 bench/vs_tsgo/audit_globals.py
 
 It checks valid and invalid projects with all three pinned compilers, including
 script/module isolation and explicit declaration-before/after-app file orders.
+Cross-file controls include ambient `var`, `let`, and `const` bindings as well
+as interfaces and declaration merging; unresolved lexical globals are failures,
+not exclusions.
 Every compiler receives the same files and configuration. A crash, missing
 diagnostic, extra diagnostic, or rejected valid input fails the audit. The
 default includes unresolved cross-file cases tracked in

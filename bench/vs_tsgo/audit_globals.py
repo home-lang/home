@@ -70,6 +70,10 @@ def cases(family: str | None = None) -> list[Case]:
     pair("sibling-generic", "cross-file", GENERIC_VARIABLE, GENERIC_GOOD, GENERIC_BAD, ("2322",),
          siblings={"globals.d.ts": GENERIC})
     pair("sibling-variable", "cross-file", "", GOOD, BAD, CODES, siblings={"globals.d.ts": METHODS + VARIABLE})
+    for kind in ("let", "const"):
+        pair(f"sibling-{kind}", "cross-file", "", "const good: number = lexicalValue;\n",
+             "const bad: string = lexicalValue;\n", ("2322",),
+             siblings={"globals.d.ts": f"declare {kind} lexicalValue: number;\n"})
     pair("sibling-merge", "cross-file", METHODS + VARIABLE, MERGED_GOOD, MERGED_BAD, CODES,
          siblings={"globals.d.ts": COUNT})
     return [case for case in result if family is None or case.family == family]

@@ -11,18 +11,18 @@ import audit_globals
 class GlobalAuditTests(unittest.TestCase):
     def test_default_keeps_unresolved_cross_file_cases(self):
         cases = audit_globals.cases()
-        self.assertEqual(44, len(cases))
+        self.assertEqual(52, len(cases))
         self.assertEqual(24, len(audit_globals.cases("same-file")))
-        self.assertEqual(20, len(audit_globals.cases("cross-file")))
+        self.assertEqual(28, len(audit_globals.cases("cross-file")))
         self.assertEqual({"same-file", "cross-file"}, {case.family for case in cases})
-        self.assertEqual(44, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(52, len({(case.family, case.name) for case in cases}))
 
     def test_cross_file_cases_cover_both_root_orders(self):
         cases = audit_globals.cases("cross-file")
         before = [case for case in cases if "/before/" in case.name]
         after = [case for case in cases if "/after/" in case.name]
-        self.assertEqual(10, len(before))
-        self.assertEqual(10, len(after))
+        self.assertEqual(14, len(before))
+        self.assertEqual(14, len(after))
         for earlier, later in zip(before, after):
             self.assertEqual(earlier.expected, later.expected)
             self.assertEqual(earlier.files["app.ts"], later.files["app.ts"])
