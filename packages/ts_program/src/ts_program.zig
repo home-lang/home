@@ -540,7 +540,9 @@ pub const Program = struct {
         if (!options.bind_only) {
             try ts_driver.checkPreparedSource(c, per_file);
             std.debug.assert(f.owner == .none);
-            const source = c.sourceOwner(f.path) catch unreachable;
+            // Scanner recovery can produce a diagnostic-bearing result
+            // without a typed HIR. Such a file has no checked owner.
+            const source = c.sourceOwner(f.path) catch return;
             self.owners_mutex.lock();
             defer self.owners_mutex.unlock();
             f.owner = self.owners.register(source) catch |err| switch (err) {
@@ -6874,6 +6876,27 @@ test "Program: compileAll produces JS for every file" {
         try T.expectEqualStrings(f.path, source.path);
         try T.expect(source.hir == &f.compilation.?.hir);
     }
+}
+
+test "Program: untyped recovery results do not publish checked source owners" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/recovery.ts", "");
+    try p.compileAll(.{ .bind_only = true });
+    const file = p.fileById(id);
+    try T.expectEqual(source_owners.OwnerId.none, file.owner);
+    // Model the driver's scanner-recovery contract: a safely owned partial
+    // compilation may carry diagnostics but cannot provide typed storage.
+    file.compilation.?.check_state = .unavailable;
+    file.compilation.?.root = hir_mod_ns.none_node_id;
+    try p.compileAll(.{ .no_emit = true });
+    try T.expectEqual(.checked, file.compilation.?.check_state);
+    try T.expectEqual(source_owners.OwnerId.none, file.owner);
+    try T.expectEqual(@as(usize, 0), p.owners.owners.items.len);
 }
 
 test "Program: compileAllStreaming invokes callback per file" {
