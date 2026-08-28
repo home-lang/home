@@ -148,9 +148,10 @@ reading an excluded union member must produce two TS2322 diagnostics and two
 TS2339 diagnostics in every compiler. These also use an untimed temporary copy.
 Both module graphs additionally require TS2322 for assigning an imported
 generic property to the wrong type and TS2339 for reading a missing member.
-Home currently fails these controls ([#487](https://github.com/home-lang/home/issues/487)),
-so the default full run stops before timing. The graphs remain in the suite;
-they are not silently omitted. Historical graph timings remain available, but
+Home `de8fe28f1` passes these unchanged controls after source-owned factory typing
+([#534](https://github.com/home-lang/home/issues/534)); all 19 workloads now pass
+admission. Earlier binaries failed and were not eligible for graph timings.
+The graphs remain in the suite; they are not silently omitted. Historical graph timings remain available, but
 the reporter marks results without schema-2 admission as ineligible speed claims.
 
 They do not stand in for application-scale measurements; pinned real-world

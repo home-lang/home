@@ -2851,3 +2851,131 @@ The shared-host and incomplete-coverage qualifications still apply.
 HOME_TSC="$PWD/bench/vs_tsgo/results/lazy-generics.2H3YDX/release-v5/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3 --workload type_predicates_large --workload recursive_generics
 python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T221611Z
 ```
+
+### Source-owned exported factory contracts (untimed)
+
+Commit `de8fe28f1`, issue [#534](https://github.com/home-lang/home/issues/534), under
+[#487](https://github.com/home-lang/home/issues/487) and
+[#416](https://github.com/home-lang/home/issues/416), extends the source-owned
+graph to exported interfaces, type aliases, annotated variables and functions.
+The old exported-value collector scanned declaration-file lines and discarded
+generic signatures. The replacement resolves bound export identities, including
+aliases and export-star paths, and shares one annotation graph before checking
+consumers. Function signatures retain formal parameter identities, constraints,
+ordered defaults, required/rest parameters, receiver types and parameterized
+returns. It does not infer missing owner annotations or publish a partial
+overload/merged-interface graph as a complete type.
+
+`audit_graph_types.py` retains **240** controls: twelve semantic families across
+local, named-import, namespace-import and two two-hop barrel placements, both
+root orders, each with a positive and appended-only negative program. Both
+compilers receive the same files and strict project configuration. Controls
+exercise explicitly annotated interfaces, inferred factory results, wrong
+property types, missing/readonly members, explicit type arguments, constraints,
+required arity, ordinary/rest arguments, dependent defaults, captured factories
+and consumer-local name collisions. A clean positive alone is not a pass:
+the negative must emit exactly its expected diagnostic code.
+
+| Untimed control | TS 6.0.3 | Native TS 7.0.2 | Home baseline `3b7f0ea93` | Home `de8fe28f1` Release |
+|---|---:|---:|---:|---:|
+| Factory contracts | 240/240 | 240/240 | 130/240 | 240/240 |
+| Original graph admission | 2/2 | 2/2 | 0/2 | 2/2 |
+| Static-value controls | 84/84 | 84/84 | 84/84 | 84/84 |
+| Nominal-origin controls | 52/52 | 52/52 | 44/52 | 44/52 |
+| Imported-owner controls | 20/20 | 20/20 | 10/20 | 12/20 |
+| Recursive generic controls | 288/288 | 288/288 | 288/288 | 288/288 |
+| Generic-class controls | 120/120 | 120/120 | 120/120 | 120/120 |
+| Bound-class controls | 52/52 | 52/52 | 52/52 | 52/52 |
+| Callable identity controls | 56/56 | 56/56 | 56/56 | 56/56 |
+| Callable union controls | 256/256 | 256/256 | 256/256 | 256/256 |
+| Graph discovery controls | 28/28 | 28/28 | 28/28 | 28/28 |
+| Export-origin controls | 32/32 | 32/32 | 32/32 | 32/32 |
+| Global controls | 56/56 | 56/56 | 32/56 | 32/56 |
+| Bound-global controls | 56/56 | 56/56 | 44/56 | 44/56 |
+
+Evidence is retained in `bench/vs_tsgo/results/graph-types.4EsbvV/`:
+`audit-before.log`, `audit-v2.log`, `audit-v3.log`, `graphs-v2.log`,
+`static_values-v2.log`, and `nominal_origins-v2.log`. The intermediate candidate
+passed 220/240 factory controls; its twenty dependent-default failures remain
+recorded. Applying defaults using owner-resolved type parameter payloads, in
+declaration order, removes those failures without changing the controls.
+Release repeats are in the corresponding `*-release-v3.log` files. The eight
+inherited private/protected nominal-origin failures remain open, as do eight
+imported-owner predicate/rest controls and the existing global-control failures.
+
+All **19/19 workloads pass Release admission**, including the unchanged original
+graph, tuple, destructuring, predicate and recursive-generic rejection controls
+(`admission-release-v3.log`). Full relevant suites pass: **4,286/4,286 checker**,
+**1,417/1,417 conformance**, **133/133 Program**, **187/187 driver**, **69/69 CLI**,
+**10/10 source-owned focus**, and **69/69 benchmark-harness** tests. These are the
+named repository suites, not a claim of complete upstream TypeScript parity.
+
+The frozen binary is `graph-types.4EsbvV/release-v3/bin/home-tsc`, SHA-256
+`9f5e333beaf9828a9720ce260ae05a872ebcea3bb51bf5785ffa3ccd7b72f1bc`.
+These correctness results are **not timing claims**. The earlier measured
+snapshot above still refers to its original frozen binary. A profile also
+identified redundant source compilation in CommonJS export queries; follow-up
+[#536](https://github.com/home-lang/home/issues/536) will use this corrected
+version as its comparison baseline, never the previously ineligible graph run.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/graph-types.4EsbvV/release-v3/bin/home-tsc" python3 bench/vs_tsgo/audit_graph_types.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
+
+### Exported-factory checkpoint performance
+
+The complete run `20260828T224220Z` measures the frozen `de8fe28f1` ReleaseFast
+binary above against **TS 6.0.3** and **native TS 7.0.2**. All **19/19 workloads**
+pass admission before measurement, including the unchanged original graph
+rejection controls. All **570 round files / 1,710 successful samples** pass the
+reporter's coverage, rotating-order, exit-status and finite-duration checks.
+Fresh generation independently matches all **513 measured corpus files** byte
+for byte (`graph-types.4EsbvV/corpus-verified-v3.log`). No samples are discarded.
+
+Environment: Apple M3 Pro, arm64, macOS 27.0, shared workstation; 30 interleaved
+fresh-process measurements per compiler/workload after three warmups. This
+task's builds, tests and audits finished before timing. Unrelated CPU and
+filesystem activity continued, including another Zig compilation. Load averages
+were 6.17 / 8.23 / 12.63 before the run and 6.79 / 7.03 / 10.92 afterward.
+Interleaving balances order, not all contention. Means and sample standard
+deviations below are observations, not statistical proof of universal leadership.
+
+| Workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs faster competitor |
+|---|---:|---:|---:|---:|
+| Startup | 68.9 ± 6.2 ms | 40.9 ± 0.9 ms | 3.6 ± 0.1 ms | 11.45× faster |
+| 256 files | 220.8 ± 9.7 ms | 57.0 ± 5.4 ms | 34.8 ± 1.5 ms | 1.64× faster |
+| Deep types | 131.5 ± 5.3 ms | 52.8 ± 1.7 ms | 26.5 ± 0.5 ms | 2.00× faster |
+| 128-module import graph | 145.5 ± 35.6 ms | 50.8 ± 9.9 ms | 33.7 ± 7.4 ms | 1.51× faster |
+| 64-leaf barrel graph | 97.2 ± 11.8 ms | 41.1 ± 1.1 ms | 25.1 ± 3.2 ms | 1.63× faster |
+| TSX components | 160.4 ± 1.9 ms | 47.0 ± 1.0 ms | 26.3 ± 0.4 ms | 1.79× faster |
+| Generic calls | 190.1 ± 21.9 ms | 56.5 ± 4.5 ms | 24.2 ± 1.2 ms | 2.34× faster |
+| Control flow | 210.1 ± 37.7 ms | 63.2 ± 5.0 ms | 44.9 ± 7.0 ms | 1.41× faster |
+| Type predicates | 259.9 ± 32.0 ms | 80.5 ± 16.2 ms | 50.5 ± 8.9 ms | 1.59× faster |
+| Large type predicates | 1071.8 ± 87.3 ms | 380.6 ± 44.8 ms | 541.3 ± 50.7 ms | **1.42× slower** |
+| Null-safe access | 198.3 ± 15.7 ms | 58.8 ± 3.1 ms | 41.9 ± 1.8 ms | 1.40× faster |
+| Destructuring | 143.6 ± 4.6 ms | 49.8 ± 2.2 ms | 38.6 ± 4.5 ms | 1.29× faster |
+| Overload resolution | 204.7 ± 11.0 ms | 66.7 ± 5.2 ms | 30.5 ± 1.4 ms | 2.19× faster |
+| Class hierarchy | 193.5 ± 18.1 ms | 55.7 ± 4.2 ms | 29.9 ± 1.3 ms | 1.86× faster |
+| Structural objects | 207.2 ± 19.7 ms | 63.9 ± 4.7 ms | 32.4 ± 1.8 ms | 1.97× faster |
+| Interface composition | 214.1 ± 14.0 ms | 68.5 ± 6.1 ms | 47.8 ± 4.6 ms | 1.43× faster |
+| Variadic tuples | 280.3 ± 21.4 ms | 85.8 ± 5.3 ms | 49.4 ± 4.0 ms | 1.74× faster |
+| Checked JavaScript/JSDoc | 233.9 ± 21.7 ms | 60.0 ± 4.2 ms | 39.4 ± 0.8 ms | 1.52× faster |
+| Recursive generic payloads | 166.8 ± 12.2 ms | 77.0 ± 7.5 ms | 30.9 ± 1.3 ms | 2.49× faster |
+
+Home has lower means on **18/19**, not all workloads. It beats native TS 7 in
+29/30 import-graph and 30/30 re-export-graph paired rounds, but **0/30 large
+predicate rounds**. The losing row is retained and tracked by
+[#537](https://github.com/home-lang/home/issues/537). Historical results suggest
+a scaling regression worth investigating; they are not a controlled before/after
+comparison. The cause must be established against a same-correctness baseline.
+Broader rejection coverage, real-project and cross-platform measurements, and
+the remaining correctness failures above still prevent an overall completion claim.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/graph-types.4EsbvV/release-v3/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T224220Z
+```
+
+The full console record and rendered report are retained as
+`graph-types.4EsbvV/timing-release-v3.log` and `report-release-v3.md`.
