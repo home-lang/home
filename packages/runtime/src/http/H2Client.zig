@@ -61,6 +61,24 @@ test "H2Client constants match RFC 9113 caps" {
     try std.testing.expect(write_buffer_control_limit > write_buffer_high_water);
 }
 
+test "H2Client response fields reject every non-token byte" {
+    const dispatch = @import("./h2_client/dispatch.zig");
+    const allowed = "abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+-.^_`|~";
+    try std.testing.expect(!dispatch.isMalformedResponseField(allowed));
+    try std.testing.expect(dispatch.isMalformedResponseField(""));
+    for (0..256) |byte| {
+        const name = [_]u8{ 'x', '-', @intCast(byte) };
+        try std.testing.expectEqual(
+            std.mem.indexOfScalar(u8, allowed, @intCast(byte)) == null,
+            dispatch.isMalformedResponseField(&name),
+        );
+    }
+    for ([_][]const u8{ "connection", "keep-alive", "proxy-connection", "te", "transfer-encoding", "upgrade" }) |name| {
+        try std.testing.expect(dispatch.isMalformedResponseField(name));
+    }
+    try std.testing.expect(!dispatch.isMalformedResponseField("x-connection"));
+}
+
 test "H2Client live counters start at zero" {
     // Reset for test isolation in case other tests touch the module-level vars.
     live_sessions.store(0, .monotonic);

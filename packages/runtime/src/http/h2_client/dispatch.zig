@@ -540,11 +540,14 @@ pub fn stripPadding(payload: []const u8) ?[]const u8 {
     return payload[1 .. payload.len - pad];
 }
 
-/// RFC 9113 §8.2.1/§8.2.2 response-side validation: lowercase names, no
-/// hop-by-hop fields. Names from lshpack are already lowercase for table
-/// hits but a literal can carry anything.
+/// RFC 9113 §8.2.1/§8.2.2: nonempty lowercase HTTP tokens, no hop-by-hop
+/// fields. HPACK literals are length-prefixed and can contain any byte.
 pub fn isMalformedResponseField(name: []const u8) bool {
-    for (name) |c| if (c >= 'A' and c <= 'Z') return true;
+    if (name.len == 0) return true;
+    for (name) |c| switch (c) {
+        'a'...'z', '0'...'9', '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+        else => return true,
+    };
     return forbidden_response_fields.has(name);
 }
 

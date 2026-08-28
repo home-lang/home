@@ -617,7 +617,7 @@ fn maybeRelease(this: *ClientSession) void {
             null,
             "",
             0,
-            0,
+            this.host_header_hash,
             this,
         );
     } else {
