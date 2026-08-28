@@ -6,8 +6,8 @@
 //! This does not transfer TypeIds: all HIR/symbol inspection stays in its owner.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const hir = @import("hir");
-const binder = @import("binder");
 const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const program = @import("ts_program.zig");
@@ -106,19 +106,63 @@ const StateContext = struct {
 
 const Entry = struct { compilation: *driver.Compilation, owned: bool };
 
+const ImportEdge = struct {
+    node: hir.NodeId,
+    specifier: hir.NodeId = 0,
+    kind: enum { default, namespace, named },
+};
+const ExportEdge = struct {
+    node: hir.NodeId,
+    specifier: hir.NodeId = 0,
+    order: usize,
+    kind: enum { named, namespace, default, local },
+
+    fn lessThan(c: *const driver.Compilation, a: ExportEdge, b: ExportEdge) bool {
+        if (a.order != b.order) return a.order < b.order;
+        if (a.kind != b.kind) return @backingInt(a.kind) < @backingInt(b.kind);
+        return c.hir.spanOf(a.specifier).start < c.hir.spanOf(b.specifier).start;
+    }
+};
+const SourceIndex = struct {
+    imports: std.AutoHashMapUnmanaged(hir.StringId, ImportEdge) = .empty,
+    exports: std.AutoHashMapUnmanaged(hir.StringId, std.ArrayListUnmanaged(ExportEdge)) = .empty,
+    defaults: std.ArrayListUnmanaged(ExportEdge) = .empty,
+    stars: std.ArrayListUnmanaged(hir.NodeId) = .empty,
+
+    fn addImport(self: *SourceIndex, arena: std.mem.Allocator, name: hir.StringId, edge: ImportEdge) !void {
+        // Match the existing source-order lookup even for invalid duplicate
+        // imports. Import diagnostics remain the checker's responsibility.
+        const entry = try self.imports.getOrPut(arena, name);
+        if (!entry.found_existing) entry.value_ptr.* = edge;
+    }
+
+    fn addExport(self: *SourceIndex, arena: std.mem.Allocator, c: *const driver.Compilation, name: hir.StringId, edge: ExportEdge) !void {
+        if (std.mem.eql(u8, c.interner.get(name), "default")) return self.defaults.append(arena, edge);
+        const entry = try self.exports.getOrPut(arena, name);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        try entry.value_ptr.append(arena, edge);
+    }
+};
+
 pub const Query = struct {
     gpa: std.mem.Allocator,
     resolver: *resolver_mod.Resolver,
     files: std.StringHashMapUnmanaged(Entry) = .empty,
+    index_arena: std.heap.ArenaAllocator,
+    indexes: std.AutoHashMapUnmanaged(*const driver.Compilation, *const SourceIndex) = .empty,
     pending: std.ArrayListUnmanaged(State) = .empty,
     visited: std.HashMapUnmanaged(State, void, StateContext, 80) = .empty,
     result: Origins = .{},
+    // Algorithmic regression accounting only; absent from production builds.
+    stats: if (builtin.is_test) struct { source_statements: usize = 0 } else struct {} = .{},
 
     pub fn init(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver) Query {
-        return .{ .gpa = gpa, .resolver = resolver };
+        return .{ .gpa = gpa, .resolver = resolver, .index_arena = std.heap.ArenaAllocator.init(gpa) };
     }
 
     pub fn deinit(self: *Query) void {
+        self.indexes.deinit(self.gpa);
+        self.index_arena.deinit();
         self.pending.deinit(self.gpa);
         self.visited.deinit(self.gpa);
         var entries = self.files.valueIterator();
@@ -156,6 +200,72 @@ pub const Query = struct {
     fn enqueue(self: *Query, state: State) !void {
         const entry = try self.visited.getOrPut(self.gpa, state);
         if (!entry.found_existing) try self.pending.append(self.gpa, state);
+    }
+
+    /// Snapshot only the prepared owner's root bindings. The index contains
+    /// unresolved edges, not cached answers: every query still traverses all
+    /// relevant alias/star paths with its own visibility and cycle state.
+    fn index(self: *Query, c: *const driver.Compilation) !*const SourceIndex {
+        if (self.indexes.get(c)) |existing| return existing;
+        const arena = self.index_arena.allocator();
+        const result = try arena.create(SourceIndex);
+        result.* = .{};
+        var declarations: std.AutoHashMapUnmanaged(hir.NodeId, ExportEdge) = .empty;
+        for (hir.blockStmts(&c.hir, c.root), 0..) |node, order| {
+            if (builtin.is_test) self.stats.source_statements += 1;
+            if (c.hir.kindOf(node) == .import_decl) {
+                const import = hir.importOf(&c.hir, node);
+                if (c.interner.get(import.module).len == 0) continue;
+                if (import.default_binding != 0 and c.hir.kindOf(import.default_binding) == .identifier)
+                    try result.addImport(arena, hir.identifierOf(&c.hir, import.default_binding).name, .{ .node = node, .kind = .default });
+                if (import.namespace_binding != 0 and c.hir.kindOf(import.namespace_binding) == .identifier)
+                    try result.addImport(arena, hir.identifierOf(&c.hir, import.namespace_binding).name, .{ .node = node, .kind = .namespace });
+                for (hir.importNamed(&c.hir, node)) |specifier| {
+                    if (c.hir.kindOf(specifier) != .import_specifier) continue;
+                    try result.addImport(arena, hir.importSpecifierOf(&c.hir, specifier).local, .{ .node = node, .specifier = specifier, .kind = .named });
+                }
+                continue;
+            }
+            if (c.hir.kindOf(node) != .export_decl) continue;
+            const ex = hir.exportOf(&c.hir, node);
+            for (hir.exportNamed(&c.hir, node)) |specifier| {
+                if (c.hir.kindOf(specifier) != .import_specifier) continue;
+                try result.addExport(arena, c, hir.importSpecifierOf(&c.hir, specifier).local, .{ .node = node, .specifier = specifier, .order = order, .kind = .named });
+            }
+            if (c.interner.get(ex.module).len != 0) {
+                if (c.interner.get(ex.namespace_alias).len != 0)
+                    try result.addExport(arena, c, ex.namespace_alias, .{ .node = node, .order = order, .kind = .namespace })
+                else if (ex.is_namespace)
+                    try result.stars.append(arena, node);
+            }
+            if (ex.decl == 0 or ex.is_export_equals) continue;
+            if (ex.is_default) {
+                try result.defaults.append(arena, .{ .node = node, .order = order, .kind = .default });
+            } else {
+                try declarations.put(arena, ex.decl, .{ .node = node, .order = order, .kind = .local });
+            }
+        }
+        // Associate real root symbols with their exported declaration owners.
+        // This handles destructured/comma declarations and merged symbols
+        // without comparing each symbol against every export statement.
+        inline for (.{ "values", "types", "namespaces" }) |field| {
+            var symbols = @field(c.module.root, field).iterator();
+            while (symbols.next()) |entry| {
+                for (entry.value_ptr.*.decls.items) |decl| {
+                    var current = decl;
+                    while (current != 0 and current != c.root) : (current = c.hir.parentOf(current)) {
+                        if (declarations.get(current)) |edge| try result.addExport(arena, c, entry.key_ptr.*, edge);
+                    }
+                }
+            }
+        }
+        // Local declaration edges came from the symbol maps; restore lexical
+        // order so first-origin and type-only diagnostic provenance stay stable.
+        var exports = result.exports.valueIterator();
+        while (exports.next()) |edges| std.mem.sort(ExportEdge, edges.items, c, ExportEdge.lessThan);
+        std.mem.sort(ExportEdge, result.defaults.items, c, ExportEdge.lessThan);
+        try self.indexes.put(self.gpa, c, result);
+        return result;
     }
 
     fn target(self: *Query, specifier: []const u8, from: []const u8) !?[]const u8 {
@@ -202,48 +312,34 @@ pub const Query = struct {
 
     fn local(self: *Query, c: *const driver.Compilation, state: State) !void {
         const name = c.interner.lookup(state.name) orelse return;
-        // Imported bindings are aliases, not the declarations they expose.
-        for (hir.blockStmts(&c.hir, c.root)) |node| {
-            if (c.hir.kindOf(node) != .import_decl) continue;
-            const import = hir.importOf(&c.hir, node);
+        const bindings = try self.index(c);
+        if (bindings.imports.get(name)) |edge| {
+            const import = hir.importOf(&c.hir, edge.node);
             const specifier = c.interner.get(import.module);
-            if (specifier.len == 0) continue;
-            if (import.default_binding != 0 and c.hir.kindOf(import.default_binding) == .identifier and
-                hir.identifierOf(&c.hir, import.default_binding).name == name)
-            {
-                if (import.is_require_equals) {
-                    self.result.complete = false;
-                    return;
-                }
-                const path = try self.target(specifier, state.path) orelse return;
-                try self.enqueue(.{
+            if (edge.kind == .default and import.is_require_equals) {
+                self.result.complete = false;
+                return;
+            }
+            const path = try self.target(specifier, state.path) orelse return;
+            switch (edge.kind) {
+                .default => try self.enqueue(.{
                     .path = path,
                     .name = "default",
                     .values = state.values and !import.is_type_only,
-                    .restriction = restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(node).start),
-                });
-                return;
+                    .restriction = restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(edge.node).start),
+                }),
+                .namespace => self.namespace(path, state.values and !import.is_type_only, restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(edge.node).start)),
+                .named => {
+                    const spec = hir.importSpecifierOf(&c.hir, edge.specifier);
+                    try self.enqueue(.{
+                        .path = path,
+                        .name = c.interner.get(spec.imported),
+                        .values = state.values and !import.is_type_only and !spec.is_type_only,
+                        .restriction = restrictionFor(state, import.is_type_only or spec.is_type_only, .import_type, c.hir.spanOf(edge.specifier).start),
+                    });
+                },
             }
-            if (import.namespace_binding != 0 and c.hir.kindOf(import.namespace_binding) == .identifier and
-                hir.identifierOf(&c.hir, import.namespace_binding).name == name)
-            {
-                const path = try self.target(specifier, state.path) orelse return;
-                self.namespace(path, state.values and !import.is_type_only, restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(node).start));
-                return;
-            }
-            for (hir.importNamed(&c.hir, node)) |spec_node| {
-                if (c.hir.kindOf(spec_node) != .import_specifier) continue;
-                const spec = hir.importSpecifierOf(&c.hir, spec_node);
-                if (spec.local != name) continue;
-                const path = try self.target(specifier, state.path) orelse return;
-                try self.enqueue(.{
-                    .path = path,
-                    .name = c.interner.get(spec.imported),
-                    .values = state.values and !import.is_type_only and !spec.is_type_only,
-                    .restriction = restrictionFor(state, import.is_type_only or spec.is_type_only, .import_type, c.hir.spanOf(spec_node).start),
-                });
-                return;
-            }
+            return;
         }
         inline for (.{ .{ "values", "value" }, .{ "types", "type" }, .{ "namespaces", "namespace" } }) |fields| {
             if (@field(c.module.root, fields[0]).get(name)) |symbol| resolved_symbol: {
@@ -267,104 +363,81 @@ pub const Query = struct {
         }
     }
 
-    fn declaredWithin(c: *const driver.Compilation, symbol: *const binder.Symbol, declaration: hir.NodeId) bool {
-        for (symbol.decls.items) |node| {
-            var current = node;
-            while (current != 0) : (current = c.hir.parentOf(current)) {
-                if (current == declaration) return true;
-            }
-        }
-        return false;
-    }
-
     fn exported(self: *Query, c: *const driver.Compilation, state: State) !void {
+        const bindings = try self.index(c);
         const wanted = c.interner.lookup(state.name);
         const is_default = std.mem.eql(u8, state.name, "default");
-        var explicit = false;
-        for (hir.blockStmts(&c.hir, c.root)) |node| {
-            if (c.hir.kindOf(node) != .export_decl) continue;
-            const export_info = hir.exportOf(&c.hir, node);
+        const edges = if (is_default)
+            bindings.defaults.items
+        else if (wanted) |name|
+            if (bindings.exports.get(name)) |found| found.items else &.{}
+        else
+            &.{};
+        for (edges) |edge| {
+            const export_info = hir.exportOf(&c.hir, edge.node);
             const specifier = c.interner.get(export_info.module);
-            for (hir.exportNamed(&c.hir, node)) |spec_node| {
-                if (c.hir.kindOf(spec_node) != .import_specifier) continue;
-                const spec = hir.importSpecifierOf(&c.hir, spec_node);
-                if (wanted == null or spec.local != wanted.?) continue;
-                explicit = true;
-                const path = if (specifier.len > 0)
-                    try self.target(specifier, state.path) orelse continue
-                else
-                    state.path;
-                try self.enqueue(.{
-                    .path = path,
-                    .name = c.interner.get(spec.imported),
-                    .local = specifier.len == 0,
-                    .values = state.values and !export_info.is_type_only and !spec.is_type_only,
-                    .restriction = restrictionFor(state, export_info.is_type_only or spec.is_type_only, .export_type, c.hir.spanOf(spec_node).start),
-                });
-            }
-            if (wanted != null and export_info.namespace_alias == wanted.? and specifier.len > 0) {
-                explicit = true;
-                const path = try self.target(specifier, state.path) orelse continue;
-                self.namespace(path, state.values and !export_info.is_type_only, restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(node).start));
-            }
-            if (export_info.decl == 0 or export_info.is_export_equals) continue;
-            if (export_info.is_default) {
-                if (!is_default) continue;
-                explicit = true;
-                const kind = c.hir.kindOf(export_info.decl);
-                const declared_name = switch (kind) {
-                    .fn_decl, .fn_expr => hir.fnDeclOf(&c.hir, export_info.decl).name,
-                    .class_decl, .class_expr => hir.classOf(&c.hir, export_info.decl).name,
-                    .interface_decl => hir.interfaceOf(&c.hir, export_info.decl).name,
-                    else => hir.none_node_id,
-                };
-                if (declared_name != 0 and c.hir.kindOf(declared_name) == .identifier) {
+            switch (edge.kind) {
+                .named => {
+                    const spec = hir.importSpecifierOf(&c.hir, edge.specifier);
+                    const path = if (specifier.len > 0)
+                        try self.target(specifier, state.path) orelse continue
+                    else
+                        state.path;
                     try self.enqueue(.{
-                        .path = state.path,
-                        .name = c.interner.get(hir.identifierOf(&c.hir, declared_name).name),
-                        .local = true,
-                        .values = state.values,
-                        .restriction = state.restriction,
+                        .path = path,
+                        .name = c.interner.get(spec.imported),
+                        .local = specifier.len == 0,
+                        .values = state.values and !export_info.is_type_only and !spec.is_type_only,
+                        .restriction = restrictionFor(state, export_info.is_type_only or spec.is_type_only, .export_type, c.hir.spanOf(edge.specifier).start),
                     });
-                    continue;
-                }
-                if (c.hir.kindOf(export_info.decl) == .identifier) {
-                    try self.enqueue(.{
-                        .path = state.path,
-                        .name = c.interner.get(hir.identifierOf(&c.hir, export_info.decl).name),
-                        .local = true,
-                        .values = state.values,
-                        .restriction = state.restriction,
-                    });
-                } else {
-                    const origin: Origin = .{ .path = state.path, .position = c.hir.spanOf(export_info.decl).start, .kind = .expression };
-                    if (kind == .class_decl or kind == .class_expr or kind == .interface_decl)
-                        self.result.include("type", origin);
-                    if (kind != .interface_decl) {
-                        if (state.values) self.result.include("value", origin) else self.result.include("type_only_value", origin);
+                },
+                .namespace => {
+                    const path = try self.target(specifier, state.path) orelse continue;
+                    self.namespace(path, state.values and !export_info.is_type_only, restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(edge.node).start));
+                },
+                .default => {
+                    const kind = c.hir.kindOf(export_info.decl);
+                    const declared_name = switch (kind) {
+                        .fn_decl, .fn_expr => hir.fnDeclOf(&c.hir, export_info.decl).name,
+                        .class_decl, .class_expr => hir.classOf(&c.hir, export_info.decl).name,
+                        .interface_decl => hir.interfaceOf(&c.hir, export_info.decl).name,
+                        else => hir.none_node_id,
+                    };
+                    if (declared_name != 0 and c.hir.kindOf(declared_name) == .identifier) {
+                        try self.enqueue(.{
+                            .path = state.path,
+                            .name = c.interner.get(hir.identifierOf(&c.hir, declared_name).name),
+                            .local = true,
+                            .values = state.values,
+                            .restriction = state.restriction,
+                        });
+                        continue;
                     }
-                    if (self.result.restriction == null) self.result.restriction = state.restriction;
-                }
-                continue;
-            }
-            if (wanted) |name| {
-                inline for (.{ "values", "types", "namespaces" }) |field| {
-                    if (@field(c.module.root, field).get(name)) |symbol| {
-                        if (declaredWithin(c, symbol, export_info.decl)) {
-                            explicit = true;
-                            try self.enqueue(.{ .path = state.path, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction });
+                    if (kind == .identifier) {
+                        try self.enqueue(.{
+                            .path = state.path,
+                            .name = c.interner.get(hir.identifierOf(&c.hir, export_info.decl).name),
+                            .local = true,
+                            .values = state.values,
+                            .restriction = state.restriction,
+                        });
+                    } else {
+                        const origin: Origin = .{ .path = state.path, .position = c.hir.spanOf(export_info.decl).start, .kind = .expression };
+                        if (kind == .class_decl or kind == .class_expr or kind == .interface_decl)
+                            self.result.include("type", origin);
+                        if (kind != .interface_decl) {
+                            if (state.values) self.result.include("value", origin) else self.result.include("type_only_value", origin);
                         }
+                        if (self.result.restriction == null) self.result.restriction = state.restriction;
                     }
-                }
+                },
+                .local => try self.enqueue(.{ .path = state.path, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction }),
             }
         }
-        if (explicit or is_default) return;
-        for (hir.blockStmts(&c.hir, c.root)) |node| {
-            if (c.hir.kindOf(node) != .export_decl) continue;
+        if (edges.len != 0 or is_default) return;
+        for (bindings.stars.items) |node| {
             const export_info = hir.exportOf(&c.hir, node);
-            if (!export_info.is_namespace or c.interner.get(export_info.namespace_alias).len != 0) continue;
             const specifier = c.interner.get(export_info.module);
-            if (specifier.len == 0) continue;
             const path = try self.target(specifier, state.path) orelse continue;
             try self.enqueue(.{
                 .path = path,
@@ -475,4 +548,126 @@ test "export origins: deep re-export chains do not impose an arbitrary depth cut
     try T.expect(result.complete and !result.ambiguous);
     try T.expectEqualStrings("/module-95.ts", result.value.?.path);
     try T.expectEqual(@as(usize, 96), query.files.count());
+}
+
+test "export origins: independent names inspect their source block only once" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(T.allocator);
+    for (0..128) |i| {
+        const line = try std.fmt.allocPrint(T.allocator, "const hidden{d} = 0; export const item{d}: number = {d};\n", .{ i, i, i });
+        defer T.allocator.free(line);
+        try source.appendSlice(T.allocator, line);
+    }
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", source.items);
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    for (0..128) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "item{d}", .{i});
+        const result = try query.resolve("/owner.ts", name);
+        try T.expect(result.complete and !result.ambiguous and result.value != null and result.type == null);
+        const owner = query.files.get("/owner.ts").?.compilation;
+        const symbol = owner.module.root.values.get(owner.interner.lookup(name).?).?;
+        try T.expectEqual(owner.hir.spanOf(symbol.decls.items[0]).start, result.value.?.position);
+    }
+    const owner = query.files.get("/owner.ts").?.compilation;
+    try T.expectEqual(hir.blockStmts(&owner.hir, owner.root).len, query.stats.source_statements);
+    const inspected = query.stats.source_statements;
+    const hidden = try query.resolve("/owner.ts", "hidden0");
+    try T.expect(hidden.complete and hidden.value == null and hidden.type == null);
+    const missing = try query.resolve("/owner.ts", "absent");
+    try T.expect(missing.complete and missing.value == null and missing.type == null);
+    try T.expectEqual(inspected, query.stats.source_statements);
+}
+
+test "export origins: indexed declarations retain comma destructuring and merged owners" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts",
+        \\export const first = 1, second = 2;
+        \\export const { left, nested: { right } } = { left: 1, nested: { right: 2 } };
+        \\export interface Shape { first: number; }
+        \\export interface Shape { second: number; }
+        \\export namespace Shape { export const marker = 1; }
+        \\const hidden = 1;
+        \\function nested() { const stray = 2; }
+        \\export { first as alias, second as default };
+    );
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    for ([_][]const u8{ "first", "second", "left", "right" }) |name| {
+        const origin = try query.resolve("/owner.ts", name);
+        try T.expect(origin.complete and !origin.ambiguous and origin.value != null);
+        const owner = query.files.get("/owner.ts").?.compilation;
+        const symbol = owner.module.root.values.get(owner.interner.lookup(name).?).?;
+        try T.expectEqual(owner.hir.spanOf(symbol.decls.items[0]).start, origin.value.?.position);
+    }
+    try T.expect((try query.resolve("/owner.ts", "first")).sameDeclaration(try query.resolve("/owner.ts", "alias")));
+    try T.expect((try query.resolve("/owner.ts", "second")).sameDeclaration(try query.resolve("/owner.ts", "default")));
+    const shape = try query.resolve("/owner.ts", "Shape");
+    try T.expect(shape.complete and !shape.ambiguous and shape.type != null and shape.namespace != null);
+    for ([_][]const u8{ "hidden", "nested", "stray", "marker" }) |name| {
+        const origin = try query.resolve("/owner.ts", name);
+        try T.expect(origin.complete and origin.value == null and origin.type == null and origin.namespace == null);
+    }
+    try T.expectEqual(@as(usize, 1), query.indexes.count());
+}
+
+test "export origins: indexed explicit aliases retain restriction order and star precedence" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/first.ts", "export class Item {} export const value = 1;");
+    try vfs.addFile("/other.ts", "export class Item {} export const value = 2;");
+    try vfs.addFile("/barrel.ts",
+        \\export type { Item } from './first';
+        \\export { Item } from './first';
+        \\export * from './other';
+        \\export const value = 3;
+    );
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const item = try query.resolve("/barrel.ts", "Item");
+    try T.expect(item.complete and !item.ambiguous and item.value != null and item.type_only_value != null);
+    try T.expectEqualStrings("/first.ts", item.value.?.path);
+    try T.expectEqualStrings("/barrel.ts", item.restriction.?.path);
+    try T.expectEqual(.export_type, item.restriction.?.kind);
+    const owner = query.files.get("/barrel.ts").?.compilation;
+    const first = hir.blockStmts(&owner.hir, owner.root)[0];
+    try T.expectEqual(owner.hir.spanOf(hir.exportNamed(&owner.hir, first)[0]).start, item.restriction.?.position);
+    const value = try query.resolve("/barrel.ts", "value");
+    try T.expect(value.complete and !value.ambiguous);
+    try T.expectEqualStrings("/barrel.ts", value.value.?.path);
+    try T.expect(!query.files.contains("/other.ts"));
+}
+
+test "export origins: index allocation failures do not leak or own borrowed compilations" {
+    const source = "export const first: number = 1; export { first as alias };";
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const c = try program.compileModuleForExportFacts(T.allocator, "/owner.ts", source);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const Probe = struct {
+        fn run(gpa: std.mem.Allocator, r: *resolver_mod.Resolver, owner: *driver.Compilation) !void {
+            var query = Query.init(gpa, r);
+            defer query.deinit();
+            try query.borrow("/owner.ts", owner);
+            const first = try query.resolve("/owner.ts", "first");
+            const alias = try query.resolve("/owner.ts", "alias");
+            try T.expect(first.sameDeclaration(alias));
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{ &resolver, c });
 }
