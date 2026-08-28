@@ -8,8 +8,9 @@ const hir = @import("hir");
 const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const origins = @import("export_origins.zig");
+const class_schema = @import("class_schema.zig");
 
-pub const Source = struct { path: []const u8, compilation: *driver.Compilation };
+pub const Source = class_schema.Source;
 const Binding = struct { source: usize, name: []const u8 };
 const BindingContext = struct {
     pub fn hash(_: BindingContext, key: Binding) u64 {

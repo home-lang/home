@@ -32,6 +32,7 @@ pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ProgramGlobalBinding = ts_checker.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
+pub const ProgramClassSchema = ts_checker.ProgramClassSchema;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = ts_checker.ProgramMemberVisibility;
 pub const ProgramTypeReference = ts_checker.ProgramTypeReference;

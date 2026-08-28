@@ -48,6 +48,7 @@ pub const ScriptObjectExpando = check.ScriptObjectExpando;
 pub const ProgramGlobalBinding = check.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = check.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = check.ProgramExportedClass;
+pub const ProgramClassSchema = check.ProgramClassSchema;
 pub const ProgramExportedClassMember = check.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = check.ProgramMemberVisibility;
 pub const ProgramTypeReference = check.ProgramTypeReference;

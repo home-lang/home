@@ -532,6 +532,8 @@ pub const ProgramExportedClass = struct {
     ambient_module_name: []const u8 = "",
     class_name: []const u8,
     type_parameter_names: []const []const u8 = &.{},
+    /// Borrowed source-owned metadata; consumer integration is staged separately.
+    schema: ?*const ProgramClassSchema.Schema = null,
     is_default: bool = false,
     is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
@@ -541,6 +543,8 @@ pub const ProgramExportedClass = struct {
         return if (self.export_name.len > 0) self.export_name else self.class_name;
     }
 };
+
+pub const ProgramClassSchema = @import("program_schema.zig");
 
 pub const ProgramMemberVisibility = enum {
     public,
