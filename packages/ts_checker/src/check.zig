@@ -92502,10 +92502,9 @@ pub const Checker = struct {
         if (node != hir_mod.none_node_id) {
             const kind = self.hir.kindOf(node);
             if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
-                // Same-shaped predicate and boolean signatures share a
-                // structural TypeId. The function syntax is authoritative
-                // for an assignment source, so an unannotated/boolean
-                // function must not inherit a predicate from that TypeId.
+                // Explicit function syntax determines the source predicate;
+                // only an unannotated expression may inherit a contextual
+                // predicate from its checked signature.
                 if (try self.predicateForFnNode(node)) |predicate| return predicate;
                 // A contextually typed function expression inherits the
                 // target's predicate. `const assert: Assert = value => {}`
@@ -92553,7 +92552,15 @@ pub const Checker = struct {
                 if (self.lookupMemberPredicate(receiver_t, member.name)) |pred| return pred;
             }
         }
-        return self.signature_predicates.get(t);
+        if (self.signature_predicates.get(t)) |predicate| return predicate;
+        if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_union) {
+            var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer signatures.deinit(self.gpa);
+            if (try self.collectResolvedUnionSignatures(t, false, &signatures) and signatures.items.len == 1) {
+                return self.signature_predicates.get(signatures.items[0]);
+            }
+        }
+        return null;
     }
 
     fn assignmentExpressionPredicatesAssignable(
@@ -102680,11 +102687,28 @@ pub const Checker = struct {
         is_construct: bool,
     ) bool {
         for (signatures) |existing| {
-            if (self.nonGenericUnionSignatureMatch(existing, candidate, is_construct) and
-                self.nonGenericUnionSignatureMatch(candidate, existing, is_construct))
-            {
-                return true;
+            if (!self.signatureMatchesKind(existing, is_construct) or !self.signatureMatchesKind(candidate, is_construct)) continue;
+            const existing_params = self.interner.signatureParams(existing);
+            const candidate_params = self.interner.signatureParams(candidate);
+            // Partial matching finds a contract usable across branches;
+            // it must not deduplicate distinct overloads of the result.
+            // For example, (a, b?) and (a, b?, c?) retain both arities.
+            if (existing_params.len != candidate_params.len or
+                self.signatureMinRequiredArgs(existing, existing_params) != self.signatureMinRequiredArgs(candidate, candidate_params) or
+                self.rest_signatures.contains(existing) != self.rest_signatures.contains(candidate)) continue;
+            if (self.signatureThisParam(existing)) |existing_this| {
+                if (self.signatureThisParam(candidate)) |candidate_this| {
+                    if (!(self.engine.isIdenticalTo(existing_this, candidate_this) catch false)) continue;
+                }
             }
+            var identical = true;
+            for (existing_params, candidate_params) |a, b| {
+                if (!(self.engine.isIdenticalTo(a, b) catch false)) {
+                    identical = false;
+                    break;
+                }
+            }
+            if (identical) return true;
         }
         return false;
     }
@@ -102700,17 +102724,11 @@ pub const Checker = struct {
         var this_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer this_types.deinit(self.gpa);
         var is_abstract_construct = false;
-        var effective_representative = representative;
         for (matched) |signature| {
             try returns.append(
                 self.gpa,
                 self.interner.signatureReturn(signature) orelse types.Primitive.any,
             );
-            if (self.interner.signatureParams(signature).len >
-                self.interner.signatureParams(effective_representative).len)
-            {
-                effective_representative = signature;
-            }
             if (self.signatureThisParam(signature)) |this_t| {
                 try this_types.append(self.gpa, this_t);
             }
@@ -102718,20 +102736,24 @@ pub const Checker = struct {
         }
         const return_t = try self.unionOrAny(returns.items);
         try self.registerDiagnosticUnionDisplayName(return_t, returns.items);
-        const params = self.interner.signatureParams(effective_representative);
+        // Matching selected the parameter contract accepted by every
+        // branch. Substituting a longer branch here can make required
+        // parameters optional or allow calls rejected by another branch.
+        const params = self.interner.signatureParams(representative);
+        const min_args = self.signatureMinRequiredArgs(representative, params);
         const result = self.interner.internSignatureWithAbstract(
             params,
             return_t,
             is_construct,
             is_construct and is_abstract_construct,
         ) catch return error.OutOfMemory;
-        try self.copySignatureParamNames(result, effective_representative);
+        try self.copySignatureParamNames(result, representative);
         try self.signature_min_args.put(
             self.gpa,
             result,
-            self.signatureMinRequiredArgs(effective_representative, params),
+            min_args,
         );
-        if (self.rest_signatures.contains(effective_representative)) {
+        if (self.rest_signatures.contains(representative)) {
             try self.rest_signatures.put(self.gpa, result, {});
         }
         if (this_types.items.len > 0) {
@@ -102741,7 +102763,33 @@ pub const Checker = struct {
                 self.interner.internIntersection(this_types.items) catch return error.OutOfMemory;
             try self.signature_this_params.put(self.gpa, result, this_t);
         }
+        try self.recordUnionSignaturePredicate(result, matched);
         return result;
+    }
+
+    /// A union call promises a predicate only when every constituent does,
+    /// for the same argument and predicate kind. Its successful result can
+    /// be any constituent's target, so combine the targets covariantly.
+    /// A synthesized target has no single source annotation node.
+    fn recordUnionSignaturePredicate(self: *Checker, result: TypeId, signatures: []const TypeId) CheckError!void {
+        if (signatures.len == 0) return;
+        const first = self.signature_predicates.get(signatures[0]) orelse return;
+        var targets: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer targets.deinit(self.gpa);
+        for (signatures) |signature| {
+            const predicate = self.signature_predicates.get(signature) orelse return;
+            if (predicate.param_index != first.param_index or predicate.is_asserts != first.is_asserts) return;
+            if (predicate.target_type == types.Primitive.none) {
+                if (first.target_type != types.Primitive.none) return;
+            } else {
+                if (first.target_type == types.Primitive.none) return;
+                try targets.append(self.gpa, try self.resolvePredicateTarget(predicate));
+            }
+        }
+        var combined = first;
+        combined.target_type = if (targets.items.len == 0) types.Primitive.none else try self.unionOrAny(targets.items);
+        combined.target_node = hir_mod.none_node_id;
+        try self.signature_predicates.put(self.gpa, result, combined);
     }
 
     fn unionSignatureTypeAtPosition(self: *Checker, signature: TypeId, position: usize) ?TypeId {
@@ -102777,6 +102825,7 @@ pub const Checker = struct {
     ) CheckError!TypeId {
         const left_params = self.interner.signatureParams(left);
         const right_params = self.interner.signatureParams(right);
+        const min_args = @max(self.signatureMinRequiredArgs(left, left_params), self.signatureMinRequiredArgs(right, right_params));
         const left_rest = self.rest_signatures.contains(left) and left_params.len > 0;
         const right_rest = self.rest_signatures.contains(right) and right_params.len > 0;
         const left_is_longest = left_params.len >= right_params.len;
@@ -102822,10 +102871,7 @@ pub const Checker = struct {
         try self.signature_min_args.put(
             self.gpa,
             result,
-            @max(
-                self.signatureMinRequiredArgs(left, left_params),
-                self.signatureMinRequiredArgs(right, right_params),
-            ),
+            min_args,
         );
         if (either_has_rest) try self.rest_signatures.put(self.gpa, result, {});
         const left_this = self.signatureThisParam(left);
@@ -102839,6 +102885,7 @@ pub const Checker = struct {
                 self.interner.internIntersection(&.{ left_this.?, right_this.? }) catch return error.OutOfMemory;
             try self.signature_this_params.put(self.gpa, result, this_t);
         }
+        try self.recordUnionSignaturePredicate(result, &.{ left, right });
         return result;
     }
 
@@ -102849,8 +102896,9 @@ pub const Checker = struct {
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!bool {
         if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
-        const members = self.interner.unionMembers(t);
-        if (members.len != 2) return false;
+        const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+        defer self.gpa.free(members);
+        if (members.len < 2) return false;
 
         var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
         defer signatures.deinit(self.gpa);
@@ -102880,11 +102928,7 @@ pub const Checker = struct {
             const len = signatures.items.len - start;
             if (len == 0) return true;
             for (signatures.items[start .. start + len]) |signature| {
-                if (self.unionSignatureHasFreeGenericParameters(signature) or
-                    (!is_construct and
-                        self.interner.signatureParams(signature).len == 0 and
-                        self.signatureThisParam(signature) != null))
-                {
+                if (self.unionSignatureHasFreeGenericParameters(signature)) {
                     return false;
                 }
             }
@@ -123912,37 +123956,18 @@ pub const Checker = struct {
                     for (branch_sigs.items) |sig| {
                         const this_t = self.signatureThisParam(sig) orelse continue;
                         saw_this_param = true;
-                        var effective_this: TypeId = this_t;
-                        // The signature_this_params map is keyed only on
-                        // signature TypeId, so when two union members
-                        // share an identical method signature shape only
-                        // the last branch's `this`-type is retained. If
-                        // the cached `this_t` matches one of the union
-                        // members (suggesting `this: this`/`this: <self>`),
-                        // use the current branch as its effective `this`
-                        // so each branch contributes its own type to the
-                        // unmet set.
-                        if (this_t != branch) {
-                            var this_t_is_union_member = false;
-                            for (self.interner.unionMembers(receiver_t)) |other| {
-                                if (other == this_t) {
-                                    this_t_is_union_member = true;
-                                    break;
-                                }
-                            }
-                            if (this_t_is_union_member) effective_this = branch;
-                        }
-                        // Check the actual receiver (the union) against
-                        // the effective `this`-type for this branch.
-                        if (try self.thisContextAssignableTo(receiver_t, effective_this)) continue;
+                        // Callable identities retain each declaration's
+                        // actual receiver; never replace it with a union
+                        // branch merely because the type IDs happen to match.
+                        if (try self.thisContextAssignableTo(receiver_t, this_t)) continue;
                         var seen = false;
                         for (unmet_this.items) |existing| {
-                            if (existing == effective_this) {
+                            if (existing == this_t) {
                                 seen = true;
                                 break;
                             }
                         }
-                        if (!seen) try unmet_this.append(self.gpa, effective_this);
+                        if (!seen) try unmet_this.append(self.gpa, this_t);
                     }
                 }
                 if (!saw_this_param) return;
@@ -123950,7 +123975,13 @@ pub const Checker = struct {
             } else {
                 var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer call_sigs.deinit(self.gpa);
-                try self.collectCallSignatures(callee_t, &call_sigs);
+                // A union requires a receiver accepted by every branch;
+                // its combined signature intersects those requirements.
+                // Raw branch signatures here would treat it as an overload
+                // set and incorrectly accept any one matching receiver.
+                if (!try self.collectResolvedUnionSignatures(callee_t, false, &call_sigs)) {
+                    try self.collectCallSignatures(callee_t, &call_sigs);
+                }
                 for (call_sigs.items) |sig| {
                     const this_t = self.signatureThisParam(sig) orelse continue;
                     saw_this_param = true;
@@ -123970,10 +124001,9 @@ pub const Checker = struct {
                 if (!saw_this_param) return;
             }
         }
-        // Relate a structurally incomplete receiver through the same
-        // missing-property elaboration used by assignments. TypeScript
-        // prefers TS2741 here when exactly one required `this` member is
-        // absent, while incompatible existing members retain TS2684.
+        // Native TS 7 uses the structural missing-property diagnostic for
+        // a single required object member (TS 6 keeps TS2684). Preserve
+        // that elaboration; combined receiver intersections remain TS2684.
         if (unmet_this.items.len == 1 and
             try self.tryReportSinglePropertyMissing(call_node, m.object, receiver_t, unmet_this.items[0]))
         {
@@ -152074,6 +152104,14 @@ pub const Checker = struct {
         // Rest signatures have variable arity; their subtype rules differ
         // from the fixed-arity case modeled here. Bail to stay faithful.
         if (self.rest_signatures.contains(source) or self.rest_signatures.contains(target)) return false;
+        // A callable's receiver and predicate are semantic parts of the
+        // signature even when its ordinary parameters/return type match.
+        // Dropping a branch based only on erased payloads can invent a
+        // narrowing promise or discard a required receiver.
+        if (!(self.signatureThisTypesAssignable(source, target) catch false)) return false;
+        const t_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
+        if (t_ret != types.Primitive.void_t and t_ret != types.Primitive.any and
+            !(self.signaturePredicatesAssignable(source, target) catch false)) return false;
         if (self.signatureIsAnyFunctionSubtypeSource(source, target)) return true;
         const sp = self.interner.signatureParams(source);
         const tp = self.interner.signatureParams(target);
@@ -152105,7 +152143,6 @@ pub const Checker = struct {
             }
         }
         // Return-type relation: a void/any target return accepts anything.
-        const t_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
         if (t_ret == types.Primitive.void_t or t_ret == types.Primitive.any) return true;
         const s_ret = self.interner.signatureReturn(source) orelse types.Primitive.any;
         return self.engine.isSubtypeOf(s_ret, t_ret) catch false;
@@ -222174,6 +222211,122 @@ test "checker: primitive constraint classification stays shallow" {
     try T.expect(s.checker.constraintMaybePrefersLiteralInference(conditional_t, 0));
     try T.expect(!s.checker.constraintMaybePrefersLiteralInference(any_object_conditional_t, 0));
     try T.expect(!s.checker.typeParameterConstraintPrefersLiteralInference(parameter_t));
+}
+
+test "checker: callable union reduction respects predicate targets and receiver types" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const plain = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    const number_guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    const string_guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    for ([_]TypeId{ number_guard, string_guard }, [_]TypeId{ types.Primitive.number_t, types.Primitive.string_t }) |sig, target| {
+        try s.checker.signature_predicates.put(T.allocator, sig, .{
+            .param_index = 0,
+            .target_type = target,
+            .target_node = hir_mod.none_node_id,
+            .is_asserts = false,
+        });
+    }
+    try T.expect(s.checker.strictCallableSubtype(number_guard, plain));
+    try T.expect(!s.checker.strictCallableSubtype(plain, number_guard));
+    try T.expect(!s.checker.strictCallableSubtype(number_guard, string_guard));
+    try T.expect(!s.checker.strictCallableSubtype(string_guard, number_guard));
+    for ([_][2]TypeId{ .{ plain, number_guard }, .{ number_guard, plain } }) |pair| {
+        try T.expectEqual(plain, try s.checker.internArrayElementUnion(&pair));
+        try T.expectEqual(plain, try s.checker.internConditionalUnion(&pair));
+    }
+
+    const left = try s.ti.internSignatureWithThisType(&.{}, types.Primitive.number_t, false, false, types.Primitive.string_t);
+    const right = try s.ti.internSignatureWithThisType(&.{}, types.Primitive.number_t, false, false, types.Primitive.number_t);
+    try T.expect(!s.checker.strictCallableSubtype(left, right));
+    try T.expect(!s.checker.strictCallableSubtype(right, left));
+    const union_t = try s.checker.internArrayElementUnion(&.{ left, right });
+    try T.expect(s.ti.pool.flagsOf(union_t).is_union);
+    try T.expectEqual(@as(usize, 2), s.ti.unionMembers(union_t).len);
+}
+
+test "checker: callable union reduction does not invent an array predicate" {
+    for ([_][]const u8{
+        "declare function guard(value: unknown): value is number; declare function plain(value: unknown): boolean;",
+        "declare function plain(value: unknown): boolean; declare function guard(value: unknown): value is number;",
+    }) |declarations| {
+        const source = try std.fmt.allocPrint(T.allocator,
+            \\{s}
+            \\declare let value: unknown;
+            \\const first = [guard, plain];
+            \\const second = [plain, guard];
+            \\if (first[0](value)) {{ const bad: number = value; }}
+            \\if (second[0](value)) {{ const bad: number = value; }}
+            \\const guards = [guard, guard];
+            \\if (guards[0](value)) {{ const good: number = value; }}
+        , .{declarations});
+        defer T.allocator.free(source);
+        const b = try newBoundSetup(source);
+        defer destroyBoundSetup(b);
+        try b.base.checker.checkSourceFile(b.base.root);
+        try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+        for (b.base.checker.diagnostics.items) |diagnostic| {
+            try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        }
+    }
+}
+
+test "checker: callable union composition requires compatible predicate kinds and positions" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const number_guard = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const string_guard = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const plain = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const any_return = try s.ti.internSignature(&.{ types.Primitive.any, types.Primitive.any }, types.Primitive.any, false);
+    const number_pred: FnPredicate = .{ .param_index = 0, .target_type = types.Primitive.number_t, .target_node = hir_mod.none_node_id, .is_asserts = false };
+    var string_pred = number_pred;
+    string_pred.target_type = types.Primitive.string_t;
+    try s.checker.signature_predicates.put(T.allocator, number_guard, number_pred);
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    try T.expect(!s.checker.strictCallableSubtype(any_return, number_guard));
+
+    const combined = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    const predicate = s.checker.signature_predicates.get(combined).?;
+    try T.expectEqual(try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }), predicate.target_type);
+    try T.expectEqual(hir_mod.none_node_id, predicate.target_node);
+    const matched = try s.checker.internMatchedUnionSignature(number_guard, &.{ number_guard, string_guard }, false);
+    try T.expectEqual(predicate.target_type, s.checker.signature_predicates.get(matched).?.target_type);
+    const mixed = try s.checker.combineUnionSignaturePair(number_guard, plain, false);
+    try T.expect(!s.checker.signature_predicates.contains(mixed));
+    string_pred.param_index = 1;
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    const different_position = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    try T.expect(!s.checker.signature_predicates.contains(different_position));
+    string_pred.param_index = 0;
+    string_pred.is_asserts = true;
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    const different_kind = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    try T.expect(!s.checker.signature_predicates.contains(different_kind));
+}
+
+test "checker: callable union composition handles three predicate branches and combined receivers" {
+    const b = try newBoundSetup(
+        \\declare const flag: boolean;
+        \\declare let value: unknown;
+        \\declare function numberGuard(value: unknown): value is number;
+        \\declare function stringGuard(value: unknown): value is string;
+        \\declare function booleanGuard(value: unknown): value is boolean;
+        \\const guard = flag ? numberGuard : flag ? stringGuard : booleanGuard;
+        \\if (guard(value)) { const good: string | number | boolean = value; }
+        \\if (guard(value)) { const bad: number = value; }
+        \\declare function left(this: { left: number }): number;
+        \\declare function right(this: { right: number }): number;
+        \\const run = flag ? left : right;
+        \\const complete = { left: 1, right: 2, run };
+        \\const good: number = complete.run();
+        \\const partial = { left: 1, run };
+        \\partial.run();
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.this_context_not_assignable));
 }
 
 test "checker: empty substitutions preserve type graph identity" {
