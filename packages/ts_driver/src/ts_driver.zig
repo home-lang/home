@@ -26,6 +26,7 @@ pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
 pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
 pub const ExternalResolver = ts_checker.ExternalResolver;
+pub const source_owners = @import("source_owners.zig");
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
@@ -241,6 +242,9 @@ pub const Compilation = struct {
     /// Checked declaration/signature metadata. Its TypeIds and source nodes
     /// belong to this compilation, and survive the temporary Checker.
     checked_types: ts_checker.CheckedTypes = .{},
+    /// Set only after semantic checking and metadata capture complete. A
+    /// bind-only or early scanner-recovery result is not a typed source owner.
+    checked_types_ready: bool = false,
     /// Emitted JavaScript text.
     js: []u8,
     /// All diagnostics from every phase, in source order.
@@ -276,6 +280,20 @@ pub const Compilation = struct {
     pub fn lookupTopLevel(self: *Compilation, name: []const u8) ?*binder.Symbol {
         const id = self.interner.lookup(name) orelse return null;
         return self.module.root.values.get(id) orelse self.module.root.types.get(id) orelse self.module.root.namespaces.get(id);
+    }
+
+    /// Borrow immutable source storage for the owner registry. Unregister the
+    /// returned owner's ID before destroying or replacing this compilation.
+    pub fn sourceOwner(self: *const Compilation, path: []const u8) error{UncheckedSource}!source_owners.Source {
+        if (!self.checked_types_ready) return error.UncheckedSource;
+        return .{
+            .hir = &self.hir,
+            .strings = &self.interner,
+            .types = &self.type_interner,
+            .checked = &self.checked_types,
+            .path = path,
+            .text = self.source,
+        };
     }
 };
 
@@ -2438,6 +2456,7 @@ pub fn compileSource(
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
 
     try checker.takeCheckedTypes(&c.checked_types);
+    c.checked_types_ready = c.root != hir_mod.none_node_id;
     return c;
 }
 
@@ -4053,6 +4072,7 @@ const T = std.testing;
 
 test {
     _ = @import("directive_lines.zig");
+    _ = source_owners;
 }
 
 test "driver: candidate directive lines preserve parser-specific precedence" {
@@ -4130,6 +4150,22 @@ test "driver: bind-only compilation exposes exports without semantic checking" {
     try T.expect(symbol.flags.is_export);
     try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
     try T.expectEqual(@as(usize, 0), compilation.js.len);
+    try T.expectError(error.UncheckedSource, compilation.sourceOwner("/bound.ts"));
+}
+
+test "driver: checked owner readiness is distinct from diagnostic success" {
+    inline for (.{ "", "export const value: string = 1;" }) |source| {
+        const compilation = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        const owner = try compilation.sourceOwner("/checked.ts");
+        try T.expect(owner.checked == &compilation.checked_types);
+        try T.expect(owner.hir == &compilation.hir);
+        try T.expectEqualStrings(source, owner.text);
+        try T.expectEqual(source.len != 0, compilation.has_errors);
+    }
 }
 
 test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
@@ -5098,39 +5134,6 @@ test "driver: checked alias display and arguments own their borrowed leaves" {
     try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
 }
 
-// Test provenance is a registry of REAL source owners and nodes. The handles
-// are not local HIR nodes: consumers must resolve them through this registry.
-// This exercises the transfer contract without pretending program resolution
-// has already adopted source-aware lookup.
-const TestTransferOrigin = struct { owner: *const Compilation, node: NodeId };
-const TestTransferNames = struct {
-    source: *const Compilation,
-    destination: *string_interner.Interner,
-    origins: *std.ArrayListUnmanaged(TestTransferOrigin),
-
-    fn string(context: *anyopaque, id: hir_mod.StringId) ts_checker.type_transfer.Error!hir_mod.StringId {
-        const self: *TestTransferNames = @ptrCast(@alignCast(context));
-        return self.destination.intern(self.source.interner.get(id)) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.ShardCapacityExceeded => error.TypeIdOverflow,
-        };
-    }
-
-    fn node(context: *anyopaque, id: NodeId) ts_checker.type_transfer.Error!NodeId {
-        const self: *TestTransferNames = @ptrCast(@alignCast(context));
-        if (id == hir_mod.none_node_id or id >= self.source.hir.nodeCount()) return error.UnmappedName;
-        for (self.origins.items, 0..) |origin, index| {
-            if (origin.owner == self.source and origin.node == id) return @intCast(index + 1);
-        }
-        try self.origins.append(T.allocator, .{ .owner = self.source, .node = id });
-        return @intCast(self.origins.items.len);
-    }
-
-    fn callbacks(self: *TestTransferNames) ts_checker.type_transfer.Names {
-        return .{ .context = self, .string = string, .declaration = node };
-    }
-};
-
 test "driver: checked transfer preserves real declarations and isolated canonical signature semantics" {
     const first = try compileSource(T.allocator,
         \\export interface Box<T> { value: T; }
@@ -5169,18 +5172,18 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     defer strings.deinit();
     // Canonical guard shape is deliberately present before either import.
     const canonical_guard = try destination.internSignature(&.{ts_checker.Primitive.unknown}, ts_checker.Primitive.boolean_t, false);
-    var origins: std.ArrayListUnmanaged(TestTransferOrigin) = .empty;
-    defer origins.deinit(T.allocator);
-    var first_names = TestTransferNames{ .source = first, .destination = &strings, .origins = &origins };
-    var second_names = TestTransferNames{ .source = second, .destination = &strings, .origins = &origins };
-    var first_ids = try ts_checker.type_transfer.append(&destination, &first.type_interner, first_names.callbacks());
-    defer first_ids.deinit();
-    var first_checked = try ts_checker.checked_transfer.clone(T.allocator, &first.checked_types, first_ids, first_names.callbacks());
-    defer first_checked.deinit(T.allocator);
-    var second_ids = try ts_checker.type_transfer.append(&destination, &second.type_interner, second_names.callbacks());
-    defer second_ids.deinit();
-    var second_checked = try ts_checker.checked_transfer.clone(T.allocator, &second.checked_types, second_ids, second_names.callbacks());
-    defer second_checked.deinit(T.allocator);
+    var origins = source_owners.Registry.init(T.allocator);
+    defer origins.deinit();
+    const first_owner = try origins.register(try first.sourceOwner("/first.ts"));
+    const second_owner = try origins.register(try second.sourceOwner("/second.ts"));
+    var first_import = try origins.importOwner(&destination, &strings, first_owner);
+    defer first_import.deinit();
+    var second_import = try origins.importOwner(&destination, &strings, second_owner);
+    defer second_import.deinit();
+    const first_ids = first_import.types.ids;
+    const second_ids = second_import.types.ids;
+    const first_checked = &first_import.types.checked;
+    const second_checked = &second_import.types.checked;
 
     const first_guard = try first_ids.typeId(try testCheckedValueType(first, "guard"));
     const second_guard = try second_ids.typeId(try testCheckedValueType(second, "guard"));
@@ -5188,13 +5191,15 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     try T.expectEqual(canonical_guard, second_guard);
     try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
     try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
-    const first_origin = origins.items[first_checked.signature_decl_nodes.get(first_guard).? - 1];
-    const second_origin = origins.items[second_checked.signature_decl_nodes.get(second_guard).? - 1];
-    try T.expect(first_origin.owner == first and second_origin.owner == second);
-    for ([_]TestTransferOrigin{ first_origin, second_origin }) |origin| {
-        try T.expectEqual(hir_mod.NodeKind.fn_decl, origin.owner.hir.kindOf(origin.node));
-        const span = origin.owner.hir.spanOf(origin.node);
-        try T.expect(std.mem.indexOf(u8, origin.owner.source[span.start..span.end], "function guard") != null);
+    const first_handle = first_checked.signature_decl_nodes.get(first_guard).?;
+    const first_origin = try origins.declaration(first_handle);
+    const second_origin = try origins.declaration(second_checked.signature_decl_nodes.get(second_guard).?);
+    try T.expect(first_origin.owner == first_owner and second_origin.owner == second_owner);
+    try T.expectEqualStrings("/first.ts", first_origin.source.path);
+    try T.expectEqualStrings("/second.ts", second_origin.source.path);
+    for ([_]source_owners.Declaration{ first_origin, second_origin }) |origin| {
+        try T.expectEqual(hir_mod.NodeKind.fn_decl, origin.source.hir.kindOf(origin.node));
+        try T.expect(std.mem.indexOf(u8, origin.text(), "function guard") != null);
     }
 
     const first_identity = try first_ids.typeId(try testCheckedValueType(first, "identity"));
@@ -5212,13 +5217,13 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     try T.expect(first_class != second_class);
     try T.expect(first_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
     try T.expect(second_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
-    try T.expect(origins.items[first_checked.class_decl_by_instance.get(first_class).? - 1].owner == first);
-    try T.expect(origins.items[second_checked.class_decl_by_instance.get(second_class).? - 1].owner == second);
+    try T.expectEqual(first_owner, (try origins.declaration(first_checked.class_decl_by_instance.get(first_class).?)).owner);
+    try T.expectEqual(second_owner, (try origins.declaration(second_checked.class_decl_by_instance.get(second_class).?)).owner);
     const first_state = try first_ids.typeId(try testCheckedValueType(first, "state"));
     const second_state = try second_ids.typeId(try testCheckedValueType(second, "state"));
     try T.expect(first_state != second_state);
-    try T.expect(origins.items[first_checked.enum_nominal_decls.get(first_state).? - 1].owner == first);
-    try T.expect(origins.items[second_checked.enum_nominal_decls.get(second_state).? - 1].owner == second);
+    try T.expectEqual(first_owner, (try origins.declaration(first_checked.enum_nominal_decls.get(first_state).?)).owner);
+    try T.expectEqual(second_owner, (try origins.declaration(second_checked.enum_nominal_decls.get(second_state).?)).owner);
 
     const choose = try first_ids.typeId(try testCheckedValueType(first, "choose"));
     const choose_params = destination.signatureParams(choose);
@@ -5227,7 +5232,7 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     try T.expect(first_checked.readonly_index_types.contains(attributes));
     const pattern_index = first_checked.pattern_index_signatures.get(attributes).?[0];
     try T.expectEqual(ts_checker.Primitive.string_t, pattern_index.value_type);
-    try T.expect(origins.items[pattern_index.decl_node - 1].owner == first);
+    try T.expectEqual(first_owner, (try origins.declaration(pattern_index.decl_node)).owner);
     const repeated = first_checked.generic_aliases.get(strings.lookup("Repeated").?).?;
     const segments = first_checked.symbolic_tuple_layouts.get(repeated.body).?;
     try T.expectEqual(@as(usize, 3), segments.len);
@@ -5239,8 +5244,12 @@ test "driver: checked transfer preserves real declarations and isolated canonica
     const tuple = try first_ids.typeId(try testCheckedValueType(first, "tuple"));
     const fixed = try first_ids.typeId(try testCheckedValueType(first, "fixed"));
     const wrong = try first_ids.typeId(try testCheckedValueType(first, "wrong"));
-    // Remove the source semantic records before using their independently
-    // owned copies. Source HIR/text stay alive for the provenance registry.
+    // Invalidate source ownership before mutating its storage. Structural
+    // relations can still use the independent payload/metadata copies, but
+    // source-dependent semantic lookup must now reject the stale handles.
+    try origins.unregister(first_owner);
+    try origins.unregister(second_owner);
+    try T.expectError(error.InvalidOwner, origins.declaration(first_handle));
     first.checked_types.deinit(T.allocator);
     second.checked_types.deinit(T.allocator);
     var engine = try ts_checker.Engine.init(T.allocator, &destination);
