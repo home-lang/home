@@ -95,15 +95,90 @@ pub const Diagnostic = struct {
 pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
     if (!diagnostic.is_parse_error) return false;
     return switch (diagnostic.code) {
-        1013, 1014, 1015, 1016, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
-        1053, 1054, 1089, 1090, 1091, 1097, 1100, 1101, 1104, 1105, 1106,
-        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
-        1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
-        1193, 1197, 1200, 1210, 1211, 1212, 1213, 1214, 1215, 1248,
-        1255, 1258, 1263, 1264, 1308, 1312, 1325,
-        1341, 1358, 1368, 1450, 1451, 1473, 1474, 17012, 18006, 18013,
-        18016, 18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566,
-        2803, 5076, 8009, 8012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1029,
+        1030,
+        1031,
+        1036,
+        1042,
+        1044,
+        1048,
+        1049,
+        1053,
+        1054,
+        1089,
+        1090,
+        1091,
+        1097,
+        1100,
+        1101,
+        1104,
+        1105,
+        1106,
+        1107,
+        1113,
+        1114,
+        1115,
+        1116,
+        1123,
+        1155,
+        1156,
+        1162,
+        1163,
+        1171,
+        1172,
+        1174,
+        1182,
+        1184,
+        1186,
+        1188,
+        1189,
+        1190,
+        1191,
+        1193,
+        1197,
+        1200,
+        1210,
+        1211,
+        1212,
+        1213,
+        1214,
+        1215,
+        1248,
+        1255,
+        1258,
+        1263,
+        1264,
+        1308,
+        1312,
+        1325,
+        1341,
+        1358,
+        1368,
+        1450,
+        1451,
+        1473,
+        1474,
+        17012,
+        18006,
+        18013,
+        18016,
+        18028,
+        18038,
+        18041,
+        2410,
+        2462,
+        2480,
+        2492,
+        2501,
+        2566,
+        2803,
+        5076,
+        8009,
+        8012,
         => false,
         else => true,
     };
@@ -8854,10 +8929,12 @@ pub const Parser = struct {
             try self.consumeStatementTerminator();
             const name_id_b = try self.internStringLiteral(name_tok);
             const name_node_b = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id_b);
-            return try self.builder.addNamespace(
+            return try self.builder.addNamespaceWithContext(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 name_node_b,
                 &.{},
+                true,
+                true,
             );
         }
         const ns_body_open = try self.expect(.open_brace, "'{' to open namespace body");
@@ -8908,10 +8985,12 @@ pub const Parser = struct {
         else
             self.interner.intern(self.source[name_tok.span.start..name_end]) catch return error.OutOfMemory;
         const name_node = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id);
-        return try self.builder.addNamespace(
+        return try self.builder.addNamespaceWithContext(
             .{ .start = start.span.start, .end = close_end },
             name_node,
             body.items,
+            self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start) or name_tok.kind == .string_literal,
+            name_tok.kind == .string_literal,
         );
     }
 
@@ -20904,15 +20983,15 @@ pub const Parser = struct {
                                 );
                             } else {
                                 const expr = if (self.peek().kind == .dot_dot_dot) recover: {
-                                const spread = self.advance();
-                                try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
-                                while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
-                                const close = self.peek();
-                                try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
-                                break :recover try self.builder.addLiteralNumber(
-                                    .{ .start = spread.span.start, .end = spread.span.start },
-                                    0,
-                                );
+                                    const spread = self.advance();
+                                    try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
+                                    while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
+                                    const close = self.peek();
+                                    try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
+                                    break :recover try self.builder.addLiteralNumber(
+                                        .{ .start = spread.span.start, .end = spread.span.start },
+                                        0,
+                                    );
                                 } else try self.parseExpression();
                                 try self.reportJsxCommaExpressionIfNeeded(expr);
                                 var value_end = self.hir.spanOf(expr).end;
@@ -28823,15 +28902,20 @@ test "parser: TSX generic arrows require an unambiguous type parameter list" {
 }
 
 test "parser: TSX less-than comparison preserves a following JSX return" {
-    var s = try newTsxTestSetup(
-        "\xEF\xBB\xBF" ++
-            \\declare namespace JSX { interface Element { div: string; } }
-        ++ \\declare namespace React { class Component<P, S> { props: P; } }
-        ++ \\export class ShortDetails extends React.Component<{ id: number }, {}> {
-        ++ \\  public render(): JSX.Element {
-        ++ \\    if (this.props.id < 1) { return (<div></div>); }
-        ++ \\  }
-        ++ \\}
+    var s = try newTsxTestSetup("\xEF\xBB\xBF" ++
+        \\declare namespace JSX { interface Element { div: string; } }
+    ++
+        \\declare namespace React { class Component<P, S> { props: P; } }
+    ++
+        \\export class ShortDetails extends React.Component<{ id: number }, {}> {
+    ++
+        \\  public render(): JSX.Element {
+    ++
+        \\    if (this.props.id < 1) { return (<div></div>); }
+    ++
+        \\  }
+    ++
+        \\}
     );
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
