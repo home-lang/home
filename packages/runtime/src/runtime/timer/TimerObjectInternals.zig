@@ -389,6 +389,15 @@ pub fn doUnref(this: *TimerObjectInternals, _: *jsc.JSGlobalObject, this_value: 
     return this_value;
 }
 
+/// Release the heap reference after a bulk clear has already unlinked and
+/// cancelled the timer. cancel() alone cannot infer that removed reference.
+pub fn releaseHeapPin(this: *TimerObjectInternals, vm: *VirtualMachine) void {
+    bun.assert(this.flags.kind != .setImmediate);
+    bun.assert(this.eventLoopTimer().in_heap == .none);
+    this.cancel(vm);
+    this.deref();
+}
+
 pub fn cancel(this: *TimerObjectInternals, vm: *VirtualMachine) void {
     this.setEnableKeepingEventLoopAlive(vm, false);
     this.flags.has_cleared_timer = true;

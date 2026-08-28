@@ -1441,11 +1441,12 @@ pub const timespec = extern struct {
         force_real_time,
     };
 
-    /// Faithful to upstream `bun.zig:3222` (`getRoughTickCount`). Home reads the
-    /// monotonic clock directly; the jest `FakeTimers` mock path re-attaches with
-    /// the fake-timers subsystem, so `.allow_mocked_time` falls through to real.
+    /// Timer deadlines and fake-clock advancement must share the same clock.
+    /// Internal timers can explicitly opt into the real monotonic clock.
     pub fn now(comptime mock_mode: MockMode) timespec {
-        _ = mock_mode;
+        if (enable_jsc_link and mock_mode == .allow_mocked_time) {
+            if (jsc.Jest.bun_test.FakeTimers.current_time.getTimespecNow()) |mocked| return mocked;
+        }
         var ts: std.c.timespec = undefined;
         _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
         return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
@@ -1546,8 +1547,39 @@ pub const timespec = extern struct {
         return new_timespec;
     }
 
-    pub fn addMsFloat(this: *const timespec, interval: f64) timespec {
-        return this.addMs(@intFromFloat(interval));
+    pub fn addMsFloat(this: *const timespec, interval_ms: f64) timespec {
+        const ns_per_ms_f = @as(f64, @floatFromInt(std.time.ns_per_ms)); // 1_000_000
+
+        // Start from the current time
+        var new_timespec = this.*;
+
+        // Split into whole ms and sub-ms remainder (matches sinon/fake-timers logic)
+        // Use modulo to extract fractional milliseconds as nanoseconds
+        const ms_whole_f = @floor(interval_ms);
+        const ms_inc: i64 = std.math.lossyCast(i64, ms_whole_f);
+
+        // nanoRemainder: floor((msFloat * 1e6) % 1e6)
+        const ns_total_f = interval_ms * ns_per_ms_f;
+        const ns_remainder_f = @mod(ns_total_f, ns_per_ms_f);
+        const nsec_inc: i64 = @intFromFloat(@floor(ns_remainder_f));
+
+        // Convert milliseconds to seconds
+        const sec_inc = @divTrunc(ms_inc, std.time.ms_per_s);
+        const ms_remainder = @mod(ms_inc, std.time.ms_per_s);
+
+        new_timespec.sec +%= sec_inc;
+        new_timespec.nsec +%= ms_remainder * std.time.ns_per_ms + nsec_inc;
+
+        // Normalize nsec into [0, ns_per_s)
+        if (new_timespec.nsec >= std.time.ns_per_s) {
+            new_timespec.sec +%= 1;
+            new_timespec.nsec -%= std.time.ns_per_s;
+        } else if (new_timespec.nsec < 0) {
+            new_timespec.sec -%= 1;
+            new_timespec.nsec +%= std.time.ns_per_s;
+        }
+
+        return new_timespec;
     }
 };
 
@@ -4171,10 +4203,7 @@ pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
 }
 
 pub fn getRoughTickCountMs(comptime mock_mode: timespec.MockMode) u64 {
-    _ = mock_mode;
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(u64, @intCast(ts.nsec)), std.time.ns_per_ms);
+    return timespec.now(mock_mode).msUnsigned();
 }
 
 pub const Ordinal = @import("jsc/ZigStackFramePosition.zig").Ordinal;
