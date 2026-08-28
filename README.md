@@ -130,6 +130,10 @@ has not been refreshed. Expanded controls keep remaining failures visible:
 | Imported-owner controls | 20/20 | 20/20 | 8/20 |
 | Transitive reference probe | 3/3 | 3/3 | 2/3 |
 
+The latest [checked-owner and typed-global checkpoint](./docs/docs/TS_PERFORMANCE.md#checked-owner-lifetime-and-typed-global-consumer-contract-untimed)
+preserves these global/import audit counts; automatic cross-file type transfer
+is not yet enabled, and both graph timing claims remain ineligible.
+
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
 reproduction commands. Expansion and optimization work is tracked in

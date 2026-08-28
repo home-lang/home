@@ -1987,3 +1987,75 @@ HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_callables.py
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
 HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
 ```
+
+### Checked-owner lifetime and typed-global consumer contract (untimed)
+
+The next checkpoint for [#480](https://github.com/home-lang/home/issues/480)
+and [#487](https://github.com/home-lang/home/issues/487) establishes source
+lifetime and checker lookup boundaries. Commit
+[`33d8c15c5`](https://github.com/home-lang/home/commit/33d8c15c5) registers each
+checked program-file revision with its source-owner registry and tombstones
+that identity before replacement or destruction. Parallel publication is
+serialized; incremental recompilation retains unaffected owners and assigns
+fresh identities to replacements. Commit
+[`76d6a8b2d`](https://github.com/home-lang/home/commit/76d6a8b2d) leaves scanner
+recovery results without checked type storage unregistered, instead of
+asserting that every diagnostic-bearing result has a typed source view.
+
+Commit [`a142705f1`](https://github.com/home-lang/home/commit/a142705f1)
+lets the checker accept explicit value/type bindings already relocated into
+its receiving type pool and string keyspace. Local and forward declarations
+take precedence. A separate property flag distinguishes global `var`-style
+bindings from lexical bindings for dotted, bracketed, and indexed-`typeof`
+access through `globalThis`; local bindings named `globalThis` still shadow
+the global object. Focused tests cover primitive and structural object types,
+call signatures, wrong assignments, missing members, invalid arguments,
+non-generic type arguments, and lexical isolation.
+
+This is a consumer contract, **not automatic cross-file type transfer**.
+Program compilation still supplies presence-only names. Publishing real
+bindings requires owner-aware declaration and semantic metadata, including
+generic parameters, predicates, nominal identity, declaration merging, and
+resolution independent of source order and cycles. The contract does not
+authorize foreign local node IDs or incomplete metadata to be treated as local.
+
+The unchanged audits were rerun against the frozen ReleaseFast binary and
+exact installed baselines. Each compiler receives the same files and options;
+valid cases must succeed silently, and invalid cases must match the expected
+diagnostic-code multiset. Failures remain visible:
+
+| Untimed correctness gate | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Global declaration controls | 56/56 | 56/56 | 32/56 |
+| Bound-global discovery controls | 56/56 | 56/56 | 44/56 |
+| Imported-owner controls | 20/20 | 20/20 | 8/20 |
+| Import/re-export graph admission | 2/2 | 2/2 | 0/2 |
+
+These results are unchanged from the prior checkpoint. Both graph projects
+still accept invalid imported-property uses in Home, so neither is readmitted
+for timing. The full admission check passes 16/18 workloads, with only those
+two failures. No new timings were collected and no speedup is claimed.
+
+The full checker suite passes 4,264/4,264, conformance 1,417/1,417,
+program 110/110, driver 187/187, and harness 38/38. Zig formatting checks pass.
+Targeted Pickier has no errors
+and one pre-existing README fragment warning.
+
+Raw logs and the frozen binary are retained locally in
+`bench/vs_tsgo/results/global-consumer.xZ8NXj`. The final binary SHA-256 is
+`f401735aa016d571c2aa4def48f47f4ff435a100af98c3d37c5d61afab392f09`.
+The installed compilers report `Version 6.0.3` and `Version 7.0.2`; the old
+`7.0.0-dev.20260707.2` version is explicitly rejected by harness tests.
+Native TS 7 is one baseline, not separate `tsc 7` and `tsgo` competitors.
+
+```sh
+./pantry/.bin/zig build test -Dfilter=ts_checker
+./pantry/.bin/zig build test -Dfilter=ts_program
+./pantry/.bin/zig build test -Dfilter=ts_driver
+./pantry/.bin/zig build test -Dfilter=ts_conformance
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_bound_globals.py
+HOME_TSC="$PWD/zig-out/bin/home-tsc" python3 bench/vs_tsgo/audit_owners.py
+```
