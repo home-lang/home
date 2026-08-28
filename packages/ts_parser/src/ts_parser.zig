@@ -10225,7 +10225,19 @@ pub const Parser = struct {
         const old_in_export_declaration = self.in_export_declaration;
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
+        const pending_start = self.pending_statements.items.len;
         const decl = try self.parseStatement();
+        const decl_kind = self.hir.kindOf(decl);
+        if (decl_kind == .var_decl or decl_kind == .let_decl or decl_kind == .const_decl) {
+            // A variable list is represented as sibling declarations. Every
+            // declarator belongs to this export, not only the first one.
+            // Preserve that ownership in HIR so binding and export queries
+            // need no source-text recovery to discover trailing declarations.
+            for (self.pending_statements.items[pending_start..]) |*extra| {
+                if (self.hir.kindOf(extra.*) != decl_kind) continue;
+                extra.* = try self.builder.addExport(self.hir.spanOf(extra.*), extra.*, &.{}, empty_string, is_type_only, false);
+            }
+        }
         if (self.hir.kindOf(decl) == .class_decl and
             hir_mod.classOf(self.hir, decl).name == hir_mod.none_node_id)
         {
@@ -28069,6 +28081,28 @@ test "parser: export decl" {
     const ex = hir_mod.exportOf(&s.hir, top);
     try T.expect(ex.decl != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(ex.decl));
+}
+
+test "parser: every exported variable declarator retains export ownership" {
+    for ([_][]const u8{
+        "export const first = 1, second = 2; const hidden = 3;",
+        "export let first: number, second: string; const hidden = 3;",
+        "export declare var first: number, second: string; const hidden = 3;",
+        "export const first = 1, { second } = { second: 2 }; const hidden = 3;",
+    }) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 3), statements.len);
+        for (statements[0..2]) |statement| {
+            try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(statement));
+            const declaration = hir_mod.exportOf(&s.hir, statement).decl;
+            try T.expectEqual(statement, s.hir.parentOf(declaration));
+        }
+        try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(statements[2]));
+    }
 }
 
 test "parser: array literal" {
