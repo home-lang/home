@@ -9,13 +9,13 @@ import audit_static_values
 class StaticValueAuditTests(unittest.TestCase):
     def test_all_import_and_consumer_families_are_retained(self):
         cases = audit_static_values.cases()
-        self.assertEqual(76, len(cases))
-        self.assertEqual(76, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(84, len(cases))
+        self.assertEqual(84, len({(case.family, case.name) for case in cases}))
         self.assertEqual({"named", "named-alias", "default", "namespace", "captured-namespace",
                           "destructured-namespace", "element-namespace", "namespace-default", "namespace-reexport",
                           "mixed-exports", "namespace-name-isolation", "named-shadow", "namespace-shadow",
                           "private-static-identity", "namespace-visibility", "type-only-import", "type-only-export",
-                          "cyclic-namespace", "long-star-chain"},
+                          "cyclic-namespace", "long-star-chain", "constructor-prototype", "captured-constructor"},
                          {case.family for case in cases})
         for case in cases:
             if case.family == "long-star-chain":

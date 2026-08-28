@@ -72,6 +72,13 @@ def cases() -> list[Case]:
     pair("long-star-chain", {"a-owner.ts": CLASS, **chain, "d40.ts": "export * from './a-owner';\n"},
          "import * as ns from './d00';\nconst good: number = ns.Secret.count;\n",
          "const bad: string = ns.Secret.count;\n")
+    pair("constructor-prototype", {"a-owner.ts": CLASS},
+         "import * as ns from './a-owner';\nconst good: string = ns.Secret.prototype.value;\n",
+         "const bad: number = ns.Secret.prototype.value;\n")
+    pair("captured-constructor", {"a-owner.ts": CLASS},
+         "import * as ns from './a-owner';\nconst Constructor = ns.Secret;\n"
+         "const instance = new Constructor();\nconst good: string = instance.value;\n",
+         "const bad: number = instance.value;\n")
     return result
 
 
