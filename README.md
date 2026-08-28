@@ -95,7 +95,7 @@ three warmups; lower is better):
 | 128 generic class families | 200.0 ms | 55.8 ms | **29.8 ms** | **1.87× faster** |
 | 128 structural object families | 197.7 ms | 60.7 ms | **31.5 ms** | **1.93× faster** |
 | 128 interface/namespace families | 233.3 ms | 76.2 ms | **46.5 ms** | **1.64× faster** |
-| 256 variadic tuple families | 268.4 ms | 81.0 ms | **46.2 ms** | **1.76× faster** |
+| 256 variadic tuple families | 268.4 ms | 81.0 ms | 46.2 ms | Provisional: older admission schema |
 | 128 checked-JavaScript/JSDoc families | 246.4 ms | 63.0 ms | **41.2 ms** | **1.53× faster** |
 
 These are local synthetic means, with substantial variance in several rows;
@@ -110,6 +110,14 @@ Later generic-callback, declaration, and
 [assertion/type-ownership fixes](./docs/docs/TS_PERFORMANCE.md#checked-type-ownership-and-assertion-returns-untimed)
 have passed correctness checks but have not yet been retimed. Async/await
 coverage is still undergoing validation and is not included in these timings.
+The latest [untimed ownership and tuple-admission checks](./docs/docs/TS_PERFORMANCE.md#semantic-metadata-ownership-and-tuple-admission-untimed)
+report:
+
+| Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Variadic tuple controls | 14/14 | 14/14 | 14/14 |
+| Global declaration controls | 44/44 | 44/44 | 30/44 |
+
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact
 reproduction commands. Expansion and optimization work is tracked in

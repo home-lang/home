@@ -50,7 +50,7 @@ do not establish universal superiority.
 | `class_hierarchy` | 200.0 ± 17.6 ms | 55.8 ± 4.5 ms | **29.8 ± 1.1 ms** | **1.87× faster** |
 | `structural_objects` | 197.7 ± 9.7 ms | 60.7 ± 2.8 ms | **31.5 ± 1.1 ms** | **1.93× faster** |
 | `interface_composition` | 233.3 ± 43.6 ms | 76.2 ± 30.3 ms | **46.5 ± 3.4 ms** | **1.64× faster** |
-| `variadic_tuples` | 268.4 ± 33.0 ms | 81.0 ± 8.5 ms | **46.2 ± 8.3 ms** | **1.76× faster** |
+| `variadic_tuples` | 268.4 ± 33.0 ms | 81.0 ± 8.5 ms | 46.2 ± 8.3 ms | Provisional: older admission schema |
 | `checkjs_jsdoc` | 246.4 ± 48.7 ms | 63.0 ± 16.6 ms | **41.2 ± 6.8 ms** | **1.53× faster** |
 
 The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
@@ -1015,7 +1015,7 @@ issues #467 and #472 and the unvalidated container path #464 remain open.
 | `class_hierarchy` | 186.1 ± 7.9 ms | 53.4 ± 7.8 ms | **28.1 ± 0.4 ms** | **1.90× faster** |
 | `structural_objects` | 185.8 ± 2.9 ms | 58.1 ± 1.6 ms | **30.3 ± 0.6 ms** | **1.92× faster** |
 | `interface_composition` | 214.9 ± 41.7 ms | 64.7 ± 4.3 ms | **45.6 ± 6.0 ms** | **1.42× faster** |
-| `variadic_tuples` | 252.9 ± 6.3 ms | 77.7 ± 2.5 ms | **42.4 ± 1.0 ms** | **1.83× faster** |
+| `variadic_tuples` | 252.9 ± 6.3 ms | 77.7 ± 2.5 ms | 42.4 ± 1.0 ms | Provisional: older admission schema |
 | `checkjs_jsdoc` | 211.5 ± 27.6 ms | 54.3 ± 1.2 ms | **36.9 ± 0.9 ms** | **1.47× faster** |
 
 </details>
@@ -1299,12 +1299,79 @@ generic-callback checks still pass. The local evidence directory is
 `bench/vs_tsgo/results/type-ownership.DvClDP`; the ReleaseFast binary SHA-256 is
 `2d1bd9e91307373ffe28b5f0af3f9efb11ea96039df3b2ad77c9540e60fee942`.
 
-This is an ownership prerequisite, not completed cross-file type linkage.
-[#488](https://github.com/home-lang/home/issues/488) remains open: interpretation
-tables such as `NoInfer`, `this` markers, readonly/pattern index metadata, and
-tuple/array origins still require ownership coverage before foreign types can
-be safely imported. The global audit still has 14 Home failures out of 132
+This was an ownership prerequisite, not completed cross-file type linkage.
+At this checkpoint, [#488](https://github.com/home-lang/home/issues/488) remained
+open for interpretation tables such as `NoInfer`, `this` markers,
+readonly/pattern index metadata, and tuple/array origins. The following
+checkpoint extends that ownership coverage. The global audit still has 14 Home failures out of 132
 checks; Home still fails both imported-graph rejection gates. Sixteen workload
 gates pass, but neither graph is readmitted and the other rows remain provisional.
 No timing run or new speed claim was made under concurrent workstation load.
 The published timings and frozen predicate sources are unchanged.
+
+### Semantic metadata ownership and tuple admission (untimed)
+
+Commit [`304fd5d06`](https://github.com/home-lang/home/commit/304fd5d0697ed8b2ee691bc80e4199413b0abb29),
+the follow-up to [#488](https://github.com/home-lang/home/issues/488), retains
+113 checked-metadata tables with the owning compilation. Structural type
+payloads alone do not encode the following information:
+
+| Retained category | Representative post-compilation coverage |
+|---|---|
+| Inference/context markers | `NoInfer<T>` targets and `ThisType<T>` receivers |
+| Index signatures | Readonly flags, parameter/declaration names, template-pattern keys and values |
+| Tuple/array interpretation | Origin flags, trailing rest elements, ordered symbolic spreads |
+| Generator protocols | Yield, return, and next types |
+| Nominal declarations | Class/enum origins, base links, visibility, abstract members, accessor writes, constructor overloads |
+| Alias/signature provenance | Generic arguments, display names, predicates, overloads, and source-node IDs |
+
+Allocator-owned maps and nested containers move intact. Six maps contain
+borrowed leaf slices (display strings or concrete type arguments); capture
+copies those leaves before any ownership changes, without copying type graphs
+or retaining the diagnostic arena. Exhaustive allocation-failure injection
+checks that a failed capture leaves the checker, empty destination, and relation
+engine binding unchanged. Further tests read metadata after checker destruction
+and after freeing the caller's source text. All IDs remain relative to the
+owning HIR/interner: this does not implement foreign-ID remapping, module
+resolution, declaration merging across files, or cycle/file-order handling.
+Those remain under [#480](https://github.com/home-lang/home/issues/480) and
+[#487](https://github.com/home-lang/home/issues/487).
+
+Commit [`cbc757dcc`](https://github.com/home-lang/home/commit/cbc757dcc)
+([#492](https://github.com/home-lang/home/issues/492)) adds a permanent
+rejection gate for the existing variadic-tuple workload. The independent audit
+uses seven valid/invalid pairs, retaining the full workload and changing only
+one appended statement at a time:
+
+| Untimed tuple control, positive + negative | TS 6.0.3 | Native TS 7.0.2 | Home |
+|---|---:|---:|---:|
+| Inferred concatenation result | 2/2 | 2/2 | 2/2 |
+| Conditional head | 2/2 | 2/2 | 2/2 |
+| Conditional tail | 2/2 | 2/2 | 2/2 |
+| Captured spread | 2/2 | 2/2 | 2/2 |
+| Consumed tuple result | 2/2 | 2/2 | 2/2 |
+| Readonly element write | 2/2 | 2/2 | 2/2 |
+| Out-of-bounds element | 2/2 | 2/2 | 2/2 |
+
+All 42 controls pass both before and after the ownership change. The permanent
+gate appends all seven invalid statements to a temporary copy and requires
+exactly five TS2322 errors, one TS2493, and one TS2540, with compiler exit 1 or 2.
+The original positive project must pass first. Schema 3 records this gate and
+preserves the schema-2 graph gates; validation still precedes result-directory
+creation, warmups, and all timing. Legacy tuple observations remain provisional,
+not retroactively validated by this newer binary. The timed corpus is unchanged.
+
+The final source passes 4,237 checker tests, 178 driver tests, 101 program tests,
+69 CLI tests, and 29 benchmark-harness/report tests. The 36 assertion controls
+still pass. All eighteen positive workloads pass; sixteen complete workload
+gates pass and both graph gates fail. The global audit remains 44/44 for each
+TypeScript baseline and 30/44 for Home (14 failures across 132 total checks).
+Neither graph is readmitted. No new timings were collected under concurrent
+workstation load.
+
+Local evidence is retained in `bench/vs_tsgo/results/semantic-ownership.JD0NXP`.
+The ReleaseFast binary SHA-256 is
+`9e4957a5a17dab0ea15a7334ba09ac8044c6f2894101f180718ed190e314e99d`.
+The unchanged tuple source SHA-256 is
+`78105a6b28024f5ac1dd32cc81d3aa065a3a99a1972927e1880f0a28eec5324f`;
+both frozen predicate source hashes also match the preceding checkpoint.
