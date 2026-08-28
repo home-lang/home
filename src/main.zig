@@ -2455,6 +2455,129 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false);
 }
 
+fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: home_rt.cli.Command.Tag) !bool {
+    if (comptime !build_options.enable_jsc) return false;
+    if (!envFlagSet("HOME_NATIVE_VM")) return false;
+    if (std.mem.eql(u8, target, "-") or (target.len > 0 and isHomeSourceFile(target))) return false;
+    const allocator = home_rt.default_allocator;
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    const log = try allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(allocator);
+    home_rt.clap.args.setProcessArgs(args);
+    const ctx = try home_rt.cli.Command.createContextData(allocator, log, tag);
+    var resolved_module = false;
+    if (try home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand, &resolved_module)) home_rt.Global.exit(0);
+    if (resolved_module) return false;
+    if (ctx.if_present and !home_rt.sys.exists(target)) home_rt.Global.exit(0);
+    if (target.len > 0 and std.fs.path.extension(target).len == 0 and looksLikePackageScriptName(target) and !home_rt.sys.exists(target)) {
+        home_rt.Output.prettyErrorln("error: Script not found \"{s}\"", .{target});
+        home_rt.Global.exit(1);
+    }
+    return false;
+}
+
+fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    if (args.len < 3) {
+        if (try tryNativePackageRun(args, "", .RunCommand)) return;
+        // No file provided, start REPL
+        try repl.start(allocator);
+        return;
+    }
+
+    // Runtime flags may appear between `run` and the script, e.g.
+    // `bun run --bun file.js` or `bun run --require ./pre file.js`. Skip
+    // them to find the actual target (a file path or package.json script
+    // name — the first non-flag token). The flags stay in the process's
+    // real argv, so `process.execArgv` is still populated correctly by the
+    // VM; we only need to locate the entrypoint here. Previously the target
+    // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
+    // module and failed with "Module not found '--bun'".
+    var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer preloads.deinit(allocator);
+    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer conditions.deinit(allocator);
+    var experimental_stream_iter = false;
+    var ri: usize = 2;
+    while (ri < args.len) : (ri += 1) {
+        const a = args[ri];
+        if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
+            if (ri + 1 < args.len) {
+                preloads.append(allocator, args[ri + 1]) catch {};
+                ri += 1;
+            }
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "--require=")) {
+            preloads.append(allocator, a["--require=".len..]) catch {};
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "--preload=")) {
+            preloads.append(allocator, a["--preload=".len..]) catch {};
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--conditions")) {
+            if (ri + 1 < args.len) {
+                var it = std.mem.splitScalar(u8, args[ri + 1], ',');
+                while (it.next()) |part| {
+                    const trimmed = std.mem.trim(u8, part, " \t");
+                    if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
+                }
+                ri += 1;
+            }
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "--conditions=")) {
+            var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
+            while (it.next()) |part| {
+                const trimmed = std.mem.trim(u8, part, " \t");
+                if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+            experimental_stream_iter = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--preserve-symlinks")) {
+            g_user_preserve_symlinks = true;
+            continue;
+        }
+        // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
+        if (std.mem.eql(u8, a, "-")) break;
+        // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
+        // --smol, --env-file=...); skip it. The first non-flag token is the
+        // entrypoint.
+        if (std.mem.eql(u8, a, "--")) {
+            ri += 1;
+            break;
+        }
+        if (runtimeFlagTakesValue(a)) {
+            if (ri + 1 < args.len) ri += 1;
+            continue;
+        }
+        if (a.len > 0 and a[0] == '-') continue;
+        break;
+    }
+
+    if (ri >= args.len) {
+        if (try tryNativePackageRun(args, "", .RunCommand)) return;
+        // Every token after `run` was a flag — no entrypoint. Fall back to
+        // the REPL, matching the bare `run` behavior above.
+        try repl.start(allocator);
+        return;
+    }
+
+    g_user_preloads = preloads.items;
+    g_user_conditions = conditions.items;
+    if (experimental_stream_iter) {
+        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+    }
+    if (try tryNativePackageRun(args, args[ri], .RunCommand)) return;
+    try runCommand(allocator, args[ri], args[ri + 1 ..]);
+    return;
+}
+
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     if (std.mem.eql(u8, file_path, "-")) {
         return runStdinCommand(allocator, extra_args);
@@ -5472,95 +5595,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (std.mem.eql(u8, command, "run")) {
-        if (args.len < 3) {
-            // No file provided, start REPL
-            try repl.start(allocator);
-            return;
-        }
-
-        // Runtime flags may appear between `run` and the script, e.g.
-        // `bun run --bun file.js` or `bun run --require ./pre file.js`. Skip
-        // them to find the actual target (a file path or package.json script
-        // name — the first non-flag token). The flags stay in the process's
-        // real argv, so `process.execArgv` is still populated correctly by the
-        // VM; we only need to locate the entrypoint here. Previously the target
-        // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
-        // module and failed with "Module not found '--bun'".
-        var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer preloads.deinit(allocator);
-        var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer conditions.deinit(allocator);
-        var experimental_stream_iter = false;
-        var ri: usize = 2;
-        while (ri < args.len) : (ri += 1) {
-            const a = args[ri];
-            if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
-                if (ri + 1 < args.len) {
-                    preloads.append(allocator, args[ri + 1]) catch {};
-                    ri += 1;
-                }
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--require=")) {
-                preloads.append(allocator, a["--require=".len..]) catch {};
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--preload=")) {
-                preloads.append(allocator, a["--preload=".len..]) catch {};
-                continue;
-            }
-            if (std.mem.eql(u8, a, "--conditions")) {
-                if (ri + 1 < args.len) {
-                    var it = std.mem.splitScalar(u8, args[ri + 1], ',');
-                    while (it.next()) |part| {
-                        const trimmed = std.mem.trim(u8, part, " \t");
-                        if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-                    }
-                    ri += 1;
-                }
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--conditions=")) {
-                var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
-                while (it.next()) |part| {
-                    const trimmed = std.mem.trim(u8, part, " \t");
-                    if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-                }
-                continue;
-            }
-            if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
-                experimental_stream_iter = true;
-                continue;
-            }
-            if (std.mem.eql(u8, a, "--preserve-symlinks")) {
-                g_user_preserve_symlinks = true;
-                continue;
-            }
-            // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
-            if (std.mem.eql(u8, a, "-")) break;
-            // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
-            // --smol, --env-file=...); skip it. The first non-flag token is the
-            // entrypoint.
-            if (a.len > 0 and a[0] == '-') continue;
-            break;
-        }
-
-        if (ri >= args.len) {
-            // Every token after `run` was a flag — no entrypoint. Fall back to
-            // the REPL, matching the bare `run` behavior above.
-            try repl.start(allocator);
-            return;
-        }
-
-        g_user_preloads = preloads.items;
-        g_user_conditions = conditions.items;
-        if (experimental_stream_iter) {
-            home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
-        }
-        try runCommand(allocator, args[ri], args[ri + 1 ..]);
-        return;
-    }
+    if (std.mem.eql(u8, command, "run")) return runCliCommand(allocator, args);
 
     if (std.mem.eql(u8, command, "build")) {
         const build_options_cli = switch (parseBuildCliOptions(args[2..])) {
@@ -5765,6 +5800,17 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+        if (leadingRuntimeRunIndex(args)) |run_index| {
+            var forwarded: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            defer forwarded.deinit(allocator);
+            try forwarded.appendSlice(allocator, &.{ args[0], "run" });
+            try forwarded.appendSlice(allocator, args[1..run_index]);
+            try forwarded.appendSlice(allocator, args[run_index + 1 ..]);
+            return runCliCommand(allocator, forwarded.items);
+        }
+    }
+
     // Runtime flags may precede the test command. Node's common harness uses
     // this form when it re-execs a fixture with its declared runtime flags.
     if (build_options.enable_jsc) {
@@ -5830,9 +5876,14 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
             }.call;
+            var if_present = false;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
                 const a = args[i];
+                if (std.mem.eql(u8, a, "--if-present")) {
+                    if_present = true;
+                    continue;
+                }
                 if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
                     if (i + 1 < args.len) {
                         preloads.append(allocator, args[i + 1]) catch {};
@@ -5878,6 +5929,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                     g_user_preloads = preloads.items;
                     g_user_conditions = conditions.items;
+                    if ((!looksLikeRunnableFile(a) or if_present) and try tryNativePackageRun(args, a, .AutoCommand)) return;
                     try runCommand(allocator, a, args[i + 1 ..]);
                     return;
                 }
@@ -5915,6 +5967,23 @@ fn runtimeFlagTakesValue(flag: []const u8) bool {
         }
     }
     return false;
+}
+
+fn leadingRuntimeRunIndex(args: []const [:0]const u8) ?usize {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) return null;
+        if (arg.len > 0 and arg[0] == '-') {
+            if (runtimeFlagTakesValue(arg)) {
+                if (i + 1 >= args.len) return null;
+                i += 1;
+            }
+            continue;
+        }
+        return if (i > 1 and std.mem.eql(u8, arg, "run")) i else null;
+    }
+    return null;
 }
 
 fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {

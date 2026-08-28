@@ -241,7 +241,7 @@ pub const Bunfig = struct {
 
                 if (json.get("telemetry")) |expr| {
                     try this.expect(expr, .e_boolean);
-                    bun.analytics.enabled = if (expr.data.e_boolean.value) .yes else .no;
+                    bun.analytics.gate.enabled = if (expr.data.e_boolean.value) .yes else .no;
                 }
             }
 

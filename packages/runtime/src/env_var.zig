@@ -67,6 +67,7 @@ pub const LIBRARY_PATH = StringEnv("LIBRARY_PATH");
 pub const BUN_INSTALL_GLOBAL_DIR = StringEnv("BUN_INSTALL_GLOBAL_DIR");
 pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
 pub const BUN_INSTALL_BIN = StringEnv("BUN_INSTALL_BIN");
+pub const npm_lifecycle_event = StringEnv("npm_lifecycle_event");
 pub const NODE_CHANNEL_FD = StringEnv("NODE_CHANNEL_FD");
 pub const TMPDIR = StringEnv("TMPDIR");
 pub const TMP = StringEnv("TMP");

@@ -1,0 +1,182 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+
+assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
+const env = { ...process.env, HOME_NATIVE_VM: '1', HOME_CORPUS_FULL_VM: '1', HOME_NATIVE_RUN: '0', NO_COLOR: '1' }
+for (const key of ['npm_execpath', 'npm_node_execpath', 'npm_lifecycle_event', 'npm_package_name', 'npm_package_version', 'npm_package_json']) delete env[key]
+const directory = mkdtempSync(join(tmpdir(), 'home-native-package-run-'))
+function run(args, options = {}) {
+  const result = spawnSync(process.execPath, args, { cwd: directory, env, encoding: 'utf8', timeout: 15000, ...options })
+  assert.equal(result.error, undefined)
+  return result
+}
+function success(args, options) {
+  const result = run(args, options)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.signal, null)
+  return result
+}
+try {
+  mkdirSync(join(directory, 'subdirectory'))
+  mkdirSync(join(directory, 'cache'))
+  env.BUN_TMPDIR = join(directory, 'cache')
+  mkdirSync(join(directory, 'node_modules', '.bin'), { recursive: true })
+  writeFileSync(join(directory, 'record.cjs'), `
+    console.log(JSON.stringify({
+      execPath: require('node:fs').realpathSync(process.execPath),
+      args: process.argv.slice(2), cwd: process.cwd(),
+      event: process.env.npm_lifecycle_event, script: process.env.npm_lifecycle_script,
+      name: process.env.npm_package_name, version: process.env.npm_package_version,
+      packageJson: process.env.npm_package_json, command: process.env.npm_command,
+      npmExecPath: process.env.npm_execpath, node: process.env.NODE,
+      nodeExists: require('node:fs').existsSync(process.env.NODE),
+    }));
+  `)
+  const scripts = {
+    precheck: 'node record.cjs pre', check: 'node record.cjs main', postcheck: 'node record.cjs post',
+    native: 'bun record.cjs native', nested: 'npm run native',
+    fail: 'exit 23', postfail: 'echo SHOULD_NOT_RUN',
+    prefailpre: 'exit 17', failpre: 'echo SHOULD_NOT_RUN', postfailpre: 'echo SHOULD_NOT_RUN',
+    failpost: 'echo main-ran', postfailpost: 'exit 19',
+    echo: 'echo package-script', 'named.sh': 'echo named-shell-script',
+    copy: 'cat', empty: '',
+  }
+  writeFileSync(join(directory, 'package.json'), JSON.stringify({ name: 'native-run-fixture', version: '2.3.4', scripts }))
+  const args = ['space value', '', 'quote"value', "single'quote", '$HOME', '$(echo injected)', ';echo injected', '*', 'line\nbreak', '你好', '--flag']
+  for (const prefix of [['--bun', 'run'], ['run', '--bun'], ['run', '--bun', '--shell=bun']]) {
+    const result = success([...prefix, 'check', ...args])
+    const records = result.stdout.trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(records.length, 3, result.stdout)
+    assert.deepEqual(records.map(record => record.args), [['pre'], ['main', ...args], ['post']])
+    assert.deepEqual(records.map(record => record.event), ['precheck', 'check', 'postcheck'])
+    for (const record of records) {
+      assert.equal(record.execPath, realpathSync(process.execPath))
+      assert.equal(realpathSync(record.cwd), realpathSync(directory))
+      assert.equal(record.name, 'native-run-fixture')
+      assert.equal(record.version, '2.3.4')
+      assert.equal(record.packageJson, join(record.cwd, 'package.json'))
+      assert.equal(record.command, 'run-script')
+      assert.equal(record.script, scripts[record.event])
+      assert.equal(realpathSync(record.npmExecPath), realpathSync(process.execPath))
+      assert.equal(record.nodeExists, true)
+      assert.equal(realpathSync(record.node), realpathSync(process.execPath), 'node alias must outlive the CLI process')
+      if (process.platform !== 'win32') assert.equal(lstatSync(dirname(dirname(record.node))).mode & 0o777, 0o700)
+    }
+  }
+  for (const argv of [['native'], ['run', 'native'], ['run', 'nested']]) {
+    const result = success(argv)
+    const record = JSON.parse(result.stdout)
+    assert.equal(record.execPath, realpathSync(process.execPath), result.stdout)
+    assert.deepEqual(record.args, ['native'])
+  }
+  for (const argv of [
+    ['--cwd', directory, '--bun', 'run', 'echo'],
+    ['run', '--cwd', directory, 'echo'],
+    ['--cwd', directory, 'echo'],
+  ]) assert.equal(success(argv, { cwd: join(directory, 'subdirectory') }).stdout, 'package-script\n')
+  assert.equal(success(['run', 'echo'], { cwd: join(directory, 'subdirectory') }).stdout, 'package-script\n')
+  writeFileSync(join(directory, 'echo'), 'console.log("file-entry");')
+  assert.equal(success(['run', 'echo']).stdout, 'package-script\n')
+  assert.equal(success(['run', './echo']).stdout, 'file-entry\n')
+  assert.equal(success(['run', 'named.sh']).stdout, 'named-shell-script\n')
+  writeFileSync(join(directory, 'extension-entry.ts'), 'console.log("resolved-ts");')
+  for (const argv of [['extension-entry'], ['run', 'extension-entry'], ['run', '--if-present', 'extension-entry']]) {
+    assert.equal(success(argv).stdout, 'resolved-ts\n')
+  }
+  assert.equal(success(['run', '--silent', 'echo']).stderr, '')
+  for (const [script, code, stdout] of [['fail', 23, ''], ['failpre', 17, ''], ['failpost', 19, 'main-ran\n']]) {
+    const result = run(['run', script])
+    assert.equal(result.status, code, result.stderr)
+    assert.equal(result.stdout, stdout)
+    assert.doesNotMatch(result.stdout + result.stderr, /SHOULD_NOT_RUN/)
+  }
+  for (const name of ['missing', 'empty']) {
+    assert.equal(run(['run', name]).status, 1)
+    const result = success(['run', '--if-present', name])
+    assert.equal(result.stdout + result.stderr, '')
+  }
+  if (process.platform !== 'win32') {
+    const bin = join(directory, 'node_modules', '.bin')
+    for (const shell of ['bash', 'sh', 'zsh']) {
+      const path = join(bin, shell)
+      writeFileSync(path, '#!/bin/sh\necho WRONG_SHELL\n')
+      chmodSync(path, 0o755)
+    }
+    assert.equal(success(['run', '--shell=system', 'echo']).stdout, 'package-script\n')
+    const input = 'native-stdin\n'.repeat(10000)
+    for (const shell of ['bun', 'system']) {
+      assert.equal(success(['run', `--shell=${shell}`, 'copy'], { input, maxBuffer: 1024 * 1024 }).stdout, input)
+    }
+    const copy = join(bin, 'native-copy')
+    writeFileSync(copy, '#!/bin/sh\ncat\n')
+    chmodSync(copy, 0o755)
+    assert.equal(success(['run', 'native-copy'], { input, maxBuffer: 1024 * 1024 }).stdout, input)
+    assert.equal(success(['native-copy'], { input, maxBuffer: 1024 * 1024 }).stdout, input)
+    const handshake = join(bin, 'native-handshake')
+    writeFileSync(handshake, '#!/bin/sh\nprintf "ready\\n"\nIFS= read -r line || exit 91\nprintf "%s\\n" "$line"\n')
+    chmodSync(handshake, 0o755)
+    const live = Bun.spawn([process.execPath, 'run', 'native-handshake'], {
+      cwd: directory, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    })
+    const timer = setTimeout(() => live.kill(), 5000)
+    try {
+      const reader = live.stdout.getReader()
+      const first = await reader.read()
+      assert.equal(new TextDecoder().decode(first.value), 'ready\n', 'inherited output was buffered until exit')
+      live.stdin.write('interactive-input\n')
+      await live.stdin.flush()
+      live.stdin.end()
+      let tail = ''
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        tail += new TextDecoder().decode(next.value)
+      }
+      assert.equal(tail, 'interactive-input\n')
+      assert.equal(await live.exited, 0, await live.stderr.text())
+    } finally {
+      clearTimeout(timer)
+      live.kill()
+      await live.exited
+    }
+    const kill = join(bin, 'native-signal')
+    writeFileSync(kill, '#!/bin/sh\nkill -KILL $$\n')
+    chmodSync(kill, 0o755)
+    const killed = run(['run', 'native-signal'])
+    assert.equal(killed.status, null)
+    assert.equal(killed.signal, 'SIGKILL')
+    const local = join(bin, 'native-record')
+    writeFileSync(local, '#!/usr/bin/env node\n' + `console.log(require('node:fs').realpathSync(process.execPath));\n`)
+    chmodSync(local, 0o755)
+    assert.equal(success(['--bun', 'run', 'native-record']).stdout.trim(), realpathSync(process.execPath))
+    const record = JSON.parse(success(['run', '--bun', 'native']).stdout)
+    const cache = dirname(dirname(record.node))
+    assert.ok(realpathSync(cache).startsWith(realpathSync(env.BUN_TMPDIR) + '/'))
+    chmodSync(cache, 0o777)
+    try {
+      const rejected = run(['run', '--bun', 'native'])
+      assert.equal(rejected.status, 1)
+      assert.match(rejected.stderr, /UnsafeNodeShimDirectory/)
+      assert.equal(rejected.stdout, '')
+    } finally {
+      chmodSync(cache, 0o700)
+    }
+    rmSync(record.node)
+    symlinkSync('/usr/bin/false', record.node)
+    try {
+      const rejected = run(['run', '--bun', 'native'])
+      assert.equal(rejected.status, 1)
+      assert.match(rejected.stderr, /UnsafeNodeShimTarget/)
+      assert.equal(rejected.stdout, '')
+    } finally {
+      rmSync(record.node)
+      symlinkSync(realpathSync(process.execPath), record.node)
+    }
+  }
+  console.log('native package-script dispatch passed')
+} finally {
+  rmSync(directory, { recursive: true, force: true })
+}

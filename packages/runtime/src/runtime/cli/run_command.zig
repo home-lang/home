@@ -72,7 +72,7 @@ pub const RunCommand = struct {
         return Once.once.call(.{ PATH, cwd });
     }
 
-    const BUN_BIN_NAME = if (Environment.isDebug) "bun-debug" else "bun";
+    const BUN_BIN_NAME = "bun";
     const BUN_RUN = std.fmt.comptimePrint("{s} run", .{BUN_BIN_NAME});
 
     const BUN_RUN_USING_BUN = std.fmt.comptimePrint("{s} --bun run", .{BUN_BIN_NAME});
@@ -232,7 +232,7 @@ pub const RunCommand = struct {
 
         for (passthrough) |part| {
             try copy_script.append(' ');
-            if (bun.shell.needsEscapeUtf8AsciiLatin1(part)) {
+            if (part.len == 0 or bun.shell.needsEscapeUtf8AsciiLatin1(part)) {
                 try bun.shell.escape8Bit(part, &copy_script, true);
             } else {
                 try copy_script.appendSlice(part);
@@ -303,7 +303,7 @@ pub const RunCommand = struct {
             }
 
             Output.flush();
-            return;
+            Global.exit(1);
         })) {
             .err => |err| {
                 _ = err;
@@ -312,7 +312,7 @@ pub const RunCommand = struct {
                 }
 
                 Output.flush();
-                return;
+                Global.exit(1);
             },
             .result => |result| result,
         };
@@ -329,12 +329,12 @@ pub const RunCommand = struct {
                 }
             },
 
-            .signaled => {
-                if (!silent) {
-                    Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> was terminated by a signal<r>", .{name});
-                    Output.flush();
+            .signaled => |signal| {
+                if (!silent and signal != .SIGINT) {
+                    Output.prettyErrorln("<r><red>error<r><d>:<r> script <b>\"{s}\"<r> was terminated by signal {s}<r>", .{ name, signal.name() orelse "unknown" });
                 }
-                Global.exit(1);
+                if (bun.feature_flag.BUN_INTERNAL_SUPPRESS_CRASH_IN_BUN_RUN.get()) bun.crash_handler.suppressReporting();
+                Global.raiseIgnoringPanicHandler(signal);
             },
 
             .err => |err| {
@@ -344,7 +344,7 @@ pub const RunCommand = struct {
                 }
 
                 Output.flush();
-                return;
+                Global.exit(1);
             },
         }
 
@@ -355,9 +355,10 @@ pub const RunCommand = struct {
     /// This prevents '"node" exited with ...' when it was actually bun.
     /// As of writing this is only used for 'runBinary'
     fn basenameOrBun(str: []const u8) []const u8 {
+        if (private_node_path) |path| if (std.mem.eql(u8, path, str)) return "bun";
         // The full path is not used here, because on windows it is dependant on the
         // username. Before windows we checked bun_node_dir, but this is not allowed on Windows.
-        if (strings.hasSuffixComptime(str, "/bun-node/node" ++ bun.exe_suffix) or (Environment.isWindows and strings.hasSuffixComptime(str, "\\bun-node\\node" ++ bun.exe_suffix))) {
+        if (strings.hasSuffixComptime(str, "/bun-node/node" ++ (if (Environment.isWindows) ".exe" else "")) or (Environment.isWindows and strings.hasSuffixComptime(str, "\\bun-node\\node" ++ (if (Environment.isWindows) ".exe" else "")))) {
             return "bun";
         }
         return std.fs.path.basename(str);
@@ -566,7 +567,6 @@ pub const RunCommand = struct {
 
                         Global.exit(code);
                     },
-                    .running => @panic("Unexpected state: process is running"),
                 }
             },
         }
@@ -598,8 +598,52 @@ pub const RunCommand = struct {
     else
         "/bun-node-debug";
 
+    var private_node_dir: ?[:0]u8 = null;
+    var private_node_path: ?[:0]u8 = null;
+
+    fn ensurePrivateNodeDirectory(path: [:0]const u8) !void {
+        switch (bun.sys.mkdir(path, 0o700)) {
+            .result => {},
+            .err => |err| if (err.getErrno() != .EXIST) return error.FailedToCreateNodeShim,
+        }
+        const stat = try bun.sys.lstat(path).unwrap();
+        if (!bun.S.ISDIR(stat.mode) or stat.uid != bun.c.getuid() or stat.mode & 0o777 != 0o700) return error.UnsafeNodeShimDirectory;
+    }
+
+    fn privateNodePath() ![:0]const u8 {
+        if (private_node_path) |path| return path;
+        const allocator = bun.default_allocator;
+        const self = try bun.selfExePath();
+        const temp = bun.fs.FileSystem.RealFS.tmpdirPath();
+        // Keep aliases usable after the command exits (including background
+        // children and `which node` callers), without deleting a shared cache.
+        // A per-executable namespace is safe to reuse only after validating
+        // ownership, permissions, directory type and every symlink target.
+        const dir = try std.fmt.allocPrintSentinel(allocator, "{s}/home-node-{d}-{x}", .{
+            strings.withoutTrailingSlash(temp), bun.c.getuid(), std.hash.Wyhash.hash(0, self),
+        }, 0);
+        errdefer allocator.free(dir);
+        try ensurePrivateNodeDirectory(dir);
+        const node_dir = try std.fmt.allocPrintSentinel(allocator, "{s}/node", .{dir}, 0);
+        defer allocator.free(node_dir);
+        try ensurePrivateNodeDirectory(node_dir);
+        inline for (.{ "node/node", "bun" }) |name| {
+            const path = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ dir, name }, 0);
+            defer allocator.free(path);
+            std.Io.Dir.cwd().symLink(std.Io.Threaded.global_single_threaded.io(), self, path, .{}) catch |err| {
+                if (err != error.PathAlreadyExists) return err;
+            };
+            var target: bun.PathBuffer = undefined;
+            const actual = try bun.sys.readlink(path, &target).unwrap();
+            if (!std.mem.eql(u8, actual, self)) return error.UnsafeNodeShimTarget;
+        }
+        private_node_path = try std.fmt.allocPrintSentinel(allocator, "{s}/node/node", .{dir}, 0);
+        private_node_dir = dir;
+        return private_node_path.?;
+    }
+
     pub fn bunNodeFileUtf8(allocator: std.mem.Allocator) ![:0]const u8 {
-        if (!Environment.isWindows) return bun_node_dir;
+        if (!Environment.isWindows) return privateNodePath();
         var temp_path_buffer: bun.WPathBuffer = undefined;
         var target_path_buffer: bun.PathBuffer = undefined;
         const len = bun.windows.GetTempPathW(
@@ -632,56 +676,11 @@ pub const RunCommand = struct {
         if (CLI.pretend_to_be_node) return;
 
         if (Environment.isPosix) {
-            var argv0 = @as([*:0]const u8, @ptrCast(optional_bun_path.ptr));
-
-            // if we are already an absolute path, use that
-            // if the user started the application via a shebang, it's likely that the path is absolute already
-            if (bun.argv[0][0] == '/') {
-                optional_bun_path.* = bun.argv[0];
-                argv0 = bun.argv[0];
-            } else if (optional_bun_path.len == 0) {
-                // otherwise, ask the OS for the absolute path
-                const self = try bun.selfExePath();
-                if (self.len > 0) {
-                    argv0 = self.ptr;
-                    optional_bun_path.* = self;
-                }
-            }
-
-            if (optional_bun_path.len == 0) {
-                argv0 = bun.argv[0];
-            }
-
-            if (Environment.isDebug) {
-                std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), bun_node_dir) catch {};
-            }
-            const paths = .{ bun_node_dir ++ "/node", bun_node_dir ++ "/bun" };
-            inline for (paths) |path| {
-                var retried = false;
-                while (true) {
-                    inner: {
-                        std.Io.Dir.cwd().symLink(std.Io.Threaded.global_single_threaded.io(), std.mem.span(argv0), path, .{}) catch |err| {
-                            if (err == error.PathAlreadyExists) break :inner;
-                            if (retried)
-                                return;
-
-                            std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), bun_node_dir) catch {};
-
-                            retried = true;
-                            continue;
-                        };
-                    }
-                    break;
-                }
-            }
-            if (PATH.items.len > 0 and PATH.items[PATH.items.len - 1] != std.fs.path.delimiter) {
-                try PATH.append(std.fs.path.delimiter);
-            }
-
-            // The reason for the extra delim is because we are going to append the system PATH
-            // later on. this is done by the caller, and explains why we are adding bun_node_dir
-            // to the end of the path slice rather than the start.
-            try PATH.appendSlice(bun_node_dir ++ .{std.fs.path.delimiter});
+            const node_path = try privateNodePath();
+            optional_bun_path.* = try bun.selfExePath();
+            if (PATH.items.len > 0 and PATH.items[PATH.items.len - 1] != std.fs.path.delimiter) try PATH.append(std.fs.path.delimiter);
+            try PATH.appendSlice(std.fs.path.dirname(node_path).?);
+            try PATH.append(std.fs.path.delimiter);
         } else if (Environment.isWindows) {
             var target_path_buffer: bun.WPathBuffer = undefined;
 
@@ -888,6 +887,9 @@ pub const RunCommand = struct {
         force_using_bun: bool,
     ) ![]u8 {
         const PATH = this_transpiler.env.get("PATH") orelse "";
+        // Resolve before dependencies can contribute executables named sh/bash.
+        // The cached selection also survives scripts that overwrite PATH.
+        _ = findShell(PATH, cwd);
         if (ORIGINAL_PATH) |original_path| {
             original_path.* = PATH;
         }
@@ -903,6 +905,7 @@ pub const RunCommand = struct {
         var optional_bun_self_path: string = "";
 
         var new_path_len: usize = PATH.len + 2;
+        if (Environment.isPosix) new_path_len += private_node_dir.?.len + 1;
 
         if (package_json_dir.len > 0) {
             new_path_len += package_json_dir.len + 1;
@@ -946,6 +949,12 @@ pub const RunCommand = struct {
         }
 
         {
+            // Nested `bun run` and rewritten package-manager commands must
+            // resolve to this executable, even when normal Node is retained.
+            if (Environment.isPosix) {
+                try new_path.appendSlice(private_node_dir.?);
+                try new_path.append(std.fs.path.delimiter);
+            }
             if (package_json_dir.len > 0) {
                 try new_path.appendSlice(package_json_dir);
                 try new_path.append(std.fs.path.delimiter);
@@ -1646,6 +1655,117 @@ pub const RunCommand = struct {
         _ = _bootAndHandleError(ctx, absolute_script_path.?, null);
         return true;
     }
+    fn runMatchingPackageScript(ctx: Command.Context, target_name: string, package_json: *PackageJSON, env: *DotEnv.Loader) !bool {
+        if (package_json.scripts) |scripts| {
+            if (scripts.get(target_name)) |script_content| {
+                log("Found matching script `{s}`", .{script_content});
+                Global.configureAllocator(.{ .long_running = false });
+                env.map.put("npm_lifecycle_event", target_name) catch unreachable;
+
+                // allocate enough to hold "post${scriptname}"
+                var temp_script_buffer = try std.fmt.allocPrint(ctx.allocator, "\x00pre{s}", .{target_name});
+                defer ctx.allocator.free(temp_script_buffer);
+
+                const package_json_path = package_json.source.path.text;
+                const package_json_dir = strings.withoutTrailingSlash(strings.withoutSuffixComptime(package_json_path, "package.json"));
+                log("Running in dir `{s}`", .{package_json_dir});
+
+                if (scripts.get(temp_script_buffer[1..])) |prescript| {
+                    try runPackageScriptForeground(
+                        ctx,
+                        ctx.allocator,
+                        prescript,
+                        temp_script_buffer[1..],
+                        package_json_dir,
+                        env,
+                        &.{},
+                        ctx.debug.silent,
+                        ctx.debug.use_system_shell,
+                    );
+                }
+
+                try runPackageScriptForeground(
+                    ctx,
+                    ctx.allocator,
+                    script_content,
+                    target_name,
+                    package_json_dir,
+                    env,
+                    ctx.passthrough,
+                    ctx.debug.silent,
+                    ctx.debug.use_system_shell,
+                );
+
+                temp_script_buffer[0.."post".len].* = "post".*;
+
+                if (scripts.get(temp_script_buffer)) |postscript| {
+                    try runPackageScriptForeground(
+                        ctx,
+                        ctx.allocator,
+                        postscript,
+                        temp_script_buffer,
+                        package_json_dir,
+                        env,
+                        &.{},
+                        ctx.debug.silent,
+                        ctx.debug.use_system_shell,
+                    );
+                }
+
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Native Home command dispatch shares Bun's environment, lifecycle and
+    /// binary execution paths while its existing VM owns module execution.
+    pub fn execPackageOrBinary(ctx: Command.Context, target_name: string, bin_dirs_only: bool, resolved_module: *bool) !bool {
+        if (!ctx.debug.loaded_bunfig) {
+            bun.cli.Arguments.loadConfigPath(ctx.allocator, true, "bunfig.toml", ctx, .RunCommand) catch {};
+        }
+        var bundle: transpiler.Transpiler = undefined;
+        const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = false });
+        if (target_name.len == 0) {
+            printHelp(root.enclosing_package_json);
+            return true;
+        }
+        const skip_script = target_name[0] == '.' or std.fs.path.isAbsolute(target_name);
+        if (!skip_script) if (root.enclosing_package_json) |package_json| {
+            if (package_json.scripts) |scripts| if (scripts.contains(target_name)) {
+                try configurePathForRun(ctx, root, &bundle, null, root.abs_path, ctx.debug.run_in_bun);
+                try bundle.env.map.put("npm_command", "run-script");
+                return runMatchingPackageScript(ctx, target_name, package_json, bundle.env);
+            };
+        };
+
+        // Resolve extensionless and directory entries before PATH binaries or
+        // missing-script errors, preserving the VM's module resolution order.
+        const resolution = bundle.resolver.resolve(bundle.fs.top_level_dir, target_name, .entry_point_run) catch
+            bundle.resolver.resolve(bundle.fs.top_level_dir, try std.mem.join(ctx.allocator, "", &.{ "./", target_name }), .entry_point_run) catch null;
+        if (resolution) |resolved| {
+            var mutable = resolved;
+            if (mutable.path()) |path| {
+                const loader = bundle.options.loaders.get(path.name.ext) orelse bun.options.defaultLoaders.get(path.name.ext) orelse .tsx;
+                if (loader.canBeRunByBun() or loader == .html or loader == .md) {
+                    resolved_module.* = true;
+                    return false;
+                }
+            }
+        }
+        if (bun.sys.exists(target_name)) return false;
+        if (!skip_script and std.mem.indexOfScalar(u8, target_name, '/') == null) {
+            var original_path: string = "";
+            try configurePathForRun(ctx, root, &bundle, &original_path, root.abs_path, ctx.debug.run_in_bun);
+            const path = bundle.env.get("PATH") orelse "";
+            const search_path = if (bin_dirs_only and path.len > original_path.len) path[0 .. path.len - original_path.len - 1] else if (bin_dirs_only) "" else path;
+            if (which(&path_buf, search_path, root.abs_path, target_name)) |destination| {
+                try runBinary(ctx, destination, destination, root.abs_path, bundle.env, ctx.passthrough, target_name);
+            }
+        }
+        return false;
+    }
+
     pub fn exec(
         ctx: Command.Context,
         cfg: struct {
@@ -1767,65 +1887,7 @@ pub const RunCommand = struct {
         // run script with matching name
 
         if (!skip_script_check) if (root_dir_info.enclosing_package_json) |package_json| {
-            if (package_json.scripts) |scripts| {
-                if (scripts.get(target_name)) |script_content| {
-                    log("Found matching script `{s}`", .{script_content});
-                    Global.configureAllocator(.{ .long_running = false });
-                    this_transpiler.env.map.put("npm_lifecycle_event", target_name) catch unreachable;
-
-                    // allocate enough to hold "post${scriptname}"
-                    var temp_script_buffer = try std.fmt.allocPrint(ctx.allocator, "\x00pre{s}", .{target_name});
-                    defer ctx.allocator.free(temp_script_buffer);
-
-                    const package_json_path = root_dir_info.enclosing_package_json.?.source.path.text;
-                    const package_json_dir = strings.withoutTrailingSlash(strings.withoutSuffixComptime(package_json_path, "package.json"));
-                    log("Running in dir `{s}`", .{package_json_dir});
-
-                    if (scripts.get(temp_script_buffer[1..])) |prescript| {
-                        try runPackageScriptForeground(
-                            ctx,
-                            ctx.allocator,
-                            prescript,
-                            temp_script_buffer[1..],
-                            package_json_dir,
-                            this_transpiler.env,
-                            &.{},
-                            ctx.debug.silent,
-                            ctx.debug.use_system_shell,
-                        );
-                    }
-
-                    try runPackageScriptForeground(
-                        ctx,
-                        ctx.allocator,
-                        script_content,
-                        target_name,
-                        package_json_dir,
-                        this_transpiler.env,
-                        passthrough,
-                        ctx.debug.silent,
-                        ctx.debug.use_system_shell,
-                    );
-
-                    temp_script_buffer[0.."post".len].* = "post".*;
-
-                    if (scripts.get(temp_script_buffer)) |postscript| {
-                        try runPackageScriptForeground(
-                            ctx,
-                            ctx.allocator,
-                            postscript,
-                            temp_script_buffer,
-                            package_json_dir,
-                            this_transpiler.env,
-                            &.{},
-                            ctx.debug.silent,
-                            ctx.debug.use_system_shell,
-                        );
-                    }
-
-                    return true;
-                }
-            }
+            if (try runMatchingPackageScript(ctx, target_name, package_json, this_transpiler.env)) return true;
         };
 
         // load module and run that module
