@@ -1411,7 +1411,9 @@ pub fn spawnProcessPosix(
     }
     var spawned = PosixSpawnResult{};
     var extra_fds = std.array_list.Managed(PosixSpawnResult.ExtraPipe).init(bun.default_allocator);
-    errdefer extra_fds.deinit();
+    // A native spawn failure returns Maybe.err, not a Zig error. Release the
+    // registration list on that path too; success moves it into spawned.
+    defer extra_fds.deinit();
     var stack_fallback = bun.stackFallback(2048, bun.default_allocator);
     const allocator = stack_fallback.get();
     var to_close_at_end = std.array_list.Managed(bun.FD).init(allocator);

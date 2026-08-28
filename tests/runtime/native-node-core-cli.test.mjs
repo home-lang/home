@@ -44,6 +44,55 @@ for (const [inputType, header] of [
 
 const directory = mkdtempSync(join(tmpdir(), 'home-native-core-cli-'))
 try {
+  // Failed native spawn setup must report its errno, never watch pid 0 or
+  // launch a child after silently discarding an invalid file action.
+  const spawnFailures = join(directory, 'spawn-failures.cjs')
+  writeFileSync(spawnFailures, `
+    const assert = require('node:assert/strict');
+    const { spawnSync, spawn } = require('node:child_process');
+    const { join } = require('node:path');
+    const fs = require('node:fs');
+    const missing = join(__dirname, 'missing-executable');
+    const denied = join(__dirname, 'non-executable');
+    fs.writeFileSync(denied, '#!/bin/sh\\nexit 91\\n', { mode: 0o644 });
+    const countFDs = () => fs.readdirSync(process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd').length;
+    const before = process.platform === 'win32' ? 0 : countFDs();
+    let ticked = false;
+    process.nextTick(() => { ticked = true; });
+    for (let round = 0; round < 32; round++) {
+      for (const fn of [Bun.spawn, Bun.spawnSync]) {
+        assert.throws(() => fn([missing]), e => e.code === 'ENOENT' && e.path === missing);
+        if (process.platform !== 'win32') {
+          assert.throws(() => fn([denied]), e => e.code === 'EACCES' && e.path === denied);
+        }
+      }
+      const failed = spawnSync(missing, ['version']);
+      assert.equal(failed.error.code, 'ENOENT');
+      assert.equal(failed.error.path, missing);
+      assert.deepEqual(failed.output, [null, null, null]);
+      assert.equal(failed.signal, null);
+      assert.notEqual(failed.status, 0);
+      assert.throws(() => Bun.spawnSync([process.execPath, '-e', 'throw Error("unreachable")'], { cwd: missing }), e => e.code === 'ENOENT');
+    }
+    if (process.platform !== 'win32') {
+      assert.throws(() => fs.fstatSync(10240));
+      const options = { stdio: ['ignore', 'pipe', 'pipe', 10240] };
+      const failed = spawnSync(process.execPath, ['-e', 'throw Error("invalid fd executed")'], options);
+      assert.equal(failed.error.code, 'EBADF');
+      assert.deepEqual(failed.output, [null, null, null]);
+      assert.throws(() => spawn(process.execPath, ['-e', 'throw Error("invalid fd executed")'], options), e => e.code === 'EBADF');
+      assert.ok(countFDs() <= before + 2, 'failed spawn leaked descriptors');
+    }
+    const recovered = Bun.spawnSync([process.execPath, '-e', 'console.log("recovered")']);
+    assert.equal(recovered.exitCode, 0);
+    assert.equal(recovered.stdout.toString(), 'recovered\\n');
+    assert.equal(ticked, false, 'spawnSync re-entered user microtasks');
+    setImmediate(() => { assert.equal(ticked, true); console.log('spawn-failures-recovered'); });
+  `)
+  const spawnRecovery = run([spawnFailures])
+  assert.equal(spawnRecovery.status, 0, spawnRecovery.stderr)
+  assert.equal(spawnRecovery.stdout.trim(), 'spawn-failures-recovered')
+
   const fixture = join(directory, 'entry')
   writeFileSync(fixture, 'console.log(JSON.stringify(process.argv.slice(2)));')
   const implicit = run([fixture, 'test', '--no-warnings'])
