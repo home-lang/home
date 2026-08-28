@@ -4883,8 +4883,8 @@ pub const ModuleExportFacts = struct {
     cannot_be_named: bool = false,
 };
 
-/// Return the class name from a direct JavaScript
-/// `module.exports = new ClassName()` assignment. The caller owns the result.
+/// Source-only compatibility entry point. Prepare bindings, but never check
+/// the module merely to answer an export-shape query. The caller owns the name.
 pub fn moduleCommonJsExportAssignmentClassName(
     gpa: std.mem.Allocator,
     source: []const u8,
@@ -4894,56 +4894,73 @@ pub fn moduleCommonJsExportAssignmentClassName(
         .is_tsx = is_tsx,
         .continue_on_error = true,
         .no_emit = true,
+        .bind_only = true,
     }) catch return null;
     defer {
         compilation.deinit();
         gpa.destroy(compilation);
     }
-    if (compilation.interner.lookup("module")) |module_name| {
-        if (compilation.interner.lookup("exports")) |exports_name| {
-            var node: hir_mod_ns.NodeId = 1;
-            while (node < compilation.hir.nodeCount()) : (node += 1) {
-                if (compilation.hir.kindOf(node) != .assignment) continue;
-                const assignment = hir_mod_ns.assignmentOf(&compilation.hir, node);
-                if (assignment.op != null or assignment.target == hir_mod_ns.none_node_id or
-                    compilation.hir.kindOf(assignment.target) != .member_access or
-                    assignment.value == hir_mod_ns.none_node_id or
-                    compilation.hir.kindOf(assignment.value) != .new_expr) continue;
-                const target = hir_mod_ns.memberOf(&compilation.hir, assignment.target);
-                if (target.name != exports_name or target.object == hir_mod_ns.none_node_id or
-                    compilation.hir.kindOf(target.object) != .identifier or
-                    hir_mod_ns.identifierOf(&compilation.hir, target.object).name != module_name) continue;
-                const callee = hir_mod_ns.callOf(&compilation.hir, assignment.value).callee;
-                if (callee == hir_mod_ns.none_node_id or compilation.hir.kindOf(callee) != .identifier) continue;
-                const class_name = compilation.interner.get(hir_mod_ns.identifierOf(&compilation.hir, callee).name);
-                return gpa.dupe(u8, class_name) catch null;
+    const name = moduleCommonJsExportAssignmentClassNameFromCompilation(compilation) orelse return null;
+    return gpa.dupe(u8, name) catch null;
+}
+
+/// Borrow the bound class name of a single CommonJS instance export. This is
+/// display metadata, not the module's type: multiple assignments need the real
+/// union type, and must not be misrepresented by the first constructor's name.
+/// Only prepared HIR and lexical bindings are inspected; no allocation,
+/// reparsing, checking, or source-text recovery is performed.
+pub fn moduleCommonJsExportAssignmentClassNameFromCompilation(
+    compilation: *const ts_driver.Compilation,
+) ?[]const u8 {
+    _ = compilation.interner.lookup("module") orelse return null;
+    _ = compilation.interner.lookup("exports") orelse return null;
+    const hir = &compilation.hir;
+    var result: ?[]const u8 = null;
+    var node: hir_mod_ns.NodeId = 1;
+    while (node < hir.nodeCount()) : (node += 1) {
+        if (hir.kindOf(node) != .assignment) continue;
+        const assignment = hir_mod_ns.assignmentOf(hir, node);
+        if (!commonJsModuleExportsAccess(hir, &compilation.interner, assignment.target)) continue;
+        const object = commonJsPropertyAccessObject(hir, assignment.target) orelse continue;
+        // A local `module` value is not the CommonJS wrapper binding.
+        if (moduleQueryBoundValue(compilation, object) != null) continue;
+        if (result != null or assignment.op != null or hir.kindOf(assignment.value) != .new_expr) return null;
+        var callee = hir_mod_ns.callOf(hir, assignment.value).callee;
+        // Const aliases form a finite graph of source-owned symbols. A walk
+        // longer than that graph is a cycle, not a depth-based approximation.
+        var remaining = compilation.module.symbols.items.len;
+        while (remaining > 0) : (remaining -= 1) {
+            const symbol = moduleQueryBoundValue(compilation, callee) orelse return null;
+            if (symbol.flags.is_class) {
+                result = compilation.interner.get(symbol.name);
+                break;
             }
+            if (!symbol.flags.is_const or symbol.decls.items.len != 1) return null;
+            const declaration = symbol.decls.items[0];
+            if (hir.kindOf(declaration) != .const_decl) return null;
+            callee = hir_mod_ns.varDeclOf(hir, declaration).init;
+        }
+        if (result == null) return null;
+    }
+    return result;
+}
+
+fn moduleQueryBoundValue(compilation: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?*const binder.Symbol {
+    const hir = &compilation.hir;
+    if (hir.kindOf(node) != .identifier) return null;
+    const name = hir_mod_ns.identifierOf(hir, node).name;
+    var ancestor = node;
+    while (ancestor != hir_mod_ns.none_node_id) : (ancestor = hir.parentOf(ancestor)) {
+        for (compilation.module.scopes.items) |scope| {
+            if (scope.introducing_node != ancestor) continue;
+            var current: ?*const binder.Scope = scope;
+            while (current) |lexical| : (current = lexical.parent) {
+                if (lexical.values.get(name)) |symbol| return symbol;
+            }
+            return null;
         }
     }
-
-    var search_start: usize = 0;
-    while (std.mem.indexOfPos(u8, source, search_start, "module.exports")) |export_pos| {
-        var cursor = export_pos + "module.exports".len;
-        search_start = cursor;
-        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-        if (cursor >= source.len or source[cursor] != '=' or
-            (cursor + 1 < source.len and (source[cursor + 1] == '=' or source[cursor + 1] == '>'))) continue;
-        cursor += 1;
-        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-        if (!std.mem.startsWith(u8, source[cursor..], "new")) continue;
-        cursor += "new".len;
-        if (cursor >= source.len or !std.ascii.isWhitespace(source[cursor])) continue;
-        while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-        if (cursor >= source.len or
-            !(std.ascii.isAlphabetic(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) continue;
-        const name_start = cursor;
-        cursor += 1;
-        while (cursor < source.len and
-            (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) : (cursor += 1)
-        {}
-        return gpa.dupe(u8, source[name_start..cursor]) catch null;
-    }
-    return null;
+    return compilation.module.root.values.get(name);
 }
 
 const ModuleExportAssignmentInfo = struct {
@@ -9070,6 +9087,77 @@ test "module export facts preserve CommonJS defineProperty readonly descriptors"
     try T.expect(getter.exported_value and getter.exported_value_readonly);
     try T.expect(setter.exported_value and !setter.exported_value_readonly);
     try T.expect(invalid.exported_value and invalid.exported_value_readonly);
+}
+
+test "CommonJS class display query uses prepared syntax and bound aliases" {
+    const sources = [_][]const u8{
+        "class Service {} module.exports = new Service();",
+        "class Service {} module['exports'] = (new Service());",
+        "class Service {} const Alias = Service; const Selected = Alias; module.exports = new Selected();",
+        "class Service {} /* module.exports = new Fake(); */ module.exports = new Service();",
+        "class Service {} const note = 'module.exports = new Fake()'; module.exports = new Service();",
+        "class Service {} function later() { module.exports = new Service(); }",
+    };
+    for (sources) |source| {
+        const compilation = try compileModuleForExportFacts(T.allocator, "/owner.js", source);
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        try T.expectEqualStrings("Service", moduleCommonJsExportAssignmentClassNameFromCompilation(compilation).?);
+        try T.expect(!compilation.checked_types_ready);
+        const name = moduleCommonJsExportAssignmentClassName(T.allocator, source, false).?;
+        defer T.allocator.free(name);
+        try T.expectEqualStrings("Service", name);
+    }
+}
+
+test "CommonJS class display query does not invent names or flatten reassignment" {
+    const sources = [_][]const u8{
+        "// module.exports = new Fake();",
+        "const note = 'module.exports = new Fake()';",
+        "module.exports = new Missing();",
+        "function Factory() {} module.exports = new Factory();",
+        "class Service {} const module = { exports: {} }; module.exports = new Service();",
+        "class Service {} function local(module) { module.exports = new Service(); }",
+        "class Service {} function local() { const module = { exports: {} }; module.exports = new Service(); }",
+        "class Service {} module.exports = new Service(); module.exports = {};",
+        "class Service {} module.exports = {}; module.exports = new Service();",
+        "class Service {} class Other {} module.exports = new Service(); module.exports = new Other();",
+        "class Service {} module.exports = new Service(); module.exports = new Service();",
+        "const A = B; const B = A; module.exports = new A();",
+        "class Service {} function local(Service) { module.exports = new Service(); }",
+        "class Service {} module.exports += new Service();",
+    };
+    for (sources) |source| {
+        const compilation = try compileModuleForExportFacts(T.allocator, "/owner.js", source);
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        try T.expectEqual(@as(?[]const u8, null), moduleCommonJsExportAssignmentClassNameFromCompilation(compilation));
+    }
+}
+
+test "CommonJS prepared class query never reopens source or checks its owner" {
+    const compilation = try compileModuleForExportFacts(T.allocator, "/owner.js", "class Service {} module.exports = new Service();");
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const node_count = compilation.hir.nodeCount();
+    const type_count = compilation.type_interner.pool.typeCount();
+    const diagnostics = compilation.diagnostics.items.len;
+    // Once parsed, the query must depend only on immutable owner syntax and
+    // bindings, even if its source view is unavailable to a reparser.
+    compilation.source = "";
+    for (0..128) |_| {
+        try T.expectEqualStrings("Service", moduleCommonJsExportAssignmentClassNameFromCompilation(compilation).?);
+    }
+    try T.expectEqual(node_count, compilation.hir.nodeCount());
+    try T.expectEqual(type_count, compilation.type_interner.pool.typeCount());
+    try T.expectEqual(diagnostics, compilation.diagnostics.items.len);
+    try T.expect(!compilation.checked_types_ready);
 }
 
 test "module export facts distinguish scripts from external modules" {

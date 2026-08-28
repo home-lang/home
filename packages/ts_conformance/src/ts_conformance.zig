@@ -41,6 +41,36 @@ const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
     ambient_modules: []const AmbientModuleResolution = &.{},
     allow_js: bool = false,
+    module_compilation_cache: std.StringHashMapUnmanaged(*ts_driver.Compilation) = .empty,
+
+    fn deinit(self: *CheckerResolverAdapter) void {
+        var compilations = self.module_compilation_cache.valueIterator();
+        while (compilations.next()) |compilation| {
+            const source = compilation.*.source;
+            compilation.*.deinit();
+            self.resolver.gpa.destroy(compilation.*);
+            self.resolver.gpa.free(source);
+        }
+        self.module_compilation_cache.deinit(self.resolver.gpa);
+    }
+
+    fn moduleCompilation(self: *CheckerResolverAdapter, path: []const u8) ?*ts_driver.Compilation {
+        if (self.module_compilation_cache.get(path)) |cached| return cached;
+        const source = self.resolver.fs.readFile(self.resolver.gpa, path) catch return null;
+        const compilation = ts_program.compileModuleForExportFacts(self.resolver.gpa, path, source) catch {
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        // Resolved and ambient module paths outlive this adapter, as does the
+        // resolver arena used for names returned to the checker.
+        self.module_compilation_cache.put(self.resolver.gpa, path, compilation) catch {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        return compilation;
+    }
 
     const TypeOnlyExportInfo = struct {
         path: []const u8,
@@ -173,14 +203,10 @@ const CheckerResolverAdapter = struct {
         if (effective_resolved) |r| {
             if (!self.allow_js and !r.is_declaration and isJsLikeVirtualFile(r.path)) {
                 const arena = self.resolver.arena.allocator();
-                const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
-                defer self.resolver.gpa.free(src);
-                const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
                 const export_assignment_class_name = if (name.len == 0)
-                    ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+                    ts_program.moduleCommonJsExportAssignmentClassNameFromCompilation(self.moduleCompilation(r.path) orelse return null)
                 else
                     null;
-                defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
                 return .{
                     .module_name = ts_program.renderModuleDisplayName(arena, module_path) catch return null,
                     .exported_type = true,
@@ -193,21 +219,18 @@ const CheckerResolverAdapter = struct {
                 };
             }
         }
-        // Read the resolved module's source and parse+bind it to query
-        // its top-level export table. The resolver's arena outlives the
-        // checker calls, so the rendered module name borrowed by the
-        // checker stays valid.
+        // Reuse the bound owner for both shape and export-table queries.
+        // The resolver's arena outlives all returned display names.
         const arena = self.resolver.arena.allocator();
-        const src = self.resolver.fs.readFile(self.resolver.gpa, module_path) catch return null;
-        defer self.resolver.gpa.free(src);
+        const compilation = self.moduleCompilation(module_path) orelse return null;
+        const src = compilation.source;
         const is_tsx = std.mem.endsWith(u8, module_path, ".tsx") or std.mem.endsWith(u8, module_path, ".jsx");
         const export_assignment_class_name = if (name.len == 0)
-            ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+            ts_program.moduleCommonJsExportAssignmentClassNameFromCompilation(compilation)
         else
             null;
-        defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
         const resolved_facts = if (effective_resolved != null)
-            ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, module_path, name)
+            ts_program.moduleExportFactsFromCompilation(self.resolver.gpa, self.resolver, module_path, compilation, name)
         else
             ts_program.ModuleExportFacts{
                 .exported_type = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
@@ -1149,6 +1172,34 @@ const ActualDiagnosticLine = struct {
         return a.order < b.order;
     }
 };
+
+test "conformance: CommonJS display queries reuse the prepared owner" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |allow_js| {
+        var vfs = ts_resolver.VirtualFs.init(allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", "class Service {} module.exports = new Service();");
+        var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var adapter = CheckerResolverAdapter{ .resolver = &resolver, .allow_js = allow_js };
+        defer adapter.deinit();
+        const first = CheckerResolverAdapter.moduleExportImpl(&adapter, "./owner", "/app.js", "").?;
+        try std.testing.expectEqualStrings("Service", first.export_assignment_class_name);
+        try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
+        const owner = adapter.moduleCompilation("/owner.js").?;
+        try std.testing.expect(!owner.checked_types_ready);
+        // Querying this immutable program view must not reopen or recheck its
+        // source. A later program would have a new adapter and cache.
+        try vfs.addFile("/owner.js", "class Changed {} module.exports = new Changed();");
+        for (0..8) |_| {
+            const next = CheckerResolverAdapter.moduleExportImpl(&adapter, "./owner", "/app.js", "").?;
+            try std.testing.expectEqualStrings("Service", next.export_assignment_class_name);
+            try std.testing.expect(owner == adapter.moduleCompilation("/owner.js").?);
+            try std.testing.expect(!owner.checked_types_ready);
+        }
+        try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
+    }
+}
 
 test "conformance: program diagnostics sort same-position globals by code" {
     var higher_text = [_]u8{'b'};
@@ -3712,6 +3763,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .ambient_modules = ambient_modules,
         .allow_js = allow_js_project,
     };
+    defer resolver_adapter.deinit();
     const external = ts_checker.ExternalResolver{
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,

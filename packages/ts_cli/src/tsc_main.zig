@@ -2352,15 +2352,11 @@ const CheckerResolverAdapter = struct {
         const r = self.resolveModule(specifier, containing_file) orelse return null;
         const cache_key: ModuleExportCacheKey = .{ .path = r.path, .name = name, .mode = .normal };
         if (self.cachedModuleExport(cache_key)) |cached| return cached;
-        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
-        defer self.resolver.gpa.free(src);
-        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const compilation = self.moduleCompilation(r.path) orelse return null;
         const export_assignment_class_name = if (name.len == 0)
-            ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+            ts_program.moduleCommonJsExportAssignmentClassNameFromCompilation(compilation)
         else
             null;
-        defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
-        const compilation = self.moduleCompilation(r.path) orelse return null;
         const facts = blk: {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
