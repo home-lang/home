@@ -478,6 +478,19 @@ pub const ScriptObjectExpando = struct {
     has_jsdoc_typedef: bool = false,
 };
 
+/// A program-global binding whose TypeId is in the receiving checker's type
+/// interner. Names use that checker's string keyspace. This is name lookup,
+/// not owner transfer: callers must separately install any semantic metadata
+/// required by the type before publishing a binding.
+pub const ProgramGlobalBinding = struct {
+    name: hir_mod.StringId,
+    type: TypeId,
+    /// True for `var`/function-style bindings that become properties of
+    /// `globalThis`; false for top-level lexical `let`/`const` bindings and
+    /// type-space entries.
+    is_global_this_property: bool = false,
+};
+
 pub const ModuleInterfaceAugmentation = struct {
     target_path: []const u8,
     source_path: []const u8 = "",
@@ -5197,10 +5210,17 @@ pub const Checker = struct {
     /// These are properties of `globalThis`, `window`, and `self`, but not
     /// of the nullable `top: Window | null` DOM binding.
     program_global_var_names: []const []const u8 = &.{},
+    /// Source-owned value types relocated into this checker's type pool.
+    /// Local lexical/module bindings take precedence over these entries.
+    program_global_value_types: []const ProgramGlobalBinding = &.{},
     /// Type-space names contributed by sibling global script files.
     /// Program compilation supplies these so per-file checking can resolve
     /// interfaces, aliases, classes, enums, and namespaces from global libs.
     program_global_type_names: []const []const u8 = &.{},
+    /// Source-owned non-generic type bindings relocated into this checker's
+    /// type pool. Generic declarations additionally require their transferred
+    /// parameter metadata and are not published through this slice yet.
+    program_global_types: []const ProgramGlobalBinding = &.{},
     /// Program-level namespace roots contributed by `declare global {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
@@ -5656,8 +5676,16 @@ pub const Checker = struct {
         self.program_global_var_names = names;
     }
 
+    pub fn setProgramGlobalValueTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
+        self.program_global_value_types = bindings;
+    }
+
     pub fn setProgramGlobalTypeNames(self: *Checker, names: []const []const u8) void {
         self.program_global_type_names = names;
+    }
+
+    pub fn setProgramGlobalTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
+        self.program_global_types = bindings;
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -73186,6 +73214,7 @@ pub const Checker = struct {
 
     fn typeRefNameExists(self: *Checker, name: hir_mod.StringId) bool {
         if (self.type_names.contains(name)) return true;
+        if (self.programGlobalType(name) != null) return true;
         if (self.class_instance_types.contains(name)) return true;
         if (std.mem.eql(u8, self.string_interner.get(name), "Image")) return true;
         if (self.lookupNarrow(name)) |t| {
@@ -75454,6 +75483,9 @@ pub const Checker = struct {
                 }
                 if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
+                if (self.programGlobalType(id.name)) |t| {
+                    if (!self.visibleTypeDeclarationExistsAt(type_node, id.name)) return t;
+                }
                 if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return types.Primitive.any;
             },
             .literal_number => {
@@ -75872,6 +75904,7 @@ pub const Checker = struct {
                     // sibling-declaration fallback. It must not erase a
                     // type that this checker can resolve from its own HIR,
                     // including forward and merged declarations.
+                    if (self.programGlobalType(r.name)) |t| return t;
                     if (is_program_global_type) return types.Primitive.any;
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
@@ -76838,6 +76871,13 @@ pub const Checker = struct {
                         if (!self.globalThisHasProperty(type_node, key)) {
                             try self.reportGlobalThisMissingProperty(ia.index, key, "typeof globalThis");
                             return types.Primitive.any;
+                        }
+                        if (self.program_global_value_types.len > 0) {
+                            const operand = hir_mod.typeofTypeOf(self.hir, ia.object).operand;
+                            const name = self.string_interner.lookup("globalThis").?;
+                            if (!self.programGlobalThisNameIsShadowed(operand, name)) {
+                                if (self.programGlobalThisPropertyType(key)) |t| return t;
+                            }
                         }
                     }
                 }
@@ -110157,6 +110197,11 @@ pub const Checker = struct {
                 if (try self.reportProgramRequireBindingMissingMember(node, m.object, m.name)) {
                     break :blk types.Primitive.any;
                 }
+                if (self.programGlobalThisReceiver(m.object)) {
+                    if (self.programGlobalThisPropertyType(m.name)) |t| {
+                        break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                    }
+                }
                 if ((try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
                     (try self.lookupObjectMember(obj_t, m.name))) |t|
                 {
@@ -110674,6 +110719,24 @@ pub const Checker = struct {
                 } else resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
+                if (self.programGlobalThisReceiver(e.object)) {
+                    const global_key: ?hir_mod.StringId = if (self.hir.kindOf(e.index) == .literal_string)
+                        try self.globalThisTypeIndexKeyId(e.index)
+                    else
+                        self.singleStringLiteralIndexKey(idx_t);
+                    if (global_key) |key| {
+                        if (!self.checking_element_write_target) {
+                            if (try self.elementAccessNarrowKey(node)) |narrow_key| {
+                                if (self.lookupMemberNarrow(narrow_key)) |t| {
+                                    break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                                }
+                            }
+                        }
+                        if (self.programGlobalThisPropertyType(key)) |t| {
+                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        }
+                    }
+                }
                 if (self.hir.kindOf(e.object) == .identifier and
                     self.visibleAnnotatedIdentifierType(e.object) == types.Primitive.any)
                 {
@@ -130844,6 +130907,9 @@ pub const Checker = struct {
                     return types.Primitive.any;
                 }
             }
+            if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
+                if (self.programGlobalValueType(id.name)) |t| return t;
+            }
             // Module is bound and the name is unknown ÃÂ¢ÃÂÃÂ emit TS2304
             // unless the identifier is a recognized built-in (e.g.
             // `console`, `undefined`, global constructors). Skip
@@ -130948,6 +131014,10 @@ pub const Checker = struct {
                 self.reportCannotFindNameOnce(node, id.name) catch {};
             }
         }
+        if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
+            if (self.programGlobalValueType(id.name)) |t| return t;
+        }
+
         // Lib globals ÃÂ¢ÃÂÃÂ `Object` carries the keys/values/entries/
         // assign namespace. `NaN` / `Infinity` are number-typed values.
         // `isNaN` / `isFinite` / `parseFloat` / `parseInt` get loose
@@ -144530,6 +144600,34 @@ pub const Checker = struct {
         }
     }
 
+    fn programGlobalThisReceiver(self: *Checker, object_node: NodeId) bool {
+        if (self.program_global_value_types.len == 0) return false;
+        if (!self.memberAccessObjectIsGlobalThisThis(object_node)) return false;
+        if (self.hir.kindOf(object_node) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, object_node).name;
+            if (std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
+                self.programGlobalThisNameIsShadowed(object_node, name)) return false;
+        }
+        return true;
+    }
+
+    fn programGlobalThisNameIsShadowed(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (self.module) |module| {
+            for (module.scopes.items) |scope| {
+                if (!scope.values.contains(name)) continue;
+                if (scope == module.root or self.nodeIsAncestorOf(scope.introducing_node, anchor)) return true;
+            }
+        }
+        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return true;
+        var parent = self.hir.parentOf(anchor);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            const kind = self.hir.kindOf(parent);
+            if ((kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) and
+                self.functionParametersDeclareName(parent, name)) return true;
+        }
+        return false;
+    }
+
     fn reportNonStrictGlobalArrowThisNameAccess(
         self: *Checker,
         node: NodeId,
@@ -144591,6 +144689,7 @@ pub const Checker = struct {
     }
 
     fn globalThisHasProperty(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (self.programGlobalThisPropertyType(name) != null) return true;
         const raw = self.string_interner.get(name);
         if (std.mem.eql(u8, raw, "globalThis") or
             std.mem.eql(u8, raw, "Float64Array") or
@@ -168215,6 +168314,7 @@ pub const Checker = struct {
     }
 
     fn programHasGlobalVarName(self: *Checker, name: hir_mod.StringId) bool {
+        if (self.programGlobalValueType(name) != null) return true;
         const raw_name = self.string_interner.get(name);
         for (self.program_global_var_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw_name)) return true;
@@ -168223,11 +168323,33 @@ pub const Checker = struct {
     }
 
     fn programHasGlobalTypeName(self: *Checker, name: hir_mod.StringId) bool {
+        if (self.programGlobalType(name) != null) return true;
         const raw_name = self.string_interner.get(name);
         for (self.program_global_type_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw_name)) return true;
         }
         return false;
+    }
+
+    fn programGlobalValueType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_value_types) |binding| {
+            if (binding.name == name) return binding.type;
+        }
+        return null;
+    }
+
+    fn programGlobalThisPropertyType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_value_types) |binding| {
+            if (binding.name == name and binding.is_global_this_property) return binding.type;
+        }
+        return null;
+    }
+
+    fn programGlobalType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_types) |binding| {
+            if (binding.name == name) return binding.type;
+        }
+        return null;
     }
 
     fn sourceHasLexicalValueDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
@@ -203603,6 +203725,115 @@ test "checker: top exposes sibling global var declarations" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: relocated program globals retain value type and globalThis property types" {
+    const b = try newBoundSetup(
+        \\const goodValue: number = foreignValue;
+        \\const badValue: string = foreignValue;
+        \\const goodGlobalThis: number = globalThis.foreignValue;
+        \\const badGlobalThis: string = globalThis.foreignValue;
+        \\declare const typed: ForeignType;
+        \\const goodType: number = typed;
+        \\const badType: string = typed;
+        \\function local(globalThis: { foreignValue: string }) {
+        \\    const good: string = globalThis.foreignValue;
+        \\    const goodBracket: string = globalThis["foreignValue"];
+        \\    const goodIndex: (typeof globalThis)["foreignValue"] = "local";
+        \\}
+        \\const goodBracket: number = globalThis["foreignValue"];
+        \\const badBracket: string = globalThis["foreignValue"];
+        \\const badIndex: (typeof globalThis)["foreignValue"] = "wrong";
+        \\type BadGeneric = ForeignType<string>;
+    );
+    defer destroyBoundSetup(b);
+    const values = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("foreignValue"),
+        .type = types.Primitive.number_t,
+        .is_global_this_property = true,
+    }};
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignType"),
+        .type = types.Primitive.number_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 0));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 2));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 5));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 8));
+    try T.expectEqual(types.Primitive.number_t, statementVarType(b.base, 10));
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_generic));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.global_this_no_index_signature));
+}
+
+test "checker: relocated structural globals preserve members and call signatures" {
+    const b = try newBoundSetup(
+        \\const valueGood: string = foreignObject.value;
+        \\const valueBad: number = foreignObject.value;
+        \\foreignObject.missing;
+        \\const callGood: string = foreignFunction(1);
+        \\const callBad: number = foreignFunction(1);
+        \\foreignFunction("bad");
+        \\declare const annotated: ForeignShape;
+        \\const annotationBad: number = annotated.value;
+    );
+    defer destroyBoundSetup(b);
+    const object_t = try b.base.ti.internObjectType(&.{.{
+        .name = try b.base.sint.intern("value"),
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const function_t = try b.base.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.string_t, false);
+    const values = [_]ProgramGlobalBinding{
+        .{ .name = try b.base.sint.intern("foreignObject"), .type = object_t },
+        .{ .name = try b.base.sint.intern("foreignFunction"), .type = function_t },
+    };
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignShape"),
+        .type = object_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+}
+
+test "checker: relocated globals preserve lexical shadowing and globalThis exclusions" {
+    const b = try newBoundSetup(
+        \\export {};
+        \\const shadowed = "local";
+        \\const good: string = shadowed;
+        \\const lexicalGood: number = lexical;
+        \\globalThis.lexical;
+        \\declare const localTyped: ForeignType;
+        \\const localGood: string = localTyped;
+        \\type ForeignType = string;
+    );
+    defer destroyBoundSetup(b);
+    const values = [_]ProgramGlobalBinding{
+        .{ .name = try b.base.sint.intern("shadowed"), .type = types.Primitive.number_t },
+        .{ .name = try b.base.sint.intern("lexical"), .type = types.Primitive.number_t },
+    };
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignType"),
+        .type = types.Primitive.number_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.global_this_no_index_signature));
 }
 
 test "checker: top is nullable Window without global var properties" {

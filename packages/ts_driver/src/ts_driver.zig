@@ -29,6 +29,7 @@ pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const source_owners = @import("source_owners.zig");
 pub const StringInterner = string_interner.Interner;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
+pub const ProgramGlobalBinding = ts_checker.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
@@ -416,8 +417,14 @@ pub const CompileOptions = struct {
     script_object_expandos: []const ScriptObjectExpando = &.{},
     /// Top-level `var` names contributed by sibling global scripts.
     program_global_var_names: []const []const u8 = &.{},
+    /// Program-global value types already relocated into this compilation's
+    /// type interner.
+    program_global_value_types: []const ProgramGlobalBinding = &.{},
     /// Type-space names contributed by sibling global scripts.
     program_global_type_names: []const []const u8 = &.{},
+    /// Non-generic program-global types already relocated into this
+    /// compilation's type interner.
+    program_global_types: []const ProgramGlobalBinding = &.{},
     /// Program-level relative module interface augmentations discovered
     /// in sibling files.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
@@ -2293,8 +2300,14 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     if (options.program_global_var_names.len > 0) {
         checker.setProgramGlobalVarNames(options.program_global_var_names);
     }
+    if (options.program_global_value_types.len > 0) {
+        checker.setProgramGlobalValueTypes(options.program_global_value_types);
+    }
     if (options.program_global_type_names.len > 0) {
         checker.setProgramGlobalTypeNames(options.program_global_type_names);
+    }
+    if (options.program_global_types.len > 0) {
+        checker.setProgramGlobalTypes(options.program_global_types);
     }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
