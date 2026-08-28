@@ -446,3 +446,24 @@ The final build passes **17/17 steps**, the runtime unit suite passes **1,819 te
 The local Bun release executable reports `1.4.0-canary.1+4982b91e3` and reproduces the HTTP/1 pipeline timeout: its complete unchanged `test-stream-pipeline.js` exceeds a 45-second bound, and the isolated diagnostic has the same empty keep-alive response and unfinished request pipeline as Home. Node instead rejects the unframed follow-up bytes with a 400 response and closes the socket. The exact pinned uWS parser waits for more bytes while the method token has no delimiter. No Home-specific difference is established for this case; it still fails the requested full-suite goal and is not counted as passing.
 
 The exact pin also has no `internal/js_stream_socket` or `internal/test/binding` source module, and neither appears in its `exposedInternals` map. The local release control rejects `bun:internal-for-testing` even with its feature environment variable, so that run cannot establish execution parity for the three wrapper tests. Home's missing-module failures and the unimplemented wrapper/socket behavior remain explicit in #514. Evidence: `zig-out/http1-pipeline-{lifecycle,pinned}-results.json` and `http1-wrap-flag-results.json`. These baseline findings do not resolve the four failing stream files.
+
+## Native CLI entrypoint diagnostics (#508)
+
+Implicit file runs and explicit `run` now share the native entrypoint preflight. It resolves extensionless and directory entries, rejects non-runnable loaders, preserves the original target spelling in missing-module/file/script errors, and emits CLI diagnostics without a VM exception footer. A valid PATH binary can still win after an unrunnable data-file resolution, and `--if-present` retains its silent-success boundary. Actual exceptions from evaluated JavaScript keep their runtime traceback and footer.
+
+Automatic dispatch prefers an existing readable runnable file over a same-named package script, while explicit `run` prefers the script. The probe opens and fstats the file, so an unreadable `.js` file can fall through to its package script; a missing `.js` file also permits script lookup before resolving a `.ts` sibling. This read-permission edge was reproduced against the local Bun release control and is covered by the native regression on unprivileged POSIX runs. Successful VM execution now flushes the resolver/transpiler log after `onBeforeExit`, matching the selected pin's nonfatal debug-diagnostic behavior.
+
+The complete unchanged `cli/install/bun-run.test.ts` is byte-identical to source pin `4982b91e3702094330f3be3883354c52b8c01323`:
+
+| Checkpoint | Passing | Failing | Assertions |
+| --- | ---: | ---: | ---: |
+| Published parent | 259 | 32 | 381 |
+| Native entrypoint diagnostics | 287 | 4 | 411 |
+
+The comparison resolves 28 failing test names and introduces none. The expanded native package regression covers missing targets, unrunnable JSON, binary fallback, file/script precedence, loader overrides, real runtime exceptions, and both debug and quiet config behavior. It passes normally and with VM destruction plus JSC exception checks. The final build passes **17/17 steps**, runtime units pass **1,819 tests / 19 skips / 0 failures**, and all **55 regression commands** pass, including all **24 native files**, complete spawn and child-process tests. The earlier published binary fails the new missing-module diagnostic assertion. No upstream test, assertion, fixture or deadline was changed.
+
+The four remaining bun-run failures are three native `bun x` dispatch cases ([#518](https://github.com/home-lang/home/issues/518)) and workspace-filter execution ([#519](https://github.com/home-lang/home/issues/519)). Optional config-value parsing versus Home's outer target scanner is an additional gap ([#517](https://github.com/home-lang/home/issues/517)); attached `--config=PATH` is used for the verified debug/quiet regression. These counts do not establish complete CLI or source-ownership parity. Verification used the shared Darwin checkout; unrelated compiler edits are excluded from this commit. The branch is not merged to main, and [#66](https://github.com/home-lang/home/issues/66) remains incomplete.
+
+The final unit rebuild initially failed with `NoSpaceLeft`; its successful rerun followed cleanup of five verified obsolete task artifacts. The failed run remains recorded in `entrypoint-unit-nospace.{log,json}`.
+
+Evidence: `zig-out/entrypoint-build5.{log,json}`, `entrypoint-unit.{log,json}`, `entrypoint-regressions.json`, `entrypoint-native-{final,destruction,parent}.json`, `package-wide-entrypoint-{baseline,final}.json`, `entrypoint-comparison.json`, `entrypoint-readable-control.json`, `entrypoint-config{,2}-control.json`, and `entrypoint-source-integrity.json`.

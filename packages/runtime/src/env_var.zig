@@ -9,6 +9,7 @@ const Environment = @import("environment.zig");
 
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
+pub const NODE_PRESERVE_SYMLINKS_MAIN = @import("bun_core/env_var.zig").NODE_PRESERVE_SYMLINKS_MAIN;
 
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
 /// upstream Bun implementation uses native syscalls on Windows; until

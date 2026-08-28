@@ -1855,6 +1855,15 @@ const VmRunState = struct {
         if (this.print_result) printEntryPointResult(vm);
         vm.onBeforeExit();
 
+        // Resolver/transpiler diagnostics can be nonfatal (for example a
+        // missing tsconfig extends at debug log level). Run.start flushes them
+        // after evaluation even when the entrypoint completed successfully.
+        if (vm.log.msgs.items.len > 0) {
+            home_rt.Output.flush();
+            vm.log.print(home_rt.Output.errorWriterBuffered()) catch {};
+            home_rt.Output.flush();
+        }
+
         vm.global.handleRejectedPromises();
         // Flush buffered stdout/stderr (console.log) before the noreturn exit.
         home_rt.Output.flush();
@@ -2527,14 +2536,7 @@ fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime 
         }
         return false;
     }
-    var resolved_module = false;
-    if (try home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand, &resolved_module)) home_rt.Global.exit(0);
-    if (resolved_module) return false;
-    if (ctx.if_present and !home_rt.sys.exists(target)) home_rt.Global.exit(0);
-    if (target.len > 0 and std.fs.path.extension(target).len == 0 and looksLikePackageScriptName(target) and !home_rt.sys.exists(target)) {
-        home_rt.Output.prettyErrorln("error: Script not found \"{s}\"", .{target});
-        home_rt.Global.exit(1);
-    }
+    if (try home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand)) home_rt.Global.exit(0);
     return false;
 }
 
@@ -5875,14 +5877,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (has_file and (native_vm or std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
             var experimental_stream_iter = false;
-            var if_present = false;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
                 const a = args[i];
-                if (std.mem.eql(u8, a, "--if-present")) {
-                    if_present = true;
-                    continue;
-                }
                 if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
                     experimental_stream_iter = true;
                     continue;
@@ -5896,7 +5893,7 @@ pub fn main(init: std.process.Init) !void {
                     if (experimental_stream_iter) {
                         home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
                     }
-                    if ((!looksLikeRunnableFile(a) or if_present) and try tryNativePackageRun(args, a, .AutoCommand)) return;
+                    if (try tryNativePackageRun(args, a, .AutoCommand)) return;
                     try runCommand(allocator, a, args[i + 1 ..]);
                     return;
                 }

@@ -42,6 +42,7 @@ try {
     prefailpre: 'exit 17', failpre: 'echo SHOULD_NOT_RUN', postfailpre: 'echo SHOULD_NOT_RUN',
     failpost: 'echo main-ran', postfailpost: 'exit 19',
     echo: 'echo package-script', 'named.sh': 'echo named-shell-script',
+    'collision.js': 'echo collision-script', 'script-only.js': 'echo fallback-script', 'unreadable.js': 'echo readable-script',
     copy: 'cat', empty: '',
   }
   writeFileSync(join(directory, 'package.json'), JSON.stringify({ name: 'native-run-fixture', version: '2.3.4', scripts }))
@@ -152,6 +153,77 @@ HOME_DOTENV_QUOTED='single $HOME_DOTENV_BASE'
   writeFileSync(join(directory, 'extension-entry.ts'), 'console.log("resolved-ts");')
   for (const argv of [['extension-entry'], ['run', 'extension-entry'], ['run', '--if-present', 'extension-entry']]) {
     assert.equal(success(argv).stdout, 'resolved-ts\n')
+  }
+  mkdirSync(join(directory, 'without-entry'))
+  writeFileSync(join(directory, 'without-entry', 'other.js'), 'console.log("not-an-entry");')
+  writeFileSync(join(directory, 'data.json'), '{}')
+  for (const prefix of [[], ['run'], ['--bun'], ['--bun', 'run']]) {
+    for (const [target, kind] of [
+      ['missing.js', 'Module'], ['./missing', 'Module'],
+      [join(directory, 'missing-absolute'), 'Module'], ['./without-entry', 'Module'],
+      ['missing.asset', 'File'], ['missing-script', 'Script'],
+    ]) {
+      const result = run([...prefix, target])
+      assert.equal(result.status, 1)
+      assert.equal(result.stdout, '')
+      assert.equal(result.stderr, `error: ${kind} not found "${target}"\n`)
+    }
+    for (const target of ['data', 'data.json', './data']) {
+      const result = run([...prefix, target])
+      assert.equal(result.status, 1)
+      assert.equal(result.stdout, '')
+      assert.match(result.stderr, /^error: Cannot run ".*data\.json"\nnote: Bun cannot run json files directly\n$/)
+    }
+    assert.equal(success([...prefix, '--if-present', 'data.json']).stdout, '')
+  }
+  // File preference applies only to an existing fast-path file. A missing
+  // .js entry may still name a package script before resolving a .ts sibling.
+  writeFileSync(join(directory, 'collision.js'), 'console.log("collision-file");')
+  writeFileSync(join(directory, 'script-only.ts'), 'console.log("resolved-script-file");')
+  assert.equal(success(['collision.js']).stdout, 'collision-file\n')
+  assert.equal(success(['run', 'collision.js']).stdout, 'collision-script\n')
+  assert.equal(success(['script-only.js']).stdout, 'fallback-script\n')
+  assert.equal(success(['./script-only.js']).stdout, 'resolved-script-file\n')
+  if (process.platform !== 'win32' && process.getuid() !== 0) {
+    const unreadable = join(directory, 'unreadable.js')
+    writeFileSync(unreadable, 'console.log("unreadable-file");')
+    chmodSync(unreadable, 0)
+    try {
+      assert.equal(success(['unreadable.js']).stdout, 'readable-script\n')
+    }
+    finally {
+      chmodSync(unreadable, 0o600)
+    }
+  }
+  writeFileSync(join(directory, 'runnable.json'), 'console.log("json-as-js");')
+  for (const prefix of [[], ['run']]) {
+    assert.equal(success([...prefix, '--loader', '.json:js', './runnable.json']).stdout, 'json-as-js\n')
+  }
+  writeFileSync(join(directory, 'runtime-error.js'), 'throw new Error("entry-runtime-error");')
+  const runtimeFailure = run(['runtime-error.js'])
+  assert.equal(runtimeFailure.status, 1)
+  assert.match(runtimeFailure.stderr, /error: entry-runtime-error/)
+  assert.match(runtimeFailure.stderr, /\nBun v[^\n]+\n$/)
+  const debugDirectory = join(directory, 'debug-config')
+  mkdirSync(debugDirectory)
+  writeFileSync(join(debugDirectory, 'tsconfig.json'), JSON.stringify({ extends: './absent-tsconfig.json' }))
+  writeFileSync(join(debugDirectory, 'bunfig.toml'), 'logLevel = "debug"\n')
+  writeFileSync(join(debugDirectory, 'quiet.toml'), 'logLevel = "error"\n')
+  writeFileSync(join(debugDirectory, 'index.js'), 'console.log("debug-entry");')
+  for (const prefix of [[], ['run']]) {
+    const debug = success([...prefix, '--config=' + join(debugDirectory, 'bunfig.toml'), './index.js'], { cwd: debugDirectory })
+    assert.equal(debug.stdout, 'debug-entry\n')
+    assert.match(debug.stderr, /ENOENT loading tsconfig\.json extends/)
+    const quiet = success([...prefix, '--config=' + join(debugDirectory, 'quiet.toml'), './index.js'], { cwd: debugDirectory })
+    assert.equal(quiet.stdout, 'debug-entry\n')
+    assert.equal(quiet.stderr, '')
+  }
+  // Resolving a non-runnable data file does not suppress a valid CLI binary.
+  if (process.platform !== 'win32') {
+    const binary = join(directory, 'node_modules', '.bin', 'data')
+    writeFileSync(binary, '#!/bin/sh\necho data-binary\n')
+    chmodSync(binary, 0o755)
+    for (const prefix of [[], ['run']]) assert.equal(success([...prefix, 'data']).stdout, 'data-binary\n')
   }
   assert.equal(success(['run', '--silent', 'echo']).stderr, '')
   for (const [script, code, stdout] of [['fail', 23, ''], ['failpre', 17, ''], ['failpost', 19, 'main-ran\n']]) {
