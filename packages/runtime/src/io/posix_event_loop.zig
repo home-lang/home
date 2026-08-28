@@ -170,7 +170,7 @@ pub const FilePoll = struct {
     const ShellStaticPipeWriter = bun.shell.subproc.ShellSubprocess.StaticPipeWriter.Poll;
     const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
     const FileSink = jsc.WebCore.FileSink.Poll;
-    // const TerminalPoll = bun.api.Terminal.Poll; // terminal not for corpus
+    const TerminalPoll = bun.api.Terminal.Poll;
     const DNSResolver = bun.api.dns.Resolver;
     const GetAddrInfoRequest = bun.api.dns.GetAddrInfoRequest;
     const Request = bun.api.dns.internal.Request;
@@ -202,7 +202,7 @@ pub const FilePoll = struct {
         // LifecycleScriptSubprocessOutputReader,
         Process,
         ShellBufferedWriter, // i do not know why, but this has to be here otherwise compiler will complain about dependency loop
-        // TerminalPoll,
+        TerminalPoll,
         ParentDeathWatchdog,
     });
 
@@ -441,7 +441,11 @@ pub const FilePoll = struct {
                 Request.MacAsyncDNS.onMachportChange(loader);
             },
 
-            // TerminalPoll case: terminal not for corpus
+            @field(Owner.Tag, @typeName(TerminalPoll)) => {
+                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) Terminal", .{poll.fd});
+                var handler: *TerminalPoll = ptr.as(TerminalPoll);
+                handler.onPoll(size_or_offset, poll.flags.contains(.hup));
+            },
             @field(Owner.Tag, @typeName(ParentDeathWatchdog)) => {
                 if (comptime !Environment.isMac) unreachable;
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) ParentDeathWatchdog", .{poll.fd});

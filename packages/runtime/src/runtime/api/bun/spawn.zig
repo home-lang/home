@@ -177,6 +177,18 @@ pub const BunSpawn = struct {
 
 // Mostly taken from Bun's copy of Zig's posix_spawn.zig.
 pub const PosixSpawn = struct {
+    /// ABI of the linked native bun-spawn.cpp fork/exec implementation.
+    const BunSpawnRequest = extern struct {
+        chdir_buf: ?[*:0]const u8 = null,
+        detached: bool = false,
+        new_process_group: bool = false,
+        actions: extern struct { ptr: ?[*]const BunSpawn.Action, len: usize },
+        pty_slave_fd: i32 = -1,
+        linux_pdeathsig: i32 = 0,
+
+        extern fn posix_spawn_bun(pid: *c_int, path: [*:0]const u8, request: *const BunSpawnRequest, argv: [*:null]?[*:0]const u8, envp: [*:null]?[*:0]const u8) isize;
+    };
+
     pub const WaitPidResult = struct {
         pid: pid_t,
         status: u32,
@@ -190,6 +202,23 @@ pub const PosixSpawn = struct {
         envp: [*:null]?[*:0]const u8,
     ) @import("bun").sys.Maybe(pid_t) {
         const M = bun.sys.Maybe(pid_t);
+        // A controlling PTY needs setsid + TIOCSCTTY before exec. Darwin's
+        // posix_spawn file actions cannot do that; use the native fork/exec
+        // implementation with its error pipe, keeping ordinary spawn unchanged.
+        if (attr.pty_slave_fd >= 0) {
+            const request = BunSpawnRequest{
+                .chdir_buf = actions.chdir_buf,
+                .detached = attr.detached,
+                .new_process_group = attr.new_process_group,
+                .actions = .{ .ptr = actions.actions.items.ptr, .len = actions.actions.items.len },
+                .pty_slave_fd = attr.pty_slave_fd,
+                .linux_pdeathsig = attr.linux_pdeathsig,
+            };
+            var pid: pid_t = 0;
+            const rc = BunSpawnRequest.posix_spawn_bun(&pid, path, &request, argv, envp);
+            if (rc != 0) return .{ .err = M.errno(@as(std.posix.E, @fromBackingInt(@intCast(rc))), .posix_spawn).err.withPath(std.mem.span(path)) };
+            return .{ .result = pid };
+        }
         var native_actions = switch (PosixSpawnActions.init()) {
             .result => |value| value,
             .err => |err| return .{ .err = err.withPath(std.mem.span(path)) },

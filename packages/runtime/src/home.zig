@@ -2677,7 +2677,22 @@ pub const jsc = struct {
     // size-class tables. It MUST run once before any `Zig__GlobalObject__create`
     // (VirtualMachine.init), otherwise JSC::VM::tryCreate crashes inside
     // MarkedSpace::sizeClasses(). JSCInitialize itself is `std::call_once`-guarded.
+    var process_stdio_once = once(initializeProcessStdio);
+    fn initializeProcessStdio() void {
+        if (comptime enable_jsc_link) {
+            const native = struct {
+                extern "c" fn bun_initialize_process() void;
+                extern "c" fn bun_restore_stdio() void;
+            };
+            // Capture inherited TTY state before JS runs. The native process
+            // builtins use bun_stdio_tty to choose real node:tty streams.
+            native.bun_initialize_process();
+            Global.addExitCallback(native.bun_restore_stdio);
+        }
+    }
+
     pub fn initialize(eval_mode: bool) void {
+        process_stdio_once.call(.{});
         // Forked std has no `std.os.environ` slice; build one from `std.c.environ`
         // (a null-terminated array of `?[*:0]u8`, bit-identical to `[*:0]u8`).
         const env = std.mem.span(std.c.environ);

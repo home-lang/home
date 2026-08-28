@@ -319,3 +319,28 @@ Verification for this input/poll checkpoint:
 One verification attempt encountered host ENOSPC errors and is not counted as passing. Only obsolete intermediate outputs in this task's isolated runtime cache were removed; the installed binary, selected control binaries and unrelated shared worktree changes were preserved. The full regression batch and repeat checks were then rerun successfully with disk space available.
 
 The complete child-process file still reports **31 pass / 1 fail / 1 skip / 1 TODO / 70 assertions** because of package-script dispatch in [#497](https://github.com/home-lang/home/issues/497). The newly recorded terminal gap is [#503](https://github.com/home-lang/home/issues/503): Home's selected terminal integration cases report **0 pass / 3 fail / 13 filtered out**, with skeleton terminal creation/I/O methods. The pre-change Home binary fails identically. Installed Bun 1.3.14 passes only the inline-terminal case and times out on the other two, so it is not a passing control for the whole newer selection. Terminal payload replacement cleanup is not evidence that terminal support is implemented. General native ownership, other-platform execution and the complete Bun suite remain unfinished under [#66](https://github.com/home-lang/home/issues/66).
+
+## Native terminal PTYs, controlling sessions and teardown (#503)
+
+`Terminal.zig` now implements actual PTY allocation, reader/writer I/O, callbacks, resize, termios access, raw mode, references and disposal in place of the skeleton. The implementation follows the pinned Zig source and was checked against `terminal.rs` at `4982b91e3702094330f3be3883354c52b8c01323`. Terminal writers participate in native FilePoll dispatch. POSIX backpressure completion delivers the drain callback after buffered bytes have drained. Reader references are acquired before synchronous registration callbacks; EOF/error release happens once, after re-entrant JavaScript returns. Disposal suppresses callbacks and releases the strong wrapper reference.
+
+Home's VM startup now calls the native process initializer once, recording inherited TTY descriptors and their original attributes, and registers stdio restoration at exit. This enables real `node:tty` process streams and fixes child `isTTY`, dimensions, raw mode and restoration behavior. PTY spawns use the native fork/exec helper and error pipe for `setsid`/`TIOCSCTTY`; ordinary spawns retain their existing path and errno handling. Standalone terminals remain reusable, while inline terminals close the parent's slave descriptor to deliver EOF when the child exits.
+
+Each terminal owns its raw-mode snapshot, so toggling one cannot restore another's settings. Darwin's 64-bit termios flag conversion saturates before converting a rounded JavaScript number; Infinity and NaN no longer risk integer overflow. The `openpty` signature now uses the actual platform termios type, replacing the skeleton's incorrect fixed 44-byte ABI assumption.
+
+Final Darwin verification:
+
+| Unchanged upstream file | Passed | Assertions | Excluded |
+| --- | ---: | ---: | --- |
+| `terminal.test.ts` | 89 | 220 | 1 TODO |
+| `terminal-spawn.test.ts` | 15 | 72 | 1 Windows-only skip |
+| `terminal-platform-gaps.test.ts` | 19 | 31 | None |
+| `stdin-pause-pty.test.ts` | 1 | 2, plus 1 snapshot | None |
+
+All four files and the inspected readline child fixture are byte-identical to the source pin. Tests exercise real bytes, controlling-terminal access, Ctrl+C, SIGWINCH, SIGHUP, dimensions, terminal reuse and stdio restoration. No corpus assertions, workloads or deadlines were changed.
+
+The new `tests/runtime/native-terminal.test.mjs` checks natural unref exit and positive ref/re-ref controls, independent raw modes, a 1,048,593-byte backpressured input whose caller buffer is overwritten, drain receiver identity, `/dev/tty` dimensions, constructor failures with zero through three descriptor slots available, 48 disposal/failed-inline-spawn cycles with overridden Blob/typed-array inputs, collectible retired wrappers with a retained positive control, and 24 close/GC callbacks during reading. The previous published binary fails its reference-liveness control. Darwin's transient PENDIN bit is excluded only from raw-mode snapshot comparison; actual terminal settings are still checked.
+
+The final native binary passes **39 regression commands**, including all **22 native regression files**, the four files above and the complete unchanged spawn file (**126 passed / 5,484 assertions / 5 skips**). Its deliberately unreferenced sleep descendant was cleaned up after the tested parent exited normally. Three additional native terminal runs pass, including VM destruction at exit. Seven adjacent stdin suites pass **34 tests / 197 assertions**, with **3 TODOs excluded**. Native build and cached rebuild pass **17/17 steps**; focused Pickier, Terminal/spawn Zig formatting and scoped whitespace checks pass.
+
+The complete child-process file still reports **31 passed / 1 failed / 1 skipped / 1 TODO / 70 assertions**: package-script dispatch remains tracked in [#497](https://github.com/home-lang/home/issues/497). Linux/Windows execution and cross-compilation have not been verified in this checkpoint; restored ConPTY source is not a verified Windows result. [#503](https://github.com/home-lang/home/issues/503) stays open for integration and platform verification. The complete Bun port and suite remain unfinished under [#66](https://github.com/home-lang/home/issues/66).
