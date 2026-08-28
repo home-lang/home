@@ -589,6 +589,13 @@ pub const ProgramExportedValue = struct {
     kind: ProgramExportedValueKind,
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
+    declaration: ?*const ProgramClassSchema.Declaration = null,
+};
+
+pub const ProgramExportedType = struct {
+    target_path: []const u8,
+    export_name: []const u8,
+    declaration: *const ProgramClassSchema.Declaration,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -5298,6 +5305,7 @@ pub const Checker = struct {
     free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_exported_types: []const ProgramExportedType = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
@@ -5767,6 +5775,10 @@ pub const Checker = struct {
     pub fn setProgramExportedValues(self: *Checker, values: []const ProgramExportedValue) void {
         self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_values = values;
+    }
+
+    pub fn setProgramExportedTypes(self: *Checker, values: []const ProgramExportedType) void {
+        self.program_exported_types = values;
     }
 
     pub fn setProgramAmbientModuleInterfaceExports(self: *Checker, exports: []const ProgramAmbientModuleInterfaceExport) void {
@@ -75863,6 +75875,7 @@ pub const Checker = struct {
                     return types.Primitive.any;
                 }
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
+                if (try self.programExportedTypeForLocal(r.name, type_node)) |instance| return instance;
                 if (!self.nameHasEnclosingTypeParameter(r.name, type_node)) {
                     if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
                         const params = self.typeParamNodesOfDecl(decl);
@@ -78405,6 +78418,7 @@ pub const Checker = struct {
         } else full_path.items[1..];
         if (namespace_path.len == 0) {
             if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
+            if (try self.programExportedTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
         }
         var exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
         const spec = self.string_interner.get(import_info.specifier);
@@ -106142,6 +106156,14 @@ pub const Checker = struct {
         if (self.program_exported_values.len == 0 or self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
         const spec = self.string_interner.get(imp.module);
+        if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+        {
+            for (self.program_exported_values) |value| {
+                if (!std.mem.eql(u8, value.export_name, "default")) continue;
+                if (try self.programImportTargetsPath(import_node, spec, value.target_path)) return self.programExportedValueType(value);
+            }
+        }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
             if (self.hir.kindOf(spec_node) != .import_specifier) continue;
             const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -106161,7 +106183,15 @@ pub const Checker = struct {
         return null;
     }
 
-    fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!TypeId {
+    fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!?TypeId {
+        if (value.declaration) |declaration| {
+            const definition_id = self.programGenericDefinition(declaration) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnsupportedProgramType => return null,
+            };
+            if (declaration.is_function) return self.interner.genericDefinition(definition_id).?.body;
+            return try self.resolveGenericType(try self.interner.internInstantiation(definition_id, &.{}));
+        }
         return switch (value.kind) {
             .variable => try self.programTypeReferenceType(value.result),
             .function => blk: {
@@ -106172,6 +106202,45 @@ pub const Checker = struct {
                 break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
             },
         };
+    }
+
+    fn programExportedTypeForLocal(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.program_exported_types.len == 0 or self.nameHasEnclosingTypeParameter(name, anchor)) return null;
+        if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
+            const position = self.hir.spanOf(local).start;
+            for (self.program_exported_types) |entry| {
+                if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
+                    return self.programDeclarationTypeReference(entry.declaration, anchor);
+            }
+            return null;
+        }
+        if (self.module) |module| {
+            const symbol = module.root.types.get(name) orelse module.root.values.get(name) orelse return null;
+            if (!symbol.flags.is_import) return null;
+        }
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, statement);
+            if (import.default_binding != hir_mod.none_node_id and self.hir.kindOf(import.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, import.default_binding).name == name)
+                return self.programExportedTypeForImportPath(statement, import.module, self.string_interner.intern("default") catch return error.OutOfMemory, anchor);
+            for (hir_mod.importNamed(self.hir, statement)) |specifier| {
+                const item = hir_mod.importSpecifierOf(self.hir, specifier);
+                if (item.local == name) return self.programExportedTypeForImportPath(statement, import.module, item.imported, anchor);
+            }
+        }
+        return null;
+    }
+
+    fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+            if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
+            return self.programDeclarationTypeReference(entry.declaration, anchor);
+        }
+        return null;
     }
 
     /// Construct the whole runtime export shape, not a class-only namespace.
@@ -106230,7 +106299,7 @@ pub const Checker = struct {
                     } else {
                         for (self.program_exported_values) |value| {
                             if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
-                            member_type = try self.programExportedValueType(value);
+                            member_type = (try self.programExportedValueType(value)) orelse return self.unavailableProgramModuleNamespace(root_path);
                             break;
                         }
                     }
@@ -106367,6 +106436,7 @@ pub const Checker = struct {
             .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
             .origin = try self.programSchemaDeclarationOrigin(declaration),
         });
+        if (declaration.is_function) try self.recordGenericSignatureParams(body, parameters);
         self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
         self.engine.generic_instance_origins = &self.generic_instance_origins;
         return definition;
@@ -106383,9 +106453,19 @@ pub const Checker = struct {
         const schema = class.schema orelse return null;
         if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
         if (!try self.programSchemaSupported(schema)) return null;
-        const declaration = schema.declaration;
+        return self.programDeclarationTypeReference(schema.declaration, anchor);
+    }
+
+    fn programDeclarationTypeReference(self: *Checker, declaration: *const ProgramClassSchema.Declaration, anchor: NodeId) CheckError!?TypeId {
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
         const nodes = hir_mod.typeRefArgs(self.hir, anchor);
         const params = declaration.parameters;
+        if (params.len == 0 and nodes.len != 0) {
+            const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not generic.", .{declaration.name});
+            try self.reportOnce(anchor, TsCodes.type_not_generic, message);
+            for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+            return types.Primitive.unknown;
+        }
         var minimum: usize = 0;
         for (params, 0..) |param, i| if (param.default == null) {
             minimum = i + 1;
@@ -106393,7 +106473,7 @@ pub const Checker = struct {
         if (nodes.len < minimum or nodes.len > params.len) {
             var label: std.ArrayListUnmanaged(u8) = .empty;
             defer label.deinit(self.gpa);
-            try label.appendSlice(self.gpa, class.class_name);
+            try label.appendSlice(self.gpa, declaration.name);
             try label.append(self.gpa, '<');
             for (params, 0..) |param, i| {
                 if (i != 0) try label.appendSlice(self.gpa, ", ");
@@ -125461,6 +125541,16 @@ pub const Checker = struct {
         const params = self.generic_signature_params.get(sig) orelse return;
         for (params) |param| {
             if (subs.contains(param)) continue;
+            // Source-owned signatures have no declaration node in this HIR.
+            // Their parameter payload already holds the owner's lowered
+            // default, including references to earlier parameter identities.
+            if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
+                const default = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)].default;
+                if (default != types.Primitive.none) {
+                    try subs.put(self.gpa, param, try self.substituteType(default, subs));
+                    continue;
+                }
+            }
             const decl = self.type_parameter_decl_nodes.get(param) orelse
                 self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param)) orelse continue;
             if (self.hir.kindOf(decl) != .type_parameter) continue;
@@ -153290,6 +153380,9 @@ pub const Checker = struct {
         for (0..n) |i| {
             try self.inferFromPair(param_ts[i], arg_ts[i], &subs);
         }
+        // Apply defaults in declaration order even when a parameter appears
+        // only inside a symbolic return type, or only in a later default.
+        try self.applyGenericSignatureDefaults(sig, &subs);
         // Default-type fallback: walk every TypeId reachable from the
         // signature (params + return) and, for any type-parameter id
         // not already substituted, fall back to its declaration-site
@@ -197027,6 +197120,29 @@ test "checker: source-owned dependent defaults use earlier effective arguments" 
     try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(implicit, value).?, string_array));
     try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, number_array));
     try T.expect(!try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, string_array));
+}
+
+test "checker: source-owned factory defaults substitute earlier arguments without consumer HIR" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    var params = [_]ProgramClassSchema.Parameter{ .{ .name = "T", .default = &string }, .{ .name = "U" } };
+    const first: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const second: ProgramClassSchema.Expression = .{ .parameter = &params[1] };
+    const array: ProgramClassSchema.Expression = .{ .array = &first };
+    params[1].default = &array;
+    const function: ProgramClassSchema.Expression = .{ .function = .{ .parameters = &.{}, .result = &second } };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "make", .parameters = &params, .body = &function, .is_function = true };
+    const signature = (try s.checker.programExportedValueType(.{ .target_path = "/owner.ts", .export_name = "make", .kind = .function, .declaration = &declaration })).?;
+    const actual = try s.checker.instantiateSignatureFromArgs(signature, &.{}, &.{});
+    const result = s.ti.signatureReturn(actual).?;
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(result));
+    const declared = s.checker.generic_signature_params.get(signature).?;
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try subs.put(T.allocator, declared[0], types.Primitive.number_t);
+    try s.checker.applyGenericSignatureDefaults(signature, &subs);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(subs.get(declared[1]).?));
 }
 
 test "checker: source-owned anonymous constraints report without a local declaration node" {

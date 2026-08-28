@@ -48,6 +48,7 @@ pub const Declaration = struct {
     parameters: []Parameter = &.{},
     body: ?*const Expression = null,
     is_class: bool = false,
+    is_function: bool = false,
 };
 
 pub const Schema = struct {
@@ -65,11 +66,15 @@ pub const Schema = struct {
     /// declaration graphs by identity, so recursive aliases terminate without
     /// truncating their bodies or imposing an arbitrary depth limit.
     pub fn isSupported(self: *const Schema, gpa: std.mem.Allocator) !bool {
+        return declarationSupported(self.declaration, gpa);
+    }
+
+    pub fn declarationSupported(declaration: *const Declaration, gpa: std.mem.Allocator) !bool {
         var pending: std.ArrayListUnmanaged(*const Expression) = .empty;
         defer pending.deinit(gpa);
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
-        try appendDeclaration(gpa, &pending, self.declaration);
+        try appendDeclaration(gpa, &pending, declaration);
         while (pending.pop()) |expr| {
             const entry = try visited.getOrPut(gpa, expr);
             if (entry.found_existing) continue;

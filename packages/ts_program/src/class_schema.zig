@@ -9,7 +9,7 @@ const schema = driver.ProgramClassSchema;
 const Primitive = schema.Primitive;
 
 pub const Source = struct { path: []const u8, compilation: *driver.Compilation };
-const Key = struct { source: usize, node: hir.NodeId };
+pub const Key = struct { source: usize, node: hir.NodeId };
 const Resolution = union(enum) { declaration: Key, missing, unsupported };
 const Context = struct { source: usize, declaration: *schema.Declaration };
 
@@ -17,9 +17,8 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     const result = try gpa.create(schema.Schema);
     result.* = .{ .arena = std.heap.ArenaAllocator.init(gpa), .declaration = undefined };
     errdefer result.deinit(gpa);
-    var builder: Builder = .{ .arena = result.arena.allocator(), .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
+    var builder = try Builder.init(gpa, result.arena.allocator(), resolver, sources);
     defer builder.query.deinit();
-    for (sources) |owner| try builder.query.borrow(owner.path, owner.compilation);
     for (sources, 0..) |owner, index| {
         if (owner.compilation == source.compilation) {
             result.declaration = try builder.declaration(.{ .source = index, .node = node });
@@ -29,12 +28,19 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     unreachable;
 }
 
-const Builder = struct {
+pub const Builder = struct {
     arena: std.mem.Allocator,
     sources: []const Source,
     resolver: *resolver_mod.Resolver,
     query: origins.Query,
     declarations: std.AutoHashMapUnmanaged(Key, *schema.Declaration) = .empty,
+
+    pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Builder {
+        var result: Builder = .{ .arena = arena, .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
+        errdefer result.query.deinit();
+        for (sources) |owner| try result.query.borrow(owner.path, owner.compilation);
+        return result;
+    }
 
     fn expression(self: *Builder, value: schema.Expression) !*const schema.Expression {
         const node = try self.arena.create(schema.Expression);
@@ -42,13 +48,13 @@ const Builder = struct {
         return node;
     }
 
-    fn declaration(self: *Builder, key: Key) error{OutOfMemory}!*schema.Declaration {
+    pub fn declaration(self: *Builder, key: Key) error{OutOfMemory}!*schema.Declaration {
         if (self.declarations.get(key)) |existing| return existing;
         const source = self.sources[key.source];
         const c = source.compilation;
         const kind = c.hir.kindOf(key.node);
         const def = try self.arena.create(schema.Declaration);
-        def.* = .{ .path = source.path, .position = c.hir.spanOf(key.node).start, .name = "", .is_class = kind == .class_decl or kind == .class_expr };
+        def.* = .{ .path = source.path, .position = c.hir.spanOf(key.node).start, .name = "", .is_class = kind == .class_decl or kind == .class_expr, .is_function = kind == .fn_decl };
         try self.declarations.put(self.arena, key, def);
         const info: struct { name: hir.NodeId, params: []const hir.NodeId } = switch (kind) {
             .class_decl, .class_expr => blk: {
@@ -63,12 +69,27 @@ const Builder = struct {
                 const value = hir.interfaceOf(&c.hir, key.node);
                 break :blk .{ .name = value.name, .params = c.hir.child_pool.items[value.type_params_start..][0..value.type_params_len] };
             },
+            .fn_decl => blk: {
+                const value = hir.fnDeclOf(&c.hir, key.node);
+                break :blk .{ .name = value.name, .params = hir.fnTypeParams(&c.hir, key.node) };
+            },
+            .var_decl, .let_decl, .const_decl => .{ .name = hir.varDeclOf(&c.hir, key.node).name, .params = &.{} },
             else => {
                 def.body = try self.expression(.unsupported);
                 return def;
             },
         };
         if (info.name != 0 and c.hir.kindOf(info.name) == .identifier) def.name = c.interner.get(hir.identifierOf(&c.hir, info.name).name);
+        if ((kind == .fn_decl or kind == .interface_decl) and info.name != 0 and c.hir.kindOf(info.name) == .identifier) {
+            const name = hir.identifierOf(&c.hir, info.name).name;
+            const symbol = if (kind == .fn_decl) c.module.root.values.get(name) else c.module.root.types.get(name);
+            if (symbol) |bound| {
+                if (bound.decls.items.len != 1 and std.mem.indexOfScalar(hir.NodeId, bound.decls.items, key.node) != null) {
+                    def.body = try self.expression(.unsupported);
+                    return def;
+                }
+            }
+        }
         def.parameters = try self.arena.alloc(schema.Parameter, info.params.len);
         for (info.params, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
         const context: Context = .{ .source = key.source, .declaration = def };
@@ -81,6 +102,10 @@ const Builder = struct {
         }
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
+        else if (kind == .fn_decl)
+            try self.functionType(context, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type)
+        else if (kind == .var_decl or kind == .let_decl or kind == .const_decl)
+            try self.lower(context, hir.varDeclOf(&c.hir, key.node).type_annotation)
         else if (kind == .interface_decl)
             if (hir.interfaceOf(&c.hir, key.node).extends_len != 0) try self.expression(.unsupported) else try self.object(context, hir.interfaceMembers(&c.hir, key.node))
         else
@@ -266,28 +291,36 @@ const Builder = struct {
         for (hir.blockStmts(&c.hir, c.root)) |statement| {
             if (c.hir.kindOf(statement) != .import_decl) continue;
             const import = hir.importOf(&c.hir, statement);
+            if (import.default_binding != 0 and c.hir.kindOf(import.default_binding) == .identifier and
+                hir.identifierOf(&c.hir, import.default_binding).name == name)
+                return self.resolveImported(source, c.interner.get(import.module), "default");
             for (hir.importNamed(&c.hir, statement)) |specifier| {
                 const value = hir.importSpecifierOf(&c.hir, specifier);
                 if (value.local != name) continue;
-                const target = self.resolver.resolve(c.interner.get(import.module), self.sources[source].path) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return .unsupported,
-                };
-                const resolved = self.query.resolve(target.path, c.interner.get(value.imported)) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return .unsupported,
-                };
-                if (!resolved.complete or resolved.ambiguous) return .unsupported;
-                const origin = resolved.type orelse return .unsupported;
-                for (self.sources, 0..) |owner, index| {
-                    if (!std.mem.eql(u8, owner.path, origin.path)) continue;
-                    for (owner.compilation.hir.spans.items, 0..) |span, id| {
-                        if (span.start != origin.position) continue;
-                        switch (owner.compilation.hir.kindOf(@intCast(id))) {
-                            .type_alias_decl, .interface_decl, .class_decl => return .{ .declaration = .{ .source = index, .node = @intCast(id) } },
-                            else => {},
-                        }
-                    }
+                return self.resolveImported(source, c.interner.get(import.module), c.interner.get(value.imported));
+            }
+        }
+        return .unsupported;
+    }
+
+    fn resolveImported(self: *Builder, source: usize, specifier: []const u8, name: []const u8) error{OutOfMemory}!Resolution {
+        const target = self.resolver.resolve(specifier, self.sources[source].path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .unsupported,
+        };
+        const resolved = self.query.resolve(target.path, name) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .unsupported,
+        };
+        if (!resolved.complete or resolved.ambiguous) return .unsupported;
+        const origin = resolved.type orelse return .unsupported;
+        for (self.sources, 0..) |owner, index| {
+            if (!std.mem.eql(u8, owner.path, origin.path)) continue;
+            for (owner.compilation.hir.spans.items, 0..) |span, id| {
+                if (span.start != origin.position) continue;
+                switch (owner.compilation.hir.kindOf(@intCast(id))) {
+                    .type_alias_decl, .interface_decl, .class_decl => return .{ .declaration = .{ .source = index, .node = @intCast(id) } },
+                    else => {},
                 }
             }
         }

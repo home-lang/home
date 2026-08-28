@@ -30,6 +30,7 @@ const source_owners = ts_driver.source_owners;
 pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
 const class_declarations = @import("class_declarations.zig");
+const declaration_graph = @import("declaration_graph.zig");
 
 const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
@@ -584,8 +585,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        const program_exported_values = try self.collectProgramExportedValues();
-        defer freeProgramExportedValues(self.gpa, program_exported_values);
+        var declarations = try self.collectProgramDeclarations();
+        defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -610,7 +611,8 @@ pub const Program = struct {
             per_file.program_global_type_names = program_global_type_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
-            per_file.program_exported_values = program_exported_values;
+            per_file.program_exported_values = declarations.values;
+            per_file.program_exported_types = declarations.types;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
@@ -740,8 +742,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        const program_exported_values = try self.collectProgramExportedValues();
-        defer freeProgramExportedValues(self.gpa, program_exported_values);
+        var declarations = try self.collectProgramDeclarations();
+        defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -773,7 +775,8 @@ pub const Program = struct {
             per_file.program_global_type_names = program_global_type_names;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
-            per_file.program_exported_values = program_exported_values;
+            per_file.program_exported_values = declarations.values;
+            per_file.program_exported_types = declarations.types;
             per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.program_commonjs_exports = program_commonjs_exports;
             per_file.program_umd_globals = merged_program_umd_globals;
@@ -902,139 +905,14 @@ pub const Program = struct {
         return try out.toOwnedSlice(self.gpa);
     }
 
-    fn collectProgramExportedValues(self: *Program) ProgramError![]const ts_driver.ProgramExportedValue {
-        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedValue) = .empty;
-        errdefer freeProgramExportedValues(self.gpa, out.items);
+    fn collectProgramDeclarations(self: *Program) ProgramError!declaration_graph.Graph {
+        var sources: std.ArrayListUnmanaged(declaration_graph.Source) = .empty;
+        defer sources.deinit(self.gpa);
         for (self.files.items) |file| {
-            if (file.redirect_target != null or !file.is_declaration) continue;
-            var lines = std.mem.splitScalar(u8, file.source, '\n');
-            while (lines.next()) |raw_line| {
-                var line = std.mem.trim(u8, raw_line, " \t\r");
-                if (!std.mem.startsWith(u8, line, "export ")) continue;
-                line = std.mem.trimStart(u8, line["export ".len..], " \t");
-                if (std.mem.startsWith(u8, line, "declare ")) {
-                    line = std.mem.trimStart(u8, line["declare ".len..], " \t");
-                }
-                if (std.mem.startsWith(u8, line, "function ")) {
-                    try self.collectProgramExportedFunction(file, line["function ".len..], &out);
-                } else if (std.mem.startsWith(u8, line, "const ") or
-                    std.mem.startsWith(u8, line, "let ") or
-                    std.mem.startsWith(u8, line, "var "))
-                {
-                    const keyword_len: usize = if (std.mem.startsWith(u8, line, "const ")) 6 else 4;
-                    try self.collectProgramExportedVariable(file, line[keyword_len..], &out);
-                }
-            }
+            if (file.redirect_target != null) continue;
+            try sources.append(self.gpa, .{ .path = file.path, .compilation = file.compilation orelse unreachable });
         }
-        return try out.toOwnedSlice(self.gpa);
-    }
-
-    fn collectProgramExportedFunction(
-        self: *Program,
-        file: *const File,
-        declaration: []const u8,
-        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedValue),
-    ) ProgramError!void {
-        const open = std.mem.indexOfScalar(u8, declaration, '(') orelse return;
-        const raw_name = std.mem.trim(u8, declaration[0..open], " \t");
-        const generic_start = std.mem.indexOfScalar(u8, raw_name, '<') orelse raw_name.len;
-        const name = std.mem.trimEnd(u8, raw_name[0..generic_start], " \t");
-        if (name.len == 0) return;
-        const close_rel = std.mem.indexOfScalar(u8, declaration[open + 1 ..], ')') orelse return;
-        const close = open + 1 + close_rel;
-        var params: std.ArrayListUnmanaged(ts_driver.ProgramTypeReference) = .empty;
-        errdefer params.deinit(self.gpa);
-        var param_it = std.mem.splitScalar(u8, declaration[open + 1 .. close], ',');
-        while (param_it.next()) |raw_param| {
-            const param = std.mem.trim(u8, raw_param, " \t");
-            if (param.len == 0) continue;
-            const colon = std.mem.indexOfScalar(u8, param, ':') orelse continue;
-            const type_name = simpleProgramTypeName(param[colon + 1 ..]);
-            try params.append(self.gpa, try self.programTypeReference(file, type_name));
-        }
-        var result: ts_driver.ProgramTypeReference = .{ .name = "void" };
-        const after = std.mem.trimStart(u8, declaration[close + 1 ..], " \t");
-        if (after.len > 0 and after[0] == ':') {
-            result = try self.programTypeReference(file, simpleProgramTypeName(after[1..]));
-        }
-        try out.append(self.gpa, .{
-            .target_path = file.path,
-            .export_name = name,
-            .kind = .function,
-            .parameters = try params.toOwnedSlice(self.gpa),
-            .result = result,
-        });
-    }
-
-    fn collectProgramExportedVariable(
-        self: *Program,
-        file: *const File,
-        declaration: []const u8,
-        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedValue),
-    ) ProgramError!void {
-        const colon = std.mem.indexOfScalar(u8, declaration, ':') orelse return;
-        const name = std.mem.trim(u8, declaration[0..colon], " \t");
-        if (name.len == 0) return;
-        const value_type = try self.programTypeReference(file, simpleProgramTypeName(declaration[colon + 1 ..]));
-        try out.append(self.gpa, .{
-            .target_path = file.path,
-            .export_name = name,
-            .kind = .variable,
-            .result = value_type,
-        });
-    }
-
-    fn simpleProgramTypeName(raw: []const u8) []const u8 {
-        const trimmed = std.mem.trim(u8, raw, " \t\r;{}");
-        var end: usize = 0;
-        while (end < trimmed.len and (std.ascii.isAlphanumeric(trimmed[end]) or
-            trimmed[end] == '_' or trimmed[end] == '$')) : (end += 1)
-        {}
-        return if (end == 0) "any" else trimmed[0..end];
-    }
-
-    fn programTypeReference(self: *Program, file: *const File, name: []const u8) ProgramError!ts_driver.ProgramTypeReference {
-        if (name.len == 0 or std.mem.eql(u8, name, "any") or
-            std.mem.eql(u8, name, "unknown") or std.mem.eql(u8, name, "never") or
-            std.mem.eql(u8, name, "void") or std.mem.eql(u8, name, "string") or
-            std.mem.eql(u8, name, "number") or std.mem.eql(u8, name, "boolean"))
-        {
-            return .{ .name = if (name.len == 0) "any" else name };
-        }
-        var lines = std.mem.splitScalar(u8, file.source, '\n');
-        while (lines.next()) |raw_line| {
-            const line = std.mem.trim(u8, raw_line, " \t\r");
-            if (!std.mem.startsWith(u8, line, "import ")) continue;
-            const after_import = std.mem.trimStart(u8, line["import ".len..], " \t");
-            var local_end: usize = 0;
-            while (local_end < after_import.len and (std.ascii.isAlphanumeric(after_import[local_end]) or
-                after_import[local_end] == '_' or after_import[local_end] == '$')) : (local_end += 1)
-            {}
-            if (local_end == 0 or !std.mem.eql(u8, after_import[0..local_end], name)) continue;
-            const from = std.mem.indexOf(u8, after_import[local_end..], "from") orelse continue;
-            const after_from = std.mem.trimStart(u8, after_import[local_end + from + "from".len ..], " \t");
-            if (after_from.len < 2 or (after_from[0] != '"' and after_from[0] != '\'')) continue;
-            const quote = after_from[0];
-            const quote_end = std.mem.indexOfScalar(u8, after_from[1..], quote) orelse continue;
-            const specifier = after_from[1 .. 1 + quote_end];
-            const resolution = self.resolver.resolve(specifier, file.path) catch continue;
-            var target_path = resolution.path;
-            if (self.by_path.get(resolution.path)) |target_id| {
-                const target_file = self.files.items[target_id];
-                if (target_file.redirect_target) |canonical_id| {
-                    target_path = self.files.items[canonical_id].path;
-                }
-            }
-            return .{ .name = name, .target_path = target_path, .is_default = true };
-        }
-        return .{ .name = name };
-    }
-
-    fn freeProgramExportedValues(gpa: std.mem.Allocator, values: []const ts_driver.ProgramExportedValue) void {
-        for (values) |value| {
-            if (value.parameters.len > 0) gpa.free(value.parameters);
-        }
-        if (values.len > 0) gpa.free(values);
+        return declaration_graph.collect(self.gpa, self.resolver, sources.items) catch return error.OutOfMemory;
     }
 
     fn collectAmbientModuleInterfaceExports(self: *const Program) ProgramError![]const ts_driver.ProgramAmbientModuleInterfaceExport {
@@ -2684,8 +2562,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        const program_exported_values = try self.collectProgramExportedValues();
-        defer freeProgramExportedValues(self.gpa, program_exported_values);
+        var declarations = try self.collectProgramDeclarations();
+        defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const program_commonjs_exports = try self.collectProgramCommonJsExports();
@@ -2705,7 +2583,8 @@ pub const Program = struct {
         shared_options.program_global_type_names = program_global_type_names;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
-        shared_options.program_exported_values = program_exported_values;
+        shared_options.program_exported_values = declarations.values;
+        shared_options.program_exported_types = declarations.types;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
@@ -4593,6 +4472,59 @@ test "Program: generic local declarations retain schemas without becoming export
         try T.expectEqualStrings("/classes.ts", class.declaration_path);
         try T.expectEqual(!std.mem.eql(u8, class.class_name, "Visible"), class.local_only);
     }
+}
+
+test "Program: exported type and factory aliases share a source-owned declaration graph" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner = "export interface Box<T> { readonly value: T; } export function make<T>(value: T): Box<T> { return { value }; } export const seed: Box<number> = make(1);";
+    const barrel = "export { Box as AliasBox, make as build, seed as sample } from './owner';";
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/barrel.ts", barrel);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/barrel.ts", barrel);
+    _ = try program.add("/owner.ts", owner);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 2), graph.types.len);
+    try T.expectEqual(@as(usize, 4), graph.values.len);
+    try T.expect(graph.types[0].declaration == graph.types[1].declaration);
+    const box = graph.types[0].declaration;
+    try T.expectEqualStrings("/owner.ts", box.path);
+    var factory: ?*const ts_driver.ProgramClassSchema.Declaration = null;
+    for (graph.values) |value| {
+        const declaration = value.declaration.?;
+        try T.expectEqualStrings("/owner.ts", declaration.path);
+        if (!declaration.is_function) continue;
+        if (factory) |previous| try T.expect(previous == declaration);
+        factory = declaration;
+        const signature = declaration.body.?.function;
+        try T.expect(signature.result.reference.declaration == box);
+        try T.expect(signature.parameters[0].type.parameter == &declaration.parameters[0]);
+        try T.expect(signature.result.reference.arguments[0].parameter == &declaration.parameters[0]);
+    }
+    try T.expect(factory != null);
+}
+
+test "Program: unsupported overload and merged interface graphs are not published as partial signatures" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", "export interface Box { first: string } export interface Box { second: number } export declare function make(value: string): Box; export declare function make(value: number): Box;");
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 0), graph.values.len);
+    try T.expectEqual(@as(usize, 0), graph.types.len);
 }
 
 test "Program: bound class facts separate static members and ignore source trivia" {

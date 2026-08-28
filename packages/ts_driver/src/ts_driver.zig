@@ -37,6 +37,7 @@ pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = ts_checker.ProgramMemberVisibility;
 pub const ProgramTypeReference = ts_checker.ProgramTypeReference;
 pub const ProgramExportedValue = ts_checker.ProgramExportedValue;
+pub const ProgramExportedType = ts_checker.ProgramExportedType;
 pub const ProgramExportedValueKind = ts_checker.ProgramExportedValueKind;
 pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
 pub const ProgramCommonJsExport = ts_checker.ProgramCommonJsExport;
@@ -432,6 +433,7 @@ pub const CompileOptions = struct {
     /// Program-level exported classes discovered in sibling files.
     program_exported_classes: []const ProgramExportedClass = &.{},
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_exported_types: []const ProgramExportedType = &.{},
     /// Program-level exported interfaces declared inside ambient external
     /// modules in sibling files.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
@@ -2321,6 +2323,9 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     }
     if (options.program_exported_values.len > 0) {
         checker.setProgramExportedValues(options.program_exported_values);
+    }
+    if (options.program_exported_types.len > 0) {
+        checker.setProgramExportedTypes(options.program_exported_types);
     }
     if (options.program_ambient_module_interface_exports.len > 0) {
         checker.setProgramAmbientModuleInterfaceExports(options.program_ambient_module_interface_exports);
