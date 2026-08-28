@@ -50291,6 +50291,9 @@ pub const Checker = struct {
         right_t: TypeId,
         right: types.ObjectMember,
     ) bool {
+        if (left.declaration_origin != 0 or right.declaration_origin != 0) {
+            return left.declaration_origin == right.declaration_origin;
+        }
         const left_program_origin = self.synthetic_program_class_origins.get(left_t);
         const right_program_origin = self.synthetic_program_class_origins.get(right_t);
         if (left_program_origin != null or right_program_origin != null) {
@@ -54472,6 +54475,7 @@ pub const Checker = struct {
                     .is_method = member.is_method,
                     .visibility = member.visibility,
                     .decl_node = member.decl_node,
+                    .declaration_origin = member.declaration_origin,
                 });
             }
             const str_idx = self.interner.objectStringIndex(t);
@@ -106196,6 +106200,7 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!TypeId {
         _ = anchor;
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         var class_params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer class_params.deinit(self.gpa);
         try self.pushNarrowScope();
@@ -106228,9 +106233,9 @@ pub const Checker = struct {
                     .protected => .protected,
                     .private => .private,
                 },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
-        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
@@ -106265,6 +106270,12 @@ pub const Checker = struct {
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = member.is_method,
+                .visibility = switch (member.visibility) {
+                    .public => .public,
+                    .protected => .protected,
+                    .private => .private,
+                },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
         const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
@@ -106273,7 +106284,6 @@ pub const Checker = struct {
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
@@ -106315,6 +106325,7 @@ pub const Checker = struct {
         exported_class: ProgramExportedClass,
         class_name: hir_mod.StringId,
     ) CheckError!TypeId {
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
@@ -106331,52 +106342,24 @@ pub const Checker = struct {
                     .protected => .protected,
                     .private => .private,
                 },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
-        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const display = if (exported_class.is_default)
             try self.programDefaultClassDisplayName(exported_class.target_path)
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         return instance_t;
-    }
-
-    fn appendSyntheticProgramClassNominalBrand(
-        self: *Checker,
-        exported_class: ProgramExportedClass,
-        members: *std.ArrayListUnmanaged(types.ObjectMember),
-    ) CheckError!void {
-        var nominal = false;
-        for (exported_class.members) |member| {
-            if (member.visibility != .public) {
-                nominal = true;
-                break;
-            }
-        }
-        if (!nominal) return;
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
-        const origin_text = self.string_interner.get(origin);
-        const brand_text = try std.fmt.allocPrint(self.diag_arena.allocator(), "__home_class_origin_{s}", .{origin_text});
-        const brand = self.string_interner.intern(brand_text) catch return error.OutOfMemory;
-        try members.append(self.gpa, .{
-            .name = brand,
-            .type = types.Primitive.never,
-            .is_optional = false,
-            .is_readonly = true,
-            .is_method = false,
-            .visibility = .private,
-        });
     }
 
     fn syntheticProgramClassOrigin(self: *Checker, exported_class: ProgramExportedClass) CheckError!hir_mod.StringId {
         const text = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "{s}::{s}::{s}",
-            .{ exported_class.target_path, exported_class.ambient_module_name, exported_class.class_name },
+            "{d}:{s}{d}:{s}{d}:{s}",
+            .{ exported_class.target_path.len, exported_class.target_path, exported_class.ambient_module_name.len, exported_class.ambient_module_name, exported_class.class_name.len, exported_class.class_name },
         );
         return self.string_interner.intern(text) catch error.OutOfMemory;
     }
@@ -157234,6 +157217,7 @@ pub const Checker = struct {
                     .is_method = om.is_method,
                     .visibility = om.visibility,
                     .decl_node = om.decl_node,
+                    .declaration_origin = om.declaration_origin,
                 });
             }
             // Preserve and substitute index signatures so `T[]`
@@ -208406,6 +208390,59 @@ test "checker: program ambient require namespaces retain private class origin" {
     s.checker.setProgramExportedClasses(&classes);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: imported nominal origins are metadata without synthetic members" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const name = try s.sint.intern("Secret");
+    const members = [_]ProgramExportedClassMember{
+        .{ .name = "key", .type_name = "string", .visibility = .private },
+        .{ .name = "value", .type_name = "string" },
+    };
+    const first: ProgramExportedClass = .{ .target_path = "/a.ts", .class_name = "Secret", .members = &members };
+    const second: ProgramExportedClass = .{ .target_path = "/b.ts", .class_name = "Secret", .members = &members };
+    const first_type = try s.checker.syntheticProgramClassInstanceType(first, name);
+    const alias_type = try s.checker.syntheticProgramClassInstanceType(first, name);
+    const second_type = try s.checker.syntheticProgramClassInstanceType(second, name);
+    for ([_]TypeId{ first_type, alias_type, second_type }) |instance| {
+        const actual = s.ti.objectMembers(instance);
+        try T.expectEqual(@as(usize, 2), actual.len);
+        try T.expectEqualStrings("key", s.sint.get(actual[0].name));
+        try T.expectEqualStrings("value", s.sint.get(actual[1].name));
+        try T.expect(actual[0].declaration_origin != 0);
+        try T.expectEqual(@as(hir_mod.StringId, 0), actual[1].declaration_origin);
+    }
+    try T.expect(try s.checker.checkerAssignableTo(first_type, alias_type));
+    try T.expect(!try s.checker.checkerAssignableTo(first_type, second_type));
+    // Length-prefixing prevents module/class separators inside a source path
+    // from making distinct declaration coordinates compare equal.
+    const one = try s.checker.syntheticProgramClassOrigin(.{ .target_path = "/x::y", .ambient_module_name = "z", .class_name = "Secret" });
+    const two = try s.checker.syntheticProgramClassOrigin(.{ .target_path = "/x", .ambient_module_name = "y::z", .class_name = "Secret" });
+    try T.expect(one != two);
+}
+
+test "checker: imported nominal origins survive generic substitution" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithFlags(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .invariant, false);
+    const member: types.ObjectMember = .{
+        .name = try s.sint.intern("key"),
+        .type = parameter,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+        .visibility = .private,
+        .declaration_origin = try s.sint.intern("source:Secret"),
+    };
+    const original = try s.ti.internObjectType(&.{member});
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, parameter, types.Primitive.string_t);
+    const mapped = try s.checker.substituteType(original, &substitutions);
+    var expected = member;
+    expected.type = types.Primitive.string_t;
+    try T.expectEqualDeep(expected, s.ti.objectMembers(mapped)[0]);
 }
 
 test "checker: repeated structural vars and for-head typeof share the hoisted type" {

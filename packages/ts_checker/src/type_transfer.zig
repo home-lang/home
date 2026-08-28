@@ -333,6 +333,7 @@ const Builder = struct {
                     mapped.name = try self.string(member.name);
                     mapped.type = try self.typeId(member.type);
                     mapped.decl_node = try self.node(member.decl_node);
+                    if (member.declaration_origin != 0) mapped.declaration_origin = try self.string(member.declaration_origin);
                     try target.pool.object_member_pool.append(target.gpa, mapped);
                 }
                 target.pool.object_type_payloads.items[target.pool.payloadOf(mapped_id)] = .{
@@ -560,7 +561,7 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     const enumeration = try ti.internEnumStringLiteral(10, 30, 40);
     const parameter = try ti.internFreshTypeParameterWithFlags(50, p.unknown, text, .contravariant, true);
     const object = try ti.internObjectTypeWithIndexAndSymbol(&.{
-        .{ .name = 60, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 7 },
+        .{ .name = 60, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 7, .declaration_origin = 61 },
         .{ .name = 70, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = true },
     }, text, number, bigint);
     ti.setTypeSymbol(object, 9);
@@ -631,10 +632,11 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     try T.expectEqualDeep(types.TypeParameterPayload{ .name = 150, .constraint = object, .default = text, .variance = .contravariant, .is_const = true }, tp);
     const obj = pool.object_type_payloads.items[pool.payloadOf(object)];
     try T.expectEqual(@as(u32, 1009), pool.headers.items[object].symbol);
-    try T.expectEqualDeep(types.ObjectMember{ .name = 160, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 1007 }, pool.object_member_pool.items[obj.members_start]);
+    try T.expectEqualDeep(types.ObjectMember{ .name = 160, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 1007, .declaration_origin = 161 }, pool.object_member_pool.items[obj.members_start]);
     try T.expectEqual(parameter, pool.object_member_pool.items[obj.members_start + 1].type);
     try T.expectEqual(@as(u32, 170), pool.object_member_pool.items[obj.members_start + 1].name);
     try T.expectEqual(hir.none_node_id, pool.object_member_pool.items[obj.members_start + 1].decl_node);
+    try T.expectEqual(@as(types.StringId, 0), pool.object_member_pool.items[obj.members_start + 1].declaration_origin);
     try T.expectEqual(pool.payloadOf(signature), obj.call_sig);
     try T.expectEqual(pool.payloadOf(signature), obj.construct_sig);
     try T.expectEqual(text, obj.string_index_type);

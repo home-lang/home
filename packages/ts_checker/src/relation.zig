@@ -581,6 +581,7 @@ pub const Engine = struct {
                     if (x.name != y.name) continue;
                     if (x.is_optional != y.is_optional) return false;
                     if (x.is_readonly != y.is_readonly) return false;
+                    if (!memberOriginsCompatible(x, y)) return false;
                     if (!try self.isIdenticalTo(x.type, y.type)) return false;
                     matched = true;
                     break;
@@ -1700,13 +1701,9 @@ pub const Engine = struct {
             defer members.deinit(self.interner.gpa);
             for (snapshot) |m| {
                 const member_t = try self.substituteTpDeepLimit(m.type, map, depth + 1);
-                try members.append(self.interner.gpa, .{
-                    .name = m.name,
-                    .type = self.validOrUnknown(member_t),
-                    .is_optional = m.is_optional,
-                    .is_readonly = m.is_readonly,
-                    .is_method = m.is_method,
-                });
+                var mapped = m;
+                mapped.type = self.validOrUnknown(member_t);
+                try members.append(self.interner.gpa, mapped);
             }
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
@@ -2741,6 +2738,7 @@ pub const Engine = struct {
         const effective_target = try self.effectiveOptionalMemberType(target_member);
         for (source_members) |sm| {
             if (sm.name != target_member.name) continue;
+            if (!memberOriginsCompatible(sm, target_member)) return false;
             if (!target_member.is_optional and sm.is_optional) return false;
             // readonly on target is fine even if source is mutable
             // (covariant). Mutable on target with readonly source is
@@ -2756,6 +2754,14 @@ pub const Engine = struct {
             if (try self.isAssignableTo(sm.type, effective_target)) return true;
         }
         return false;
+    }
+
+    fn memberOriginsCompatible(left: types.ObjectMember, right: types.ObjectMember) bool {
+        // Local declarations retain their checker-owned HIR/heritage checks.
+        // Imported origins must survive nested relations and substitutions,
+        // where the outer object need not itself be a named class instance.
+        if (left.declaration_origin == 0 and right.declaration_origin == 0) return true;
+        return left.declaration_origin == right.declaration_origin and left.visibility == right.visibility;
     }
 
     /// Effective type of a (possibly optional) object property for
@@ -3055,6 +3061,82 @@ test "Engine: structural object assignability — exact match" {
     });
     try T.expect(try e.isAssignableTo(a, b));
     try T.expect(try e.isIdenticalTo(a, b));
+}
+
+test "Engine: imported nominal origins survive nested structural relations" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.string_interner = &sint;
+    const key = try sint.intern("key");
+    const value = try sint.intern("value");
+    const first_origin = try sint.intern("first:Secret");
+    const second_origin = try sint.intern("second:Secret");
+    for ([_]types.MemberVisibility{ .private, .protected }) |visibility| {
+        var member = mkMember(key, Primitive.string_t, false);
+        member.visibility = visibility;
+        member.declaration_origin = first_origin;
+        const first = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        const alias = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        member.declaration_origin = second_origin;
+        const second = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        try T.expect(try e.isIdenticalTo(first, alias));
+        try T.expect(try e.isAssignableTo(first, alias));
+        try T.expect(!try e.isIdenticalTo(first, second));
+        try T.expect(!try e.isAssignableTo(first, second));
+        try T.expect(!try e.isAssignableTo(second, first));
+        const surface = try ti.internObjectType(&.{mkMember(value, Primitive.string_t, false)});
+        const structural = try ti.internObjectType(&.{ mkMember(key, Primitive.string_t, false), mkMember(value, Primitive.string_t, false) });
+        try T.expect(try e.isAssignableTo(first, surface));
+        try T.expect(!try e.isAssignableTo(structural, first));
+        try T.expect(!try e.isAssignableTo(first, structural));
+        const wrapped_first = try ti.internObjectType(&.{mkMember(value, first, false)});
+        const wrapped_alias = try ti.internObjectType(&.{mkMember(value, alias, false)});
+        const wrapped_second = try ti.internObjectType(&.{mkMember(value, second, false)});
+        try T.expect(try e.isAssignableTo(wrapped_first, wrapped_alias));
+        try T.expect(!try e.isAssignableTo(wrapped_first, wrapped_second));
+        const first_array = try ti.internArrayType(&sint, first);
+        const alias_array = try ti.internArrayType(&sint, alias);
+        const second_array = try ti.internArrayType(&sint, second);
+        try T.expect(try e.isAssignableTo(first_array, alias_array));
+        try T.expect(!try e.isAssignableTo(first_array, second_array));
+        const make_first = try ti.internSignature(&.{}, first, false);
+        const make_alias = try ti.internSignature(&.{}, alias, false);
+        const make_second = try ti.internSignature(&.{}, second, false);
+        try T.expect(try e.isAssignableTo(make_first, make_alias));
+        try T.expect(!try e.isAssignableTo(make_first, make_second));
+        const use_first = try ti.internSignature(&.{first}, Primitive.void_t, false);
+        const use_alias = try ti.internSignature(&.{alias}, Primitive.void_t, false);
+        const use_second = try ti.internSignature(&.{second}, Primitive.void_t, false);
+        try T.expect(try e.isAssignableTo(use_first, use_alias));
+        try T.expect(!try e.isAssignableTo(use_first, use_second));
+        const intersection = try ti.internIntersection(&.{ second, surface });
+        try T.expect(!try e.isAssignableTo(intersection, first));
+    }
+}
+
+test "Engine: imported nominal origins survive type parameter substitution" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    var member = mkMember(2, parameter, false);
+    member.visibility = .private;
+    member.decl_node = 17;
+    member.declaration_origin = 3;
+    const original = try ti.internObjectType(&.{member});
+    const mapped = try e.substituteTpDeep(original, &.{.{ .from = parameter, .to = Primitive.string_t }});
+    member.type = Primitive.string_t;
+    try T.expectEqualDeep(member, ti.objectMembers(mapped)[0]);
+    const alias = try ti.internObjectType(&.{member});
+    try T.expect(try e.isAssignableTo(mapped, alias));
+    member.declaration_origin = 4;
+    const other = try ti.internObjectType(&.{member});
+    try T.expect(!try e.isAssignableTo(mapped, other));
 }
 
 test "Engine: object primitive accepts object-like sources only" {

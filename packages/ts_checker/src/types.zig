@@ -317,6 +317,10 @@ pub const ObjectMember = struct {
     is_method: bool,
     visibility: MemberVisibility = .public,
     decl_node: hir.NodeId = hir.none_node_id,
+    /// Source-qualified declaring-class identity for imported non-public
+    /// members. This is metadata, not a property name or a local HIR node.
+    /// Zero means no imported origin; string IDs relocate with the type graph.
+    declaration_origin: StringId = 0,
 };
 
 pub const ObjectTypePayload = struct {
