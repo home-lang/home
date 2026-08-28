@@ -90,6 +90,60 @@ class WorkloadSelectionTests(unittest.TestCase):
             commands.assert_not_called()
 
 
+class RecursiveGenericWorkloadTests(unittest.TestCase):
+    def setUp(self):
+        config = {"generated": {"recursive_generic_families": 256}}
+        patcher = mock.patch.object(run, "manifest", return_value=config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_generator_retains_distinct_arguments_and_concrete_uses(self):
+        with mock.patch.object(run, "write") as write:
+            run.generate_recursive_generics(run.Path("project"), 3)
+        sources = {str(call.args[0]): call.args[1] for call in write.call_args_list}
+        self.assertIn("next: Link<T[]>", sources["project/src/owner.ts"])
+        consumer = sources["project/src/recursive-generics.ts"]
+        for index in range(3):
+            self.assertIn(f"readonly tag{index}: string", consumer)
+            self.assertIn(f"Box<Payload{index}>", consumer)
+            self.assertIn(f"Payload{index}[][][][] = selected{index}", consumer)
+            self.assertIn(f"selected{index}[0][0][0][0].id", consumer)
+        self.assertEqual(3, consumer.count(".value.next.next.next.next.item"))
+        with self.assertRaises(ValueError):
+            run.generate_recursive_generics(run.Path("project"), 0)
+
+    def test_negative_controls_append_to_copy_and_cover_first_middle_last(self):
+        complete = "error TS2322: wrong\n" * 6 + "error TS2339: missing\n" * 3
+        with mock.patch.object(run.shutil, "copytree") as copy, mock.patch.object(
+            run.Path, "read_text", return_value="original source\n"
+        ), mock.patch.object(run, "write") as write, mock.patch.object(
+            run.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, complete, "")
+        ):
+            run.validate_recursive_generic_negatives({"home": ["home"]})
+            self.assertEqual(run.CORPUS / "recursive_generics", copy.call_args.args[0])
+            self.assertNotEqual(run.CORPUS / "recursive_generics/src/recursive-generics.ts", write.call_args.args[0])
+            self.assertTrue(write.call_args.args[1].startswith("original source\n"))
+            for index in (0, 128, 255):
+                self.assertIn(f"selected{index}[0][0][0][0].id", write.call_args.args[1])
+                self.assertIn(f"selected{index}[0][0][0][0].missing", write.call_args.args[1])
+
+    def test_negative_controls_reject_partial_errors_acceptance_and_crashes(self):
+        complete = "error TS2322: wrong\n" * 6 + "error TS2339: missing\n" * 3
+        for code, output in ((0, ""), (0, complete), (1, "error TS2322: wrong\n"), (-11, complete), (3, complete)):
+            with mock.patch.object(run.shutil, "copytree"), mock.patch.object(run.Path, "read_text", return_value="source\n"), mock.patch.object(
+                run, "write"
+            ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")):
+                with self.assertRaisesRegex(SystemExit, "failed recursive_generics negative controls"):
+                    run.validate_recursive_generic_negatives({"home": ["home"]})
+
+    def test_positive_workload_requires_negative_admission(self):
+        commands = {"home": ["home"]}
+        with mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), mock.patch.object(
+            run, "validate_recursive_generic_negatives"
+        ) as negatives:
+            run.validate(commands, "recursive_generics")
+            negatives.assert_called_once_with(commands)
+
 class AdmissionTests(unittest.TestCase):
     def test_legacy_graph_report_does_not_claim_an_unvalidated_win(self):
         import compare

@@ -797,6 +797,26 @@ def generate_checkjs_jsdoc(directory: Path, families: int) -> None:
     write(directory / "src/checkjs-jsdoc.js", "".join(blocks).rstrip() + "\n")
 
 
+def generate_recursive_generics(directory: Path, families: int) -> None:
+    if families < 1:
+        raise ValueError("recursive generic workloads require at least one family")
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    write(directory / "src/owner.ts",
+          "type Link<T> = { readonly item: T; readonly next: Link<T[]> };\n"
+          "export declare class Box<T> { readonly value: Link<T>; }\n")
+    blocks = ["import { Box } from './owner';\n"]
+    for index in range(families):
+        blocks.append(
+            f"interface Payload{index} {{ readonly id: number; readonly tag{index}: string; }}\n"
+            f"declare const source{index}: Box<Payload{index}>;\n"
+            f"const selected{index} = source{index}.value.next.next.next.next.item;\n"
+            f"const typed{index}: Payload{index}[][][][] = selected{index};\n"
+            f"const leaf{index}: number = selected{index}[0][0][0][0].id;\n"
+        )
+    write(directory / "src/recursive-generics.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
@@ -840,6 +860,7 @@ def cmd_corpus() -> None:
         CORPUS / "checkjs_jsdoc",
         cfg["checkjs_jsdoc_families"],
     )
+    generate_recursive_generics(CORPUS / "recursive_generics", cfg["recursive_generic_families"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
@@ -919,6 +940,31 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         validate_graph_negatives(commands, workload)
     elif workload == "variadic_tuples":
         validate_variadic_tuple_negatives(commands)
+    elif workload == "recursive_generics":
+        validate_recursive_generic_negatives(commands)
+
+
+def validate_recursive_generic_negatives(commands: dict[str, list[str]]) -> None:
+    families = manifest()["generated"]["recursive_generic_families"]
+    indices = sorted({0, families // 2, families - 1})
+    invalid = "".join(
+        f"const wrongLeaf{index}: string = selected{index}[0][0][0][0].id;\n"
+        f"const wrongContainer{index}: {{ id: string }}[][][][] = selected{index};\n"
+        f"const missing{index} = selected{index}[0][0][0][0].missing;\n"
+        for index in indices
+    )
+    with tempfile.TemporaryDirectory(prefix="home-bench-recursive-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "recursive_generics", project)
+        source_path = project / "src/recursive-generics.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322"] * (2 * len(indices)) + ["2339"] * len(indices):
+                raise SystemExit(f"{name} failed recursive_generics negative controls:\n{details}")
 
 
 def validate_variadic_tuple_negatives(commands: dict[str, list[str]]) -> None:
