@@ -93,6 +93,22 @@ Selection is recorded in metadata, and unknown or duplicate names are rejected
 before creating results. Validation and timing rules are unchanged. A targeted
 run supplements the full-suite report; retain and report both results.
 
+Cross-file CommonJS instance consumption has an **untimed** audit:
+
+```sh
+python3 bench/vs_tsgo/audit_commonjs.py
+```
+
+Its 66 cases use explicit JavaScript roots with `allowJs` and `checkJs`, both
+owner/app orders, and identical positives with appended wrong-type or missing
+member controls. Direct, bracket, parenthesized and aliased construction,
+reassignment, nested/shadowed assignments and comment/string decoys are covered.
+Both pinned TypeScript compilers pass all cases; Home currently passes only
+the 22 positives. All 44 missing rejections remain failures under
+[#541](https://github.com/home-lang/home/issues/541), not timing inputs. Query
+reuse under [#536](https://github.com/home-lang/home/issues/536) does not itself
+establish cross-file CommonJS typing.
+
 ## Methodology
 
 - Every compiler receives `--noEmit -p <same tsconfig>`; all other benchmark

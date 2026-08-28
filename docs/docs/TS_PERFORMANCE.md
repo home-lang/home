@@ -3140,3 +3140,172 @@ Full-run, confirmation and input-integrity logs are retained locally as
 `corpus-verified-v3.log`. Raw round files and metadata remain in their named
 result directories under `bench/vs_tsgo/results/`; they are not combined with
 any earlier checkpoint.
+
+### Prepared CommonJS export queries
+
+Commit `1cfc33c1a`, follow-up [#536](https://github.com/home-lang/home/issues/536), removes a repeated
+compilation in the empty-name export query. The CLI previously read the file
+and ran a complete parse/bind/check to find a CommonJS constructor name before
+obtaining its already cached bound module. The query now borrows that prepared
+owner's HIR and bindings directly; the conformance adapter retains prepared
+owners for both shape and export-table queries as well. The source-only API
+prepares bindings but no longer checks merely to answer this shape question.
+
+Raw `module.exports` substring recovery is removed. Display names come from
+bound class constructors and const aliases, not comments, strings, unbound
+names or unrelated function constructors. Local `module` bindings are
+distinguished from the CommonJS wrapper binding. Multiple export assignments
+do not get flattened into the first class's name: this single-class display
+fact is absent when the actual union type is needed. This metadata query does
+not replace semantic type checking or supply an `any` type.
+
+The new audit in commit `d95dfaac1` also exposes a separate cross-file typing
+gap, tracked by [#541](https://github.com/home-lang/home/issues/541). It includes
+11 source forms, both root orders, valid consumption, and the identical program
+with an appended wrong-type or missing-member use. Every configuration
+explicitly lists the JavaScript files and enables strict `allowJs`/`checkJs`.
+Both pinned compilers pass **66/66**; frozen Home `b7b9dd9ee` passes **22/66**:
+
+| Untimed CommonJS control | TS 6.0.3 | Native TS 7.0.2 | Home baseline |
+|---|---:|---:|---:|
+| Valid instance consumption | 22/22 | 22/22 | 22/22 |
+| Wrong consumed member type (TS2322) | 22/22 | 22/22 | 0/22 |
+| Missing member (TS2339) | 22/22 | 22/22 | 0/22 |
+
+The missing 44 diagnostics are retained, not waived. CommonJS instance
+consumption is **not a timed workload**. Reassignment can produce union types;
+TS 6 and TS 7 differ in union ordering/display for some probes, so the shared
+audit compares exact diagnostic-code multisets, not an invented common wording.
+
+```sh
+python3 bench/vs_tsgo/audit_commonjs.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
+
+Evidence is retained locally in `bench/vs_tsgo/results/commonjs-query.hyU20d/`:
+`audit-before.log` records the 198 checks. `probe-roots-before.log` includes
+diagnostic wording. The initial `probe-before.log` accidentally excluded JS
+via a TS-only include and is **not valid admission evidence**; the replacement
+uses explicit JS roots, and harness tests now enforce those roots and flags.
+
+The ReleaseFast candidate is `commonjs-query.hyU20d/release-v1/bin/home-tsc`,
+SHA-256 `573257a819a178c9387f6d02a7992c08f995185f5dbc94034eb5eadc0ae956c0`.
+All **19/19** existing workload admission gates pass before timing. The complete
+15-audit comparison checks case identities as well as totals: **every previously
+passing case still passes**. Home's CommonJS result remains 22/66 and all other
+audit scores remain unchanged, including exported factories 240/240, recursive
+generics 288/288, exported variable lists 80/96, nominal origins 44/52, owners
+12/20, globals 32/56 and bound globals 44/56. Both competitors pass every case.
+
+Program **140/140**, conformance **1,418/1,418**, CLI **69/69** and harness
+**75/75** tests pass; unchanged checker and driver targets verify from cache.
+Program tests cover bound aliases,
+shadowing, comments/strings, multiple assignments, and 128 repeated queries with
+an unchanged HIR/type pool and no checked-owner state. Conformance adds cache
+identity checks in both JavaScript modes. Three disk-interrupted audit logs are
+retained alongside complete `*-v1-retry.log` replacements; the final per-case
+verification is `verification-final.log`. No incomplete audit was counted as
+passing, and no source, frozen compiler or benchmark evidence was deleted.
+The first conformance command returned success but lost its console output
+during disk exhaustion; the complete successful retry is retained as
+`conformance-v1-retry.log`.
+
+### Prepared-query checkpoint performance
+
+The same-correctness before/after diagnostic compares frozen `b7b9dd9ee` with
+`1cfc33c1a`. Both first pass the original import and re-export graph positives
+and their unchanged negative controls. Each workload has three warmups per
+binary followed by 30 rounds alternating process order. All **60 round files /
+120 successful finite samples** are retained in
+`commonjs-query.hyU20d/graph-ab-v1/`, including commands, versions and hashes.
+
+| Paired graph comparison | Before | Prepared query | After / before | Lower after time |
+|---|---:|---:|---:|---:|
+| `import_graph` | 32.4 ± 1.7 ms | 28.4 ± 0.6 ms | 0.876 (12.4% less time) | 30/30 rounds |
+| `reexport_graph` | 27.9 ± 5.2 ms | 27.3 ± 4.2 ms | 0.977 (2.3% less time) | 17/30 rounds |
+
+The import-graph improvement is consistent across this run. The small barrel
+mean difference is noisy and does **not** establish a reliable improvement.
+This comparison is separate from the full three-compiler run; the measurements
+are not averaged together. Before-run load averages were 5.43 / 7.41 / 8.00 on
+the shared Apple M3 Pro workstation, after our builds, tests and audits finished.
+
+The checkpoint also records resolved compiler artifacts outside timed commands:
+both Home binaries, the actual native TS 7 executable, TS 6's compiler payload
+(`lib/_tsc.js`), launchers and Node runtime. The native compiler is distinguished
+from its JavaScript launcher. Evidence: `provenance-before.json` and the
+checkpoint-local `provenance.py`; automatic harness-wide provenance remains
+tracked by [#544](https://github.com/home-lang/home/issues/544).
+
+The complete three-compiler measurement is **`20260828T234350Z`**, on the same
+Apple M3 Pro arm64 / macOS 27.0 shared workstation. Verified versions are
+**TS 6.0.3 and native TS 7.0.2**; native TS 7/`tsgo` is one competitor. All 19
+workloads pass admission before three warmups and 30 rotating-order rounds.
+Integrity validation accepts **570 round files / 1,710 successful finite
+samples**. No sample is discarded. Fresh generation matches all **513 corpus
+files byte-for-byte**, and the recorded compiler/runtime/launcher paths and
+hashes match after measurement (`provenance-after.json`).
+
+Our builds, tests and audits had finished before timing; unrelated shared-host
+activity persisted. Full-run load averages before/after were 4.89 / 7.16 / 7.89
+and 6.37 / 7.56 / 7.94. Times below are mean ± sample standard deviation;
+ratios use unrounded means and the faster competitor (native TS 7 in every row).
+
+| Workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `startup` | 65.7 ± 1.2 ms | 40.0 ± 1.1 ms | 3.6 ± 0.1 ms | 11.26× faster |
+| `many_files` | 214.6 ± 2.7 ms | 57.2 ± 1.8 ms | 34.8 ± 1.0 ms | 1.65× faster |
+| `deep_types` | 132.6 ± 17.7 ms | 53.1 ± 2.5 ms | 27.1 ± 1.1 ms | 1.96× faster |
+| `import_graph` | 131.0 ± 2.1 ms | 47.0 ± 1.3 ms | 28.1 ± 1.1 ms | 1.67× faster |
+| `reexport_graph` | 102.7 ± 14.8 ms | 42.7 ± 1.3 ms | 25.6 ± 2.5 ms | 1.67× faster |
+| `tsx_components` | 167.9 ± 1.9 ms | 48.0 ± 0.9 ms | 23.3 ± 0.2 ms | 2.06× faster |
+| `generic_calls` | 182.8 ± 3.2 ms | 56.3 ± 1.7 ms | 23.2 ± 0.4 ms | 2.42× faster |
+| `control_flow` | 288.2 ± 93.7 ms | 86.9 ± 35.4 ms | 46.7 ± 11.7 ms | 1.86× faster |
+| `type_predicates` | 434.7 ± 102.3 ms | 142.9 ± 87.0 ms | 67.7 ± 15.1 ms | 2.11× faster |
+| `type_predicates_large` | 1023.2 ± 72.0 ms | 362.2 ± 30.4 ms | 340.5 ± 18.2 ms | 1.06× lower mean; narrow |
+| `null_safe_access` | 187.3 ± 2.2 ms | 57.0 ± 1.8 ms | 39.6 ± 0.4 ms | 1.44× faster |
+| `destructuring` | 137.7 ± 2.1 ms | 47.6 ± 1.4 ms | 35.3 ± 0.7 ms | 1.35× faster |
+| `overload_resolution` | 196.8 ± 10.6 ms | 63.7 ± 1.8 ms | 29.5 ± 0.7 ms | 2.16× faster |
+| `class_hierarchy` | 233.5 ± 135.8 ms | 62.6 ± 39.5 ms | 34.2 ± 18.4 ms | 1.83× faster |
+| `structural_objects` | 186.2 ± 11.0 ms | 59.1 ± 4.4 ms | 30.6 ± 1.7 ms | 1.93× faster |
+| `interface_composition` | 200.3 ± 5.2 ms | 63.9 ± 1.8 ms | 44.8 ± 1.2 ms | 1.43× faster |
+| `variadic_tuples` | 240.3 ± 5.6 ms | 74.8 ± 2.3 ms | 43.1 ± 2.6 ms | 1.74× faster |
+| `checkjs_jsdoc` | 200.8 ± 4.6 ms | 53.6 ± 1.3 ms | 37.1 ± 0.6 ms | 1.45× faster |
+| `recursive_generics` | 150.7 ± 3.7 ms | 71.1 ± 1.8 ms | 29.1 ± 0.5 ms | 2.44× faster |
+
+Home records lower means on **19/19**. Large predicates lead by only 1.06×
+and win 29/30 paired rounds. Small predicates and class hierarchy also win
+29/30; every other row wins 30/30. Control-flow, small-predicate and class rows
+show substantial variance. These observations are not universal or statistically
+established leadership: real projects, other platforms and the outstanding
+CommonJS/global/owner/diagnostic gaps remain unvalidated. Earlier checkpoints
+and their losses stay documented separately.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/commonjs-query.hyU20d/release-v1/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T234350Z
+```
+
+Console/report evidence: `commonjs-query.hyU20d/timing-v1.log` and
+`report-v1.md`; unchanged input verification: `corpus-verified-v1.log`.
+
+The independent large-predicate confirmation **`20260828T234818Z`** uses the
+same frozen compiler and unchanged admission gates, three warmups and 30
+rotating-order rounds. All **30 round files / 90 successful finite samples**
+validate. Home has the lower time in **30/30 paired rounds**; the margin is
+still modest. This confirmation is separate, not pooled with or substituted
+for the full-run row:
+
+| Confirmation workload | TS 6.0.3 | Native TS 7.0.2 | Home | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `type_predicates_large` | 1111.8 ± 54.4 ms | 388.5 ± 16.7 ms | 358.6 ± 11.7 ms | 1.08× faster |
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/commonjs-query.hyU20d/release-v1/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3 --workload type_predicates_large
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260828T234818Z
+```
+
+The console record is `commonjs-query.hyU20d/confirmation-v1.log`.
+`provenance-confirmation.json` verifies that all recorded artifact hashes still
+match the pre-measurement snapshot. Raw full-run and confirmation JSON remain
+in their separately named directories under `bench/vs_tsgo/results/`.

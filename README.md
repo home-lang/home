@@ -74,40 +74,42 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Frontend performance snapshot** (`b7b9dd9ee`, Apple M3 Pro, shared workstation;
+**Frontend performance snapshot** (`1cfc33c1a`, Apple M3 Pro, shared workstation;
 30 interleaved runs after three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 65.3 ms | 39.5 ms | **3.3 ms** | **11.82× faster** |
-| 256 files | 216.5 ms | 57.0 ms | **38.1 ms** | **1.50× faster** |
-| Deep types | 137.5 ms | 55.2 ms | **28.2 ms** | **1.96× faster** |
-| 128-module import graph | 140.7 ms | 49.2 ms | **33.3 ms** | **1.48× faster** |
-| 64-leaf barrel graph | 99.1 ms | 44.1 ms | **25.6 ms** | **1.72× faster** |
-| 256 typed TSX components | 162.8 ms | 47.5 ms | **23.8 ms** | **1.99× faster** |
-| 256 generic call groups | 181.4 ms | 56.1 ms | **23.0 ms** | **2.44× faster** |
-| 256 exhaustive control-flow functions | 194.3 ms | 61.3 ms | **36.5 ms** | **1.68× faster** |
-| 256 type-predicate/assertion families | 248.1 ms | 74.0 ms | **45.4 ms** | **1.63× faster** |
-| 2,048 type-predicate/assertion families | 1053.4 ms | 377.7 ms | 371.6 ms | 1.02× lower mean; noisy |
-| 256 null-safe-access families | 189.6 ms | 61.1 ms | **39.7 ms** | **1.54× faster** |
-| 128 destructuring/rest/spread families | 145.0 ms | 49.5 ms | **36.6 ms** | **1.35× faster** |
-| 128 × 8 overload calls | 194.1 ms | 62.5 ms | **29.1 ms** | **2.15× faster** |
-| 128 generic class families | 178.9 ms | 50.6 ms | **28.2 ms** | **1.79× faster** |
-| 128 structural object families | 180.0 ms | 56.2 ms | **29.2 ms** | **1.92× faster** |
-| 128 interface/namespace families | 191.7 ms | 60.4 ms | **42.9 ms** | **1.41× faster** |
-| 256 variadic tuple families | 242.4 ms | 76.1 ms | **42.9 ms** | **1.77× faster** |
-| 128 checked-JavaScript/JSDoc families | 204.9 ms | 54.7 ms | **38.0 ms** | **1.44× faster** |
-| 256 recursive generic payloads | 157.2 ms | 73.9 ms | **30.2 ms** | **2.45× faster** |
+| Startup | 65.7 ms | 40.0 ms | **3.6 ms** | **11.26× faster** |
+| 256 files | 214.6 ms | 57.2 ms | **34.8 ms** | **1.65× faster** |
+| Deep types | 132.6 ms | 53.1 ms | **27.1 ms** | **1.96× faster** |
+| 128-module import graph | 131.0 ms | 47.0 ms | **28.1 ms** | **1.67× faster** |
+| 64-leaf barrel graph | 102.7 ms | 42.7 ms | **25.6 ms** | **1.67× faster** |
+| 256 typed TSX components | 167.9 ms | 48.0 ms | **23.3 ms** | **2.06× faster** |
+| 256 generic call groups | 182.8 ms | 56.3 ms | **23.2 ms** | **2.42× faster** |
+| 256 exhaustive control-flow functions | 288.2 ms | 86.9 ms | **46.7 ms** | **1.86× faster** |
+| 256 type-predicate/assertion families | 434.7 ms | 142.9 ms | **67.7 ms** | **2.11× faster** |
+| 2,048 type-predicate/assertion families | 1023.2 ms | 362.2 ms | 340.5 ms | 1.06× lower mean; narrow |
+| 256 null-safe-access families | 187.3 ms | 57.0 ms | **39.6 ms** | **1.44× faster** |
+| 128 destructuring/rest/spread families | 137.7 ms | 47.6 ms | **35.3 ms** | **1.35× faster** |
+| 128 × 8 overload calls | 196.8 ms | 63.7 ms | **29.5 ms** | **2.16× faster** |
+| 128 generic class families | 233.5 ms | 62.6 ms | **34.2 ms** | **1.83× faster** |
+| 128 structural object families | 186.2 ms | 59.1 ms | **30.6 ms** | **1.93× faster** |
+| 128 interface/namespace families | 200.3 ms | 63.9 ms | **44.8 ms** | **1.43× faster** |
+| 256 variadic tuple families | 240.3 ms | 74.8 ms | **43.1 ms** | **1.74× faster** |
+| 128 checked-JavaScript/JSDoc families | 200.8 ms | 53.6 ms | **37.1 ms** | **1.45× faster** |
+| 256 recursive generic payloads | 150.7 ms | 71.1 ms | **29.1 ms** | **2.44× faster** |
 
 Home has lower means on **19/19 timed workloads**. Large predicates have only a
-**1.02× mean lead**, with high variance and 25/30 paired wins over native TS 7.
-A separate 30-round confirmation measures **320.4 vs 331.4 ms (1.03×)**,
-with 29/30 paired wins; it is not substituted into the table. All 19 workloads
-pass their unchanged admission controls before timing, including both graph
-workloads. Shared-host load still adds variance;
+**1.06× mean lead**, with 29/30 paired wins over native TS 7. The controlled
+same-correctness import-graph comparison improves by **12.4%**, with 30/30
+paired wins; the small barrel difference is inconclusive. A separate 30-round
+large-predicate confirmation records **358.6 vs 388.5 ms (1.08×)** and 30/30
+paired wins; it does not replace the full-run row. All 19 workloads
+pass unchanged admission controls before timing. Shared-host load adds
+substantial variance to several rows;
 this is not universal benchmark leadership. Broader rejection coverage,
 real-project validation and cross-platform measurements remain incomplete.
-See [full results, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#indexed-export-checkpoint-performance).
+See [full results, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#prepared-query-checkpoint-performance).
 Earlier snapshots are retained separately, not averaged into this table.
 Async/await coverage is still undergoing validation and is not timed.
 The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
@@ -130,6 +132,7 @@ failures visible:
 | Imported-owner controls | 20/20 | 20/20 | 12/20 |
 | [Exported generic-factory controls](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed) | 240/240 | 240/240 | 240/240 |
 | [Exported variable-list controls](./docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 96/96 | 96/96 | 80/96 |
+| [CommonJS instance controls](./docs/docs/TS_PERFORMANCE.md#prepared-commonjs-export-queries) | 66/66 | 66/66 | 22/66 |
 | [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
