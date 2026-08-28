@@ -14,6 +14,7 @@ pub fn doPatchCommit(
     pathbuf: *bun.PathBuffer,
     log_level: Options.LogLevel,
 ) !?PatchCommitResult {
+    const io = std.Io.Threaded.global_single_threaded.io();
     var folder_path_buf: bun.PathBuffer = undefined;
     var lockfile: *Lockfile = try manager.allocator.create(Lockfile);
     defer lockfile.deinit();
@@ -70,8 +71,8 @@ pub fn doPatchCommit(
     defer if (free_argument) manager.allocator.free(argument);
 
     // Attempt to open the existing node_modules folder
-    var root_node_modules = switch (bun.sys.openatOSPath(bun.FD.cwd(), bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
-        .result => |fd| std.Io.Dir{ .fd = fd.cast() },
+    const root_node_modules = switch (bun.sys.openatOSPath(bun.FD.cwd(), bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
+        .result => |fd| std.Io.Dir{ .handle = fd.cast() },
         .err => |e| {
             Output.prettyError(
                 "<r><red>error<r>: failed to open root <b>node_modules<r> folder: {f}<r>\n",
@@ -80,7 +81,7 @@ pub fn doPatchCommit(
             Global.crash();
         },
     };
-    defer root_node_modules.close();
+    defer root_node_modules.close(io);
 
     var iterator = Lockfile.Tree.Iterator(.node_modules).init(lockfile);
     var resolution_buf: [1024]u8 = undefined;
@@ -218,11 +219,11 @@ pub fn doPatchCommit(
         // There isn't an option to exclude it with `git diff --no-index`, so we
         // will `rename()` it out and back again.
         const has_nested_node_modules = has_nested_node_modules: {
-            var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+            const new_folder_handle = std.Io.Dir.cwd().openDir(io, new_folder, .{}) catch |e| {
                 Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                 Global.crash();
             };
-            defer new_folder_handle.close();
+            defer new_folder_handle.close(io);
 
             if (bun.sys.renameatConcurrently(
                 .fromStdDir(new_folder_handle),
@@ -253,11 +254,11 @@ pub fn doPatchCommit(
                 }
                 break :has_bun_patch_tag null;
             };
-            var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+            const new_folder_handle = std.Io.Dir.cwd().openDir(io, new_folder, .{}) catch |e| {
                 Output.err(e, "failed to open directory <b>{s}<r>", .{new_folder});
                 Global.crash();
             };
-            defer new_folder_handle.close();
+            defer new_folder_handle.close(io);
 
             if (bun.sys.renameatConcurrently(
                 .fromStdDir(new_folder_handle),
@@ -273,14 +274,14 @@ pub fn doPatchCommit(
         };
         defer {
             if (has_nested_node_modules or bun_patch_tag != null) {
-                var new_folder_handle = std.fs.cwd().openDir(new_folder, .{}) catch |e| {
+                const new_folder_handle = std.Io.Dir.cwd().openDir(io, new_folder, .{}) catch |e| {
                     Output.prettyError(
                         "<r><red>error<r>: failed to open directory <b>{s}<r> {s}<r>\n",
                         .{ new_folder, @errorName(e) },
                     );
                     Global.crash();
                 };
-                defer new_folder_handle.close();
+                defer new_folder_handle.close(io);
 
                 if (has_nested_node_modules) {
                     if (bun.sys.renameatConcurrently(
@@ -328,7 +329,7 @@ pub fn doPatchCommit(
             Global.crash();
         };
         const paths = bun.patch.gitDiffPreprocessPaths(bun.default_allocator, old_folder, new_folder, false);
-        const opts = bun.patch.spawnOpts(paths[0], paths[1], cwd, git, &manager.event_loop);
+        const opts = bun.patch.spawnOpts(paths[0], paths[1], cwd, git);
 
         var spawn_result = switch (bun.spawnSync(&opts) catch |e| {
             Output.prettyError(
@@ -516,7 +517,7 @@ fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const 
         for (bun.meta.fieldsOf(EscapeVal)) |field| {
             if (field.name.len == 1) {
                 const c = field.name[0];
-                table[c] = @enumFromInt(field.value);
+                table[c] = @fromBackingInt(@intCast(field.value));
             }
         }
         break :brk table;
@@ -821,8 +822,9 @@ fn overwritePackageInNodeModulesFolder(
     };
     defer src_path.deinit();
 
-    var cached_package_folder = try cache_dir.openDir(cache_dir_subpath, .{ .iterate = true });
-    defer cached_package_folder.close();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var cached_package_folder = try cache_dir.openDir(io, cache_dir_subpath, .{ .iterate = true });
+    defer cached_package_folder.close(io);
 
     const ignore_directories: []const bun.OSPathSlice = &.{
         comptime bun.OSPathLiteral("node_modules"),

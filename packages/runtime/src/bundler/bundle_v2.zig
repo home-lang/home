@@ -1551,6 +1551,32 @@ pub const BundleV2 = struct {
         source_code_size: *u64,
         fetcher: ?*DependenciesScanner,
     ) !BuildResult {
+        return generateFromCLIImpl(transpiler, alloc, event_loop, enable_reloading, reachable_files_count, minify_duration, source_code_size, fetcher, false);
+    }
+
+    pub fn scanDependenciesFromCLI(
+        transpiler: *Transpiler,
+        alloc: std.mem.Allocator,
+        event_loop: EventLoop,
+        reachable_files_count: *usize,
+        minify_duration: *u64,
+        source_code_size: *u64,
+        fetcher: *DependenciesScanner,
+    ) !BuildResult {
+        return generateFromCLIImpl(transpiler, alloc, event_loop, false, reachable_files_count, minify_duration, source_code_size, fetcher, true);
+    }
+
+    fn generateFromCLIImpl(
+        transpiler: *Transpiler,
+        alloc: std.mem.Allocator,
+        event_loop: EventLoop,
+        enable_reloading: bool,
+        reachable_files_count: *usize,
+        minify_duration: *u64,
+        source_code_size: *u64,
+        fetcher: ?*DependenciesScanner,
+        comptime dependency_scan: bool,
+    ) !BuildResult {
         var this = try BundleV2.init(
             transpiler,
             null,
@@ -1574,7 +1600,7 @@ pub const BundleV2 = struct {
 
         this.waitForParse();
 
-        minify_duration.* = @as(u64, @intCast(@divTrunc(@as(i64, @truncate(std.time.nanoTimestamp())) - @as(i64, @truncate(bun.cli.start_time)), @as(i64, std.time.ns_per_ms))));
+        minify_duration.* = @as(u64, @intCast(@divTrunc(@as(i64, @truncate(bun.nanoTimestamp())) - @as(i64, @truncate(bun.cli.Command.get().start_time)), @as(i64, std.time.ns_per_ms))));
         source_code_size.* = this.source_code_length;
 
         if (this.transpiler.log.hasErrors()) {
@@ -1602,7 +1628,8 @@ pub const BundleV2 = struct {
         );
 
         // Do this at the very end, after processing all the imports/exports so that we can follow exports as needed.
-        if (fetcher) |fetch| {
+        if (dependency_scan or fetcher != null) {
+            const fetch = fetcher.?;
             try this.getAllDependencies(reachable_files, fetch);
             return .{
                 .output_files = std.array_list.Managed(options.OutputFile).init(alloc),
@@ -2987,7 +3014,7 @@ pub const BundleV2 = struct {
                         replacement.path[5..]
                     else
                         replacement.path;
-                    import_record.tag = @enumFromInt(@intFromEnum(replacement.tag));
+                    import_record.tag = @fromBackingInt(@intCast(@backingInt(replacement.tag)));
                     import_record.source_index = Index.invalid;
                     import_record.flags.is_external_without_side_effects = true;
                     continue;

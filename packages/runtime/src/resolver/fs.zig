@@ -654,7 +654,7 @@ pub const FileSystem = struct {
                 return this.dir_fd.stdDir();
             }
 
-            pub inline fn file(this: *TmpfilePosix) std.fs.File {
+            pub inline fn file(this: *TmpfilePosix) std.Io.File {
                 return this.fd.stdFile();
             }
 
@@ -685,7 +685,7 @@ pub const FileSystem = struct {
                 if (comptime !Environment.isLinux) {
                     if (this.dir_fd == bun.invalid_fd) return;
 
-                    this.dir().deleteFileZ(name) catch {};
+                    this.dir().deleteFile(std.Io.Threaded.global_single_threaded.io(), std.mem.span(name)) catch {};
                 }
             }
         };
@@ -698,7 +698,7 @@ pub const FileSystem = struct {
                 return Fs.FileSystem.instance.tmpdir();
             }
 
-            pub inline fn file(this: *TmpfileWindows) std.fs.File {
+            pub inline fn file(this: *TmpfileWindows) std.Io.File {
                 return this.fd.stdFile();
             }
 

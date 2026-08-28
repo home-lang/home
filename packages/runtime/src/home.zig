@@ -10,6 +10,7 @@
 // in the subdirectory `PORTING_STATUS.md` files.
 
 const std = @import("std");
+pub const exe_suffix = if (Environment.isWindows) ".exe" else "";
 const builtin = @import("builtin");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
@@ -499,7 +500,7 @@ pub fn errnoToZigErr(err: anytype) anyerror {
     return error.Unexpected;
 }
 pub const Generation = u16;
-pub const Wyhash11 = std.hash.Wyhash;
+pub const Wyhash11 = @import("wyhash/wyhash.zig").Wyhash11;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
 /// Mirrors Bun's `bun.json` (`interchange.json` → `parsers/json.zig`): the
 /// JSON / package.json / tsconfig parser leaf of the resolver/macro/PM cone.
@@ -2119,11 +2120,7 @@ pub fn runtimeEmbedFile(comptime root: RuntimeEmbedRoot, comptime sub_path: []co
     return @embedFile("codegen/" ++ sub_path);
 }
 
-pub const HTTPThread = struct {
-    pub fn init(opts: anytype) void {
-        _ = opts;
-    }
-};
+pub const HTTPThread = http.HTTPThread;
 
 fn ReinterpretSliceType(comptime T: type, comptime Slice: type) type {
     const is_const = @typeInfo(Slice).pointer.attrs.@"const";
@@ -2643,10 +2640,16 @@ pub const ObjectPool = object_pool.ObjectPool;
 // ---- src/cli/ ----------------------------------------------------------
 // Bun's CLI surface. Copy-in-progress; see src/cli/PORTING_STATUS.md.
 pub const cli = struct {
+    pub const Cli = @import("runtime/cli/cli.zig").Cli;
+    pub const ShellCompletions = @import("runtime/cli/shell_completions.zig");
     pub var pretend_to_be_node = false;
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
+    pub const BunxCommand = @import("runtime/cli/bunx_command.zig").BunxCommand;
+    pub const AddCommand = @import("runtime/cli/add_command.zig").AddCommand;
+    pub const BuildCommand = @import("runtime/cli/build_command.zig").BuildCommand;
+    pub const InstallCommand = @import("runtime/cli/install_command.zig").InstallCommand;
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
     pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;

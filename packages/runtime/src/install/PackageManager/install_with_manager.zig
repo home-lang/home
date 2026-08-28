@@ -812,7 +812,7 @@ pub fn installWithManager(
                 manager.lockfile.packages.len,
                 if (manager.lockfile.packages.len == 1) "" else "s",
             });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
             Output.pretty("\n", .{});
         }
         Output.flush();
@@ -1005,7 +1005,7 @@ fn printInstallSummary(
                 ),
             );
             Output.pretty("<green>{d}<r> package{s}<r> installed ", .{ pkgs_installed, if (pkgs_installed == 1) "" else "s" });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
             printed_timestamp = true;
             printBlockedPackagesInfo(install_summary, this.options.global);
 
@@ -1020,7 +1020,7 @@ fn printInstallSummary(
             }
 
             Output.pretty("<r><b>{d}<r> package{s} removed ", .{ this.summary.remove, if (this.summary.remove == 1) "" else "s" });
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
             printed_timestamp = true;
             printBlockedPackagesInfo(install_summary, this.options.global);
         } else if (install_summary.skipped > 0 and install_summary.fail == 0 and this.update_requests.len == 0) {
@@ -1033,7 +1033,7 @@ fn printInstallSummary(
                         count,
                         if (count == 1) "" else "s",
                     });
-                    Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+                    Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
                 }
                 printed_timestamp = true;
                 printBlockedPackagesInfo(install_summary, this.options.global);
@@ -1042,7 +1042,7 @@ fn printInstallSummary(
                     install_summary.skipped,
                     if (install_summary.skipped == 1) "" else "s",
                 });
-                Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+                Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
                 printed_timestamp = true;
                 printBlockedPackagesInfo(install_summary, this.options.global);
             }
@@ -1056,7 +1056,7 @@ fn printInstallSummary(
 
     if (this.options.do.summary) {
         if (!printed_timestamp) {
-            Output.printStartEndStdout(ctx.start_time, std.time.nanoTimestamp());
+            Output.printStartEndStdout(ctx.start_time, bun.nanoTimestamp());
             Output.prettyln("<d> done<r>", .{});
             printed_timestamp = true;
         }

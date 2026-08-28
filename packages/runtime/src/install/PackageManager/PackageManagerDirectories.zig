@@ -677,7 +677,8 @@ pub fn writeYarnLock(this: *PackageManager) !void {
     var secret: [32]u8 = undefined;
     std.mem.writeInt(u64, secret[0..8], @as(u64, @intCast(bun.milliTimestamp())), .little);
     var base64_bytes: [64]u8 = undefined;
-    std.crypto.random.bytes(&base64_bytes);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try io.randomSecure(&base64_bytes);
 
     const tmpname__ = std.fmt.bufPrint(tmpname_buf[8..], "{x}", .{&base64_bytes}) catch unreachable;
     tmpname_buf[tmpname__.len + 8] = 0;
@@ -690,7 +691,7 @@ pub fn writeYarnLock(this: *PackageManager) !void {
 
     var file = tmpfile.file();
     var file_buffer: [4096]u8 = undefined;
-    var file_writer = file.writerStreaming(&file_buffer);
+    var file_writer = file.writerStreaming(io, &file_buffer);
     const writer = &file_writer.interface;
     try Lockfile.Printer.Yarn.print(&printer, @TypeOf(writer), writer);
     try writer.flush();

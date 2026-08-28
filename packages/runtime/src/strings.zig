@@ -17,6 +17,7 @@ pub fn indexOfAnyT(comptime T: type, haystack: []const T, needles: []const T) ?u
 }
 
 pub const repeatingAlloc = @import("string/immutable.zig").repeatingAlloc;
+pub const mustEscapeYAMLString = @import("string/immutable.zig").mustEscapeYAMLString;
 pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
 pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
 

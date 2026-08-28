@@ -111,6 +111,8 @@ pub const CI = struct {
 };
 
 pub const SHELL = struct {
+    pub const platformGet = @import("bun_core/env_var.zig").SHELL.platformGet;
+
     pub fn get() ?[]const u8 {
         return rawGet("SHELL");
     }

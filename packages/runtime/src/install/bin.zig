@@ -390,6 +390,7 @@ pub const Bin = extern struct {
     };
 
     pub const NamesIterator = struct {
+        const copyName = @import("../string/immutable.zig").copy;
         bin: Bin,
         i: usize = 0,
         done: bool = false,
@@ -401,6 +402,7 @@ pub const Bin = extern struct {
         extern_string_buf: []const ExternalString,
 
         fn nextInDir(this: *NamesIterator) !?[]const u8 {
+            const io = std.Io.Threaded.global_single_threaded.io();
             if (this.done) return null;
             if (this.dir_iterator == null) {
                 var target = this.bin.value.dir.slice(this.string_buffer);
@@ -419,12 +421,12 @@ pub const Bin = extern struct {
             }
 
             var iter = &this.dir_iterator.?;
-            if (iter.next() catch null) |entry| {
+            if (iter.next(io) catch null) |entry| {
                 this.i += 1;
                 return entry.name;
             } else {
                 this.done = true;
-                this.dir_iterator.?.dir.close();
+                this.dir_iterator.?.reader.dir.close(io);
                 this.dir_iterator = null;
                 return null;
             }
@@ -439,9 +441,9 @@ pub const Bin = extern struct {
                     this.done = true;
                     const base = std.fs.path.basename(this.package_name.slice(this.string_buffer));
                     if (strings.hasPrefixComptime(base, "./") or strings.hasPrefixComptime(base, ".\\"))
-                        return strings.copy(&this.buf, base[2..]);
+                        return copyName(&this.buf, base[2..]);
 
-                    return strings.copy(&this.buf, base);
+                    return copyName(&this.buf, base);
                 },
                 .named_file => {
                     if (this.i > 0) return null;
@@ -449,8 +451,8 @@ pub const Bin = extern struct {
                     this.done = true;
                     const base = std.fs.path.basename(this.bin.value.named_file[0].slice(this.string_buffer));
                     if (strings.hasPrefixComptime(base, "./") or strings.hasPrefixComptime(base, ".\\"))
-                        return strings.copy(&this.buf, base[2..]);
-                    return strings.copy(&this.buf, base);
+                        return copyName(&this.buf, base[2..]);
+                    return copyName(&this.buf, base);
                 },
 
                 .dir => return try this.nextInDir(),
@@ -469,8 +471,8 @@ pub const Bin = extern struct {
                         ),
                     );
                     if (strings.hasPrefixComptime(base, "./") or strings.hasPrefixComptime(base, ".\\"))
-                        return strings.copy(&this.buf, base[2..]);
-                    return strings.copy(&this.buf, base);
+                        return copyName(&this.buf, base[2..]);
+                    return copyName(&this.buf, base);
                 },
                 else => return null,
             }

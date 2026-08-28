@@ -442,6 +442,9 @@ test "Semver String.Builder interns non-inline strings into one buffer" {
 }
 
 test "Semver String.Builder.stringHash matches Wyhash11" {
+    // An unnamed root package stores zero as its name hash. Zig's current
+    // Wyhash has a different empty-string hash and is not lockfile-compatible.
+    try std.testing.expectEqual(@as(u64, 0), String.Builder.stringHash(""));
     try std.testing.expectEqual(
         Wyhash11.hash(0, "package"),
         String.Builder.stringHash("package"),
@@ -453,7 +456,7 @@ const string = []const u8;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const OOM = error{OutOfMemory};
-const Wyhash11 = std.hash.Wyhash;
+const Wyhash11 = @import("../wyhash/wyhash.zig").Wyhash11;
 const shim = @import("shim.zig");
 const Environment = shim.Environment;
 const assert = shim.assert;

@@ -2518,17 +2518,34 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false);
 }
 
+fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: home_rt.cli.Command.Tag) !home_rt.cli.Command.Context {
+    const allocator = home_rt.default_allocator;
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    home_rt.clap.args.setProcessArgs(args);
+    return home_rt.cli.Cli.initContext(allocator, tag);
+}
+
+fn runNativeInstallCommand(args: []const [:0]const u8, force_add: bool) !void {
+    var add = force_add;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-g") or std.mem.eql(u8, arg, "--global")) add = true;
+    }
+    if (add) {
+        const ctx = try nativePackageCommandContext(args, .AddCommand);
+        try home_rt.cli.AddCommand.exec(ctx);
+    } else {
+        const ctx = try nativePackageCommandContext(args, .InstallCommand);
+        try home_rt.cli.InstallCommand.exec(ctx);
+    }
+}
+
 fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: home_rt.cli.Command.Tag) !bool {
     if (comptime !build_options.enable_jsc) return false;
     if (!envFlagSet("HOME_NATIVE_VM")) return false;
     if (target.len > 0 and isHomeSourceFile(target)) return false;
     const allocator = home_rt.default_allocator;
-    home_rt.ast.Expr.Data.Store.create();
-    home_rt.ast.Stmt.Data.Store.create();
-    const log = try allocator.create(home_rt.logger.Log);
-    log.* = home_rt.logger.Log.init(allocator);
-    home_rt.clap.args.setProcessArgs(args);
-    const ctx = try home_rt.cli.Command.createContextData(allocator, log, tag);
+    const ctx = try nativePackageCommandContext(args, tag);
     g_native_runtime_context = ctx;
     if (std.mem.eql(u8, target, "-")) {
         if (!ctx.debug.loaded_bunfig) {
@@ -5318,6 +5335,19 @@ pub fn main(init: std.process.Init) !void {
 
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and
+        (home_rt.cli.Command.isBunX(program_name) or std.mem.eql(u8, program_name, "homex") or std.mem.eql(u8, program_name, "homex.exe")))
+    {
+        // A copied bunx executable also launches itself for installation.
+        // Let that internal add invocation reach the native package manager.
+        const internal_add = args.len > 1 and std.mem.eql(u8, args[1], "add") and
+            home_rt.feature_flag.BUN_INTERNAL_BUNX_INSTALL.get();
+        if (!internal_add) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args));
+            return;
+        }
+    }
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
         var test_args: std.ArrayList([:0]const u8) = .empty;
@@ -5699,13 +5729,21 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ---- Bun-compatible CLI surface (Phase 12 in progress) ----
-    // `home add`, `home install`, `home remove`, `home update` route to
-    // Pantry (Home's package manager + registry, lives at ~/Code/pantry).
+    // Strict native add/install use the owned package manager. The pragmatic
+    // command surface still routes to Pantry (Home's package manager).
     if (std.mem.eql(u8, command, "add") or std.mem.eql(u8, command, "i")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            try runNativeInstallCommand(args, std.mem.eql(u8, command, "add"));
+            return;
+        }
         try execPantryCommand(allocator, "add", args[2..]);
         return;
     }
     if (std.mem.eql(u8, command, "install")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            try runNativeInstallCommand(args, false);
+            return;
+        }
         try execPantryCommand(allocator, "install", args[2..]);
         return;
     }
@@ -5813,6 +5851,11 @@ pub fn main(init: std.process.Init) !void {
     }
     // `home x` / `home exec` — bunx-equivalent.
     if (std.mem.eql(u8, command, "x") or std.mem.eql(u8, command, "exec")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args[1..]));
+            return;
+        }
         // TODO(phase-12-10): replace with native homex (copied from Bun's src/cli/).
         try execBunCommand(allocator, "x", args[2..]);
         return;
@@ -5829,6 +5872,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+        if (leadingRuntimeCommandIndex(args, &.{ "x", "exec" }) != null) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args[1..]));
+            return;
+        }
         if (leadingRuntimeRunIndex(args)) |run_index| {
             var forwarded: std.ArrayListUnmanaged([:0]const u8) = .empty;
             defer forwarded.deinit(allocator);
@@ -5939,11 +5987,14 @@ fn runtimeFlagTakesValue(flag: []const u8) bool {
     return false;
 }
 
-fn leadingRuntimeRunIndex(args: []const [:0]const u8) ?usize {
+fn leadingRuntimeCommandIndex(args: []const [:0]const u8, names: []const []const u8) ?usize {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--")) return null;
+        if (std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "-e") or
+            std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p") or
+            std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) return null;
         if (arg.len > 0 and arg[0] == '-') {
             if (runtimeFlagTakesValue(arg)) {
                 if (i + 1 >= args.len) return null;
@@ -5951,30 +6002,23 @@ fn leadingRuntimeRunIndex(args: []const [:0]const u8) ?usize {
             }
             continue;
         }
-        return if (i > 1 and std.mem.eql(u8, arg, "run")) i else null;
-    }
-    return null;
-}
-
-fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--")) return null;
-        if (arg.len > 0 and arg[0] == '-') {
-            if (runtimeFlagTakesValue(arg)) {
-                if (i + 1 >= args.len) return null;
-                i += 1;
-            }
-            continue;
+        if (i > 1) {
+            for (names) |name| if (std.mem.eql(u8, arg, name)) return i;
         }
-        if (i > 1 and (std.mem.eql(u8, arg, "test") or std.mem.eql(u8, arg, "t"))) return i;
         return null;
     }
     return null;
 }
 
-test "runtime flags before test preserve command dispatch boundaries" {
+fn leadingRuntimeRunIndex(args: []const [:0]const u8) ?usize {
+    return leadingRuntimeCommandIndex(args, &.{"run"});
+}
+
+fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {
+    return leadingRuntimeCommandIndex(args, &.{ "test", "t" });
+}
+
+test "runtime flags preserve command dispatch boundaries" {
     try std.testing.expect(runtimeFlagTakesValue("--input-type"));
     try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--input-type", "module", "--eval", "test" }));
     try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeTestIndex(&.{ "home", "--no-warnings", "test", "fixture.js" }));
@@ -5982,6 +6026,13 @@ test "runtime flags before test preserve command dispatch boundaries" {
     try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--eval", "test", "fixture.js" }));
     try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "fixture.js", "test" }));
     try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--", "test", "fixture.js" }));
+    const bunx_commands = &[_][]const u8{ "x", "exec" };
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeCommandIndex(&.{ "home", "--bun", "x", "fixture" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, 3), leadingRuntimeCommandIndex(&.{ "home", "--cwd", "x", "exec", "fixture" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--eval", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--bun", "--eval", "console.log(1)", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "fixture.js", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--", "x" }, bunx_commands));
 }
 
 fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {

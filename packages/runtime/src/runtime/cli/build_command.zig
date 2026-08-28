@@ -1,5 +1,20 @@
 pub const BuildCommand = struct {
     pub fn exec(ctx: Command.Context, fetcher: ?*BundleV2.DependenciesScanner) !void {
+        return execImpl(ctx, fetcher, false);
+    }
+
+    /// Install's --analyze uses the normal parse/link pipeline, but cannot
+    /// request application builds or emit artifacts through its CLI options.
+    pub fn analyze(ctx: Command.Context, fetcher: *BundleV2.DependenciesScanner) !void {
+        bun.assert(!ctx.bundler_options.bake);
+        bun.assert(!ctx.bundler_options.server_components);
+        bun.assert(!ctx.bundler_options.compile);
+        bun.assert(!ctx.bundler_options.bytecode);
+        bun.assert(!ctx.bundler_options.transform_only);
+        return execImpl(ctx, fetcher, true);
+    }
+
+    fn execImpl(ctx: Command.Context, fetcher: ?*BundleV2.DependenciesScanner, comptime dependency_scan: bool) !void {
         Global.configureAllocator(.{ .long_running = true });
         const allocator = ctx.allocator;
         var log = ctx.log;
@@ -9,7 +24,7 @@ pub const BuildCommand = struct {
             ctx.args.target = .bun;
         }
 
-        if (ctx.bundler_options.bake) {
+        if (!dependency_scan and ctx.bundler_options.bake) {
             return bun.bake.production.buildCommand(ctx);
         }
 
@@ -20,7 +35,7 @@ pub const BuildCommand = struct {
 
         const compile_target = &ctx.bundler_options.compile_target;
 
-        if (ctx.bundler_options.compile) {
+        if (!dependency_scan and ctx.bundler_options.compile) {
             const compile_define_keys = compile_target.defineKeys();
             const compile_define_values = compile_target.defineValues();
 
@@ -99,7 +114,7 @@ pub const BuildCommand = struct {
         this_transpiler.options.bytecode = ctx.bundler_options.bytecode;
         var was_renamed_from_index = false;
 
-        if (ctx.bundler_options.compile) {
+        if (!dependency_scan and ctx.bundler_options.compile) {
             if (ctx.bundler_options.transform_only) {
                 Output.prettyErrorln("<r><red>error<r><d>:<r> --compile does not support --no-bundle", .{});
                 Global.exit(1);
@@ -210,7 +225,7 @@ pub const BuildCommand = struct {
                 break :brk2 resolve_path.getIfExistsLongestCommonPath(this_transpiler.options.entry_points) orelse ".";
             };
 
-            var dir = bun.FD.fromStdDir(bun.openDirForPath(&(try std.posix.toPosixPath(path))) catch |err| {
+            var dir = bun.FD.fromStdDir(std.Io.Dir.cwd().openDir(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch |err| {
                 Output.prettyErrorln("<r><red>{s}<r> opening root directory {f}", .{ @errorName(err), bun.fmt.quote(path) });
                 Global.exit(1);
             });
@@ -257,6 +272,22 @@ pub const BuildCommand = struct {
                 this_transpiler.options.macro_remap = macros;
             },
             .unspecified => {},
+        }
+
+        if (comptime dependency_scan) {
+            var reachable_file_count: usize = 0;
+            var minify_duration: u64 = 0;
+            var input_code_length: u64 = 0;
+            _ = try BundleV2.scanDependenciesFromCLI(
+                &this_transpiler,
+                allocator,
+                bun.jsc.AnyEventLoop.init(allocator),
+                &reachable_file_count,
+                &minify_duration,
+                &input_code_length,
+                fetcher.?,
+            );
+            return;
         }
 
         var client_transpiler: transpiler.Transpiler = undefined;
@@ -606,7 +637,7 @@ pub const BuildCommand = struct {
                     1000...9999 => 0,
                     else => 0,
                 };
-                const padding_buf = [_]u8{' '}**16;
+                const padding_buf = [_]u8{' '} * *16;
                 const padding_ = padding_buf[0..@as(usize, @intCast(compiled_elapsed_digit_count))];
                 Output.pretty("{s}", .{padding_});
 
@@ -725,7 +756,7 @@ fn exitOrWatch(code: u8, watch: bool) noreturn {
 }
 
 fn printSummary(bundled_end: i128, minify_duration: u64, minified: bool, input_code_length: usize, reachable_file_count: usize, output_files: []const options.OutputFile) void {
-    const padding_buf = [_]u8{' '}**16;
+    const padding_buf = [_]u8{' '} * *16;
 
     const bundle_until_now = @divTrunc(@as(i64, @truncate(bundled_end - bun.cli.start_time)), @as(i64, std.time.ns_per_ms));
 

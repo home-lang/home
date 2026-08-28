@@ -180,6 +180,28 @@ pub const BunxCommand = struct {
     /// 1 day
     const nanoseconds_cache_valid = seconds_cache_valid * 1000000000;
 
+    fn isSafeBinName(name: []const u8) bool {
+        return name.len > 0 and !strings.eqlComptime(name, ".") and !strings.eqlComptime(name, "..") and
+            strings.indexOfChar(name, '/') == null and strings.indexOfChar(name, '\\') == null;
+    }
+
+    fn isTrustedCachedBinary(destination: [:0]const u8, uid: anytype) bool {
+        if (comptime !Environment.isPosix) return true;
+        const link = bun.sys.lstat(destination).unwrap() catch return false;
+        if (link.uid != uid or (!bun.S.ISREG(link.mode) and !bun.S.ISLNK(link.mode))) return false;
+        if (bun.S.ISLNK(link.mode)) {
+            const target = bun.sys.stat(destination).unwrap() catch return false;
+            return target.uid == uid and bun.S.ISREG(target.mode);
+        }
+        return true;
+    }
+
+    fn isTrustedCacheRoot(path: [:0]const u8, uid: anytype) bool {
+        if (comptime !Environment.isPosix) return true;
+        const stat = bun.sys.lstat(path).unwrap() catch return true;
+        return bun.S.ISDIR(stat.mode) and stat.uid == uid and stat.mode & 0o022 == 0;
+    }
+
     fn getBinNameFromSubpath(transpiler: *bun.Transpiler, dir_fd: bun.FD, subpath_z: [:0]const u8) ![]const u8 {
         const target_package_json_fd = try bun.sys.openat(dir_fd, subpath_z, bun.O.RDONLY, 0).unwrap();
         const target_package_json = bun.sys.File{ .handle = target_package_json_fd };
@@ -208,7 +230,7 @@ pub const BunxCommand = struct {
                     for (object.properties.slice()) |prop| {
                         if (prop.key) |key| {
                             if (key.asString(transpiler.allocator)) |bin_name| {
-                                if (bin_name.len == 0) continue;
+                                if (!isSafeBinName(bin_name)) continue;
                                 return bin_name;
                             }
                         }
@@ -217,7 +239,8 @@ pub const BunxCommand = struct {
                 .e_string => {
                     if (expr.get("name")) |name_expr| {
                         if (name_expr.asString(transpiler.allocator)) |name| {
-                            return name;
+                            const bin_name = if (name.len == 0) name else bun.install.Dependency.unscopedPackageName(name);
+                            if (isSafeBinName(bin_name)) return bin_name;
                         }
                     }
                 },
@@ -259,11 +282,7 @@ pub const BunxCommand = struct {
     fn getBinNameFromTempDirectory(transpiler: *bun.Transpiler, tempdir_name: []const u8, package_name: []const u8, with_stale_check: bool) ![]const u8 {
         var subpath: bun.PathBuffer = undefined;
         if (with_stale_check) {
-            const subpath_z = std.fmt.bufPrintSentinel(
-                &subpath,
-                bun.pathLiteral("{s}/package.json"),
-                .{tempdir_name},
-            0) catch unreachable;
+            const subpath_z = std.fmt.bufPrintSentinel(&subpath, bun.pathLiteral("{s}/package.json"), .{tempdir_name}, 0) catch unreachable;
             const target_package_json_fd = bun.sys.openat(bun.FD.cwd(), subpath_z, bun.O.RDONLY, 0).unwrap() catch return error.NeedToInstall;
             const target_package_json = bun.sys.File{ .handle = target_package_json_fd };
 
@@ -275,7 +294,7 @@ pub const BunxCommand = struct {
                     switch (rc) {
                         .SUCCESS => {
                             const time = std.os.windows.fromSysTime(info.LastWriteTime);
-                            const now = std.time.nanoTimestamp();
+                            const now = bun.nanoTimestamp();
                             break :is_stale (now - time > nanoseconds_cache_valid);
                         },
                         // treat failures to stat as stale
@@ -283,24 +302,20 @@ pub const BunxCommand = struct {
                     }
                 } else {
                     const stat = target_package_json.stat().unwrap() catch break :is_stale true;
-                    break :is_stale std.time.timestamp() - stat.mtime().sec > seconds_cache_valid;
+                    break :is_stale bun.timestamp() - stat.mtime().sec > seconds_cache_valid;
                 }
             };
 
             if (is_stale) {
                 _ = target_package_json.close();
                 // If delete fails, oh well. Hope installation takes care of it.
-                std.fs.cwd().deleteTree(tempdir_name) catch {};
+                std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), tempdir_name) catch {};
                 return error.NeedToInstall;
             }
             _ = target_package_json.close();
         }
 
-        const subpath_z = std.fmt.bufPrintSentinel(
-            &subpath,
-            bun.pathLiteral("{s}/node_modules/{s}/package.json"),
-            .{ tempdir_name, package_name },
-        0) catch unreachable;
+        const subpath_z = std.fmt.bufPrintSentinel(&subpath, bun.pathLiteral("{s}/node_modules/{s}/package.json"), .{ tempdir_name, package_name }, 0) catch unreachable;
 
         return try getBinNameFromSubpath(transpiler, bun.FD.cwd(), subpath_z);
     }
@@ -568,6 +583,13 @@ pub const BunxCommand = struct {
 
         debug("bunx_cache_dir: {s}", .{bunx_cache_dir});
 
+        var cache_root_buf: bun.PathBuffer = undefined;
+        const cache_root = try std.fmt.bufPrintSentinel(&cache_root_buf, "{s}", .{bunx_cache_dir}, 0);
+        if (!isTrustedCacheRoot(cache_root, uid)) {
+            Output.errGeneric("refusing to use bunx cache directory <b>{s}<r> because it is not a directory owned by the current user. Remove it and try again.", .{bunx_cache_dir});
+            Global.exit(1);
+        }
+
         var absolute_in_cache_dir_buf: bun.PathBuffer = undefined;
         var absolute_in_cache_dir = std.fmt.bufPrint(
             &absolute_in_cache_dir_buf,
@@ -611,6 +633,11 @@ pub const BunxCommand = struct {
                 // If this directory was installed by bunx, we want to perform cache invalidation on it
                 // this way running `bunx hello` will update hello automatically to the latest version
                 if (bun.strings.hasPrefix(out, bunx_cache_dir)) {
+                    if (!isTrustedCachedBinary(destination, uid)) {
+                        debug("refusing untrusted cached binary: {s}", .{out});
+                        do_cache_bust = true;
+                        break :try_run_existing;
+                    }
                     const is_stale = is_stale: {
                         if (Environment.isWindows) {
                             const fd = bun.sys.openat(.cwd(), destination, bun.O.RDONLY, 0).unwrap() catch {
@@ -626,7 +653,7 @@ pub const BunxCommand = struct {
                             switch (rc) {
                                 .SUCCESS => {
                                     const time = std.os.windows.fromSysTime(info.LastWriteTime);
-                                    const now = std.time.nanoTimestamp();
+                                    const now = bun.nanoTimestamp();
                                     break :is_stale (now - time > nanoseconds_cache_valid);
                                 },
                                 // treat failures to stat as stale
@@ -638,7 +665,7 @@ pub const BunxCommand = struct {
                             if (rc != 0) {
                                 break :is_stale true;
                             }
-                            break :is_stale std.time.timestamp() - stat.mtime().sec > seconds_cache_valid;
+                            break :is_stale bun.timestamp() - stat.mtime().sec > seconds_cache_valid;
                         }
                     };
 
@@ -700,6 +727,11 @@ pub const BunxCommand = struct {
                             absolute_in_cache_dir,
                         )) |destination| {
                             const out = bun.asByteSlice(destination);
+                            if (strings.hasPrefix(out, bunx_cache_dir) and !isTrustedCachedBinary(destination, uid)) {
+                                debug("refusing untrusted cached binary: {s}", .{out});
+                                do_cache_bust = true;
+                                break :try_run_existing;
+                            }
                             try Run.runBinary(
                                 ctx,
                                 try this_transpiler.fs.dirname_store.append(@TypeOf(out), out),
@@ -744,13 +776,15 @@ pub const BunxCommand = struct {
             Global.exit(1);
         }
 
-        const bunx_install_dir = try std.fs.cwd().makeOpenPath(bunx_cache_dir, .{});
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const bunx_install_dir = try std.Io.Dir.cwd().createDirPathOpen(io, bunx_cache_dir, .{});
+        defer bunx_install_dir.close(io);
 
         create_package_json: {
             // create package.json, but only if it doesn't exist
-            var package_json = bunx_install_dir.createFileZ("package.json", .{ .truncate = true }) catch break :create_package_json;
-            defer package_json.close();
-            package_json.writeAll("{}\n") catch {};
+            const package_json = bunx_install_dir.createFile(io, "package.json", .{ .truncate = true }) catch break :create_package_json;
+            defer package_json.close(io);
+            package_json.writeStreamingAll(io, "{}\n") catch {};
         }
 
         var args = bun.BoundedArray([]const u8, 8).fromSlice(&.{
@@ -836,7 +870,6 @@ pub const BunxCommand = struct {
                 Output.prettyErrorln("<r><red>error<r>: bunx failed to install <b>{s}<r> due to error:\n{f}", .{ install_param, err });
                 Global.exit(1);
             },
-            else => {},
         }
 
         absolute_in_cache_dir = std.fmt.bufPrint(&absolute_in_cache_dir_buf, bun.pathLiteral("{s}/node_modules/.bin/{s}{s}"), .{ bunx_cache_dir, initial_bin_name, bun.exe_suffix }) catch unreachable;
@@ -852,7 +885,7 @@ pub const BunxCommand = struct {
             absolute_in_cache_dir,
         )) |destination| {
             const out = bun.asByteSlice(destination);
-            try Run.runBinary(
+            if (isTrustedCachedBinary(destination, uid)) try Run.runBinary(
                 ctx,
                 try this_transpiler.fs.dirname_store.append(@TypeOf(out), out),
                 destination,
@@ -862,7 +895,6 @@ pub const BunxCommand = struct {
                 null,
             );
             // runBinary is noreturn
-            @compileError("unreachable");
         }
 
         // 2. The "bin" is possibly not the same as the package name, so we load the package.json to figure out what "bin" to use
@@ -879,7 +911,7 @@ pub const BunxCommand = struct {
                         absolute_in_cache_dir,
                     )) |destination| {
                         const out = bun.asByteSlice(destination);
-                        try Run.runBinary(
+                        if (isTrustedCachedBinary(destination, uid)) try Run.runBinary(
                             ctx,
                             try this_transpiler.fs.dirname_store.append(@TypeOf(out), out),
                             destination,
@@ -889,7 +921,6 @@ pub const BunxCommand = struct {
                             null,
                         );
                         // runBinary is noreturn
-                        @compileError("unreachable");
                     }
                 }
             } else |_| {}

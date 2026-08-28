@@ -888,7 +888,7 @@ pub const Cloner = struct {
     lockfile: *Lockfile,
     old: *Lockfile,
     mapping: []PackageID,
-    trees: Tree.List = Tree.List{},
+    trees: Tree.List = .empty,
     trees_count: u32 = 1,
     log: *logger.Log,
     old_preinstall_state: std.ArrayListUnmanaged(Install.PreinstallState),

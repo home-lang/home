@@ -7,10 +7,17 @@ pub var Bun__Node__ProcessTitle: ?string = null;
 pub const Cli = struct {
     pub const CompileTarget = @import("../../options_types/CompileTarget.zig");
     pub var log_: logger.Log = undefined;
+    /// Initialize native command dispatch without entering the top-level CLI.
+    pub fn initContext(allocator: std.mem.Allocator, comptime command: Command.Tag) !Command.Context {
+        is_main_thread = true;
+        start_time = bun.nanoTimestamp();
+        log_ = logger.Log.init(allocator);
+        return Command.createContextData(allocator, &log_, command);
+    }
     pub fn startTransform(_: std.mem.Allocator, _: api.TransformOptions, _: *logger.Log) anyerror!void {}
     pub fn start(allocator: std.mem.Allocator) void {
         is_main_thread = true;
-        start_time = std.time.nanoTimestamp();
+        start_time = bun.nanoTimestamp();
         log_ = logger.Log.init(allocator);
 
         var log = &log_;
