@@ -407,11 +407,7 @@ fn buildOneProject(
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .errors;
-            owned.append(gpa, p) catch return .errors;
-            input_files.append(gpa, p) catch return .errors;
-        }
+        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .errors;
     } else {
         // Exclude the project's own output dir (so emitted .js/.d.ts aren't
         // re-ingested as inputs on rebuild) and node_modules, in addition
@@ -588,11 +584,7 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .build;
-            owned.append(gpa, p) catch return .build;
-            input_files.append(gpa, p) catch return .build;
-        }
+        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .build;
     } else {
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
@@ -1135,11 +1127,7 @@ fn appendProjectCleanOutputs(
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = try std.fs.path.join(gpa, &.{ project_dir, f });
-            try owned.append(gpa, p);
-            try input_files.append(gpa, p);
-        }
+        try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned);
     } else {
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
@@ -2840,7 +2828,10 @@ pub fn main(init: std.process.Init) !void {
     for (opts.files) |f| try input_files.append(gpa, f);
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
-            if (c.files) |fs_list| for (fs_list) |f| try input_files.append(gpa, f);
+            if (c.files) |fs_list| {
+                const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
+                try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned_paths);
+            }
         }
     }
     if (input_files.items.len == 0) {
