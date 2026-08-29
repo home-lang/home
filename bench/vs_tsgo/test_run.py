@@ -2,6 +2,8 @@
 
 import unittest
 import subprocess
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 import run
@@ -48,6 +50,103 @@ class CompilerVersionTests(unittest.TestCase):
                 run.cmd_cold(30, 3)
             self.assertEqual([], results.mock_calls)
             validate.assert_not_called()
+
+
+class ProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.tsc_tools = self.root / "tsc"
+        self.tsgo_tools = self.root / "tsgo"
+        self.tsc_payload = self.tsc_tools / "node_modules/typescript/lib/_tsc.js"
+        self.tsgo_payload = self.tsgo_tools / "node_modules/@typescript/typescript-linux-x64/lib/tsc"
+        self.tsc_wrapper = self.tsc_tools / "node_modules/typescript/bin/tsc"
+        self.tsc_launcher = self.tsc_tools / "node_modules/.bin/tsc"
+        self.tsgo_launcher = self.tsgo_tools / "node_modules/typescript/bin/tsc"
+        self.home = self.root / "home-tsc"
+        self.node = self.root / "node"
+        self.hyperfine = self.root / "hyperfine"
+        self.python = self.root / "python3"
+        for path, content in (
+            (self.tsc_payload, b"javascript compiler"),
+            (self.tsgo_payload, b"native compiler"),
+            (self.tsc_wrapper, b"tsc wrapper"),
+            (self.tsgo_launcher, b"tsgo wrapper"),
+            (self.home, b"home compiler"),
+            (self.node, b"node runtime"),
+            (self.hyperfine, b"hyperfine runtime"),
+            (self.python, b"python runtime"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        self.tsc_launcher.parent.mkdir(parents=True, exist_ok=True)
+        self.tsc_launcher.symlink_to(self.tsc_wrapper)
+        self.commands = {
+            "tsc": [str(self.tsc_launcher)],
+            "tsgo": [str(self.tsgo_launcher)],
+            "home": [str(self.home)],
+        }
+
+    def test_records_resolved_launchers_and_real_payloads(self):
+        tools = {"node": self.node, "hyperfine": self.hyperfine}
+        with mock.patch.object(run, "TSC_TOOLS", self.tsc_tools), mock.patch.object(
+            run, "TSGO_TOOLS", self.tsgo_tools
+        ), mock.patch.object(run.platform, "system", return_value="Linux"), mock.patch.object(
+            run.platform, "machine", return_value="x86_64"
+        ), mock.patch.object(run, "resolved_tool", side_effect=lambda name: tools[name]), mock.patch.object(
+            run, "version_output", side_effect=lambda command: f"Version for {Path(command[0]).name}"
+        ), mock.patch.object(run.sys, "executable", str(self.python)):
+            provenance = run.benchmark_provenance(self.commands)
+
+        compilers = provenance["compilers"]
+        self.assertEqual(str(self.tsc_wrapper.resolve()), compilers["tsc"]["launcher"]["resolved_path"])
+        self.assertEqual(str(self.tsc_payload.resolve()), compilers["tsc"]["payload"]["resolved_path"])
+        self.assertEqual(str(self.tsgo_payload.resolve()), compilers["tsgo"]["payload"]["resolved_path"])
+        self.assertEqual(run.sha256_file(self.home), compilers["home"]["executable"]["sha256"])
+        self.assertNotEqual(compilers["tsgo"]["launcher"]["sha256"], compilers["tsgo"]["payload"]["sha256"])
+
+    def test_admission_artifact_change_stops_before_result_creation(self):
+        with mock.patch.object(run, "selected_workloads", return_value=["example"]), mock.patch.object(
+            run.shutil, "which", return_value="hyperfine"
+        ), mock.patch.object(run, "CORPUS") as corpus, mock.patch.object(
+            run, "compiler_commands", return_value=self.commands
+        ), mock.patch.object(run, "verified_compiler_versions", return_value={}), mock.patch.object(
+            run, "benchmark_provenance", side_effect=[{"hash": "before"}, {"hash": "after"}]
+        ), mock.patch.object(run, "validate"), mock.patch.object(run, "RESULTS") as results:
+            corpus.is_dir.return_value = True
+            with self.assertRaisesRegex(SystemExit, "changed during admission"):
+                run.cmd_cold(1, 0)
+            self.assertEqual([], results.mock_calls)
+
+    def test_measurement_artifact_change_is_retained_but_not_verified(self):
+        results = self.root / "results"
+        corpus = self.root / "corpus"
+        corpus.mkdir()
+        before = {"hash": "before"}
+        after = {"hash": "after"}
+        with mock.patch.object(run, "selected_workloads", return_value=["example"]), mock.patch.object(
+            run.shutil, "which", return_value="hyperfine"
+        ), mock.patch.object(run, "CORPUS", corpus), mock.patch.object(
+            run, "RESULTS", results
+        ), mock.patch.object(run, "compiler_commands", return_value=self.commands), mock.patch.object(
+            run, "verified_compiler_versions", return_value={name: name for name in self.commands}
+        ), mock.patch.object(run, "benchmark_provenance", side_effect=[before, before, after]), mock.patch.object(
+            run, "validate"
+        ), mock.patch.object(run.platform, "platform", return_value="test-system"), mock.patch.object(
+            run.platform, "machine", return_value="test-machine"
+        ), mock.patch.object(run.platform, "processor", return_value="test-processor"), mock.patch.object(
+            run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+        ):
+            with self.assertRaisesRegex(SystemExit, "changed during measurement"):
+                run.cmd_cold(1, 0)
+
+        directories = list(results.iterdir())
+        self.assertEqual(1, len(directories))
+        metadata = run.json.loads((directories[0] / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual("changed", metadata["provenance"]["status"])
+        self.assertEqual(before, metadata["provenance"]["before"])
+        self.assertEqual(after, metadata["provenance"]["after"])
 
 
 class WorkloadSelectionTests(unittest.TestCase):
@@ -253,6 +352,7 @@ class AdmissionTests(unittest.TestCase):
             run.shutil, "which", return_value="hyperfine"
         ), mock.patch.object(run, "CORPUS"), mock.patch.object(run, "compiler_commands", return_value={}), mock.patch.object(
             run, "verified_compiler_versions", return_value={}
+        ), mock.patch.object(run, "benchmark_provenance", return_value={}
         ), mock.patch.object(run, "validate", side_effect=[None, SystemExit("admission failed")]) as validate, mock.patch.object(
             run, "RESULTS"
         ) as results, mock.patch.object(run.subprocess, "run") as process:

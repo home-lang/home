@@ -29,6 +29,10 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual("**1.01× faster**", compare.format_comparison(100, 100.51))
         self.assertEqual("1.01× slower", compare.format_comparison(100.51, 100))
 
+    def test_legacy_and_verified_provenance_are_distinguished(self):
+        self.assertIn("legacy result", compare.provenance_notice({}))
+        self.assertIn("verified unchanged", compare.provenance_notice({"provenance": {"status": "verified"}}))
+
 
 class InterleavedIntegrityTests(unittest.TestCase):
     def setUp(self):
@@ -50,6 +54,22 @@ class InterleavedIntegrityTests(unittest.TestCase):
 
     def test_complete_rotating_rounds_are_accepted(self):
         compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_verified_unchanged_provenance_is_accepted(self):
+        snapshot = {"schema": 1, "compilers": {"home": {"sha256": "same"}}}
+        self.metadata["provenance"] = {"status": "verified", "before": snapshot, "after": snapshot}
+        compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_incomplete_or_changed_provenance_is_not_reportable(self):
+        for status in ("measuring", "incomplete", "changed"):
+            self.metadata["provenance"] = {"status": status, "before": {}, "after": {}}
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, "not verified"):
+                compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_mismatched_verified_provenance_is_not_reportable(self):
+        self.metadata["provenance"] = {"status": "verified", "before": {"hash": "a"}, "after": {"hash": "b"}}
+        with self.assertRaisesRegex(ValueError, "changed during measurement"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
 
     def test_missing_round_is_not_a_smaller_successful_report(self):
         (self.directory / "example-round-002.json").unlink()

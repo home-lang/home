@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import platform
@@ -946,6 +947,96 @@ def version_output(command: list[str]) -> str:
     return (result.stdout or result.stderr).strip()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_provenance(path: Path) -> dict[str, object]:
+    requested = path.absolute()
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file():
+        raise SystemExit(f"benchmark artifact is not a file: {resolved}")
+    return {
+        "path": str(requested),
+        "resolved_path": str(resolved),
+        "size": resolved.stat().st_size,
+        "sha256": sha256_file(resolved),
+    }
+
+
+def native_tsgo_payload() -> Path:
+    system = {"Darwin": "darwin", "Linux": "linux", "Windows": "win32"}.get(platform.system())
+    machine = platform.machine().lower()
+    architecture = {
+        "amd64": "x64",
+        "x86_64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(machine)
+    if system is None or architecture is None:
+        raise SystemExit(f"cannot identify native TS 7 payload for {platform.system()} {platform.machine()}")
+    executable = "tsc.exe" if system == "win32" else "tsc"
+    return (
+        TSGO_TOOLS
+        / "node_modules"
+        / "@typescript"
+        / f"typescript-{system}-{architecture}"
+        / "lib"
+        / executable
+    )
+
+
+def resolved_tool(name: str) -> Path:
+    path = shutil.which(name)
+    if path is None:
+        raise SystemExit(f"{name} is required for benchmark provenance")
+    return Path(path)
+
+
+def benchmark_provenance(commands: dict[str, list[str]]) -> dict[str, object]:
+    node = resolved_tool("node")
+    hyperfine = resolved_tool("hyperfine")
+    tsc_payload = TSC_TOOLS / "node_modules" / "typescript" / "lib" / "_tsc.js"
+    records: dict[str, object] = {
+        "schema": 1,
+        "compilers": {
+            "tsc": {
+                "command": commands["tsc"],
+                "launcher": artifact_provenance(Path(commands["tsc"][0])),
+                "payload": artifact_provenance(tsc_payload),
+            },
+            "tsgo": {
+                "command": commands["tsgo"],
+                "launcher": artifact_provenance(Path(commands["tsgo"][0])),
+                "payload": artifact_provenance(native_tsgo_payload()),
+            },
+            "home": {
+                "command": commands["home"],
+                "executable": artifact_provenance(Path(commands["home"][0])),
+            },
+        },
+        "tools": {
+            "node": {
+                "version": version_output([str(node)]),
+                "executable": artifact_provenance(node),
+            },
+            "hyperfine": {
+                "version": version_output([str(hyperfine)]),
+                "executable": artifact_provenance(hyperfine),
+            },
+            "python": {
+                "version": platform.python_version(),
+                "executable": artifact_provenance(Path(sys.executable)),
+            },
+        },
+    }
+    return records
+
+
 def verified_compiler_versions(commands: dict[str, list[str]]) -> dict[str, str]:
     versions = {name: version_output(command) for name, command in commands.items()}
     pinned = manifest()["compilers"]
@@ -1167,11 +1258,15 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         cmd_corpus()
     commands = compiler_commands()
     versions = verified_compiler_versions(commands)
+    preflight_provenance = benchmark_provenance(commands)
     # Validate the entire selection before creating a result directory or
     # timing any workload. A later admission failure must not leave an
     # apparently complete report containing only the earlier/easier cases.
     for workload in workloads:
         validate(commands, workload)
+    admitted_provenance = benchmark_provenance(commands)
+    if admitted_provenance != preflight_provenance:
+        raise SystemExit("benchmark artifacts changed during admission; no timing results were created")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = RESULTS / stamp
     output.mkdir(parents=True)
@@ -1186,53 +1281,78 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         "validation_schema": 3,
         "workloads": workloads,
         "compilers": versions,
+        "provenance": {
+            "status": "measuring",
+            "before": preflight_provenance,
+            "after": None,
+        },
     }
-    write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
-    for workload in workloads:
-        config = CORPUS / workload / "tsconfig.json"
-        benchmarks = {
-            name: command + ["--noEmit", "-p", str(config)]
-            for name, command in commands.items()
-        }
-        names = list(benchmarks)
+    metadata_path = output / "metadata.json"
+    write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+    try:
+        for workload in workloads:
+            config = CORPUS / workload / "tsconfig.json"
+            benchmarks = {
+                name: command + ["--noEmit", "-p", str(config)]
+                for name, command in commands.items()
+            }
+            names = list(benchmarks)
 
-        # Warm and measure in balanced round-robin order. Running every sample
-        # for compiler A before compiler B lets changing workstation load bias
-        # the comparison; rotating the order makes each compiler occupy every
-        # position equally while retaining Hyperfine's process timer.
-        for index in range(warmup):
-            order = names[index % len(names) :] + names[: index % len(names)]
-            for name in order:
-                subprocess.run(
-                    benchmarks[name],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            # Warm and measure in balanced round-robin order. Running every sample
+            # for compiler A before compiler B lets changing workstation load bias
+            # the comparison; rotating the order makes each compiler occupy every
+            # position equally while retaining Hyperfine's process timer.
+            for index in range(warmup):
+                order = names[index % len(names) :] + names[: index % len(names)]
+                for name in order:
+                    subprocess.run(
+                        benchmarks[name],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
 
-        print(f"+ hyperfine interleaved {workload}: {runs} runs after {warmup} warmups", flush=True)
-        for index in range(runs):
-            offset = index % len(names)
-            order = names[offset:] + names[:offset]
-            command_line = [
-                "hyperfine",
-                "--shell=none",
-                "--runs",
-                "1",
-                "--style",
-                "none",
-                "--export-json",
-                str(output / f"{workload}-round-{index:03d}.json"),
-            ]
-            for name in order:
-                command_line.extend(
-                    [
-                        "--command-name",
-                        f"{name} {workload}",
-                        shlex.join(benchmarks[name]),
-                    ]
-                )
-            subprocess.run(command_line, check=True)
+            print(f"+ hyperfine interleaved {workload}: {runs} runs after {warmup} warmups", flush=True)
+            for index in range(runs):
+                offset = index % len(names)
+                order = names[offset:] + names[:offset]
+                command_line = [
+                    "hyperfine",
+                    "--shell=none",
+                    "--runs",
+                    "1",
+                    "--style",
+                    "none",
+                    "--export-json",
+                    str(output / f"{workload}-round-{index:03d}.json"),
+                ]
+                for name in order:
+                    command_line.extend(
+                        [
+                            "--command-name",
+                            f"{name} {workload}",
+                            shlex.join(benchmarks[name]),
+                        ]
+                    )
+                subprocess.run(command_line, check=True)
+    except BaseException as error:
+        metadata["provenance"]["status"] = "incomplete"
+        metadata["failure"] = {"type": type(error).__name__, "message": str(error)}
+        try:
+            metadata["provenance"]["after"] = benchmark_provenance(commands)
+        except BaseException as provenance_error:
+            metadata["provenance"]["after_error"] = str(provenance_error)
+        write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+        raise
+
+    final_provenance = benchmark_provenance(commands)
+    metadata["provenance"]["after"] = final_provenance
+    if final_provenance != preflight_provenance:
+        metadata["provenance"]["status"] = "changed"
+        write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+        raise SystemExit(f"benchmark artifacts changed during measurement; retained invalid results in {output}")
+    metadata["provenance"]["status"] = "verified"
+    write(metadata_path, json.dumps(metadata, indent=2) + "\n")
     print(f"Results: {output}")
     return output
 

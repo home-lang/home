@@ -51,9 +51,22 @@ def format_workload_comparison(workload: str, home_mean: float, competitor_mean:
     return format_comparison(home_mean, competitor_mean)
 
 
+def provenance_notice(metadata: dict) -> str:
+    provenance = metadata.get("provenance")
+    if provenance is None:
+        return "Provenance: legacy result; executable identities were not recorded automatically."
+    return "Provenance: verified unchanged before admission and after measurement."
+
+
 def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     if metadata.get("schedule") != "round-robin interleaved":
         return
+    provenance = metadata.get("provenance")
+    if provenance is not None:
+        if provenance.get("status") != "verified":
+            raise ValueError(f"benchmark provenance is {provenance.get('status', 'invalid')}, not verified")
+        if provenance.get("before") != provenance.get("after"):
+            raise ValueError("benchmark provenance changed during measurement")
     runs = metadata.get("runs")
     workloads = metadata.get("workloads", [])
     names = list(metadata.get("compilers", {}))
@@ -130,6 +143,7 @@ def main() -> int:
             f"tsc `{versions.get('tsc', '?')}`, tsgo `{versions.get('tsgo', '?')}`, "
             f"Home `{versions.get('home', '?')}`."
         )
+        print(provenance_notice(metadata))
         print()
     print("| Workload | tsc | tsgo | Home | Home vs fastest competitor |")
     print("|---|---:|---:|---:|---:|")
