@@ -1523,19 +1523,81 @@ pub const Parser = struct {
             const body_start = i + 3;
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
-            try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
-            try self.scanJSDocParamParentDiagnostics(body_start, body_end);
-            try self.scanJSDocCommentTypeExpressions(body_start, body_end);
-            try self.scanJSDocTypedefModuleQualifierDiagnostics(body_start, body_end);
-            try self.scanJSDocImportTagDiagnostics(body_start, body_end);
-            try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
-            try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
-            try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
-            try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
-            try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
-            try self.scanJSDocHeritageTypeDiagnostics(body_start, body_end);
+            const facts = self.jsDocDiagnosticScanFacts(body_start, body_end);
+            if (facts.has_param) {
+                try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
+                try self.scanJSDocParamParentDiagnostics(body_start, body_end);
+            }
+            if (std.mem.indexOfScalar(u8, self.source[body_start..body_end], '{') != null) {
+                try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            }
+            if (facts.has_typedef) {
+                try self.scanJSDocTypedefModuleQualifierDiagnostics(body_start, body_end);
+            }
+            if (facts.has_import) try self.scanJSDocImportTagDiagnostics(body_start, body_end);
+            if (facts.has_typedef and facts.type_count >= 2) {
+                try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            }
+            if (facts.return_count >= 2 or facts.type_count >= 2) {
+                try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
+            }
+            if (facts.has_template and facts.has_type_alias_like) {
+                try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
+            }
+            if (facts.has_template) try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
+            if (facts.has_property) try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
+            if (facts.has_heritage) try self.scanJSDocHeritageTypeDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
+    }
+
+    const JSDocDiagnosticScanFacts = struct {
+        has_param: bool = false,
+        has_typedef: bool = false,
+        has_import: bool = false,
+        has_template: bool = false,
+        has_type_alias_like: bool = false,
+        has_property: bool = false,
+        has_heritage: bool = false,
+        type_count: u32 = 0,
+        return_count: u32 = 0,
+    };
+
+    fn jsDocDiagnosticScanFacts(self: *const Parser, start: usize, end: usize) JSDocDiagnosticScanFacts {
+        var facts: JSDocDiagnosticScanFacts = .{};
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const name = self.source[tag_name_start..tag_name_end];
+            if (std.mem.eql(u8, name, "param")) facts.has_param = true;
+            if (std.mem.eql(u8, name, "typedef")) facts.has_typedef = true;
+            if (std.mem.eql(u8, name, "import")) facts.has_import = true;
+            if (std.mem.eql(u8, name, "template")) facts.has_template = true;
+            if (std.mem.eql(u8, name, "typedef") or
+                std.mem.eql(u8, name, "callback") or
+                std.mem.eql(u8, name, "overload"))
+            {
+                facts.has_type_alias_like = true;
+            }
+            if (std.mem.eql(u8, name, "property") or std.mem.eql(u8, name, "prop")) {
+                facts.has_property = true;
+            }
+            if (std.mem.eql(u8, name, "implements") or
+                std.mem.eql(u8, name, "augments") or
+                std.mem.eql(u8, name, "extends"))
+            {
+                facts.has_heritage = true;
+            }
+            if (std.mem.eql(u8, name, "type")) facts.type_count += 1;
+            if (std.mem.eql(u8, name, "return") or std.mem.eql(u8, name, "returns")) {
+                facts.return_count += 1;
+            }
+            i = tag_name_end;
+        }
+        return facts;
     }
 
     fn scanJSDocParamTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
