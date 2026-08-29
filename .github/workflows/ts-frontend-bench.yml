@@ -1,0 +1,64 @@
+name: TypeScript Frontend Benchmark
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ts-frontend-benchmark
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    name: Linux x64 full admitted suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.1441+d5181a9c9'
+
+      - name: Build native Home TypeScript frontend
+        run: zig build home-tsc -Doptimize=ReleaseFast
+
+      - name: Run benchmark harness regressions
+        run: python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+
+      - name: Build pinned benchmark image
+        run: docker build -f bench/vs_tsgo/Dockerfile -t home-ts-frontend-bench .
+
+      - name: Run full admitted suite in container
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --env HOME_BENCH_WORKSPACE=/work \
+            --env HOME_TSC=/work/zig-out/bin/home-tsc \
+            --env npm_config_cache=/tmp/npm-cache \
+            --env npm_config_update_notifier=false \
+            home-ts-frontend-bench \
+            cold --runs 30 --warmup 3
+
+      - name: Render verified report
+        run: |
+          result_directory=$(find bench/vs_tsgo/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)
+          test -n "$result_directory"
+          python3 bench/vs_tsgo/compare.py "$result_directory" | tee "$result_directory/report.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          sha256sum zig-out/bin/home-tsc | tee "$result_directory/home-tsc.sha256"
+          printf 'result_directory=%s\n' "$result_directory" >> "$GITHUB_ENV"
+
+      - name: Upload complete benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-frontend-linux-x64-${{ github.run_id }}
+          path: |
+            ${{ env.result_directory || 'bench/vs_tsgo/results' }}
+          if-no-files-found: error
+          retention-days: 30
