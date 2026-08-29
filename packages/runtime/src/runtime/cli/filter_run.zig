@@ -118,6 +118,13 @@ pub const ProcessHandle = struct {
     pub fn onProcessExit(this: *This, proc: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
         this.process.?.status = status;
         this.end_time = bun.milliTimestamp();
+        // The process notification can arrive before the pipe notifications.
+        // Drain bytes already written before publishing completion or starting
+        // the next lifecycle script; otherwise a fast `echo` can lose output.
+        if (comptime Environment.isPosix) {
+            if (!this.stdout.isDone()) this.stdout.read();
+            if (!this.stderr.isDone()) this.stderr.read();
+        }
         // We just leak the process because we're going to exit anyway after all processes are done
         _ = proc;
         this.state.processExit(this) catch {};
@@ -348,7 +355,7 @@ const State = struct {
         for (this.handles) |*handle| {
             if (handle.process) |*proc| {
                 // if we get an error here we simply ignore it
-                _ = proc.ptr.kill(std.posix.SIG.INT);
+                _ = proc.ptr.kill(@backingInt(std.posix.SIG.INT));
             }
         }
     }
@@ -373,30 +380,42 @@ const State = struct {
 const AbortHandler = struct {
     const This = @This();
 
-    var should_abort = false;
+    var should_abort = std.atomic.Value(bool).init(false);
+    var wakeup_loop = std.atomic.Value(?*bun.uws.Loop).init(null);
 
-    fn posixSignalHandler(sig: i32, info: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
+    fn requestAbort() void {
+        should_abort.store(true, .seq_cst);
+        // kqueue retries EINTR. Setting the flag alone can leave an idle
+        // command asleep indefinitely, so notify its existing async wakeup.
+        if (wakeup_loop.load(.seq_cst)) |loop| loop.wakeup();
+    }
+
+    fn posixSignalHandler(sig: if (Environment.isAndroid) i32 else std.posix.SIG, info: *const std.posix.siginfo_t, _: ?*anyopaque) callconv(.c) void {
         _ = sig;
         _ = info;
-        should_abort = true;
+        const errno = std.c._errno();
+        const saved_errno = errno.*;
+        defer errno.* = saved_errno;
+        requestAbort();
     }
 
     fn windowsCtrlHandler(dwCtrlType: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
         if (dwCtrlType == std.os.windows.CTRL_C_EVENT) {
-            should_abort = true;
+            requestAbort();
             return std.os.windows.TRUE;
         }
         return std.os.windows.FALSE;
     }
 
-    pub fn install() void {
+    pub fn install(event_loop: *bun.jsc.MiniEventLoop) void {
+        wakeup_loop.store(event_loop.loop, .seq_cst);
         if (Environment.isPosix) {
             const action = bun.sys.Sigaction{
                 .handler = .{ .sigaction = AbortHandler.posixSignalHandler },
                 .mask = bun.sys.sigemptyset(),
                 .flags = std.posix.SA.SIGINFO | std.posix.SA.RESTART | std.posix.SA.RESETHAND,
             };
-            bun.sys.sigaction(std.posix.SIG.INT, &action, null);
+            bun.sys.sigaction(@backingInt(std.posix.SIG.INT), &action, null);
         } else {
             const res = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
             if (res == 0) {
@@ -419,6 +438,17 @@ const AbortHandler = struct {
 fn windowsIsTerminal() bool {
     const res = bun.windows.GetFileType(bun.FD.stdout().native());
     return res == bun.windows.FILE_TYPE_CHAR;
+}
+
+fn prettyOutputEnabled() bool {
+    // Filter commands run before VM output setup. Honor the typed Bun color
+    // controls here, including forced color on POSIX pipes. Windows retains
+    // the console-only display boundary used by the pinned runner.
+    const env = @import("../../bun_core/env_var.zig");
+    const force_color = (env.FORCE_COLOR.get() orelse 0) > 0;
+    if (!force_color and env.NO_COLOR.get()) return false;
+    if (comptime Environment.isWindows) return windowsIsTerminal();
+    return force_color or std.c.isatty(std.posix.STDOUT_FILENO) != 0;
 }
 
 pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
@@ -471,7 +501,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
         }
 
         const pkgjson = bun.PackageJSON.parse(&this_transpiler.resolver, dirpath, .invalid, null, .include_scripts, .main) orelse {
-            Output.warn("Failed to read package.json\n", .{});
+            Output.warn("Failed to read {f}, skipping this workspace package\n", .{bun.fmt.quote(package_json_path)});
             continue;
         };
 
@@ -502,7 +532,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
 
             for (ctx.passthrough) |part| {
                 try copy_script.append(' ');
-                if (bun.shell.needsEscapeUtf8AsciiLatin1(part)) {
+                if (part.len == 0 or bun.shell.needsEscapeUtf8AsciiLatin1(part)) {
                     try bun.shell.escape8Bit(part, &copy_script, true);
                 } else {
                     try copy_script.appendSlice(part);
@@ -549,7 +579,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
     var state = State{
         .handles = try ctx.allocator.alloc(ProcessHandle, scripts.items.len),
         .event_loop = event_loop,
-        .pretty_output = if (Environment.isWindows) windowsIsTerminal() and Output.enable_ansi_colors_stdout else Output.enable_ansi_colors_stdout,
+        .pretty_output = prettyOutputEnabled(),
         .shell_bin = shell_bin,
         .env = this_transpiler.env,
     };
@@ -632,10 +662,10 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
         }
     }
 
-    AbortHandler.install();
+    AbortHandler.install(event_loop);
 
     while (!state.isDone()) {
-        if (AbortHandler.should_abort and !state.aborted) {
+        if (AbortHandler.should_abort.load(.seq_cst) and !state.aborted) {
             // We uninstall the custom abort handler so that if the user presses Ctrl+C again,
             // the process is aborted immediately and doesn't wait for the event loop to tick.
             // This can be useful if one of the processes is stuck and doesn't react to SIGINT.

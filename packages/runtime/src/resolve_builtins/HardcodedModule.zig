@@ -46,6 +46,7 @@ pub const HardcodedModule = enum {
     @"node:readline/promises",
     @"node:stream",
     @"node:stream/consumers",
+    @"node:stream/iter",
     @"node:stream/promises",
     @"node:stream/web",
     @"node:string_decoder",
@@ -60,6 +61,7 @@ pub const HardcodedModule = enum {
     @"node:vm",
     @"node:wasi",
     @"node:zlib",
+    @"node:zlib/iter",
     @"node:worker_threads",
     @"node:punycode",
     undici,
@@ -90,6 +92,11 @@ pub const HardcodedModule = enum {
     @"node:_http_incoming",
     @"node:_http_outgoing",
     @"node:_http_server",
+    @"internal/async_context_frame",
+    @"internal/async_hooks",
+    @"internal/js_stream_socket",
+    @"internal/streams/add-abort-signal",
+    @"internal/test/binding",
     /// This is gated behind '--expose-internals'
     @"bun:internal-for-testing",
 
@@ -107,6 +114,11 @@ pub const HardcodedModule = enum {
         .{ "bun:sqlite", .@"bun:sqlite" },
         .{ "bun:wrap", .@"bun:wrap" },
         .{ "bun:internal-for-testing", .@"bun:internal-for-testing" },
+        .{ "internal/async_context_frame", .@"internal/async_context_frame" },
+        .{ "internal/async_hooks", .@"internal/async_hooks" },
+        .{ "internal/js_stream_socket", .@"internal/js_stream_socket" },
+        .{ "internal/streams/add-abort-signal", .@"internal/streams/add-abort-signal" },
+        .{ "internal/test/binding", .@"internal/test/binding" },
         // Node.js
         .{ "node:assert", .@"node:assert" },
         .{ "node:assert/strict", .@"node:assert/strict" },
@@ -146,6 +158,7 @@ pub const HardcodedModule = enum {
         .{ "node:repl", .@"node:repl" },
         .{ "node:stream", .@"node:stream" },
         .{ "node:stream/consumers", .@"node:stream/consumers" },
+        .{ "node:stream/iter", .@"node:stream/iter" },
         .{ "node:stream/promises", .@"node:stream/promises" },
         .{ "node:stream/web", .@"node:stream/web" },
         .{ "node:string_decoder", .@"node:string_decoder" },
@@ -162,6 +175,7 @@ pub const HardcodedModule = enum {
         .{ "node:wasi", .@"node:wasi" },
         .{ "node:worker_threads", .@"node:worker_threads" },
         .{ "node:zlib", .@"node:zlib" },
+        .{ "node:zlib/iter", .@"node:zlib/iter" },
         .{ "node:_stream_duplex", .@"node:_stream_duplex" },
         .{ "node:_stream_passthrough", .@"node:_stream_passthrough" },
         .{ "node:_stream_readable", .@"node:_stream_readable" },
@@ -255,6 +269,8 @@ pub const HardcodedModule = enum {
             nodeEntry("node:repl"),
             nodeEntry("node:stream"),
             nodeEntry("node:stream/consumers"),
+            nodeEntry("node:stream/iter"),
+            nodeEntry("node:zlib/iter"),
             nodeEntry("node:stream/promises"),
             nodeEntry("node:stream/web"),
             nodeEntry("node:string_decoder"),
@@ -311,6 +327,8 @@ pub const HardcodedModule = enum {
             nodeEntry("repl"),
             nodeEntry("stream"),
             nodeEntry("stream/consumers"),
+            nodeEntry("stream/iter"),
+            nodeEntry("zlib/iter"),
             nodeEntry("stream/promises"),
             nodeEntry("stream/web"),
             nodeEntry("string_decoder"),
@@ -376,6 +394,11 @@ pub const HardcodedModule = enum {
             .{ "bun:sqlite", .{ .path = "bun:sqlite" } },
             .{ "bun:wrap", .{ .path = "bun:wrap" } },
             .{ "bun:internal-for-testing", .{ .path = "bun:internal-for-testing" } },
+            .{ "internal/async_context_frame", .{ .path = "internal/async_context_frame" } },
+            .{ "internal/async_hooks", .{ .path = "internal/async_hooks" } },
+            .{ "internal/js_stream_socket", .{ .path = "internal/js_stream_socket" } },
+            .{ "internal/streams/add-abort-signal", .{ .path = "internal/streams/add-abort-signal" } },
+            .{ "internal/test/binding", .{ .path = "internal/test/binding" } },
             .{ "ffi", .{ .path = "bun:ffi" } },
 
             // Thirdparty packages we override
@@ -412,6 +435,7 @@ pub const HardcodedModule = enum {
         }
 
         pub fn get(name: []const u8, target: anytype, cfg: Cfg) ?Alias {
+            if (HardcodedModule.streamIterAliasGated(name)) return null;
             if (targetIsBun(target)) {
                 if (cfg.rewrite_jest_for_tests) {
                     return bun_test_aliases.get(name);
@@ -438,7 +462,40 @@ pub const HardcodedModule = enum {
             };
         }
     };
+
+    pub fn streamIterEnabled() bool {
+        return stream_iter_enabled.load(.monotonic);
+    }
+
+    pub fn setStreamIterEnabled(enabled: bool) void {
+        stream_iter_enabled.store(enabled, .monotonic);
+    }
+
+    pub fn streamIterAliasGated(name: []const u8) bool {
+        return streamIterAliasGatedWithEnabled(name, streamIterEnabled());
+    }
+
+    pub fn isInternalTestingSpecifier(name: []const u8) bool {
+        return std.mem.eql(u8, name, "internal/async_context_frame") or
+            std.mem.eql(u8, name, "internal/async_hooks") or
+            std.mem.eql(u8, name, "internal/js_stream_socket") or
+            std.mem.eql(u8, name, "internal/streams/add-abort-signal") or
+            std.mem.eql(u8, name, "internal/test/binding");
+    }
 };
+
+var stream_iter_enabled = std.atomic.Value(bool).init(false);
+
+fn streamIterAliasGatedWithEnabled(name: []const u8, enabled: bool) bool {
+    return (std.mem.eql(u8, name, "stream/iter") or
+        std.mem.eql(u8, name, "node:stream/iter") or
+        std.mem.eql(u8, name, "zlib/iter") or
+        std.mem.eql(u8, name, "node:zlib/iter")) and !enabled;
+}
+
+pub export fn Bun__streamIterEnabled() bool {
+    return HardcodedModule.streamIterEnabled();
+}
 
 const bun = struct {
     pub fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
@@ -481,7 +538,21 @@ test "HardcodedModule.map resolves Bun and Node builtins" {
     try std.testing.expectEqual(HardcodedModule.bun, HardcodedModule.map.get("bun").?);
     try std.testing.expectEqual(HardcodedModule.@"node:fs", HardcodedModule.map.get("node:fs").?);
     try std.testing.expectEqual(HardcodedModule.ws, HardcodedModule.map.get("ws").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/async_context_frame", HardcodedModule.map.get("internal/async_context_frame").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/async_hooks", HardcodedModule.map.get("internal/async_hooks").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/js_stream_socket", HardcodedModule.map.get("internal/js_stream_socket").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/streams/add-abort-signal", HardcodedModule.map.get("internal/streams/add-abort-signal").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/test/binding", HardcodedModule.map.get("internal/test/binding").?);
     try std.testing.expect(HardcodedModule.map.get("not-a-builtin") == null);
+}
+
+test "internal testing specifiers are explicit" {
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/async_context_frame"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/async_hooks"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/js_stream_socket"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/streams/add-abort-signal"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/test/binding"));
+    try std.testing.expect(!HardcodedModule.isInternalTestingSpecifier("internal/streams/readable"));
 }
 
 test "HardcodedModule.Alias rewrites common Node aliases" {
@@ -501,4 +572,12 @@ test "HardcodedModule.Alias maps Bun extras and test rewrites" {
     try std.testing.expectEqualStrings("bun:test", vitest.path);
 
     try std.testing.expect(HardcodedModule.Alias.get("bun", .browser, .{}) == null);
+}
+
+test "stream iter aliases are gated by the experimental flag" {
+    inline for (.{ "stream/iter", "node:stream/iter", "zlib/iter", "node:zlib/iter" }) |name| {
+        try std.testing.expect(streamIterAliasGatedWithEnabled(name, false));
+        try std.testing.expect(!streamIterAliasGatedWithEnabled(name, true));
+    }
+    try std.testing.expect(!streamIterAliasGatedWithEnabled("node:stream", false));
 }

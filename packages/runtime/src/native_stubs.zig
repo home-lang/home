@@ -27,7 +27,6 @@ test "unsupported encoded callbacks return JavaScript undefined, never the empty
     try @import("std").testing.expectEqual(@as(usize, 0xa), unsupportedEncoded());
 }
 fn noopDetached(_: ?*anyopaque, _: usize) callconv(.c) void {}
-fn noopDispatch(_: ?*anyopaque, _: ?*const u8, _: c_int) callconv(.c) void {}
 extern fn u_hasBinaryProperty(c: c_int, which: c_int) callconv(.c) u8;
 fn icuHasBinaryProperty(c: u32, which: c_uint) callconv(.c) bool {
     return u_hasBinaryProperty(@intCast(c), @intCast(which)) != 0;
@@ -42,7 +41,6 @@ comptime {
     // NetworkSink__memoryCost now has its real export (streams.zig NetworkSink,
     // force-referenced once the S3 write path un-stub links the real uploader).
     @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
-    @export(&noopBool, .{ .name = "Bun__streamIterEnabled" });
     // Bun object sets differ on whether workaround-missing-symbols.cpp.o
     // exports this wrapper, so Home keeps a weak bridge to ICU.
     @export(&icuHasBinaryProperty, .{ .name = "icu_hasBinaryProperty", .linkage = .weak });
@@ -59,25 +57,13 @@ comptime {
     }
 
     for ([_][]const u8{
-        "us_dispatch_keylog",
-        "us_dispatch_session",
-    }) |name| {
-        @export(&noopDispatch, .{ .name = name });
-    }
-
-    for ([_][]const u8{
         "H2FrameParserPrototype__pushPromise",
         "JS2Zig___src_collections_linear_fifo_zig__TestingAPIs_orderedRemoveProbe",
         "JS2Zig___src_sys_sys_zig__TestingAPIs_translateNtStatusToE",
-        "SecureContextClass__create_private",
-        "SecureContextClass__parse_pkcs12",
-        "SecureContextPrototype__add_ca_cert",
         "TCPSocketPrototype__getTypeOfService",
-        "TCPSocketPrototype__resumeSNI",
         "TCPSocketPrototype__setKeyCert",
         "TCPSocketPrototype__setTypeOfService",
         "TLSSocketPrototype__getTypeOfService",
-        "TLSSocketPrototype__resumeSNI",
         "TLSSocketPrototype__setKeyCert",
         "TLSSocketPrototype__setTypeOfService",
     }) |name| {
@@ -91,8 +77,8 @@ comptime {
         // dns.zig (the noop left hostname HTTP/3 connects hanging).
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
         "Bun__Secrets__scheduleJob",
-        "Bun__onRejectEntryPointResult",
-        "Bun__onResolveEntryPointResult",
+        // Entry-point result handlers are real VirtualMachine exports. Native
+        // promiseHandlerID compares their addresses against its fixed table.
         "BlockList__onStructuredCloneDestroy",
         "CrashHandler__setDlOpenAction",
         "CrashHandler__setInsideNativePlugin",
@@ -144,7 +130,6 @@ comptime {
         // jsc/js2native_workarounds.zig (the noops returned globalThis).
         "JS2Zig___src_install_jsc_install_binding_zig__bun_install_js_bindings_generate_workaround",
         "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround",
-        "JS2Zig___src_jsc_Counters_zig__createCountersObject",
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
         // event_loop getActiveTasks now has its real export in js2native_workarounds.zig.
         "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",

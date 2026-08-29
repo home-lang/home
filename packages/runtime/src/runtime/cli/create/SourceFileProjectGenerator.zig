@@ -283,6 +283,7 @@ pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependen
         try argv.append("bun");
         try argv.append("--only-missing");
         try argv.append("install");
+        try argv.append("--");
         try argv.appendSlice(dependencies);
         try runInstall(argv.items);
     }
@@ -312,6 +313,7 @@ pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependen
                     try shadcn_argv.append("--src-dir");
                 }
                 try shadcn_argv.append("-y");
+                try shadcn_argv.append("--");
                 try shadcn_argv.appendSlice(shadcn.components.keys());
 
                 // print "bun" but use bun.selfExePath()

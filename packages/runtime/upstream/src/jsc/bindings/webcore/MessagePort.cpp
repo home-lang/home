@@ -29,6 +29,7 @@
 
 #include "BunClientData.h"
 #include "EventNames.h"
+#include "HomeMessagePortLifecycle.h"
 #include "MessageEvent.h"
 #include "MessagePortPipe.h"
 #include "MessageWithMessagePorts.h"
@@ -44,7 +45,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(MessagePort);
 
 Ref<MessagePort> MessagePort::create(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
 {
-    return adoptRef(*new MessagePort(context, WTF::move(pipe), side));
+    auto port = adoptRef(*new MessagePort(context, WTF::move(pipe), side));
+    // Registration is distinct from start(): an unstarted port still needs
+    // peer-close notifications, while its message inbox must stay buffered.
+    port->m_pipe->attach(side, context.identifier(), ThreadSafeWeakPtr<MessagePort> { port.get() });
+    return port;
 }
 
 MessagePort::MessagePort(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
@@ -58,8 +63,10 @@ MessagePort::MessagePort(ScriptExecutionContext& context, Ref<MessagePortPipe>&&
 
 MessagePort::~MessagePort()
 {
-    if (!m_isDetached)
+    if (!m_isDetached || m_started) {
+        m_pipe->detach(m_side);
         m_pipe->close(m_side);
+    }
 }
 
 ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& state, JSC::JSValue messageValue, StructuredSerializeOptions&& options)
@@ -69,14 +76,12 @@ ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& state, JSC::JSVa
     if (messageData.hasException())
         return messageData.releaseException();
 
-    if (!isEntangled())
-        return {};
-
     Vector<TransferredMessagePort> transferredPorts;
     if (!ports.isEmpty()) {
-        // A port may not be posted through itself or its own entangled peer.
+        // A live sender may not transfer its own peer. An inactive sender
+        // still consumes transfer lists, including a still-active former peer.
         for (auto& port : ports) {
-            if (port->pipe() == m_pipe.ptr())
+            if (port.get() == this || (isEntangled() && port->pipe() == m_pipe.ptr()))
                 return Exception { DataCloneError };
         }
         auto disentangled = MessagePort::disentanglePorts(WTF::move(ports));
@@ -85,7 +90,14 @@ ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& state, JSC::JSVa
         transferredPorts = disentangled.releaseReturnValue();
     }
 
-    m_pipe->send(m_side, MessageWithMessagePorts { messageData.releaseReturnValue(), WTF::move(transferredPorts) });
+    // Transfer-list processing still consumes transferred resources when the
+    // sending wrapper is closed. The temporary endpoints then close as orphans.
+    if (!isEntangled())
+        return {};
+
+    MessageWithMessagePorts message { messageData.releaseReturnValue(), WTF::move(transferredPorts) };
+    if (!WorkerParentPort::send(m_pipe.get(), m_side, WTF::move(message)))
+        m_pipe->send(m_side, WTF::move(message));
     return {};
 }
 
@@ -106,13 +118,15 @@ void MessagePort::close()
 {
     if (m_isDetached)
         return;
+    // Once detached, started distinguishes a pending local close from a
+    // transferred-away wrapper. Only the former can synchronously consume its
+    // inbox before close completion; both retain pending close notifications.
+    m_started = true;
     m_isDetached = true;
 
-    // m_pipe is held for the port's whole lifetime (the GC thread reads
-    // it in hasPendingActivity()); marking our side Closed is sufficient.
+    // Closed stops outgoing sends/transfer immediately, but the pipe retains
+    // the local inbox until its asynchronous close event is ready to dispatch.
     m_pipe->close(m_side);
-
-    removeAllEventListeners();
 
     // Release the self-reference taken by jsRef() (set when .onmessage is
     // assigned or .ref() is called from JS). The JS .close() binding calls
@@ -133,16 +147,14 @@ TransferredMessagePort MessagePort::disentangle()
 {
     ASSERT(isEntangled());
 
-    // Drop any message listeners (and the event-loop ref they carry) while
-    // this port is still attached to its context; after observeContext(null)
-    // there would be nothing to unref.
-    removeAllEventListeners();
-    m_hasMessageEventListener = false;
+    // Retain listeners until the old wrapper's asynchronous close event.
+    // It remains a destruction observer so a dying context can instead
+    // clear listeners and release their event-loop refs without running JS.
 
     // Release the self-reference taken by jsRef() on the sending side. After
     // transfer this object is inert (the receiving side gets a fresh
-    // MessagePort for the same pipe endpoint) and is no longer a destruction
-    // observer, so nothing else will ever release a ref taken here.
+    // MessagePort for the same pipe endpoint). Its pending close retains the
+    // wrapper, but must not keep the sending event loop referenced.
     // The caller (disentanglePorts) holds a RefPtr, so deref() is safe.
     if (m_hasRef) {
         m_hasRef = false;
@@ -157,12 +169,17 @@ TransferredMessagePort MessagePort::disentangle()
     // GC thread can always dereference it — our side is detached, so all
     // further operations on it are no-ops.
     m_pipe->detach(m_side);
-    m_isDetached = true;
     m_started = false;
+    m_isDetached = true;
 
-    if (auto* context = scriptExecutionContext())
-        context->willDestroyDestructionObserver(*this);
-    observeContext(nullptr);
+    if (auto* context = scriptExecutionContext()) {
+        context->postTask([port = Ref { *this }](ScriptExecutionContext&) {
+            if (!port->scriptExecutionContext())
+                return;
+            auto event = Event::create(eventNames().closeEvent, Event::CanBubble::No, Event::IsCancelable::No);
+            port->dispatchEvent(event);
+        });
+    }
 
     return TransferredMessagePort { m_pipe.copyRef(), m_side };
 }
@@ -198,11 +215,17 @@ void MessagePort::dispatchOneMessage(ScriptExecutionContext& context, MessageWit
 
     auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), {}, {}, {}, WTF::move(ports));
     dispatchEvent(event.event);
+    WorkerParentPort::forwardGlobalEvent(*this, context, event.event.get());
 }
 
 JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
 {
-    if (!isEntangled())
+    auto& vm = lexicalGlobalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    const uint64_t state = m_pipe->state(m_side);
+    const bool pendingLocalClose = m_isDetached && m_started
+        && (state & MessagePortPipe::Closed) && !(state & MessagePortLifecycle::CloseDispatched);
+    if (!isEntangled() && !pendingLocalClose)
         return jsUndefined();
 
     auto* context = scriptExecutionContext();
@@ -214,11 +237,42 @@ JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
         return jsUndefined();
 
     auto ports = MessagePort::entanglePorts(*context, WTF::move(message->transferredPorts));
-    return message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, WTF::move(ports), SerializationErrorMode::NonThrowing);
+    auto value = message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, WTF::move(ports), SerializationErrorMode::Throwing);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!value) [[unlikely]] {
+        throwTypeError(lexicalGlobalObject, scope, "Failed to deserialize MessagePort message"_s);
+        return {};
+    }
+    // Presence is independent of the serialized value. In particular, a real
+    // undefined message must be distinguishable from an empty receive queue.
+    auto* result = constructEmptyObject(lexicalGlobalObject);
+    RETURN_IF_EXCEPTION(scope, {});
+    result->putDirect(vm, vm.propertyNames->message, value);
+    RELEASE_AND_RETURN(scope, result);
 }
 
 void MessagePort::dispatchEvent(Event& event)
 {
+    // Only a native trusted close event can finalize a detached wrapper.
+    // dispatchEventForBindings always makes user-provided events untrusted.
+    if (event.isTrusted() && event.type() == eventNames().closeEvent) {
+        Ref protectedThis { *this };
+        if (m_isDetached && !scriptExecutionContext())
+            return;
+        close();
+        if (auto* context = scriptExecutionContext(); context && context->globalObject() && !context->isJSExecutionForbidden()) {
+            auto* globalObject = defaultGlobalObject(context->globalObject());
+            // Worker teardown can clear JSC's termination flag while Home's
+            // VM is still stopped. Match ordinary message dispatch's gate.
+            if (Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) == ScriptExecutionStatus::Running)
+                EventTarget::dispatchEvent(event);
+        }
+        removeAllEventListeners();
+        m_hasMessageEventListener = false;
+        m_started = false;
+        observeContext(nullptr);
+        return;
+    }
     if (m_isDetached)
         return;
     EventTarget::dispatchEvent(event);
@@ -232,7 +286,18 @@ void MessagePort::contextDestroyed()
     // first — otherwise ~ContextDestructionObserver() would call back into
     // it while it is mid-destruction.
     Ref protectedThis { *this };
+    // A dying wrapper has no pending receive window. Unregister it before
+    // closing so the pipe discards its inbox even if local close was pending.
+    if (!m_isDetached || m_started) {
+        m_pipe->detach(m_side);
+        m_pipe->close(m_side);
+    }
     close();
+    // No JS may run during context destruction, including a queued close for
+    // a transferred-away wrapper. Clear refs while the context still exists.
+    removeAllEventListeners();
+    m_hasMessageEventListener = false;
+    m_started = false;
     ContextDestructionObserver::contextDestroyed();
 }
 
@@ -244,12 +309,21 @@ bool MessagePort::hasPendingActivity() const
     // atomic loads. The plain bool reads can observe stale values but
     // cannot crash — at worst the wrapper is collected one cycle early
     // or late, which is the same tolerance as before this refactor.
-    if (!scriptExecutionContext() || m_isDetached)
+    if (!scriptExecutionContext())
         return false;
+    const uint64_t s = m_pipe->state(m_side);
+    // A queued native close must keep its JS listener/wrapper alive even if
+    // there is no message listener. Never touch another context's weak port.
+    if ((s & MessagePortPipe::Closed) && (s & MessagePortPipe::DrainScheduled))
+        return true;
+    if ((s & MessagePortLifecycle::PeerClosed) && (s & MessagePortPipe::DrainScheduled)
+        && !(s & MessagePortLifecycle::CloseDispatched))
+        return true;
+    if (m_isDetached)
+        return true; // its context is retained only until close dispatch/teardown
     if (!m_hasMessageEventListener)
         return false;
 
-    uint64_t s = m_pipe->state(m_side);
     // Keep alive if there are messages already queued for us, or the peer
     // is still open and could send more.
     return MessagePortPipe::queuedCount(s) > 0 || m_pipe->isOtherSideOpen(m_side);
@@ -291,17 +365,17 @@ void MessagePort::onDidChangeListenerImpl(EventTarget& self, const AtomString& e
     switch (kind) {
     case Add:
         if (port.m_messageEventCount == 0 && context)
-            context->refEventLoop();
+            port.jsRef(context->jsGlobalObject());
         port.m_messageEventCount++;
         break;
     case Remove:
         port.m_messageEventCount--;
         if (port.m_messageEventCount == 0 && context)
-            context->unrefEventLoop();
+            port.jsUnref(context->jsGlobalObject());
         break;
     case Clear:
         if (port.m_messageEventCount > 0 && context)
-            context->unrefEventLoop();
+            port.jsUnref(context->jsGlobalObject());
         port.m_messageEventCount = 0;
         break;
     }

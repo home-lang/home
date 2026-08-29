@@ -173,16 +173,28 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
 
             // we need to add support for the backlog parameter on listen here we use the
             // default value of nodejs
+            var pipe_error: ?bun.sys.Error = null;
             const named_pipe = WindowsNamedPipeListeningContext.listen(
                 globalObject,
                 pipe_name,
                 511,
                 ssl,
                 this,
-            ) catch return globalObject.throwInvalidArguments(
-                "Failed to listen at {s}",
-                .{pipe_name},
-            );
+                &pipe_error,
+            ) catch {
+                if (pipe_error) |system_error| {
+                    const error_info = api.socket.socketErrorInfo(@intCast(system_error.errno));
+                    const err = jsc.SystemError{
+                        .errno = -error_info.errno,
+                        .code = bun.String.static(error_info.code),
+                        .message = bun.String.static("Failed to listen"),
+                        .path = bun.String.cloneUTF8(pipe_name),
+                        .syscall = bun.String.static("listen"),
+                    };
+                    return globalObject.throwValue(err.toErrorInstance(globalObject));
+                }
+                return globalObject.throwInvalidArguments("Failed to listen at {s}", .{pipe_name});
+            };
             this.listener = .{ .namedPipe = named_pipe };
 
             const this_value = this.toJS(globalObject);
@@ -255,7 +267,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             },
             .fd => |fd| {
                 const err: bun.jsc.SystemError = .{
-                    .errno = @intFromEnum(bun.sys.SystemErrno.EINVAL),
+                    .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
                     .code = .static("EINVAL"),
                     .message = .static("Bun does not support listening on a file descriptor."),
                     .syscall = .static("listen"),
@@ -298,6 +310,9 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
                 _ = listen_socket.addServerName(server_name, secure, null);
             }
         }
+        if (handlers.onServerName != .zero) {
+            listen_socket.onServerName(dispatchServerName);
+        }
     }
 
     listener_allocated = false; // ownership now on `this`; deinit handles cleanup
@@ -306,6 +321,58 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     this.poll_ref.ref(handlers.vm);
 
     return this_value;
+}
+
+/// Dispatch one ClientHello SNI name to the listener's JavaScript handler.
+/// A true result parks the handshake; an Error aborts it; a native
+/// SecureContext supplies one owned SSL_CTX reference to the C caller.
+fn dispatchServerName(
+    listen_socket: *uws.ListenSocket,
+    hostname: [*:0]const u8,
+    abort_handshake: *c_int,
+    raw_socket: ?*anyopaque,
+) callconv(.c) ?*BoringSSL.SSL_CTX {
+    jsc.markBinding(@src());
+    const listener = listen_socket.group().owner(Listener);
+    const handlers = &listener.handlers;
+    if (handlers.vm.isShuttingDown() or handlers.onServerName == .zero) return null;
+
+    // This callback is listener-scoped. Do not enter the accepted-socket
+    // Handlers lifecycle scope: doing so would mutate listener connection
+    // accounting from inside the handshake.
+    const globalObject = handlers.globalObject;
+    const this_value = listener.strong_data.get() orelse .js_undefined;
+    const name_value = ZigString.init(std.mem.span(hostname)).toJS(globalObject);
+    const socket_handle: JSValue = if (raw_socket) |opaque_socket| handle: {
+        const socket: *uws.us_socket_t = @ptrCast(@alignCast(opaque_socket));
+        if (socket.kind() != .bun_socket_tls) break :handle .js_undefined;
+        const tls = socket.ext(?*TLSSocket).* orelse break :handle .js_undefined;
+        break :handle tls.getThisValue(globalObject);
+    } else .js_undefined;
+
+    const result = handlers.onServerName.call(
+        globalObject,
+        this_value,
+        &.{ this_value, name_value, socket_handle },
+    ) catch |err| globalObject.takeError(err);
+
+    if (result.isBoolean() and result.toBoolean()) {
+        abort_handshake.* = 2;
+        return null;
+    }
+    if (result.toError() != null) {
+        abort_handshake.* = 1;
+        return null;
+    }
+    if (result.isUndefinedOrNull()) return null;
+    if (SecureContext.fromJS(result)) |secure| {
+        const ctx = secure.borrow();
+        if (handlers.onALPNCallback != .zero) api.socket.installALPNSelector(ctx);
+        return ctx;
+    }
+
+    abort_handshake.* = 1;
+    return null;
 }
 
 pub fn constructor(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*Listener {
@@ -396,6 +463,8 @@ pub fn addServerName(this: *Listener, global: *jsc.JSGlobalObject, hostname: JSV
             return global.throwValue(bun.BoringSSL.ERR_toJS(global, BoringSSL.ERR_get_error()));
         };
     } else return .js_undefined;
+
+    if (this.handlers.onALPNCallback != .zero) api.socket.installALPNSelector(sni_ctx);
 
     // The C SNI tree SSL_CTX_up_ref()s; drop our build/borrow ref once added.
     ls.removeServerName(server_name);
@@ -883,8 +952,8 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             socket.ref();
             SocketType.js.dataSetCached(socket.getThisValue(globalObject), globalObject, default_data);
             socket.flags.allow_half_open = socket_config.allowHalfOpen;
-            socket.doConnect(connection) catch {
-                socket.handleConnectError(@intFromEnum(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+            socket.doConnect(connection, socket_config.local_address.slice(), socket_config.localPort orelse 0) catch {
+                socket.handleConnectError(@backingInt(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
                 // Balance the unconditional `socket.ref()` above. `handleConnectError`
                 // only derefs when the socket was attached (`needs_deref`), which is
                 // never true on this synchronous-failure path — the socket is still
@@ -1033,7 +1102,9 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
         backlog: i32,
         ssl_config: ?*const SSLConfig,
         listener: *Listener,
+        pipe_error: *?bun.sys.Error,
     ) !*WindowsNamedPipeListeningContext {
+        pipe_error.* = null;
         const this = WindowsNamedPipeListeningContext.new(.{
             .globalThis = globalThis,
             .vm = globalThis.bunVM(),
@@ -1064,7 +1135,11 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
         if (path[path.len - 1] == 0) {
             // is already null terminated
             const slice_z = path[0 .. path.len - 1 :0];
-            this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect).unwrap() catch return error.FailedToBindPipe;
+            const result = this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect);
+            if (result.asErr()) |err| {
+                pipe_error.* = err;
+                return error.NamedPipeListenFailed;
+            }
         } else {
             var path_buf: bun.PathBuffer = undefined;
             // we need to null terminate the path
@@ -1073,7 +1148,11 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
             @memcpy(path_buf[0..len], path[0..len]);
             path_buf[len] = 0;
             const slice_z = path_buf[0..len :0];
-            this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect).unwrap() catch return error.FailedToBindPipe;
+            const result = this.uvPipe.listenNamedPipe(slice_z, backlog, this, onClientConnect);
+            if (result.asErr()) |err| {
+                pipe_error.* = err;
+                return error.NamedPipeListenFailed;
+            }
         }
         //TODO: add readableAll and writableAll support if someone needs it
         // if(uv.uv_pipe_chmod(&this.uvPipe, uv.UV_WRITABLE | uv.UV_READABLE) != 0) {

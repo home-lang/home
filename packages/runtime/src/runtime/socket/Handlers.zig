@@ -9,6 +9,10 @@ onConnectError: jsc.JSValue = .zero,
 onEnd: jsc.JSValue = .zero,
 onError: jsc.JSValue = .zero,
 onHandshake: jsc.JSValue = .zero,
+onSession: jsc.JSValue = .zero,
+onKeylog: jsc.JSValue = .zero,
+onServerName: jsc.JSValue = .zero,
+onALPNCallback: jsc.JSValue = .zero,
 
 binary_type: BinaryType = .Buffer,
 
@@ -30,6 +34,10 @@ const callback_fields = .{
     "onEnd",
     "onError",
     "onHandshake",
+    "onSession",
+    "onKeylog",
+    "onServerName",
+    "onALPNCallback",
 };
 
 pub fn markActive(this: *Handlers) void {
@@ -198,6 +206,10 @@ fn unprotect(this: *Handlers) void {
     this.onEnd.unprotect();
     this.onError.unprotect();
     this.onHandshake.unprotect();
+    this.onSession.unprotect();
+    this.onKeylog.unprotect();
+    this.onServerName.unprotect();
+    this.onALPNCallback.unprotect();
 }
 
 fn withAsyncContextIfNeeded(this: *Handlers, globalObject: *jsc.JSGlobalObject) void {
@@ -222,12 +234,18 @@ fn protect(this: *Handlers) void {
     this.onEnd.protect();
     this.onError.protect();
     this.onHandshake.protect();
+    this.onSession.protect();
+    this.onKeylog.protect();
+    this.onServerName.protect();
+    this.onALPNCallback.protect();
 }
 
 /// `handlers` is always `protect`ed in this struct.
 pub const SocketConfig = struct {
     hostname_or_unix: jsc.ZigString.Slice,
+    local_address: jsc.ZigString.Slice = .empty,
     port: ?u16 = null,
+    localPort: ?u16 = null,
     fd: ?bun.FD = null,
     ssl: ?SSLConfig = null,
     handlers: Handlers,
@@ -247,6 +265,7 @@ pub const SocketConfig = struct {
     /// Deinitializes everything except `handlers`.
     pub fn deinitExcludingHandlers(this: *SocketConfig) void {
         this.hostname_or_unix.deinit();
+        this.local_address.deinit();
         bun.memory.deinit(&this.ssl);
         const handlers = this.handlers;
         this.* = undefined;
@@ -295,6 +314,17 @@ pub const SocketConfig = struct {
         };
         errdefer result.deinit();
 
+        applyGeneratedCommonOptions(&result, generated);
+
+        if (generated.local_address.get()) |local_address| {
+            if (local_address.length() > 0) {
+                result.local_address = local_address.toUTF8(bun.default_allocator);
+                if (strings.indexOfChar(result.local_address.slice(), 0) != null) {
+                    return global.throwInvalidArguments("\"localAddress\" must not contain null bytes", .{});
+                }
+            }
+        }
+
         if (result.fd != null) {
             // If a user passes a file descriptor then prefer it over hostname or unix
         } else if (generated.unix_.get()) |unix| {
@@ -321,14 +351,18 @@ pub const SocketConfig = struct {
             result.port = generated.port orelse bun.URL.parse(slice).getPort() orelse {
                 return global.throwInvalidArguments("Missing \"port\"", .{});
             };
-            result.exclusive = generated.exclusive;
-            result.allowHalfOpen = generated.allow_half_open;
-            result.reusePort = generated.reuse_port;
-            result.ipv6Only = generated.ipv6_only;
         } else {
             return global.throwInvalidArguments("Expected either \"hostname\" or \"unix\"", .{});
         }
         return result;
+    }
+
+    fn applyGeneratedCommonOptions(result: *SocketConfig, generated: *const jsc.generated.SocketConfig) void {
+        result.localPort = generated.local_port;
+        result.exclusive = generated.exclusive;
+        result.allowHalfOpen = generated.allow_half_open;
+        result.reusePort = generated.reuse_port;
+        result.ipv6Only = generated.ipv6_only;
     }
 
     pub fn fromJS(
@@ -397,7 +431,28 @@ pub const SocketConfig = struct {
     }
 };
 
+test "SocketConfig copies generic and local-bind options independently of address kind" {
+    var generated: jsc.generated.SocketConfig = .{};
+    generated.local_port = 43123;
+    generated.exclusive = true;
+    generated.allow_half_open = true;
+    generated.reuse_port = true;
+    generated.ipv6_only = true;
+
+    var result: SocketConfig = undefined;
+    SocketConfig.applyGeneratedCommonOptions(&result, &generated);
+
+    try std.testing.expectEqual(@as(?u16, 43123), result.localPort);
+    try std.testing.expect(result.exclusive);
+    try std.testing.expect(result.allowHalfOpen);
+    try std.testing.expect(result.reusePort);
+    try std.testing.expect(result.ipv6Only);
+    try std.testing.expect(@hasField(jsc.generated.SocketConfig, "local_address"));
+    try std.testing.expect(@hasField(jsc.generated.SocketConfig, "local_port"));
+}
+
 const bun = @import("bun");
+const std = @import("std");
 const Environment = bun.Environment;
 const strings = bun.strings;
 const uws = bun.uws;

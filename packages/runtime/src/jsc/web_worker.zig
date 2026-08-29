@@ -23,9 +23,9 @@
 //! Refs on `WebCore::Worker`:
 //!   - `JSWorker` wrapper  +1  (dropped at GC)
 //!   - worker thread       +1  taken in `Worker::create()` BEFORE the thread is
-//!                             spawned, dropped on the PARENT thread inside the
-//!                             close task posted by `dispatchExit()`. `~Worker`
-//!                             therefore never runs on the worker thread.
+//!                             spawned, dropped before publishing the exit task
+//!                             while its captured Ref keeps Worker alive. The
+//!                             task's final deref is on the PARENT thread.
 //!
 //! Lifecycle of the worker thread (`threadMain`):
 //!   1. `startVM()`  — build a mimalloc arena, clone env, initialise a
@@ -33,9 +33,10 @@
 //!   2. `spin()`     — load the entry point, call `dispatchOnline` +
 //!      `fireEarlyMessages`, run the event loop until it drains or
 //!      `requested_terminate` is observed, run `beforeExit`.
-//!   3. `shutdown()` — call `vm.onExit()`, tear down the JSC VM, post
-//!      `dispatchExit` (which releases `parent_poll_ref` + the thread ref on
-//!      the parent), free the arena, exit the thread. After `dispatchExit`
+//!   3. `shutdown()` — call `vm.onExit()`, stop/join descendants and perform
+//!      their native exit cleanup without JS, tear down the JSC VM, post
+//!      `dispatchExit`, free the arena, then publish thread-resource completion.
+//!      After `dispatchExit`
 //!      `this` may be freed at any time; nothing below it dereferences `this`.
 //!
 //! `vm_lock` exists solely to close the TOCTOU between the parent reading a
@@ -51,12 +52,11 @@
 //! reach `shutdown()` before process-global resolver state is freed — the
 //! main-thread analogue of Node's `Environment::stop_sub_worker_contexts()`.
 //!
-//! Known gap vs Node.js: the worker thread is detached, not joined, so
-//! `await worker.terminate()` resolves before the OS thread is fully gone;
-//! nested workers are not stopped when their WORKER parent's context tears
-//! down (only the main thread waits). When a parent context is gone before
-//! the close task posts, the thread-held `Worker` ref is intentionally
-//! leaked (see `Worker::dispatchExit`).
+//! OS threads remain detached, so `await worker.terminate()` can resolve before
+//! the final thread return. A worker parent's shutdown separately waits until
+//! all descendants have finished their shared-state accesses and thread-local
+//! cleanup, and drains only their marked native exit tasks before its own heap
+//! teardown. This is not general cancellation of arbitrary queued C++ tasks.
 
 const WebWorker = @This();
 
@@ -73,11 +73,14 @@ cpp_worker: *anyopaque,
 ///
 /// Validity: when the parent is the main thread, `globalExit()` calls
 /// `terminateAllAndWait()` before freeing anything, so this stays valid
-/// through `startVM()` even with `{ref:false}`/`.unref()`. When the parent
-/// is itself a worker, nothing joins us on its exit — the nested-worker
-/// "Known gap" in the file header. When `parent_poll_ref` is held (the
-/// default), the parent's loop stays alive until the close task runs.
+/// through `startVM()` even with `{ref:false}`/`.unref()`. A worker parent
+/// waits on its direct-child completion counter before tearing down its VM.
+/// When `parent_poll_ref` is held (the default), the parent's loop also stays
+/// alive until the close task runs.
 parent: *jsc.VirtualMachine,
+/// Direct worker parent, if any. Its child counter keeps it alive until our
+/// final shutdown publication; never follow this chain without LiveWorkers.mutex.
+parent_worker: ?*WebWorker,
 parent_context_id: u32,
 execution_context_id: u32,
 mini: bool,
@@ -97,6 +100,11 @@ name: [:0]const u8,
 /// before the thread is spawned; removed in `shutdown()` once the worker is
 /// past all process-global resolver access.
 live_node: std.DoublyLinkedList.Node = .{},
+/// Includes children which unlinked but are still posting exit cleanup or
+/// releasing their thread-local resources. Zero is observed under the registry
+/// lock, after the child's final wake, so this embedded counter cannot dangle.
+children_outstanding: std.atomic.Value(u32) = .init(0),
+joining_children: bool = false, // protected by LiveWorkers.mutex
 
 /// Set by the parent (`notifyNeedTermination`) or by the worker itself
 /// (`exit`). The worker loop polls this between ticks.
@@ -131,7 +139,7 @@ pub const Status = enum(u8) {
     starting,
     /// `dispatchOnline` has fired; event loop is running.
     running,
-    /// `shutdown()` has begun; no further JS will run.
+    /// `shutdown()` has begun; only explicit exit handlers may still run JS.
     terminated,
 };
 
@@ -140,6 +148,18 @@ extern fn WebWorker__dispatchExit(*anyopaque, i32) void;
 extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
+extern fn Home__Worker__isExitTask(*jsc.CppTask) bool;
+extern fn Home__Worker__performExitTask(*jsc.JSGlobalObject, *jsc.CppTask) void;
+extern fn Home__Worker__prepareParentPort(*anyopaque, *jsc.JSGlobalObject) void;
+extern fn Home__Worker__closeParentPort(*anyopaque) void;
+
+/// Nested exit-task publication is protected by the parent's child counter,
+/// unlike an arbitrary raw-global producer. The main-parent path still uses
+/// the existing context-ID lookup/pre-enqueue reference-release hook.
+export fn Home__Worker__parentGlobalForExit(this: *WebWorker) ?*jsc.JSGlobalObject {
+    if (this.parent_worker == null) return null;
+    return this.parent.global;
+}
 
 /// Process-global registry of worker threads that have been spawned and
 /// have not yet reached the point in `shutdown()` where they are past all
@@ -151,7 +171,8 @@ extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, 
 const LiveWorkers = struct {
     var mutex: bun.Mutex = .{};
     var list: std.DoublyLinkedList = .{};
-    /// Number of workers registered in `list`. Separate atomic so
+    /// Number of registered workers not yet finished with thread cleanup.
+    /// Unlinked workers may still be counted. Separate atomic so
     /// `terminateAllAndWait` can futex-wait on it without the mutex.
     var outstanding: std.atomic.Value(u32) = .init(0);
 
@@ -160,6 +181,16 @@ const LiveWorkers = struct {
         defer mutex.unlock();
         list.append(&worker.live_node);
         _ = outstanding.fetchAdd(1, .release);
+        if (worker.parent_worker) |parent_worker| {
+            _ = parent_worker.children_outstanding.fetchAdd(1, .release);
+            var ancestor: ?*WebWorker = parent_worker;
+            while (ancestor) |parent_worker_| : (ancestor = parent_worker_.parent_worker) {
+                if (parent_worker_.hasRequestedTerminate() or parent_worker_.joining_children) {
+                    _ = worker.requested_terminate.swap(true, .release);
+                    break;
+                }
+            }
+        }
         // Wake terminateAllAndWait so it re-sweeps and catches this worker
         // (it may have been created by another worker mid-sweep). No-op if
         // nothing is waiting.
@@ -168,24 +199,80 @@ const LiveWorkers = struct {
 
     /// Remove the worker from the intrusive list while it is still safe to
     /// dereference. The outstanding count is deliberately left unchanged
-    /// until dispatchExit has been posted (see markExited).
+    /// until dispatchExit and thread-local cleanup finish (see markExited).
     fn unlink(worker: *WebWorker) void {
         mutex.lock();
         list.remove(&worker.live_node);
         mutex.unlock();
     }
 
-    /// Publish completion after dispatchExit. This prevents global teardown
-    /// from observing zero live workers before the last parent close task has
-    /// entered its concurrent queue.
-    fn markExited() void {
+    /// Publish completion after dispatchExit and all thread-local cleanup.
+    /// Nested parent zero observations share this lock with the final wake so
+    /// they cannot free the parent's embedded counter while a child uses it.
+    fn markExited(parent_worker: ?*WebWorker) void {
+        mutex.lock();
+        defer mutex.unlock();
+        if (parent_worker) |parent_worker_| {
+            _ = parent_worker_.children_outstanding.fetchSub(1, .release);
+            bun.Futex.wake(&parent_worker_.children_outstanding, 1);
+        }
         _ = outstanding.fetchSub(1, .release);
         bun.Futex.wake(&outstanding, 1);
     }
 
     fn unregister(worker: *WebWorker) void {
+        const parent_worker = worker.parent_worker;
         unlink(worker);
-        markExited();
+        markExited(parent_worker);
+    }
+
+    fn requestLocked(worker: *WebWorker) bool {
+        const was_requested = worker.requested_terminate.swap(true, .release);
+        if (was_requested) return true;
+        worker.vm_lock.lock();
+        defer worker.vm_lock.unlock();
+        if (worker.vm) |vm| {
+            vm.jsc_vm.notifyNeedTermination();
+            vm.eventLoop().wakeup();
+        }
+        return false;
+    }
+
+    fn requestDescendantsLocked(parent_worker: *WebWorker) void {
+        var it = list.first;
+        while (it) |node| : (it = node.next) {
+            const worker: *WebWorker = @fieldParentPtr("live_node", node);
+            var ancestor = worker.parent_worker;
+            while (ancestor) |ancestor_worker| : (ancestor = ancestor_worker.parent_worker) {
+                if (ancestor_worker == parent_worker) {
+                    _ = requestLocked(worker);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn requestTerminationTree(worker: *WebWorker) bool {
+        mutex.lock();
+        defer mutex.unlock();
+        const was_requested = requestLocked(worker);
+        // Do not skip descendants when the root was already interrupted.
+        requestDescendantsLocked(worker);
+        return was_requested;
+    }
+
+    fn joinChildren(worker: *WebWorker) void {
+        while (true) {
+            mutex.lock();
+            worker.joining_children = true;
+            requestDescendantsLocked(worker);
+            const count = worker.children_outstanding.load(.acquire);
+            mutex.unlock();
+            if (count == 0) return;
+            // No timeout permits freeing a parent VM still borrowed by its
+            // descendants. Timed waits only allow another registry sweep.
+            bun.Futex.wait(&worker.children_outstanding, count, 100 * std.time.ns_per_ms) catch {};
+        }
     }
 };
 
@@ -197,8 +284,8 @@ const LiveWorkers = struct {
 /// `dir_cache` / `dirname_store` etc.
 ///
 /// This is the `Environment::stop_sub_worker_contexts()` equivalent for the
-/// main thread; nested workers (a worker's own sub-workers at the worker's
-/// exit) remain the documented gap.
+/// main thread. Worker parents use joinChildren instead, so they never wait on
+/// the process-global count that includes themselves.
 ///
 /// Termination is cooperative: `requested_terminate` is polled at
 /// checkpoints throughout `startVM()` and `spin()`, and for a running VM
@@ -206,8 +293,9 @@ const LiveWorkers = struct {
 /// safepoint. We do NOT use `thread_suspend`/`SuspendThread` — a worker
 /// frozen mid-mimalloc-alloc or holding the `dir_cache` mutex would
 /// deadlock/corrupt the very cleanup we're trying to make safe.
-pub fn terminateAllAndWait(timeout_ms: u64) void {
-    if (LiveWorkers.outstanding.load(.acquire) == 0) return;
+/// False means the deadline expired: the caller must not free shared state.
+pub fn terminateAllAndWait(timeout_ms: u64) bool {
+    if (LiveWorkers.outstanding.load(.acquire) == 0) return true;
 
     // Futex-wait on the counter so we sleep rather than burn a core. Each
     // unregister() wakes us; we re-check and re-wait until zero or deadline.
@@ -236,12 +324,12 @@ pub fn terminateAllAndWait(timeout_ms: u64) void {
         }
 
         const n = LiveWorkers.outstanding.load(.acquire);
-        if (n == 0) return;
+        if (n == 0) return true;
         if (timer) |*t| {
             const elapsed = t.read();
             if (elapsed >= deadline_ns) {
                 log("terminateAllAndWait: timed out with {d} outstanding", .{n});
-                return;
+                return false;
             }
             bun.Futex.wait(&LiveWorkers.outstanding, n, deadline_ns - elapsed) catch {};
         } else {
@@ -261,7 +349,7 @@ pub fn hasRequestedTerminate(this: *const WebWorker) bool {
 }
 
 fn setRequestedTerminate(this: *WebWorker) bool {
-    return this.requested_terminate.swap(true, .release);
+    return LiveWorkers.requestTerminationTree(this);
 }
 
 // =============================================================================
@@ -322,6 +410,7 @@ pub fn create(
     worker.* = WebWorker{
         .cpp_worker = cpp_worker,
         .parent = parent,
+        .parent_worker = parent.worker,
         .parent_context_id = parent_context_id,
         .execution_context_id = this_context_id,
         .mini = mini,
@@ -402,15 +491,6 @@ pub fn setRef(this: *WebWorker, value: bool) callconv(.c) void {
 pub fn notifyNeedTermination(this: *WebWorker) callconv(.c) void {
     if (this.setRequestedTerminate()) return;
     log("[{d}] notifyNeedTermination", .{this.execution_context_id});
-
-    // vm_lock serialises against shutdown() nulling `vm` and freeing the arena
-    // it lives in.
-    this.vm_lock.lock();
-    defer this.vm_lock.unlock();
-    if (this.vm) |vm| {
-        vm.jsc_vm.notifyNeedTermination();
-        vm.eventLoop().wakeup();
-    }
 }
 
 /// Release the keep-alive on the parent's event loop. Called on the parent
@@ -602,6 +682,9 @@ fn spin(this: *WebWorker) void {
     }
 
     vm.preload = this.preloads;
+    // Install the actual MessagePort before user code can receive or transfer
+    // messages. Importing node:worker_threads later returns this same endpoint.
+    Home__Worker__prepareParentPort(this.cpp_worker, vm.global);
 
     // Resolve the entry point on the worker thread (the parent only stored the
     // raw specifier). The returned slice is BORROWED from storage that outlives
@@ -649,6 +732,10 @@ fn spin(this: *WebWorker) void {
     }
 
     this.flushLogs(vm);
+    if (this.hasRequestedTerminate()) {
+        this.shutdown();
+        return;
+    }
     log("[{d}] event loop start", .{this.execution_context_id});
     // dispatchOnline fires the parent-side 'open' event and flips the C++
     // state to Running (which routes postMessage directly instead of
@@ -656,6 +743,10 @@ fn spin(this: *WebWorker) void {
     // observes 'online' only once the worker's top-level code has completed;
     // moving it earlier would change that observable ordering.
     WebWorker__dispatchOnline(this.cpp_worker, vm.global);
+    if (this.hasRequestedTerminate()) {
+        this.shutdown();
+        return;
+    }
     WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
     this.setStatus(.running);
 
@@ -697,14 +788,17 @@ fn spin(this: *WebWorker) void {
 /// Ordering constraints (each step is a barrier for the next):
 ///   1. `vm = null` under lock    — a racing notifyNeedTermination() now sees
 ///                                  null and skips wakeup() instead of touching
-///                                  memory freed in step 5.
+///                                  memory freed in step 6.
 ///   2. `vm.onExit()`             — user 'exit' handlers run; needs the JSC VM.
-///   3. `teardownJSCVM()`         — collectNow + one vm.deref; can re-enter Zig
-///                                  via finalizers, so must precede step 5.
-///   4. `dispatchExit()`          — posts close task → parent releases
+///   3. join children / cleanup  — descendants no longer borrow our VM; only
+///                                  their marked native exit tasks run, no JS.
+///   4. `teardownJSCVM()`         — collectNow + one vm.deref; can re-enter Zig
+///                                  via finalizers, so must precede step 6.
+///   5. `dispatchExit()`          — posts close task → parent releases
 ///                                  parent_poll_ref + thread-held Worker ref.
 ///                                  After this `this` may be freed at any time.
-///   5. free loop/arena/pools     — no `this.*` dereferences below step 4.
+///   6. free loop/arena/pools     — no `this.*` dereferences below step 5.
+///   7. publish completion       — only snapshots and the registry are touched.
 ///
 /// Does NOT free `this` — see ownership rule in the file header. After this
 /// returns, callers must return immediately without dereferencing `this`.
@@ -714,8 +808,9 @@ fn shutdown(this: *WebWorker) void {
     bun.analytics.Features.workers_terminated += 1;
     log("[{d}] shutdown", .{this.execution_context_id});
 
-    // Snapshot everything we'll need after `this` may be freed (step 4).
+    // Snapshot everything we'll need after `this` may be freed (step 5).
     const cpp_worker = this.cpp_worker;
+    const parent_worker = this.parent_worker;
     var arena = this.arena;
     this.arena = null;
 
@@ -740,7 +835,9 @@ fn shutdown(this: *WebWorker) void {
         // clear it so process.on('exit') handlers can run. teardownJSCVM
         // re-sets it for the JSC VM teardown.
         vm.jsc_vm.clearHasTerminationRequest();
-        vm.is_shutting_down = true;
+        // onExit marks shutdown after user exit listeners and before Node-API
+        // cleanup hooks. Marking it here would suppress uncaughtException()
+        // and turn assertions thrown by worker exit listeners into success.
         vm.onExit();
         jsc.API.cron.CronJob.clearAllForVM(vm, .teardown);
         // Embedded socket groups must drain while JSC is still alive —
@@ -751,9 +848,17 @@ fn shutdown(this: *WebWorker) void {
         globalObject = vm.global;
     }
 
+    // Descendants may still borrow this VM during startup and exit-task
+    // publication. Recursively join only our children, then perform only the
+    // native Worker-exit cleanup on its owning thread; never tick arbitrary JS.
+    LiveWorkers.joinChildren(this);
+    if (vm_to_deinit) |vm| drainChildExitTasks(vm);
+    Home__Worker__closeParentPort(cpp_worker);
+
     // ---- 3. JSC VM teardown ----------------------------------------------
     if (globalObject) |global| {
         WebWorker__teardownJSCVM(global);
+        if (vm_to_deinit.?.rare_data) |rare| rare.runPostHeapCleanupHooks();
     }
 
     // JSC is down; no more resolver/module-loader access past this point.
@@ -765,7 +870,6 @@ fn shutdown(this: *WebWorker) void {
     // ---- 4. Post close task to parent ------------------------------------
     WebWorker__dispatchExit(cpp_worker, exit_code);
     // `this` may be freed past this point.
-    LiveWorkers.markExited();
 
     // ---- 5. Free worker-thread resources ---------------------------------
     if (loop) |loop_| {
@@ -789,6 +893,44 @@ fn shutdown(this: *WebWorker) void {
     if (arena) |*arena_| {
         arena_.deinit();
     }
+    // Final publication: parent VM and process-global cleanup can proceed
+    // only after every child thread-local resource has finished using them.
+    LiveWorkers.markExited(parent_worker);
+}
+
+fn drainChildExitTasks(vm: *jsc.VirtualMachine) void {
+    const loop = vm.eventLoop();
+    // Move concurrent nodes without calling tickConcurrentWithCount(), which
+    // also runs timers/signals. Every child's exit task was published before
+    // its completion count reached zero.
+    var batch = loop.concurrent_tasks.popBatch();
+    var iterator = batch.iterator();
+    var previous: ?*jsc.EventLoop.ConcurrentTask = null;
+    while (iterator.next()) |task| {
+        if (previous) |node| node.deinit();
+        previous = if (task.autoDelete()) task else null;
+        bun.handleOom(loop.tasks.writeItem(task.task));
+    }
+    if (previous) |node| node.deinit();
+
+    var pending = loop.tasks;
+    loop.tasks = jsc.EventLoop.Queue.init(bun.default_allocator);
+    defer pending.deinit();
+    var retained = jsc.EventLoop.Queue.init(bun.default_allocator);
+    while (pending.readItem()) |task| {
+        if (task.get(jsc.CppTask)) |cpp_task| {
+            if (Home__Worker__isExitTask(cpp_task)) {
+                Home__Worker__performExitTask(vm.global, cpp_task);
+                continue;
+            }
+        }
+        bun.handleOom(retained.writeItem(task));
+    }
+    // Preserve unrelated task order, including anything queued by native
+    // destructors during cleanup. General cancellation remains separate #465.
+    while (loop.tasks.readItem()) |task| bun.handleOom(retained.writeItem(task));
+    loop.tasks.deinit();
+    loop.tasks = retained;
 }
 
 /// process.exit() inside the worker. Worker-thread only.

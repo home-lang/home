@@ -5,7 +5,7 @@ const Duplex = require("internal/streams/duplex");
 const addServerName = $newZigFunction("Listener.zig", "jsAddServerName", 3);
 const { throwNotImplemented } = require("internal/shared");
 const { throwOnInvalidTLSArray } = require("internal/tls");
-const { validateString } = require("internal/validators");
+const { validateFunction, validateString } = require("internal/validators");
 
 const { Server: NetServer, Socket: NetSocket } = net;
 
@@ -484,6 +484,7 @@ const ksession = Symbol("ksession");
 const krenegotiationDisabled = Symbol("renegotiationDisabled");
 
 const buntls = Symbol.for("::buntls::");
+const kNativeSecureContextCtor = Symbol.for("::buntlsnativesecurecontextctor::");
 
 function TLSSocket(socket?, options?) {
   this[ksecureContext] = undefined;
@@ -498,6 +499,7 @@ function TLSSocket(socket?, options?) {
   this._controlReleased = undefined;
   this.secureConnecting = false;
   this._SNICallback = undefined;
+  this._ALPNCallback = undefined;
   this.servername = undefined;
   this.authorized = false;
   void this.authorizationError;
@@ -509,6 +511,20 @@ function TLSSocket(socket?, options?) {
   options = isNetSocketOrDuplex ? { ...options, allowHalfOpen: false } : options || socket || {};
 
   NetSocket.$call(this, options);
+
+  if (options.isServer) {
+    const sniCallback = options.SNICallback;
+    if (sniCallback != null) {
+      validateFunction(sniCallback, "options.SNICallback");
+      this._SNICallback = sniCallback;
+    }
+    const alpnCallback = options.ALPNCallback;
+    if (alpnCallback != null) {
+      validateFunction(alpnCallback, "options.ALPNCallback");
+      if (options.ALPNProtocols) throw $ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
+      this._ALPNCallback = alpnCallback;
+    }
+  }
 
   this.ciphers = options.ciphers;
   if (this.ciphers) {
@@ -712,6 +728,20 @@ function Server(options, secureConnectionListener): void {
     return new Server(options, secureConnectionListener);
   }
 
+  if (options != null && typeof options === "object") {
+    const sniCallback = options.SNICallback;
+    if (sniCallback != null) {
+      validateFunction(sniCallback, "options.SNICallback");
+      this._SNICallback = sniCallback;
+    }
+    const alpnCallback = options.ALPNCallback;
+    if (alpnCallback != null) {
+      validateFunction(alpnCallback, "options.ALPNCallback");
+      if (options.ALPNProtocols) throw $ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
+      this._ALPNCallback = alpnCallback;
+    }
+  }
+
   NetServer.$apply(this, [options, secureConnectionListener]);
 
   this.key = undefined;
@@ -845,6 +875,7 @@ function Server(options, secureConnectionListener): void {
   this.setSecureContext(options);
 }
 $toClass(Server, "Server", NetServer);
+Server.prototype[kNativeSecureContextCtor] = NativeSecureContext;
 
 function createServer(options, connectionListener) {
   return new Server(options, connectionListener);

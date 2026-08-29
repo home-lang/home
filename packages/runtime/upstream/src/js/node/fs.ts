@@ -560,6 +560,16 @@ var access = function access(path, mode, callback) {
   lstatSync = fs.lstatSync.bind(fs) as unknown as typeof import("node:fs").lstatSync,
   mkdirSync = fs.mkdirSync.bind(fs) as unknown as typeof import("node:fs").mkdirSync,
   mkdtempSync = fs.mkdtempSync.bind(fs) as unknown as typeof import("node:fs").mkdtempSync,
+  mkdtempDisposableSync = function mkdtempDisposableSync(prefix, options) {
+    const path = mkdtempSync(prefix, options);
+    // Stash the full path in case of process.chdir()
+    const fullPath = require("node:path").resolve(path);
+    function remove() {
+      // force makes repeated removal a no-op; real failures (EACCES) still throw
+      fs.rmSync(fullPath, { recursive: true, force: true });
+    }
+    return { path, remove, [Symbol.dispose]: remove };
+  },
   openSync = fs.openSync.bind(fs) as unknown as typeof import("node:fs").openSync,
   readSync = function readSync(fd, buffer, offsetOrOptions, length, position) {
     let offset = offsetOrOptions;
@@ -1200,6 +1210,7 @@ var exports = {
   mkdirSync,
   mkdtemp,
   mkdtempSync,
+  mkdtempDisposableSync,
   open,
   openSync,
   read,

@@ -1725,6 +1725,24 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.socket_global.install(allocator, ctx, global);
 }
 
+/// Complete a native JSC run through Node-compatible natural process exit.
+/// Listener failures are fatal, while a listener-assigned `process.exitCode`
+/// becomes the host process status. Explicit `process.exit()` remains noreturn
+/// and therefore never reaches this path.
+fn finishNaturalProcess(allocator: std.mem.Allocator, ctx: anytype) void {
+    var result = home_rt.jsc.process_global.emitNaturalExit(allocator, ctx) catch |err| {
+        std.debug.print("{s}error:{s} failed to emit process exit: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+        std.process.exit(1);
+    };
+    defer result.deinit(allocator);
+
+    if (result.exception_message) |message| {
+        std.debug.print("{s}error:{s} process exit listener threw: {s}\n", .{ Color.Red.code(), Color.Reset.code(), message });
+        std.process.exit(1);
+    }
+    if (result.exit_code != 0) std.process.exit(result.exit_code);
+}
+
 /// True when env var `name` is set to a non-empty value.
 fn envFlagSet(name: [*:0]const u8) bool {
     const value = std.c.getenv(name) orelse return false;
@@ -1739,6 +1757,8 @@ fn envFlagSet(name: [*:0]const u8) bool {
 const VmRunState = struct {
     vm: *home_rt.jsc.VirtualMachine,
     entry_path: []const u8,
+    print_result: bool = false,
+    owned_preload_path: ?[]const u8 = null,
 
     var instance: VmRunState = undefined;
 
@@ -1760,21 +1780,66 @@ const VmRunState = struct {
         home_rt.Output.flush();
     }
 
+    fn cleanupOwnedPreload(this: *VmRunState) void {
+        if (this.owned_preload_path) |path| {
+            Io.Dir.cwd().deleteFile(g_io, path) catch {};
+            this.owned_preload_path = null;
+        }
+    }
+
+    fn cleanupOwnedPreloadAtExit() callconv(.c) void {
+        // Explicit process.exit() during entry evaluation never returns from
+        // loadEntryPoint, so its generated preload needs a process-exit hook.
+        instance.cleanupOwnedPreload();
+    }
+
+    /// Use JSC's actual module completion value, including statements, imports,
+    /// and TypeScript. A console.log(expression) wrapper cannot preserve it.
+    fn printEntryPointResult(vm: *home_rt.jsc.VirtualMachine) void {
+        const result = vm.entry_point_result.value.get() orelse .js_undefined;
+        const to_print = completion: {
+            if (result.asAnyPromise()) |promise| {
+                if (promise.status() != .pending) break :completion promise.result(vm.jsc_vm);
+                // Match Run.start: a pending result does not itself keep the
+                // event loop alive, but a later settlement is printed if work
+                // scheduled by promise reactions makes progress.
+                result.then2(vm.global, .js_undefined, home_rt.jsc.VirtualMachine.onResolveEntryPointResult, home_rt.jsc.VirtualMachine.onRejectEntryPointResult) catch {};
+                vm.tick();
+                vm.eventLoop().autoTickActive();
+                while (vm.isEventLoopAlive()) {
+                    vm.tick();
+                    vm.eventLoop().autoTickActive();
+                }
+            }
+            break :completion result;
+        };
+        to_print.print(vm.global, .Log, .Log);
+    }
+
     fn start(this: *VmRunState) void {
         const vm = this.vm;
 
         if (vm.loadEntryPoint(this.entry_path)) |promise| {
+            // Preloads have finished loading. Remove only our generated file,
+            // including rejected-entry paths which exit without running defers.
+            this.cleanupOwnedPreload();
             if (promise.status() == .rejected) {
-                _ = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
+                const handled = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
                 promise.setHandled();
-                vm.exit_handler.exit_code = 1;
-                home_rt.Output.flush();
-                printUnhandledFooterIfNeeded(vm);
-                vm.onExit();
-                vm.globalExit();
+                vm.pending_internal_promise_reported_at = vm.hot_reload_counter;
+                // A user handler may recover, schedule async work, or choose
+                // its own exitCode. Only an unhandled entry failure is fatal.
+                if (!handled) {
+                    vm.exit_handler.exit_code = 1;
+                    home_rt.Output.flush();
+                    printUnhandledFooterIfNeeded(vm);
+                    vm.onExit();
+                    vm.globalExit();
+                }
             }
             _ = promise.result(vm.global.vm());
         } else |err| {
+            this.cleanupOwnedPreload();
             std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), this.entry_path, @errorName(err) });
             vm.exit_handler.exit_code = 1;
             home_rt.Output.flush();
@@ -1787,7 +1852,17 @@ const VmRunState = struct {
             vm.tick();
             vm.eventLoop().autoTickActive();
         }
+        if (this.print_result) printEntryPointResult(vm);
         vm.onBeforeExit();
+
+        // Resolver/transpiler diagnostics can be nonfatal (for example a
+        // missing tsconfig extends at debug log level). Run.start flushes them
+        // after evaluation even when the entrypoint completed successfully.
+        if (vm.log.msgs.items.len > 0) {
+            home_rt.Output.flush();
+            vm.log.print(home_rt.Output.errorWriterBuffered()) catch {};
+            home_rt.Output.flush();
+        }
 
         vm.global.handleRejectedPromises();
         // Flush buffered stdout/stderr (console.log) before the noreturn exit.
@@ -1821,15 +1896,21 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     var code: ?[]const u8 = null;
     var print_mode = false;
     var expose_gc = false;
+    var experimental_stream_iter = false;
+    var extra: std.ArrayListUnmanaged([:0]const u8) = .empty;
+    defer extra.deinit(allocator);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
+        if (code == null and std.mem.eql(u8, a, "--")) return false;
         if (std.mem.eql(u8, a, "--print") or std.mem.eql(u8, a, "-p")) {
             print_mode = true;
-            if (i + 1 < args.len) {
+            if (code == null and i + 1 < args.len) {
                 code = args[i + 1];
                 i += 1;
             }
+        } else if (code != null) {
+            try extra.append(allocator, a);
         } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--eval")) {
             if (i + 1 < args.len) {
                 code = args[i + 1];
@@ -1837,8 +1918,17 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
             }
         } else if (std.mem.eql(u8, a, "--expose-gc")) {
             expose_gc = true;
+        } else if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+            // Only a leading runtime flag enables the feature. Once `-e` has
+            // consumed its source, later flags are script arguments in Node.
+            if (code == null) experimental_stream_iter = true;
         } else if (std.mem.startsWith(u8, a, "-")) {
-            // Other leading runtime flags are accepted and ignored.
+            // Do not mistake an option value (for example the `module` in
+            // `--input-type module --eval ...`) for a script entrypoint.
+            if (code == null and runtimeFlagConsumesNext(a)) {
+                if (i + 1 >= args.len) return false;
+                i += 1;
+            }
         } else if (code == null) {
             // A bare positional before any eval flag isn't ours (let the file
             // path / command handlers deal with it).
@@ -1846,25 +1936,20 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
         }
     }
     if (code == null) return false;
+    if (experimental_stream_iter) {
+        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+    }
 
-    // Assemble the module source: optional gc alias, then either the raw code
-    // (`-e`) or a `console.log(<expr>)` wrapper (`--print`).
+    // Preserve the raw module source for native completion-value evaluation.
     var src: std.ArrayListUnmanaged(u8) = .empty;
     defer src.deinit(allocator);
     if (expose_gc) try src.appendSlice(allocator, "try { globalThis.gc = Bun.gc; } catch {}\n");
-    if (print_mode) {
-        try src.appendSlice(allocator, "console.log(");
-        try src.appendSlice(allocator, code.?);
-        try src.appendSlice(allocator, ");\n");
-    } else {
-        try src.appendSlice(allocator, code.?);
-        try src.appendSlice(allocator, "\n");
-    }
+    try src.appendSlice(allocator, code.?);
 
     // Bun evaluates inline code as a virtual `<cwd>/[eval]` TypeScript module.
     // Keeping that synthetic path is important: relative imports in `-e`
     // resolve from the caller's cwd, not from an implementation temp directory.
-    runFileViaVMOpts(allocator, "[eval]", &.{}, true, src.items) catch |err| {
+    runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra.items), true, src.items, print_mode) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
@@ -1881,27 +1966,76 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
 /// `error: <message>` line. `extra_args` become `process.argv[2..]`.
 /// globalExits on success (noreturn via runFileViaVM), so it never returns true.
 fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8) !void {
-    if (comptime !build_options.enable_jsc) return error.JscDisabled;
-
-    var src: std.ArrayListUnmanaged(u8) = .empty;
-    defer src.deinit(allocator);
-    try src.appendSlice(allocator, code);
-    try src.appendSlice(allocator, "\n");
-
-    try runFileViaVMOpts(allocator, "[eval]", extra_args, true, src.items);
+    return runInlineEvalModeViaVM(allocator, code, extra_args, false);
 }
 
-/// Preload modules named via `--require`/`-r`/`--preload` on the implicit-run
-/// command line; consumed by runFileViaVMOpts (set into `vm.preload`).
-var g_user_preloads: []const []const u8 = &.{};
+fn inlineEvalArguments(args: []const [:0]const u8) []const [:0]const u8 {
+    // A leading end-of-options separator is CLI syntax, not a script arg.
+    // Later separators are ordinary user data and must remain untouched.
+    return if (args.len > 0 and std.mem.eql(u8, args[0], "--")) args[1..] else args;
+}
 
-/// Custom export/import conditions named via `--conditions=<name>` on the
-/// implicit-run command line; appended to the resolver's ESM condition set in
-/// runFileViaVMOpts so `package.json` "exports"/"imports" match them.
-var g_user_conditions: []const []const u8 = &.{};
+fn runInlineEvalModeViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8, print_result: bool) !void {
+    if (comptime !build_options.enable_jsc) return error.JscDisabled;
+    // Keep the caller's exact text: process._eval exposes this source verbatim.
+    try runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra_args), true, code, print_result);
+}
+
+/// Package lookup may fall through to a module. Reuse its parsed context:
+/// parsing twice would apply a relative --cwd twice and lose loaded bunfig data.
+var g_native_runtime_context: ?home_rt.cli.Command.Context = null;
+
+fn nativeRuntimeContext(inline_eval: bool) !home_rt.cli.Command.Context {
+    if (g_native_runtime_context) |ctx| return ctx;
+    const allocator = home_rt.default_allocator;
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    const log = try allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(allocator);
+
+    const raw = home_rt.argv;
+    var parser_args: std.ArrayListUnmanaged([:0]const u8) = .empty;
+    if (inline_eval) {
+        // The eval dispatcher already owns source and trailing script args.
+        // Only parse the leading runtime options, never flags in user argv.
+        try parser_args.append(allocator, raw[0]);
+        var i: usize = 1;
+        while (i < raw.len) : (i += 1) {
+            const arg = raw[i];
+            if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--eval") or
+                std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--print") or
+                arg.len == 0 or arg[0] != '-') break;
+            try parser_args.append(allocator, arg);
+            if (runtimeFlagConsumesNext(arg) and i + 1 < raw.len) {
+                i += 1;
+                try parser_args.append(allocator, raw[i]);
+            }
+        }
+        // Use a recognized module extension so bunfig loads before CLI
+        // overrides are applied. This is parser input, not the VM entry path.
+        try parser_args.append(allocator, "[eval].ts");
+    } else if (leadingRuntimeRunIndex(raw)) |run_index| {
+        try parser_args.appendSlice(allocator, &.{ raw[0], "run" });
+        try parser_args.appendSlice(allocator, raw[1..run_index]);
+        try parser_args.appendSlice(allocator, raw[run_index + 1 ..]);
+    } else {
+        try parser_args.appendSlice(allocator, raw);
+    }
+    home_rt.clap.args.setProcessArgs(parser_args.items);
+    const is_run = !inline_eval and parser_args.items.len > 1 and std.mem.eql(u8, parser_args.items[1], "run");
+    const ctx = if (is_run)
+        try home_rt.cli.Command.createContextData(allocator, log, .RunCommand)
+    else
+        try home_rt.cli.Command.createContextData(allocator, log, .AutoCommand);
+    if (!ctx.debug.loaded_bunfig) {
+        try home_rt.cli.Arguments.loadConfigPath(allocator, true, "bunfig.toml", ctx, .RunCommand);
+    }
+    g_native_runtime_context = ctx;
+    return ctx;
+}
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
-    return runFileViaVMOpts(allocator, file_path, extra_args, false, null);
+    return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false);
 }
 
 fn runFileViaVMOpts(
@@ -1910,8 +2044,13 @@ fn runFileViaVMOpts(
     extra_args: []const [:0]const u8,
     inject_node_globals: bool,
     eval_source_text: ?[]const u8,
+    print_result: bool,
 ) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
+
+    // Parse before resolving the entry: --cwd changes both module resolution
+    // and config discovery. Keep Command.get() pointing at this real context.
+    const ctx = try nativeRuntimeContext(std.mem.eql(u8, file_path, "[eval]"));
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
@@ -1924,7 +2063,7 @@ fn runFileViaVMOpts(
     // Faithful to Run.boot: JSC (WTF + Options + heap size-class tables) must be
     // initialized exactly once before any VM is created. Skipping this makes
     // JSC::VM::tryCreate crash in MarkedSpace::sizeClasses().
-    home_rt.jsc.initialize(false);
+    home_rt.jsc.initialize(print_result);
 
     // Faithful to Run.boot: the AST node stores must exist before the module
     // loader transpiles anything (the parser allocates Expr/Stmt data from them).
@@ -1935,12 +2074,19 @@ fn runFileViaVMOpts(
     // This frame never returns before globalExit, so a local arena stays valid.
     var arena = home_rt.MimallocArena.init();
 
-    const log = try allocator.create(home_rt.logger.Log);
-    log.* = home_rt.logger.Log.init(allocator);
-    var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
+    var args = ctx.args;
     args.disable_hmr = true;
     args.target = home_rt.schema.api.Target.bun;
-    args.absolute_working_dir = home_rt.dupeZ(allocator, u8, cwd) catch null;
+    // Preserve Home's existing repeated/comma-separated condition support.
+    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (args.conditions) |value| {
+        var it = std.mem.splitScalar(u8, value, ',');
+        while (it.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t");
+            if (trimmed.len > 0) try conditions.append(allocator, trimmed);
+        }
+    }
+    args.conditions = conditions.items;
 
     // Build the preload list and WRITE any temp preload file to disk BEFORE the
     // VM (and its resolver) is initialized. `bun -e`/`--eval` exposes the node
@@ -1954,6 +2100,8 @@ fn runFileViaVMOpts(
     // and the resolver reports "Cannot find module". The `vm.preload` assignment
     // (which needs `vm`) stays after init.
     var preload_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    var owned_preload_path: ?[]const u8 = null;
+    errdefer if (owned_preload_path) |path| Io.Dir.cwd().deleteFile(g_io, path) catch {};
     if (inject_node_globals) {
         const boot =
             \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
@@ -1963,22 +2111,21 @@ fn runFileViaVMOpts(
         const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
             return error.NameTooLong;
         try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
-        try preload_list.append(allocator, try allocator.dupe(u8, pre_path));
+        owned_preload_path = try allocator.dupe(u8, pre_path);
+        try preload_list.append(allocator, owned_preload_path.?);
     }
     // User `--require`/`-r`/`--preload` modules (run before the entry).
-    for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
-
-    // Engine code (e.g. ConsoleObject) reads the process-global Command.Context
-    // via `Command.get()`. We boot the VM directly (not through Command.start),
-    // so initialize that context with defaults first or those reads dereference
-    // undefined memory.
-    _ = home_rt.cli.Command.initDefaultContext(allocator, log);
+    try preload_list.appendSlice(allocator, ctx.preloads);
 
     const vm = try home_rt.jsc.VirtualMachine.init(.{
         .allocator = arena.allocator(),
         .args = args,
-        .log = log,
+        .log = ctx.log,
         .is_main_thread = true,
+        .eval = print_result,
+        .smol = ctx.runtime_options.smol,
+        .debugger = ctx.runtime_options.debugger,
+        .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
     });
 
     var b = &vm.transpiler;
@@ -1992,6 +2139,7 @@ fn runFileViaVMOpts(
         const eval_source = try allocator.create(home_rt.logger.Source);
         eval_source.* = home_rt.logger.Source.initPathString(abs_path, source_text);
         vm.module_loader.eval_source = eval_source;
+        if (print_result) b.options.dead_code_elimination = false;
     }
 
     // `process.argv` is built as [execPath, scriptPath, ...vm.argv]; vm.argv holds
@@ -2010,20 +2158,26 @@ fn runFileViaVMOpts(
     // loadEntryPoint runs them when `vm.preload` is non-empty.
     if (preload_list.items.len > 0) vm.preload = try preload_list.toOwnedSlice(allocator);
 
-    // Resolver/transpiler config mirrored from Run.boot (defaults for the install
-    // knobs since there's no CLI context here).
+    // The native entry uses the same parsed resolver/transpiler settings as Run.boot.
+    b.options.install = ctx.install;
+    b.resolver.opts.install = ctx.install;
+    b.resolver.opts.global_cache = ctx.debug.global_cache;
+    b.resolver.opts.prefer_offline_install = (ctx.debug.offline_mode_setting orelse .online) == .offline;
+    b.resolver.opts.prefer_latest_install = (ctx.debug.offline_mode_setting orelse .online) == .latest;
+    b.options.global_cache = b.resolver.opts.global_cache;
+    b.options.prefer_offline_install = b.resolver.opts.prefer_offline_install;
+    b.options.prefer_latest_install = b.resolver.opts.prefer_latest_install;
     b.resolver.env_loader = b.env;
+    b.options.minify_identifiers = ctx.bundler_options.minify_identifiers;
+    b.options.minify_whitespace = ctx.bundler_options.minify_whitespace;
+    b.options.ignore_dce_annotations = ctx.bundler_options.ignore_dce_annotations;
+    b.resolver.opts.minify_identifiers = ctx.bundler_options.minify_identifiers;
+    b.resolver.opts.minify_whitespace = ctx.bundler_options.minify_whitespace;
     b.options.env.behavior = .load_all_without_inlining;
-
-    // Custom `--conditions=<name>` from the command line: append to the ESM
-    // condition set so package.json "exports"/"imports" match them (mirrors
-    // build_command appending "development"/"react-server").
-    if (g_user_conditions.len > 0) {
-        // The resolver carries its OWN copy of the options (b.resolver.opts is not
-        // b.options), so the condition maps must be appended on the resolver's
-        // copy — that's the set consulted during exports/imports matching.
-        b.resolver.opts.conditions.appendSlice(g_user_conditions) catch {};
-        b.options.conditions.appendSlice(g_user_conditions) catch {};
+    switch (ctx.debug.macros) {
+        .disable => b.options.no_macros = true,
+        .map => |macros| b.options.macro_remap = macros,
+        .unspecified => {},
     }
 
     b.configureDefines() catch return error.ConfigureDefinesFailed;
@@ -2043,50 +2197,10 @@ fn runFileViaVMOpts(
     vm.main_is_eval_entry = eval_source_text != null;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
-    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path };
+    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path, .print_result = print_result, .owned_preload_path = owned_preload_path };
+    if (owned_preload_path != null) home_rt.Global.addExitCallback(VmRunState.cleanupOwnedPreloadAtExit);
     const callback = home_rt.jsc.OpaqueWrap(VmRunState, VmRunState.start);
     vm.global.vm().holdAPILock(&VmRunState.instance, callback);
-}
-
-/// Run `home test` natively through Home's `TestCommand.exec` — the bun:test
-/// runner (sets up the Jest runner + VM, scans for test files, runs + reports).
-/// `args` are the raw `home test` args; non-flag entries become test
-/// files/filters (positionals[1..]). Flag parsing is not wired yet, so test
-/// flags are currently ignored. globalExit inside exec makes this noreturn on
-/// success. Gated behind HOME_NATIVE_VM=1.
-/// Minimal bunfig.toml `preload` extractor for the native test runner. Reads
-/// the `preload = "<path>"` / `preload = ["a", "b"]` assignment(s) (top-level
-/// and any `[test]` section) and returns the paths. Intentionally NOT a full
-/// TOML/bunfig parse — Bunfig.parse pulls in unported install/process code.
-fn readBunfigPreloads(allocator: std.mem.Allocator) []const []const u8 {
-    const content = Io.Dir.cwd().readFileAlloc(g_io, "bunfig.toml", allocator, std.Io.Limit.limited(1 << 20)) catch return &.{};
-    defer allocator.free(content);
-    var list: std.ArrayListUnmanaged([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#' or line[0] == '[') continue;
-        if (!std.mem.startsWith(u8, line, "preload")) continue;
-        var rest = std.mem.trim(u8, line["preload".len..], " \t");
-        if (rest.len == 0 or rest[0] != '=') continue;
-        rest = std.mem.trim(u8, rest[1..], " \t");
-        if (rest.len == 0) continue;
-        // Collect every quoted string on the value side (covers both the single
-        // string and the inline-array forms).
-        var i: usize = 0;
-        while (i < rest.len) : (i += 1) {
-            const q = rest[i];
-            if (q != '"' and q != '\'') continue;
-            i += 1;
-            const start = i;
-            while (i < rest.len and rest[i] != q) i += 1;
-            if (i > start) {
-                const dup = allocator.dupe(u8, rest[start..i]) catch continue;
-                list.append(allocator, dup) catch {};
-            }
-        }
-    }
-    return list.toOwnedSlice(allocator) catch &.{};
 }
 
 const bun_resolver_fixture_modules = "packages/home_test/fixtures/bun-resolver-node-modules";
@@ -2099,6 +2213,10 @@ fn argsTargetBunResolverTest(args: []const [:0]const u8) bool {
     return false;
 }
 
+/// Run `home test` through Home's native option parser, test runner, and VM.
+/// The dispatcher has normalized `args`; the shared parser handles test,
+/// runtime, transpiler, and bunfig configuration before executing user code.
+/// TestCommand exits after reporting results. Gated behind HOME_NATIVE_VM=1.
 fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     _ = allocator_unused;
@@ -2166,63 +2284,17 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
 
-    // Build the process-global Command.Context (TestCommand.exec reads ctx.args,
-    // ctx.positionals, ctx.test_options). Defaults are sane; set the cwd so test
-    // discovery resolves relative to it.
-    const ctx = home_rt.cli.Command.initDefaultContext(allocator, log);
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |p| {
-        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
-        ctx.args.absolute_working_dir = blk: {
-            const buf = allocator.allocSentinel(u8, cwd.len, 0) catch break :blk null;
-            @memcpy(buf, cwd);
-            break :blk buf;
-        };
-    }
-
-    // Honor bunfig.toml's `preload` the way `bun test` does: the runner sets
-    // `vm.preload = ctx.preloads` (test_command.zig), but booting the Context
-    // directly skips bunfig parsing, so a bunfig that preloads a setup module
-    // (e.g. Bun's test harness, which registers custom matchers like `toRun`)
-    // had no effect on test files that don't import it. The full Bunfig parser
-    // drags in unported install/process subsystems, so extract just the
-    // `preload` value here.
-    const cfg_preloads = readBunfigPreloads(allocator);
-    if (cfg_preloads.len > 0) ctx.preloads = cfg_preloads;
-
-    // positionals[0] is the command name; [1..] are file/dir paths or filters.
-    // `--conditions=<name>` (and `--conditions <name>`) add custom package.json
-    // "exports"/"imports" conditions; the test transpiler reads ctx.args.conditions.
-    var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
-    try positionals.append(allocator, "test");
-    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-    var ai: usize = 0;
-    while (ai < args.len) : (ai += 1) {
-        const a = args[ai];
-        if (std.mem.eql(u8, a, "--conditions")) {
-            if (ai + 1 < args.len) {
-                var it = std.mem.splitScalar(u8, args[ai + 1], ',');
-                while (it.next()) |part| {
-                    const t = std.mem.trim(u8, part, " \t");
-                    if (t.len > 0) try conditions.append(allocator, t);
-                }
-                ai += 1;
-            }
-            continue;
-        }
-        if (std.mem.startsWith(u8, a, "--conditions=")) {
-            var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
-            while (it.next()) |part| {
-                const t = std.mem.trim(u8, part, " \t");
-                if (t.len > 0) try conditions.append(allocator, t);
-            }
-            continue;
-        }
-        if (a.len > 0 and a[0] == '-') continue; // skip other flags (not parsed yet)
-        try positionals.append(allocator, a);
-    }
-    ctx.positionals = try positionals.toOwnedSlice(allocator);
-    if (conditions.items.len > 0) ctx.args.conditions = try conditions.toOwnedSlice(allocator);
+    // Parse the same test/runtime/configuration options as the native CLI.
+    // Keep parser argv separate from process.argv: Home's dispatcher has
+    // already normalized the test command's arguments, but user code must
+    // still observe the original executable and argument list.
+    const parser_argv = try allocator.alloc([:0]const u8, args.len + 2);
+    parser_argv[0] = home_rt.argv[0];
+    parser_argv[1] = "test";
+    @memcpy(parser_argv[2..], args);
+    home_rt.clap.args.setProcessArgs(parser_argv);
+    const ctx = try home_rt.cli.Command.createContextData(allocator, log, .TestCommand);
+    ctx.start_time = home_rt.start_time;
 
     try home_rt.cli.TestCommand.exec(ctx);
 }
@@ -2305,6 +2377,7 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         // (blocks until the process is killed); no-op otherwise.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
         home_rt.jsc.socket_global.runLoop(allocator, ctx);
+        finishNaturalProcess(allocator, ctx);
         return true;
     }
 }
@@ -2374,6 +2447,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         // If the eval'd code called Bun.serve(), stay alive serving requests.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
         home_rt.jsc.socket_global.runLoop(allocator, ctx);
+        finishNaturalProcess(allocator, ctx);
     }
 }
 
@@ -2442,7 +2516,117 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try argv.append(allocator, "-");
     try argv.appendSlice(allocator, extra_args);
 
-    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source);
+    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false);
+}
+
+fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: home_rt.cli.Command.Tag) !home_rt.cli.Command.Context {
+    const allocator = home_rt.default_allocator;
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    home_rt.clap.args.setProcessArgs(args);
+    return home_rt.cli.Cli.initContext(allocator, tag);
+}
+
+fn runNativeInstallCommand(args: []const [:0]const u8, force_add: bool) !void {
+    var add = force_add;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-g") or std.mem.eql(u8, arg, "--global")) add = true;
+    }
+    if (add) {
+        const ctx = try nativePackageCommandContext(args, .AddCommand);
+        try home_rt.cli.AddCommand.exec(ctx);
+    } else {
+        const ctx = try nativePackageCommandContext(args, .InstallCommand);
+        try home_rt.cli.InstallCommand.exec(ctx);
+    }
+}
+
+fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: home_rt.cli.Command.Tag) !bool {
+    if (comptime !build_options.enable_jsc) return false;
+    if (!envFlagSet("HOME_NATIVE_VM")) return false;
+    if (target.len > 0 and isHomeSourceFile(target)) return false;
+    const allocator = home_rt.default_allocator;
+    const ctx = try nativePackageCommandContext(args, tag);
+    g_native_runtime_context = ctx;
+    if (tag == .AutoCommand and target.len == 0 and ctx.filters.len == 0 and !ctx.workspaces) {
+        home_rt.cli.Command.Tag.printHelp(.AutoCommand, false);
+        home_rt.Output.flush();
+        return true;
+    }
+    if (std.mem.eql(u8, target, "-")) {
+        if (!ctx.debug.loaded_bunfig) {
+            try home_rt.cli.Arguments.loadConfigPath(allocator, true, "bunfig.toml", ctx, .RunCommand);
+        }
+        return false;
+    }
+    const handled = home_rt.cli.RunCommand.execPackageOrBinary(ctx, target, tag == .AutoCommand) catch |err| switch (err) {
+        // These are expected CLI validation failures, not internal faults.
+        // Report them without walking the native compiler's debug metadata.
+        error.UnsafeNodeShimDirectory, error.UnsafeNodeShimTarget => {
+            home_rt.Output.prettyErrorln("<r><red>error<r>: {s}", .{@errorName(err)});
+            home_rt.Global.exit(1);
+        },
+        else => return err,
+    };
+    if (handled) home_rt.Global.exit(0);
+    return false;
+}
+
+fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    if (args.len < 3) {
+        if (try tryNativePackageRun(args, "", .RunCommand)) return;
+        // No file provided, start REPL
+        try repl.start(allocator);
+        return;
+    }
+
+    // Runtime flags may appear between `run` and the script, e.g.
+    // `bun run --bun file.js` or `bun run --require ./pre file.js`. Skip
+    // them to find the actual target (a file path or package.json script
+    // name — the first non-flag token). The flags stay in the process's
+    // real argv, so `process.execArgv` is still populated correctly by the
+    // VM; we only need to locate the entrypoint here. Previously the target
+    // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
+    // module and failed with "Module not found '--bun'".
+    var experimental_stream_iter = false;
+    var ri: usize = 2;
+    while (ri < args.len) : (ri += 1) {
+        const a = args[ri];
+        if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
+            experimental_stream_iter = true;
+            continue;
+        }
+        // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
+        if (std.mem.eql(u8, a, "-")) break;
+        // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
+        // --smol, --env-file=...); skip it. The first non-flag token is the
+        // entrypoint.
+        if (std.mem.eql(u8, a, "--")) {
+            ri += 1;
+            break;
+        }
+        if (runtimeFlagConsumesNext(a)) {
+            if (ri + 1 < args.len) ri += 1;
+            continue;
+        }
+        if (a.len > 0 and a[0] == '-') continue;
+        break;
+    }
+
+    if (ri >= args.len) {
+        if (try tryNativePackageRun(args, "", .RunCommand)) return;
+        // Every token after `run` was a flag — no entrypoint. Fall back to
+        // the REPL, matching the bare `run` behavior above.
+        try repl.start(allocator);
+        return;
+    }
+
+    if (experimental_stream_iter) {
+        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+    }
+    if (try tryNativePackageRun(args, args[ri], .RunCommand)) return;
+    try runCommand(allocator, args[ri], args[ri + 1 ..]);
+    return;
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
@@ -2455,7 +2639,9 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
     }
 
     // Route JS / TS files through the runtime delegation shim (Phase 12).
-    if (fileExtIsJsLike(file_path)) {
+    if (fileExtIsJsLike(file_path) or
+        (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and !isHomeSourceFile(file_path)))
+    {
         return runJsLikeFile(allocator, file_path, extra_args);
     }
 
@@ -4671,9 +4857,9 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4728,9 +4914,9 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Gate: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4779,9 +4965,9 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native File: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -4851,7 +5037,7 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
         }
     }
 
-    const tests_observed = passed + failed_tests + todo;
+    const tests_observed = passed + failed_tests + unsupported + todo;
     const no_tests = tests_observed == 0 and allowed_empty == 0;
     const failed = blocked or failed_tests != 0 or unsupported != 0 or files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Files: {s}{s}\n", .{
@@ -4901,9 +5087,9 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
         std.process.exit(1);
     }
 
-    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
     const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
+    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Directory: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5155,6 +5341,19 @@ pub fn main(init: std.process.Init) !void {
 
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and
+        (home_rt.cli.Command.isBunX(program_name) or std.mem.eql(u8, program_name, "homex") or std.mem.eql(u8, program_name, "homex.exe")))
+    {
+        // A copied bunx executable also launches itself for installation.
+        // Let that internal add invocation reach the native package manager.
+        const internal_add = args.len > 1 and std.mem.eql(u8, args[1], "add") and
+            home_rt.feature_flag.BUN_INTERNAL_BUNX_INSTALL.get();
+        if (!internal_add) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args));
+            return;
+        }
+    }
     if (std.mem.eql(u8, program_name, "homecheck")) {
         // Rebuild args to inject 'test' command
         var test_args: std.ArrayList([:0]const u8) = .empty;
@@ -5250,11 +5449,10 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        // Without `--print`, run through the full VM (faithful globals + error
-        // printer). `--print` stays on the eval shim, which formats the result
-        // value. globalExits on success.
-        if (build_options.enable_jsc and !print_result) {
-            runInlineEvalViaVM(allocator, code.?, extra.items) catch |err| {
+        // Both modes use the complete native VM. Print mode additionally
+        // retains and formats the module's real completion value.
+        if (build_options.enable_jsc) {
+            runInlineEvalModeViaVM(allocator, code.?, extra.items, print_result) catch |err| {
                 std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
                 std.process.exit(1);
             };
@@ -5274,7 +5472,11 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --print <code>\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, args[2], true, &.{});
+        if (build_options.enable_jsc) {
+            try runInlineEvalModeViaVM(allocator, args[2], args[3..], true);
+        } else {
+            try evalCommand(allocator, args[2], true, &.{});
+        }
         return;
     }
 
@@ -5449,87 +5651,15 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, code.?, print_result, &.{});
+        if (build_options.enable_jsc) {
+            try runInlineEvalModeViaVM(allocator, code.?, &.{}, print_result);
+        } else {
+            try evalCommand(allocator, code.?, print_result, &.{});
+        }
         return;
     }
 
-    if (std.mem.eql(u8, command, "run")) {
-        if (args.len < 3) {
-            // No file provided, start REPL
-            try repl.start(allocator);
-            return;
-        }
-
-        // Runtime flags may appear between `run` and the script, e.g.
-        // `bun run --bun file.js` or `bun run --require ./pre file.js`. Skip
-        // them to find the actual target (a file path or package.json script
-        // name — the first non-flag token). The flags stay in the process's
-        // real argv, so `process.execArgv` is still populated correctly by the
-        // VM; we only need to locate the entrypoint here. Previously the target
-        // was hard-coded to `args[2]`, so `run --bun x` treated `--bun` as the
-        // module and failed with "Module not found '--bun'".
-        var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer preloads.deinit(allocator);
-        var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer conditions.deinit(allocator);
-        var ri: usize = 2;
-        while (ri < args.len) : (ri += 1) {
-            const a = args[ri];
-            if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
-                if (ri + 1 < args.len) {
-                    preloads.append(allocator, args[ri + 1]) catch {};
-                    ri += 1;
-                }
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--require=")) {
-                preloads.append(allocator, a["--require=".len..]) catch {};
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--preload=")) {
-                preloads.append(allocator, a["--preload=".len..]) catch {};
-                continue;
-            }
-            if (std.mem.eql(u8, a, "--conditions")) {
-                if (ri + 1 < args.len) {
-                    var it = std.mem.splitScalar(u8, args[ri + 1], ',');
-                    while (it.next()) |part| {
-                        const trimmed = std.mem.trim(u8, part, " \t");
-                        if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-                    }
-                    ri += 1;
-                }
-                continue;
-            }
-            if (std.mem.startsWith(u8, a, "--conditions=")) {
-                var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
-                while (it.next()) |part| {
-                    const trimmed = std.mem.trim(u8, part, " \t");
-                    if (trimmed.len > 0) conditions.append(allocator, trimmed) catch {};
-                }
-                continue;
-            }
-            // A lone `-` is Bun's stdin entrypoint, not a runtime flag.
-            if (std.mem.eql(u8, a, "-")) break;
-            // Any other leading `--flag`/`-x` is a runtime flag (e.g. --bun,
-            // --smol, --env-file=...); skip it. The first non-flag token is the
-            // entrypoint.
-            if (a.len > 0 and a[0] == '-') continue;
-            break;
-        }
-
-        if (ri >= args.len) {
-            // Every token after `run` was a flag — no entrypoint. Fall back to
-            // the REPL, matching the bare `run` behavior above.
-            try repl.start(allocator);
-            return;
-        }
-
-        g_user_preloads = preloads.items;
-        g_user_conditions = conditions.items;
-        try runCommand(allocator, args[ri], args[ri + 1 ..]);
-        return;
-    }
+    if (std.mem.eql(u8, command, "run")) return runCliCommand(allocator, args);
 
     if (std.mem.eql(u8, command, "build")) {
         const build_options_cli = switch (parseBuildCliOptions(args[2..])) {
@@ -5605,13 +5735,21 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ---- Bun-compatible CLI surface (Phase 12 in progress) ----
-    // `home add`, `home install`, `home remove`, `home update` route to
-    // Pantry (Home's package manager + registry, lives at ~/Code/pantry).
+    // Strict native add/install use the owned package manager. The pragmatic
+    // command surface still routes to Pantry (Home's package manager).
     if (std.mem.eql(u8, command, "add") or std.mem.eql(u8, command, "i")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            try runNativeInstallCommand(args, std.mem.eql(u8, command, "add"));
+            return;
+        }
         try execPantryCommand(allocator, "add", args[2..]);
         return;
     }
     if (std.mem.eql(u8, command, "install")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            try runNativeInstallCommand(args, false);
+            return;
+        }
         try execPantryCommand(allocator, "install", args[2..]);
         return;
     }
@@ -5719,6 +5857,11 @@ pub fn main(init: std.process.Init) !void {
     }
     // `home x` / `home exec` — bunx-equivalent.
     if (std.mem.eql(u8, command, "x") or std.mem.eql(u8, command, "exec")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args[1..]));
+            return;
+        }
         // TODO(phase-12-10): replace with native homex (copied from Bun's src/cli/).
         try execBunCommand(allocator, "x", args[2..]);
         return;
@@ -5732,6 +5875,35 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "package")) {
         try package_cmd.packageCommand(allocator, args[2..], g_io);
         return;
+    }
+
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+        if (leadingRuntimeCommandIndex(args, &.{ "x", "exec" }) != null) {
+            const ctx = try nativePackageCommandContext(args, .BunxCommand);
+            try home_rt.cli.BunxCommand.exec(ctx, @constCast(args[1..]));
+            return;
+        }
+        if (leadingRuntimeRunIndex(args)) |run_index| {
+            var forwarded: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            defer forwarded.deinit(allocator);
+            try forwarded.appendSlice(allocator, &.{ args[0], "run" });
+            try forwarded.appendSlice(allocator, args[1..run_index]);
+            try forwarded.appendSlice(allocator, args[run_index + 1 ..]);
+            return runCliCommand(allocator, forwarded.items);
+        }
+    }
+
+    // Runtime flags may precede the test command. Node's common harness uses
+    // this form when it re-execs a fixture with its declared runtime flags.
+    if (build_options.enable_jsc) {
+        if (leadingRuntimeTestIndex(args)) |test_index| {
+            var forwarded: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            defer forwarded.deinit(allocator);
+            try forwarded.appendSlice(allocator, args[1..test_index]);
+            try forwarded.appendSlice(allocator, args[test_index + 1 ..]);
+            try testCommand(allocator, forwarded.items);
+            return;
+        }
     }
 
     if (std.mem.eql(u8, command, "pkg")) {
@@ -5758,68 +5930,43 @@ pub fn main(init: std.process.Init) !void {
     // unaffected. Leading runtime flags (e.g. --expose-gc) are accepted and
     // skipped here; the native run path doesn't need them to execute.
     {
-        var has_file = false;
+        const native_vm = build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM");
+        var has_file = native_vm;
         for (args[1..]) |a| {
             if (looksLikeRunnableFile(a)) {
                 has_file = true;
                 break;
             }
         }
-        if (has_file and (std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
-            // `--require`/`-r`/`--preload <file>` (and `--require=<file>`) name
-            // PRELOAD modules, not the entry. Collect them and skip them when
-            // choosing the entry (otherwise the first one is picked as the file
-            // to run and the real main never executes).
-            var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
-            // `--conditions=<name>` (and `--conditions <name>`) add custom
-            // package.json "exports"/"imports" conditions (comma-separated values
-            // and repeated flags both accepted, matching Bun).
-            var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
-            const addConditions = struct {
-                fn call(list: *std.ArrayListUnmanaged([]const u8), alloc: std.mem.Allocator, csv: []const u8) void {
-                    var it = std.mem.splitScalar(u8, csv, ',');
-                    while (it.next()) |part| {
-                        const trimmed = std.mem.trim(u8, part, " \t");
-                        if (trimmed.len > 0) list.append(alloc, trimmed) catch {};
-                    }
-                }
-            }.call;
+        if (has_file and (native_vm or std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
+            var experimental_stream_iter = false;
+            var positional_only = false;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
                 const a = args[i];
-                if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
-                    if (i + 1 < args.len) {
-                        preloads.append(allocator, args[i + 1]) catch {};
-                        i += 1;
+                if (!positional_only and std.mem.eql(u8, a, "--")) {
+                    positional_only = true;
+                    continue;
+                }
+                if (!positional_only and std.mem.eql(u8, a, "--experimental-stream-iter")) {
+                    experimental_stream_iter = true;
+                    continue;
+                }
+                if (!positional_only and runtimeFlagConsumesNext(a)) {
+                    if (i + 1 < args.len) i += 1;
+                    continue;
+                }
+                if (!positional_only and a.len > 0 and a[0] == '-') continue;
+                if (looksLikeRunnableFile(a) or native_vm) {
+                    if (experimental_stream_iter) {
+                        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
                     }
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--require=")) {
-                    preloads.append(allocator, a["--require=".len..]) catch {};
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--preload=")) {
-                    preloads.append(allocator, a["--preload=".len..]) catch {};
-                    continue;
-                }
-                if (std.mem.eql(u8, a, "--conditions")) {
-                    if (i + 1 < args.len) {
-                        addConditions(&conditions, allocator, args[i + 1]);
-                        i += 1;
-                    }
-                    continue;
-                }
-                if (std.mem.startsWith(u8, a, "--conditions=")) {
-                    addConditions(&conditions, allocator, a["--conditions=".len..]);
-                    continue;
-                }
-                if (looksLikeRunnableFile(a)) {
-                    g_user_preloads = preloads.items;
-                    g_user_conditions = conditions.items;
+                    if (try tryNativePackageRun(args, a, .AutoCommand)) return;
                     try runCommand(allocator, a, args[i + 1 ..]);
                     return;
                 }
             }
+            if (native_vm and try tryNativePackageRun(args, "", .AutoCommand)) return;
         }
     }
 
@@ -5836,6 +5983,76 @@ fn looksLikeRunnableFile(s: []const u8) bool {
         if (std.mem.endsWith(u8, s, e)) return true;
     }
     return false;
+}
+
+/// Match clap's separate-token consumption: optional values use only an
+/// attached long-option value, while required/repeated values consume next.
+fn runtimeFlagConsumesNext(flag: []const u8) bool {
+    inline for (home_rt.cli.Arguments.auto_params) |param| {
+        if (comptime param.takes_value == .one or param.takes_value == .many) {
+            if (comptime param.names.long) |name| {
+                if (std.mem.eql(u8, flag, "--" ++ name)) return true;
+            }
+            if (comptime param.names.short) |name| {
+                if (std.mem.eql(u8, flag, &[_]u8{ '-', name })) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn leadingRuntimeCommandIndex(args: []const [:0]const u8, names: []const []const u8) ?usize {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) return null;
+        if (std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "-e") or
+            std.mem.eql(u8, arg, "--print") or std.mem.eql(u8, arg, "-p") or
+            std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) return null;
+        if (arg.len > 0 and arg[0] == '-') {
+            if (runtimeFlagConsumesNext(arg)) {
+                if (i + 1 >= args.len) return null;
+                i += 1;
+            }
+            continue;
+        }
+        if (i > 1) {
+            for (names) |name| if (std.mem.eql(u8, arg, name)) return i;
+        }
+        return null;
+    }
+    return null;
+}
+
+fn leadingRuntimeRunIndex(args: []const [:0]const u8) ?usize {
+    return leadingRuntimeCommandIndex(args, &.{"run"});
+}
+
+fn leadingRuntimeTestIndex(args: []const [:0]const u8) ?usize {
+    return leadingRuntimeCommandIndex(args, &.{ "test", "t" });
+}
+
+test "runtime flags preserve command dispatch boundaries" {
+    try std.testing.expect(runtimeFlagConsumesNext("--input-type"));
+    try std.testing.expect(runtimeFlagConsumesNext("--env-file"));
+    try std.testing.expect(!runtimeFlagConsumesNext("--config"));
+    try std.testing.expect(!runtimeFlagConsumesNext("-c"));
+    try std.testing.expect(!runtimeFlagConsumesNext("--inspect"));
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeRunIndex(&.{ "home", "--config", "run", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeRunIndex(&.{ "home", "--config", "fixture.js", "run" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--input-type", "module", "--eval", "test" }));
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeTestIndex(&.{ "home", "--no-warnings", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, 3), leadingRuntimeTestIndex(&.{ "home", "--require", "preload.js", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--eval", "test", "fixture.js" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "fixture.js", "test" }));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeTestIndex(&.{ "home", "--", "test", "fixture.js" }));
+    const bunx_commands = &[_][]const u8{ "x", "exec" };
+    try std.testing.expectEqual(@as(?usize, 2), leadingRuntimeCommandIndex(&.{ "home", "--bun", "x", "fixture" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, 3), leadingRuntimeCommandIndex(&.{ "home", "--cwd", "x", "exec", "fixture" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--eval", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--bun", "--eval", "console.log(1)", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "fixture.js", "x" }, bunx_commands));
+    try std.testing.expectEqual(@as(?usize, null), leadingRuntimeCommandIndex(&.{ "home", "--", "x" }, bunx_commands));
 }
 
 fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {

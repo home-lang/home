@@ -37,13 +37,14 @@ fn dangerouslyRunWithoutJitProtections(R: type, func: anytype, args: anytype) R 
     return @call(bun.callmod_inline, func, args);
 }
 
-/// Run-once guard replacing the removed `std.once` (Zig 0.17). Not
-/// thread-safe; the FFI lazy-init sites that use it run during single-threaded
-/// startup/first-use, matching how Bun invokes them.
+/// FFI can be initialized concurrently by independent workers.
 fn Once(comptime f: fn () void) type {
     return struct {
+        mutex: bun.Mutex = .{},
         done: bool = false,
         fn call(self: *@This()) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
             if (!self.done) {
                 f();
                 self.done = true;
@@ -80,6 +81,7 @@ pub const FFI = struct {
     functions: bun.StringArrayHashMapUnmanaged(Function) = .{},
     closed: bool = false,
     shared_state: ?*TCC.State = null,
+    has_napi_env: bool = false,
 
     pub fn finalize(_: *FFI) callconv(.c) void {}
 
@@ -351,14 +353,14 @@ pub const FFI = struct {
                     return error.DeferredErrors;
                 },
             };
+            errdefer state.deinit();
 
             var pathbuf: [bun.MAX_PATH_BYTES]u8 = undefined;
 
-            if (CompilerRT.dir()) |compiler_rt_dir| {
-                state.addSysIncludePath(compiler_rt_dir) catch {
-                    debug("TinyCC failed to add sysinclude path", .{});
-                };
-            }
+            const compiler_rt_dir = CompilerRT.dir() orelse
+                return globalThis.throw("Failed to prepare Home FFI compiler headers", .{});
+            state.addSysIncludePath(compiler_rt_dir) catch
+                return globalThis.throw("TinyCC failed to add compiler header path", .{});
 
             if (Environment.isMac) {
                 add_system_include_dir: {
@@ -838,6 +840,7 @@ pub const FFI = struct {
         lib.* = .{
             .dylib = null,
             .shared_state = tcc_state,
+            .has_napi_env = napi_env != null,
             .functions = compile_c.symbols.map,
         };
         tcc_state = null;
@@ -848,9 +851,9 @@ pub const FFI = struct {
         return js_object;
     }
 
-    pub fn closeCallback(globalThis: *JSGlobalObject, ctx: JSValue) JSValue {
+    pub fn closeCallback(_: *JSGlobalObject, ctx: JSValue) JSValue {
         var function: *Function = @ptrFromInt(ctx.asPtrAddress());
-        function.deinit(globalThis);
+        function.deinit();
         return .js_undefined;
     }
 
@@ -884,12 +887,12 @@ pub const FFI = struct {
             .failed => |err| {
                 const message = ZigString.init(err.msg).toErrorInstance(globalThis);
 
-                func.deinit(globalThis);
+                func.deinit();
 
                 return message;
             },
             .pending => {
-                func.deinit(globalThis);
+                func.deinit();
                 return ZigString.init("Failed to compile, but not sure why. Please report this bug").toErrorInstance(globalThis);
             },
             .compiled => {
@@ -916,6 +919,25 @@ pub const FFI = struct {
             return .js_undefined;
         }
         this.closed = true;
+        if (this.has_napi_env) {
+            // Native values can outlive close() and still own C callbacks.
+            // Environment cleanup is not enough: NapiExternal finalizers can
+            // still run when the heap is destroyed after onExit().
+            globalThis.bunVM().rareData().pushPostHeapCleanupHook(this, releaseAfterHeapCleanup);
+        } else {
+            this.releaseResources();
+        }
+        return .js_undefined;
+    }
+
+    fn releaseAfterHeapCleanup(data: ?*anyopaque) callconv(.c) void {
+        const this: *FFI = @ptrCast(@alignCast(data.?));
+        this.releaseResources();
+        // The JSFFI wrapper is gone with the heap; no JS handle can reach us.
+        bun.default_allocator.destroy(this);
+    }
+
+    fn releaseResources(this: *FFI) void {
         if (this.dylib) |*dylib| {
             dylib.close();
             this.dylib = null;
@@ -929,11 +951,9 @@ pub const FFI = struct {
         const allocator = VirtualMachine.get().allocator;
 
         for (this.functions.values()) |*val| {
-            val.deinit(globalThis);
+            val.deinit();
         }
         this.functions.deinit(allocator);
-
-        return .js_undefined;
     }
 
     pub fn printCallback(global: *JSGlobalObject, object: jsc.JSValue) JSValue {
@@ -1145,7 +1165,7 @@ pub const FFI = struct {
                     name,
                 });
                 for (symbols.values()) |*value| {
-                    value.deinit(global);
+                    value.deinit();
                 }
                 symbols.clearAndFree(bun.default_allocator);
                 dylib.close();
@@ -1155,7 +1175,7 @@ pub const FFI = struct {
                 .failed => |err| {
                     defer {
                         for (symbols.values()) |*other_function| {
-                            other_function.deinit(global);
+                            other_function.deinit();
                         }
                     }
 
@@ -1166,7 +1186,7 @@ pub const FFI = struct {
                 },
                 .pending => {
                     for (symbols.values()) |*other_function| {
-                        other_function.deinit(global);
+                        other_function.deinit();
                     }
                     symbols.clearAndFree(bun.default_allocator);
                     dylib.close();
@@ -1190,6 +1210,7 @@ pub const FFI = struct {
 
         const lib = bun.new(FFI, .{
             .dylib = dylib,
+            .has_napi_env = napi_env != null,
             .functions = symbols,
         });
 
@@ -1255,7 +1276,7 @@ pub const FFI = struct {
                     bun.asByteSlice(function_name),
                 });
                 for (symbols.values()) |*value| {
-                    value.deinit(global);
+                    value.deinit();
                 }
                 symbols.clearAndFree(allocator);
                 return ret;
@@ -1268,7 +1289,7 @@ pub const FFI = struct {
                     }
 
                     const res = ZigString.init(err.msg).toErrorInstance(global);
-                    function.deinit(global);
+                    function.deinit();
                     symbols.clearAndFree(allocator);
                     return res;
                 },
@@ -1300,6 +1321,7 @@ pub const FFI = struct {
 
         const lib = bun.new(FFI, .{
             .dylib = null,
+            .has_napi_env = napi_env != null,
             .functions = symbols,
         });
 
@@ -1479,7 +1501,7 @@ pub const FFI = struct {
 
         extern "c" fn FFICallbackFunctionWrapper_destroy(*anyopaque) void;
 
-        pub fn deinit(val: *Function, globalThis: *jsc.JSGlobalObject) void {
+        pub fn deinit(val: *Function) void {
             jsc.markBinding(@src());
 
             if (val.base_name) |base_name| {
@@ -1497,7 +1519,6 @@ pub const FFI = struct {
 
             if (val.step == .compiled) {
                 if (val.step.compiled.js_function != .zero) {
-                    _ = globalThis;
                     val.step.compiled.js_function = .zero;
                 }
 
@@ -2347,23 +2368,50 @@ const CompilerRT = struct {
         pub const @"tgmath.h" = @embedFile("./ffi-tgmath.h");
         pub const @"stddef.h" = @embedFile("./ffi-stddef.h");
         pub const @"varargs.h" = "// empty";
+        // Ship the Node-API declarations used by our implementation. cc()
+        // must not depend on an unrelated Node installation for this ABI.
+        pub const @"node_api.h" = @embedFile("../napi/node_api.h");
+        pub const @"node_api_types.h" = @embedFile("../napi/node_api_types.h");
+        pub const @"js_native_api.h" = @embedFile("../napi/js_native_api.h");
+        pub const @"js_native_api_types.h" = @embedFile("../napi/js_native_api_types.h");
     };
 
     fn createCompilerRTDir() void {
         const io = std.Io.Threaded.global_single_threaded.io();
         const tmpdir = Fs.FileSystem.instance.tmpdir() catch return;
-        var bunCC = tmpdir.createDirPathOpen(io, "bun-cc", .{}) catch return;
+        var hash = std.hash.Wyhash.init(0);
+        inline for (comptime std.meta.declarations(compiler_rt_sources)) |name| {
+            hash.update(name);
+            hash.update(@field(compiler_rt_sources, name));
+        }
+        var name_buf: [64]u8 = undefined;
+        const cache_name = std.fmt.bufPrint(&name_buf, "home-cc-{x}", .{hash.final()}) catch return;
+        var bunCC = tmpdir.createDirPathOpen(io, cache_name, .{}) catch return;
         defer bunCC.close(io);
+        var node_headers = bunCC.createDirPathOpen(io, "node", .{}) catch return;
+        defer node_headers.close(io);
 
         inline for (comptime std.meta.declarations(compiler_rt_sources)) |decl_name| {
             const source = @field(compiler_rt_sources, decl_name);
-            bunCC.writeFile(io, .{
-                .sub_path = decl_name,
-                .data = source,
-            }) catch {};
+            writeHeader(bunCC, io, decl_name, source) catch return;
+            if (comptime std.mem.startsWith(u8, decl_name, "node_api") or std.mem.startsWith(u8, decl_name, "js_native_api")) {
+                writeHeader(node_headers, io, decl_name, source) catch return;
+            }
         }
         var path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
         compiler_rt_dir = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, bun.getFdPath(.fromStdDir(bunCC), &path_buf) catch return));
+    }
+
+    fn writeHeader(header_dir: std.Io.Dir, io: std.Io, name: []const u8, source: []const u8) !void {
+        // Several Home processes may initialize FFI at once. Publish complete
+        // files atomically; never truncate headers another compiler is reading.
+        var file = try header_dir.createFileAtomic(io, name, .{});
+        defer file.deinit(io);
+        try file.file.writeStreamingAll(io, source);
+        file.link(io) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
     }
     var create_compiler_rt_dir_once = Once(createCompilerRTDir){};
 

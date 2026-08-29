@@ -347,7 +347,7 @@ const RouteLoader = struct {
         var index_id: ?usize = null;
 
         for (this.all_routes.items, 0..) |route, i| {
-            if (@intFromEnum(route.kind) > @intFromEnum(Pattern.Tag.static) and dynamic_start == null) {
+            if (@backingInt(route.kind) > @backingInt(Pattern.Tag.static) and dynamic_start == null) {
                 dynamic_start = i;
             }
 
@@ -596,7 +596,7 @@ pub const Route = struct {
             // - static routes go first because we match those first
             // - dynamic, catch-all, and optional catch all routes are sorted lexicographically, except "[", "]" appear last so that deepest routes are tested first
             // - catch-all & optional catch-all appear at the end because we want to test those at the end.
-            return switch (std.math.order(@intFromEnum(a.kind), @intFromEnum(b.kind))) {
+            return switch (std.math.order(@backingInt(a.kind), @backingInt(b.kind))) {
                 .eq => switch (a.kind) {
                     // static + dynamic are sorted alphabetically
                     .static, .dynamic => @call(
@@ -912,18 +912,25 @@ pub const MockServer = struct {
     };
 };
 
-fn makeTest(cwd_path: string, data: anytype) !void {
+// The caller keeps the fixture cwd only while constructing its router. Return
+// an owned handle so every success/error path can restore the original cwd.
+fn makeTest(cwd_path: string, data: anytype) !std.Io.Dir {
     Output.initTest();
     bun.assert(cwd_path.len > 1 and !strings.eql(cwd_path, "/") and !strings.endsWith(cwd_path, "bun"));
     // std-0.17: the std.fs.Dir API moved to std.Io.Dir (io-parameterized;
     // makeOpenPath -> createDirPathOpen, makePath -> createDirPath, writeAll ->
     // writeStreamingAll, setAsCwd -> fchdir). Use the global blocking io.
     const io = std.Io.Threaded.global_single_threaded.io();
+    const previous_cwd = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    errdefer previous_cwd.close(io);
+    errdefer std.process.setCurrentDir(io, previous_cwd) catch @panic("cannot restore router fixture cwd");
     const bun_tests_dir = try std.Io.Dir.cwd().createDirPathOpen(io, "bun-test-scratch", .{});
+    defer bun_tests_dir.close(io);
     bun_tests_dir.deleteTree(io, cwd_path) catch {};
 
     const cwd = try bun_tests_dir.createDirPathOpen(io, cwd_path, .{});
-    _ = std.c.fchdir(cwd.handle);
+    defer cwd.close(io);
+    try std.process.setCurrentDir(io, cwd);
 
     const Data = @TypeOf(data);
     const fields = comptime bun.meta.fieldsOf(Data);
@@ -935,16 +942,23 @@ fn makeTest(cwd_path: string, data: anytype) !void {
             try cwd.createDirPath(io, dir);
         }
         var file = try cwd.createFile(io, field.name, .{ .truncate = true });
+        defer file.close(io);
         try file.writeStreamingAll(io, value);
-
-        file.close(io);
     }
+    return previous_cwd;
+}
+
+fn restoreTestCwd(previous_cwd: std.Io.Dir) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    defer previous_cwd.close(io);
+    std.process.setCurrentDir(io, previous_cwd) catch @panic("cannot restore router fixture cwd");
 }
 
 pub const Test = struct {
     pub fn makeRoutes(comptime testName: string, data: anytype) !Routes {
         Output.initTest();
-        try makeTest(testName, data);
+        const previous_cwd = try makeTest(testName, data);
+        defer restoreTestCwd(previous_cwd);
         const JSAst = bun.ast;
         JSAst.Expr.Data.Store.create();
         JSAst.Stmt.Data.Store.create();
@@ -1000,7 +1014,8 @@ pub const Test = struct {
     }
 
     pub fn make(comptime testName: string, data: anytype) !Router {
-        try makeTest(testName, data);
+        const previous_cwd = try makeTest(testName, data);
+        defer restoreTestCwd(previous_cwd);
         const JSAst = bun.ast;
         JSAst.Expr.Data.Store.create();
         JSAst.Stmt.Data.Store.create();
@@ -1189,7 +1204,7 @@ const Pattern = struct {
         var count: u16 = 0;
         var offset: RoutePathInt = 0;
         bun.assert(input.len > 0);
-        var kind: u4 = @intFromEnum(Tag.static);
+        var kind: u4 = @backingInt(Tag.static);
         const end = @as(u32, @truncate(input.len - 1));
         while (offset < end) {
             const pattern: Pattern = Pattern.initUnhashed(input, offset) catch |err| {
@@ -1253,11 +1268,11 @@ const Pattern = struct {
                 return null;
             };
             offset = pattern.len;
-            kind = @max(@intFromEnum(@as(Pattern.Tag, pattern.value)), kind);
-            count += @as(u16, @intCast(@intFromBool(@intFromEnum(@as(Pattern.Tag, pattern.value)) > @intFromEnum(Pattern.Tag.static))));
+            kind = @max(@backingInt(@as(Pattern.Tag, pattern.value)), kind);
+            count += @as(u16, @intCast(@intFromBool(@backingInt(@as(Pattern.Tag, pattern.value)) > @backingInt(Pattern.Tag.static))));
         }
 
-        return ValidationResult{ .param_count = count, .kind = @as(Tag, @enumFromInt(kind)) };
+        return ValidationResult{ .param_count = count, .kind = @as(Tag, @fromBackingInt(@intCast(kind))) };
     }
 
     pub fn eql(a: Pattern, b: Pattern) bool {
@@ -1375,7 +1390,7 @@ const Pattern = struct {
                         i += 1;
                     }
 
-                    if (@intFromEnum(tag) > @intFromEnum(Tag.dynamic) and i <= end) return error.CatchAllMustBeAtTheEnd;
+                    if (@backingInt(tag) > @backingInt(Tag.dynamic) and i <= end) return error.CatchAllMustBeAtTheEnd;
 
                     return Pattern{
                         .len = @min(i + 1, end),
@@ -1789,6 +1804,9 @@ test "Sample Route Loader" {
 }
 
 test "Routes basic" {
+    const test_io = std.Io.Threaded.global_single_threaded.io();
+    const original_cwd = try std.process.currentPathAlloc(test_io, std.testing.allocator);
+    defer std.testing.allocator.free(original_cwd);
     var server = MockServer{};
     var ctx = MockRequestContextType{
         .url = try URLPath.parse("/hi"),
@@ -1799,6 +1817,9 @@ test "Routes basic" {
         .@"pages/index.js" = "//index",
         .@"pages/blog/hi.js" = "//blog/hi",
     });
+    const restored_cwd = try std.process.currentPathAlloc(test_io, std.testing.allocator);
+    defer std.testing.allocator.free(restored_cwd);
+    try expectEqualStrings(original_cwd, restored_cwd);
     try router.match(*MockServer, &server, MockRequestContextType, &ctx);
     try expectEqualStrings(ctx.matched_route.?.name, "/hi");
 

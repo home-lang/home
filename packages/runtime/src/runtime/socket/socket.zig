@@ -14,6 +14,63 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
     // per-connection *TLSSocket is a UAF when handshakes overlap. Read the
     // socket back from the per-SSL ex_data slot set in onOpen instead.
     const this = bun.cast(*TLSSocket, BoringSSL.SSL_get_ex_data(ssl, 0) orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK);
+    const handlers = this.handlers orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK;
+
+    // A configured ALPNCallback receives the SNI name and the client's raw
+    // wire-format protocol list. `false` falls through to the static list; a
+    // string selects exactly that protocol; every other result refuses the
+    // handshake with no_application_protocol.
+    if (handlers.onALPNCallback != .zero and !handlers.vm.isShuttingDown() and in != null and inlen > 0) {
+        var scope = handlers.enter();
+        defer {
+            if (scope.exit()) this.handlers = null;
+        }
+
+        const globalObject = handlers.globalObject;
+        const this_value = this.getThisValue(globalObject);
+        const wire_len: usize = @intCast(inlen);
+        const buffer = JSValue.createBufferFromLength(globalObject, wire_len) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
+            @memcpy(array_buffer.byteSlice(), in[0..wire_len]);
+        }
+        const servername_value: JSValue = if (BoringSSL.SSL_get_servername(ssl, BoringSSL.TLSEXT_NAMETYPE_host_name)) |servername|
+            ZigString.init(std.mem.span(servername)).toJS(globalObject)
+        else
+            .js_undefined;
+
+        var saved_loop_state: [5]?*anyopaque = @splat(null);
+        us_internal_ssl_loop_state_save(ssl.?, &saved_loop_state);
+        defer us_internal_ssl_loop_state_restore(&saved_loop_state);
+
+        const result = handlers.onALPNCallback.call(
+            globalObject,
+            this_value,
+            &.{ this_value, servername_value, buffer },
+        ) catch |err| globalObject.takeException(err);
+        if (result.toError()) |err_value| {
+            _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
+            return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+        if (!result.isBoolean() or result.toBoolean()) {
+            if (!result.isString()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            var chosen = result.toSlice(globalObject, default_allocator) catch |err| {
+                _ = globalObject.takeException(err);
+                return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            };
+            defer chosen.deinit();
+            const chosen_bytes = chosen.slice();
+            if (chosen_bytes.len == 0 or chosen_bytes.len > 255) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+
+            const selected = default_allocator.alloc(u8, chosen_bytes.len + 1) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            selected[0] = @intCast(chosen_bytes.len);
+            @memcpy(selected[1..], chosen_bytes);
+            if (this.flags.owned_protos) {
+                if (this.protos) |old| default_allocator.free(old);
+            }
+            this.protos = selected;
+            this.flags.owned_protos = true;
+        }
+    }
     if (this.protos) |protos| {
         if (protos.len == 0) {
             return BoringSSL.SSL_TLSEXT_ERR_NOACK;
@@ -30,11 +87,95 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
     }
 }
 
+/// ALPN selection is stored on SSL_CTX. SNI can replace that context during a
+/// handshake, so every context handoff must carry the Home selector forward.
+pub fn installALPNSelector(ctx: *BoringSSL.SSL_CTX) void {
+    BoringSSL.SSL_CTX_set_alpn_select_cb(ctx, selectALPNCallback, null);
+}
+
 pub const Handlers = @import("./Handlers.zig");
 pub const SocketConfig = Handlers.SocketConfig;
 
 pub const Listener = @import("./Listener.zig");
 pub const WindowsNamedPipeContext = if (Environment.isWindows) @import("./WindowsNamedPipeContext.zig") else void;
+
+/// Canonical socket error metadata used by both uSockets and Windows named
+/// pipes. Callers hand us either a positive `SystemErrno` value or, on Windows,
+/// the positive magnitude of a negative libuv error. Keep the original error
+/// class instead of treating every failure other than ENOENT as ECONNREFUSED.
+pub const SocketErrorInfo = struct {
+    /// Positive errno magnitude. `jsc.SystemError` stores its negation.
+    errno: c_int,
+    code: [:0]const u8,
+};
+
+fn socketErrorInfoForPlatform(errno: c_int, windows: bool) SocketErrorInfo {
+    const noent = @backingInt(bun.sys.SystemErrno.ENOENT);
+    const addrinuse = @backingInt(bun.sys.SystemErrno.EADDRINUSE);
+    const connreset = @backingInt(bun.sys.SystemErrno.ECONNRESET);
+    const connrefused = @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
+
+    const canonical_errno: c_int = if (windows) switch (errno) {
+        -uv.UV_ENOENT => noent,
+        -uv.UV_EADDRINUSE => addrinuse,
+        -uv.UV_ECONNRESET => connreset,
+        -uv.UV_ECONNREFUSED => connrefused,
+        else => errno,
+    } else errno;
+
+    const code: [:0]const u8 = switch (canonical_errno) {
+        noent => "ENOENT",
+        addrinuse => "EADDRINUSE",
+        connreset => "ECONNRESET",
+        connrefused => "ECONNREFUSED",
+        // Preserve the historical fallback for unknown socket errors while the
+        // four named-pipe/network errors above retain their exact identity.
+        else => "ECONNREFUSED",
+    };
+    const reported_errno = if (windows) switch (canonical_errno) {
+        noent => -uv.UV_ENOENT,
+        addrinuse => -uv.UV_EADDRINUSE,
+        connreset => -uv.UV_ECONNRESET,
+        connrefused => -uv.UV_ECONNREFUSED,
+        else => -uv.UV_ECONNREFUSED,
+    } else switch (canonical_errno) {
+        noent, addrinuse, connreset, connrefused => canonical_errno,
+        else => connrefused,
+    };
+
+    return .{ .errno = reported_errno, .code = code };
+}
+
+pub fn socketErrorInfo(errno: c_int) SocketErrorInfo {
+    return socketErrorInfoForPlatform(errno, Environment.isWindows);
+}
+
+test "socket errors preserve named-pipe failure identity" {
+    const cases = [_]struct {
+        canonical: c_int,
+        uv_errno: c_int,
+        code: []const u8,
+    }{
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ENOENT), .uv_errno = -uv.UV_ENOENT, .code = "ENOENT" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.EADDRINUSE), .uv_errno = -uv.UV_EADDRINUSE, .code = "EADDRINUSE" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ECONNRESET), .uv_errno = -uv.UV_ECONNRESET, .code = "ECONNRESET" },
+        .{ .canonical = @backingInt(bun.sys.SystemErrno.ECONNREFUSED), .uv_errno = -uv.UV_ECONNREFUSED, .code = "ECONNREFUSED" },
+    };
+
+    for (cases) |case| {
+        const posix = socketErrorInfoForPlatform(case.canonical, false);
+        try std.testing.expectEqual(case.canonical, posix.errno);
+        try std.testing.expectEqualStrings(case.code, posix.code);
+
+        const windows_from_system = socketErrorInfoForPlatform(case.canonical, true);
+        try std.testing.expectEqual(case.uv_errno, windows_from_system.errno);
+        try std.testing.expectEqualStrings(case.code, windows_from_system.code);
+
+        const windows_from_uv = socketErrorInfoForPlatform(case.uv_errno, true);
+        try std.testing.expectEqual(case.uv_errno, windows_from_uv.errno);
+        try std.testing.expectEqualStrings(case.code, windows_from_uv.code);
+    }
+}
 
 pub fn NewSocket(comptime ssl: bool) type {
     return struct {
@@ -113,7 +254,7 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
         }
 
-        pub fn doConnect(this: *This, connection: Listener.UnixOrHost) !void {
+        pub fn doConnect(this: *This, connection: Listener.UnixOrHost, local_address: []const u8, local_port: u16) !void {
             this.ref();
             defer this.deref();
 
@@ -127,13 +268,15 @@ pub fn NewSocket(comptime ssl: bool) type {
                 .host => |host| {
                     var sf = bun.stackFallback(1024, bun.default_allocator);
                     const alloc = sf.get();
+                    const local_hostz = if (local_address.len > 0) bun.handleOom(bun.dupeZ(alloc, u8, local_address)) else null;
+                    defer if (local_hostz) |address| alloc.free(address);
                     // getaddrinfo doesn't accept bracketed IPv6.
                     const raw = host.host;
                     const clean = if (raw.len > 1 and raw[0] == '[' and raw[raw.len - 1] == ']') raw[1 .. raw.len - 1] else raw;
                     const hostz = bun.handleOom(bun.dupeZ(alloc, u8, clean));
                     defer alloc.free(hostz);
 
-                    this.socket = switch (group.connect(kind, ssl_ctx, hostz, host.port, flags, @sizeOf(*anyopaque))) {
+                    this.socket = switch (group.connectWithLocalAddress(kind, ssl_ctx, hostz, host.port, if (local_hostz) |address| address.ptr else null, local_port, flags, @sizeOf(*anyopaque))) {
                         .failed => return error.FailedToOpenSocket,
                         .socket => |s| blk: {
                             s.ext(*This).* = this;
@@ -329,18 +472,15 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
 
             bun.assert(errno >= 0);
-            var errno_: c_int = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) @intFromEnum(bun.sys.SystemErrno.ENOENT) else @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
-            const code_ = if (errno == @intFromEnum(bun.sys.SystemErrno.ENOENT)) bun.String.static("ENOENT") else bun.String.static("ECONNREFUSED");
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ENOENT)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ENOENT);
-            if (Environment.isWindows and errno_ == @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) errno_ = @intFromEnum(bun.sys.SystemErrno.UV_ECONNREFUSED);
+            const error_info = socketErrorInfo(errno);
 
             const callback = handlers.onConnectError;
             const globalObject = handlers.globalObject;
             const err = jsc.SystemError{
-                .errno = -errno_,
+                .errno = -error_info.errno,
                 .message = bun.String.static("Failed to connect"),
                 .syscall = bun.String.static("connect"),
-                .code = code_,
+                .code = bun.String.static(error_info.code),
             };
 
             // the handlers must be kept alive for the duration of the function call
@@ -477,6 +617,26 @@ pub fn NewSocket(comptime ssl: bool) type {
             return handlers.mode.isServer();
         }
 
+        /// Resume a server handshake suspended by an asynchronous SNICallback.
+        /// A late resolution after socket teardown is intentionally a no-op;
+        /// the transport wrapper still releases any borrowed SSL_CTX reference.
+        pub fn resumeSNI(this: *This, _: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
+            jsc.markBinding(@src());
+            const args = callframe.arguments_old(2);
+            const is_error = args.len > 1 and args.ptr[1].toBoolean();
+            const ctx: ?*BoringSSL.SSL_CTX = if (args.len > 0 and !is_error)
+                if (SecureContext.fromJS(args.ptr[0])) |secure| secure.borrow() else null
+            else
+                null;
+            if (ctx) |selected| {
+                if (this.handlers) |handlers| {
+                    if (handlers.onALPNCallback != .zero) installALPNSelector(selected);
+                }
+            }
+            this.socket.sniResolve(ctx, is_error);
+            return .js_undefined;
+        }
+
         pub fn onOpen(this: *This, socket: Socket) void {
             log("onOpen {s} {*} {} {}", .{ if (this.isServer()) "S" else "C", this, this.socket.isDetached(), this.ref_count.get() });
             // Ensure the socket remains alive until this is finished
@@ -509,13 +669,14 @@ pub fn NewSocket(comptime ssl: bool) type {
                                 }
                             }
                         }
+                        if (this.isServer() and (this.protos != null or this.getHandlers().onALPNCallback != .zero)) {
+                            // Per-connection: callback reads `this` from the SSL,
+                            // not the CTX-level arg (shared across the listener).
+                            _ = BoringSSL.SSL_set_ex_data(ssl_ptr, 0, this);
+                            if (BoringSSL.SSL_get_SSL_CTX(ssl_ptr)) |ctx| installALPNSelector(ctx);
+                        }
                         if (this.protos) |protos| {
-                            if (this.isServer()) {
-                                // Per-connection: callback reads `this` from the SSL,
-                                // not the CTX-level arg (shared across the listener).
-                                _ = BoringSSL.SSL_set_ex_data(ssl_ptr, 0, this);
-                                BoringSSL.SSL_CTX_set_alpn_select_cb(BoringSSL.SSL_get_SSL_CTX(ssl_ptr), selectALPNCallback, null);
-                            } else {
+                            if (!this.isServer()) {
                                 _ = BoringSSL.SSL_set_alpn_protos(ssl_ptr, protos.ptr, @as(c_uint, @intCast(protos.len)));
                             }
                         }
@@ -615,15 +776,31 @@ pub fn NewSocket(comptime ssl: bool) type {
 
         pub fn onHandshake(this: *This, s: Socket, success: i32, ssl_error: uws.us_bun_verify_error_t) bun.JSError!void {
             jsc.markBinding(@src());
+            if (this.handlers == null) return;
             this.flags.handshake_complete = true;
             this.socket = s;
             if (this.socket.isDetached()) return;
             const handlers = this.getHandlers();
             log("onHandshake {s} ({d})", .{ if (handlers.mode == .server) "S" else "C", success });
 
-            const authorized = if (success == 1) true else false;
-
+            var authorized = success == 1;
+            var hostname_mismatch = false;
+            if (ssl and authorized and !handlers.mode.isServer()) {
+                if (this.socket.ssl()) |ssl_ptr| {
+                    const hostname = this.server_name orelse host: {
+                        if (this.connection) |connection| {
+                            if (connection == .host) break :host connection.host.host;
+                        }
+                        break :host "";
+                    };
+                    if (hostname.len > 0 and !bun.BoringSSL.checkServerIdentity(ssl_ptr, hostname)) {
+                        authorized = false;
+                        hostname_mismatch = true;
+                    }
+                }
+            }
             this.flags.authorized = authorized;
+            this.flags.hostname_mismatch = hostname_mismatch;
 
             var callback = handlers.onHandshake;
             var is_open = false;
@@ -682,6 +859,46 @@ pub fn NewSocket(comptime ssl: bool) type {
             if (result.toError()) |err_value| {
                 _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
             }
+        }
+
+        /// A resumable session parked by the native TLS callback is delivered
+        /// only after SSL_read/SSL_do_handshake has unwound, so the JS handler
+        /// may close this socket safely.
+        pub fn onSession(this: *This, session: []const u8) bun.JSError!void {
+            return this.onTLSBufferEvent(session, "onSession");
+        }
+
+        /// Deliver one NSS key-log line after the native TLS stack unwinds.
+        pub fn onKeylog(this: *This, line: []const u8) bun.JSError!void {
+            return this.onTLSBufferEvent(line, "onKeylog");
+        }
+
+        fn onTLSBufferEvent(this: *This, bytes: []const u8, comptime field: []const u8) bun.JSError!void {
+            jsc.markBinding(@src());
+            if (this.socket.isDetached() or this.handlers == null) return;
+
+            const handlers = this.getHandlers();
+            if (handlers.vm.isShuttingDown()) return;
+            const callback = @field(handlers, field);
+            if (callback == .zero) return;
+
+            var scope = handlers.enter();
+            const globalObject = handlers.globalObject;
+            const this_value = this.getThisValue(globalObject);
+            const buffer = JSValue.createBufferFromLength(globalObject, bytes.len) catch |err| {
+                if (scope.exit()) this.handlers = null;
+                return err;
+            };
+            if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
+                @memcpy(array_buffer.byteSlice(), bytes);
+            }
+
+            const result = callback.call(globalObject, this_value, &.{ this_value, buffer }) catch |err|
+                globalObject.takeException(err);
+            if (result.toError()) |err_value| {
+                _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
+            }
+            if (scope.exit()) this.handlers = null;
         }
 
         pub fn onClose(this: *This, socket: Socket, err: c_int, reason: ?*anyopaque) bun.JSError!void {
@@ -846,6 +1063,13 @@ pub fn NewSocket(comptime ssl: bool) type {
             // is very usefull to have this feature depending on the user workflow
             const ssl_error = this.socket.getVerifyError();
             if (ssl_error.error_no == 0) {
+                if (this.flags.hostname_mismatch) {
+                    const mismatch = jsc.SystemError{
+                        .code = bun.String.cloneUTF8("HOSTNAME_MISMATCH"),
+                        .message = bun.String.cloneUTF8("Hostname mismatch"),
+                    };
+                    return mismatch.toErrorInstance(globalObject);
+                }
                 return JSValue.jsNull();
             }
 
@@ -1808,7 +2032,8 @@ const Flags = packed struct(u16) {
     /// must free), vs a borrowed pointer into the Listener's handlers. Defaults
     /// false so a missed set leaks rather than freeing a borrowed pointer (UAF).
     owns_handlers: bool = false,
-    _: u5 = 0,
+    hostname_mismatch: bool = false,
+    _: u4 = 0,
 };
 
 /// Unified socket mode replacing the old is_server bool + TLSMode pair.
@@ -1870,6 +2095,14 @@ pub const DuplexUpgradeContext = struct {
         }
     }
 
+    fn onSession(this: *DuplexUpgradeContext, session: []const u8) void {
+        if (this.tls) |tls| tls.onSession(session) catch {};
+    }
+
+    fn onKeylog(this: *DuplexUpgradeContext, line: []const u8) void {
+        if (this.tls) |tls| tls.onKeylog(line) catch {};
+    }
+
     fn onHandshake(this: *DuplexUpgradeContext, success: bool, ssl_error: uws.us_bun_verify_error_t) void {
         const socket = TLSSocket.Socket.fromDuplex(&this.upgrade);
 
@@ -1907,7 +2140,7 @@ pub const DuplexUpgradeContext = struct {
                 // duplex events — skip the TLSSocket instead of calling
                 // `getHandlers()` on the freed allocation.
                 this.tls = null;
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
+                tls.handleConnectError(@backingInt(bun.sys.SystemErrno.ECONNREFUSED)) catch {};
             }
         }
     }
@@ -1969,7 +2202,7 @@ pub const DuplexUpgradeContext = struct {
                 started catch |err| switch (err) {
                     error.OutOfMemory => bun.outOfMemory(),
                     else => {
-                        const errno = @intFromEnum(bun.sys.SystemErrno.ECONNREFUSED);
+                        const errno = @backingInt(bun.sys.SystemErrno.ECONNREFUSED);
                         if (this.tls) |tls| {
                             // `handleConnectError` consumes our +1 (its
                             // `needs_deref` path) and detaches. Null
@@ -2166,6 +2399,8 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
         .onWritable = @ptrCast(&DuplexUpgradeContext.onWritable),
         .onError = @ptrCast(&DuplexUpgradeContext.onError),
         .onTimeout = @ptrCast(&DuplexUpgradeContext.onTimeout),
+        .onSession = @ptrCast(&DuplexUpgradeContext.onSession),
+        .onKeylog = @ptrCast(&DuplexUpgradeContext.onKeylog),
         .ctx = @ptrCast(duplexContext),
     });
 
@@ -2283,6 +2518,7 @@ const Environment = bun.Environment;
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;
 const uws = bun.uws;
+const uv = bun.windows.libuv;
 const BoringSSL = bun.BoringSSL.c;
 
 const jsc = bun.jsc;
@@ -2290,3 +2526,6 @@ const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const ZigString = jsc.ZigString;
 const SecureContext = jsc.API.SecureContext;
+
+extern fn us_internal_ssl_loop_state_save(ssl: *BoringSSL.SSL, state: *[5]?*anyopaque) void;
+extern fn us_internal_ssl_loop_state_restore(state: *[5]?*anyopaque) void;

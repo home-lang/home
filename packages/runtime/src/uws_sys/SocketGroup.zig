@@ -154,15 +154,29 @@ pub const SocketGroup = extern struct {
         options: c_int,
         socket_ext_size: c_int,
     ) ConnectResult {
+        return self.connectWithLocalAddress(kind, ssl_ctx, host, port, null, 0, options, socket_ext_size);
+    }
+
+    /// Connect while binding the client socket to an optional literal local IP
+    /// and port. The caller owns `local_host`; the C layer parses it before this
+    /// function returns, including on the asynchronous DNS path.
+    pub fn connectWithLocalAddress(
+        self: *SocketGroup,
+        kind: SocketKind,
+        ssl_ctx: ?*SslCtx,
+        host: [*:0]const u8,
+        port: c_int,
+        local_host: ?[*:0]const u8,
+        local_port: c_int,
+        options: c_int,
+        socket_ext_size: c_int,
+    ) ConnectResult {
         // context.c writes 1 here on the synchronous path (DNS already resolved
         // → real `us_socket_t*` returned), 0 when it hands back a
         // `us_connecting_socket_t*` placeholder. Named to match the C side so
         // the branches read the right way round — see PR review #3161005603.
         var has_dns_resolved: c_int = 0;
-        // The linked bun-usockets ABI accepts an optional local bind address
-        // before the socket options. Home does not expose localAddress here
-        // yet, so use the ordinary unbound values.
-        const ptr = c.us_socket_group_connect(self, @intFromEnum(kind), ssl_ctx, host, port, null, 0, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
+        const ptr = c.us_socket_group_connect(self, @intFromEnum(kind), ssl_ctx, host, port, local_host, local_port, options, socket_ext_size, &has_dns_resolved) orelse return .failed;
         return if (has_dns_resolved != 0)
             .{ .socket = @ptrCast(@alignCast(ptr)) }
         else
@@ -286,4 +300,12 @@ test "bun-usockets connect declaration matches the local-bind C ABI" {
     try std.testing.expectEqual(@as(usize, 10), fn_info.param_types.len);
     try std.testing.expect(fn_info.param_types[5].? == ?[*:0]const u8);
     try std.testing.expect(fn_info.param_types[9].? == *c_int);
+}
+
+test "SocketGroup local-bind entry point preserves host and port parameter types" {
+    const std = @import("std");
+    const fn_info = @typeInfo(@TypeOf(SocketGroup.connectWithLocalAddress)).@"fn";
+    try std.testing.expectEqual(@as(usize, 9), fn_info.param_types.len);
+    try std.testing.expect(fn_info.param_types[5].? == ?[*:0]const u8);
+    try std.testing.expect(fn_info.param_types[6].? == c_int);
 }

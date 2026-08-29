@@ -9,7 +9,7 @@ pub fn noop_resolver(in: string) !string {
 
 pub fn fileReadError(err: anyerror, stderr: anytype, filename: string, kind: string) noreturn {
     stderr.writer().print("Error reading file \"{s}\" for {s}: {s}", .{ filename, kind, @errorName(err) }) catch {};
-    std.process.exit(1);
+    Global.exit(1);
 }
 
 pub fn readFile(
@@ -102,6 +102,9 @@ pub const runtime_params_ = [_]ParamType{
     clap.parseParam("-i                                Auto-install dependencies during execution. Equivalent to --install=fallback.") catch unreachable,
     clap.parseParam("-e, --eval <STR>                  Evaluate argument as a script") catch unreachable,
     clap.parseParam("-p, --print <STR>                 Evaluate argument as a script and print the result") catch unreachable,
+    // Home's existing Node-compatible eval dispatcher accepts both CJS and ESM.
+    // Consume the value here so following runtime options are still parsed.
+    clap.parseParam("--input-type <STR>                Input type for inline scripts (Node.js compatibility)") catch unreachable,
     clap.parseParam("--prefer-offline                  Skip staleness checks for packages in the Bun runtime and resolve from disk") catch unreachable,
     clap.parseParam("--prefer-latest                   Use the latest matching versions of packages in the Bun runtime, always checking npm") catch unreachable,
     clap.parseParam("--port <STR>                      Set the default port for Bun.serve") catch unreachable,
@@ -110,9 +113,11 @@ pub const runtime_params_ = [_]ParamType{
     clap.parseParam("--fetch-preconnect <STR>...       Preconnect to a URL while code is loading") catch unreachable,
     clap.parseParam("--experimental-http2-fetch        Offer h2 in fetch() TLS ALPN. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1") catch unreachable,
     clap.parseParam("--experimental-http3-fetch        Honor Alt-Svc: h3 in fetch() and upgrade to HTTP/3. Same as BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT=1") catch unreachable,
+    clap.parseParam("--experimental-stream-iter       Enable the experimental stream/iter API (node:stream/iter, node:zlib/iter)") catch unreachable,
     clap.parseParam("--max-http-header-size <INT>      Set the maximum size of HTTP headers in bytes. Default is 16KiB") catch unreachable,
     clap.parseParam("--dns-result-order <STR>          Set the default order of DNS lookup results. Valid orders: verbatim (default), ipv4first, ipv6first") catch unreachable,
     clap.parseParam("--expose-gc                       Expose gc() on the global object. Has no effect on Bun.gc().") catch unreachable,
+    clap.parseParam("--expose-internals                Expose Node.js internal modules for compatibility testing") catch unreachable,
     clap.parseParam("--no-deprecation                  Suppress all reporting of the custom deprecation.") catch unreachable,
     clap.parseParam("--throw-deprecation               Determine whether or not deprecation warnings result in errors.") catch unreachable,
     clap.parseParam("--title <STR>                     Set the process title") catch unreachable,
@@ -687,7 +692,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             ctx.test_options.randomize = true;
             ctx.test_options.seed = std.fmt.parseInt(u32, seed_str, 10) catch {
                 Output.prettyErrorln("<red>error<r>: Invalid seed value: {s}", .{seed_str});
-                std.process.exit(1);
+                Global.exit(1);
             };
         }
     }
@@ -891,7 +896,16 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
         ctx.runtime_options.preconnect = args.options("--fetch-preconnect");
         ctx.runtime_options.experimental_http2_fetch = args.flag("--experimental-http2-fetch");
         ctx.runtime_options.experimental_http3_fetch = args.flag("--experimental-http3-fetch");
+        // Argument parsing can run more than once during startup. This feature
+        // bit is process-wide and write-once: a later parser without the flag
+        // must not disable an earlier exec-argument parse that contained it.
+        if (args.flag("--experimental-stream-iter")) {
+            bun.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+        }
         ctx.runtime_options.expose_gc = args.flag("--expose-gc");
+        if (args.flag("--expose-internals")) {
+            bun.allowInternalForTestingAPIs();
+        }
 
         if (args.option("--console-depth")) |depth_str| {
             const depth = std.fmt.parseInt(u16, depth_str, 10) catch {
@@ -1028,7 +1042,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             Bun__Node__ProcessThrowDeprecation = true;
         }
         if (args.option("--title")) |title| {
-            CLI.Bun__Node__ProcessTitle = title;
+            bun.cli.Bun__Node__ProcessTitle = title;
         }
         if (args.flag("--zero-fill-buffers")) {
             Bun__Node__ZeroFillBuffers = true;
@@ -1735,7 +1749,7 @@ const strings = bun.strings;
 const Api = bun.schema.api;
 const RegularExpression = bun.jsc.RegularExpression;
 
-const CLI = bun.cli;
+const CLI = @import("./cli.zig");
 const Command = CLI.Command;
 const DefineColonList = CLI.DefineColonList;
 const LoaderColonList = CLI.LoaderColonList;

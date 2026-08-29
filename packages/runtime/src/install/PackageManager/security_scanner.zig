@@ -287,7 +287,7 @@ pub fn promptForWarnings() bool {
 
     var stdin = std.Io.File.stdin();
     var reader_buffer: [1024]u8 = undefined;
-    var buffered = stdin.readerStreaming(&reader_buffer);
+    var buffered = stdin.readerStreaming(std.Io.Threaded.global_single_threaded.io(), &reader_buffer);
     const reader = &buffered.interface;
 
     const first_byte = reader.takeByte() catch {

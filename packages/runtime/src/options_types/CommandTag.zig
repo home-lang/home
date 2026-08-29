@@ -1,9 +1,7 @@
 // Copied from bun/src/options_types/CommandTag.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home"). The `params()` /
-// `printHelp()` aliases at the bottom of upstream point at `runtime/cli/cli.zig`
-// (`Command.tagParams` / `Command.tagPrintHelp`) and are intentionally omitted
-// — they re-land alongside the broader CLI command surface in Phase 12.10.
+// CLI parameter and help methods delegate lazily to runtime/cli/cli.zig,
+// keeping the enum and its classifiers usable without invoking the CLI.
 
 //! `bun.cli.Command.Tag` — the top-level CLI subcommand discriminant.
 //! Extracted to `options_types/` so lower tiers (install/, bundler/) can
@@ -181,9 +179,8 @@ pub const Tag = enum {
         .UpdateCommand = false,
     });
 
-    // JSC-bridge / CLI cross-cuts omitted — re-land in Phase 12.10:
-    //   pub const params = @import("../runtime/cli/cli.zig").Command.tagParams;
-    //   pub const printHelp = @import("../runtime/cli/cli.zig").Command.tagPrintHelp;
+    pub const params = @import("../runtime/cli/cli.zig").Command.tagParams;
+    pub const printHelp = @import("../runtime/cli/cli.zig").Command.tagPrintHelp;
 };
 
 test "Tag.char round-trips a sampling of commands" {

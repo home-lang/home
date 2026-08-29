@@ -81,22 +81,31 @@ pub fn parseWithOptions(allocator: std.mem.Allocator, input: []const u8, options
 
     if (input.len == 0) return out;
 
+    const separator = if (options.sep.len == 0) "&" else options.sep;
+    const equals = if (options.eq.len == 0) "=" else options.eq;
+
     var rest = input;
     var count: usize = 0;
     while (rest.len > 0) {
         if (options.max_keys) |max| {
-            if (count >= max) break;
+            // Bun/Node treat a numeric maxKeys value of zero or less as an
+            // unlimited pair count; zero is this native API's sentinel.
+            if (max > 0 and count >= max) break;
         }
 
-        const sep_index = if (options.sep.len == 0) null else std.mem.indexOf(u8, rest, options.sep);
+        const sep_index = std.mem.indexOf(u8, rest, separator);
         const segment = if (sep_index) |idx| rest[0..idx] else rest;
-        rest = if (sep_index) |idx| rest[idx + options.sep.len ..] else "";
+        rest = if (sep_index) |idx| rest[idx + separator.len ..] else "";
+
+        // Empty substrings do not produce properties, but they still consume
+        // the same maxKeys budget as Bun/Node's parser state machine.
+        count += 1;
 
         if (segment.len == 0) continue;
 
-        const eq_index = if (options.eq.len == 0) null else std.mem.indexOf(u8, segment, options.eq);
+        const eq_index = std.mem.indexOf(u8, segment, equals);
         const raw_key = if (eq_index) |idx| segment[0..idx] else segment;
-        const raw_value = if (eq_index) |idx| segment[idx + options.eq.len ..] else "";
+        const raw_value = if (eq_index) |idx| segment[idx + equals.len ..] else "";
 
         const key = try decodeComponent(allocator, raw_key, true);
         errdefer allocator.free(key);
@@ -104,7 +113,6 @@ pub fn parseWithOptions(allocator: std.mem.Allocator, input: []const u8, options
         errdefer allocator.free(value);
 
         try out.entries.append(allocator, .{ .key = key, .value = value });
-        count += 1;
     }
 
     return out;
@@ -240,4 +248,33 @@ test "querystring unescape keeps malformed escapes literal" {
     defer testing.allocator.free(out);
 
     try testing.expectEqualStrings("a/b%zz%", out);
+}
+
+test "querystring parse supports Bun multichar separators" {
+    var parsed = try parseWithOptions(testing.allocator, "foo=>bar&&bar=>baz", .{
+        .sep = "&&",
+        .eq = "=>",
+    });
+    defer parsed.deinit();
+
+    try testing.expectEqualStrings("bar", parsed.get("foo").?);
+    try testing.expectEqualStrings("baz", parsed.get("bar").?);
+}
+
+test "querystring maxKeys counts empty pairs and zero is unlimited" {
+    var limited = try parseWithOptions(testing.allocator, "&&kept=no", .{ .max_keys = 2 });
+    defer limited.deinit();
+    try testing.expectEqual(@as(usize, 0), limited.entries.items.len);
+
+    var unlimited = try parseWithOptions(testing.allocator, "a=1&b=2&c=3", .{ .max_keys = 0 });
+    defer unlimited.deinit();
+    try testing.expectEqual(@as(usize, 3), unlimited.entries.items.len);
+}
+
+test "querystring empty separators use Node defaults" {
+    var parsed = try parseWithOptions(testing.allocator, "a=1&b=2", .{ .sep = "", .eq = "" });
+    defer parsed.deinit();
+
+    try testing.expectEqualStrings("1", parsed.get("a").?);
+    try testing.expectEqualStrings("2", parsed.get("b").?);
 }

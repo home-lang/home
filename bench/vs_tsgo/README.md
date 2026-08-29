@@ -23,6 +23,32 @@ The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
 Run harness regression tests with
 `python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'`.
 
+## Linux container
+
+Build `home-tsc` natively for the Linux machine that will run the benchmark,
+then build the pinned benchmark image from the repository root:
+
+```sh
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+docker build -f bench/vs_tsgo/Dockerfile -t home-ts-frontend-bench .
+docker run --rm --mount type=bind,src="$PWD",dst=/work \
+  home-ts-frontend-bench cold --runs 30 --warmup 3
+```
+
+The root `.dockerignore` keeps the image context limited to the container
+entrypoint. The repository is mounted only at run time, and the entrypoint
+installs the exact TS 6.0.3 and native TS 7.0.2 manifest pins, regenerates the
+corpus, runs every admission control, and then measures. Raw results are
+written back to `bench/vs_tsgo/results/<UTC timestamp>/`.
+
+Use a workspace on a native Linux filesystem. A repository shared from macOS
+through VirtioFS is useful for functional diagnostics but is not an eligible
+Linux performance environment because filesystem-heavy workloads measure the
+share implementation. For a Linux VM, copy the repository to its ext4 volume
+before building and running the container. The runner records and verifies
+compiler payload and tool hashes before admission and after measurement; the
+report refuses results whose provenance changed.
+
 The separate global-declaration admission audit is **untimed**:
 
 ```sh

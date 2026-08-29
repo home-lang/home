@@ -18,6 +18,9 @@ cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .empty,
 // TODO: make this per JSGlobalObject instead of global
 // This does not handle ShadowRealm correctly!
 cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .empty,
+// Native executable code may be referenced by GC finalizers after onExit's
+// environment cleanup. Release it only once the JSC heap has been destroyed.
+post_heap_cleanup_hooks: std.ArrayListUnmanaged(PostHeapCleanupHook) = .empty,
 
 file_polls_: ?*Async.FilePoll.Store = null,
 
@@ -64,6 +67,7 @@ node_fs_stat_watcher_scheduler: ?bun.ptr.RefPtr(StatWatcherScheduler) = null,
 listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .empty,
 listening_sockets_for_watch_mode_lock: bun.Mutex = .{},
 
+servers_for_isolation: std.ArrayListUnmanaged(jsc.API.AnyServer) = .empty,
 fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
 stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
 
@@ -353,12 +357,30 @@ pub fn removeStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) voi
     }
 }
 
-pub fn closeAllWatchersForIsolation(this: *RareData) void {
-    while (this.fs_watchers_for_isolation.pop()) |watcher| {
-        watcher.detach();
+pub fn addServerForIsolation(this: *RareData, server: jsc.API.AnyServer) void {
+    bun.handleOom(this.servers_for_isolation.append(bun.default_allocator, server));
+}
+
+pub fn removeServerForIsolation(this: *RareData, server: jsc.API.AnyServer) void {
+    for (this.servers_for_isolation.items, 0..) |entry, i| {
+        if (entry.ptr.ptr() == server.ptr.ptr()) {
+            _ = this.servers_for_isolation.swapRemove(i);
+            return;
+        }
     }
-    while (this.stat_watchers_for_isolation.pop()) |watcher| {
-        watcher.close();
+}
+
+pub fn closeAllHandlesForIsolation(this: *RareData) void {
+    // Pop before closing: native stop callbacks may unregister other handles
+    // or register new ones. Never retain an array element across a callback.
+    while (true) {
+        if (this.fs_watchers_for_isolation.pop()) |watcher| {
+            watcher.closeForIsolation();
+        } else if (this.stat_watchers_for_isolation.pop()) |watcher| {
+            watcher.close();
+        } else if (this.servers_for_isolation.pop()) |server| {
+            server.stop(true);
+        } else break;
     }
 }
 
@@ -540,6 +562,24 @@ pub fn pushCleanupHook(
     func: CleanupHook.Function,
 ) void {
     bun.handleOom(this.cleanup_hooks.append(bun.default_allocator, CleanupHook.init(globalThis, ctx, func)));
+}
+
+const PostHeapCleanupHook = struct {
+    ctx: ?*anyopaque,
+    func: CleanupHook.Function,
+};
+
+/// Callbacks must not access JSC. Ordinary process exit without heap destruction
+/// lets the OS reclaim this code instead of releasing it before finalizers.
+pub fn pushPostHeapCleanupHook(this: *RareData, ctx: ?*anyopaque, func: CleanupHook.Function) void {
+    bun.handleOom(this.post_heap_cleanup_hooks.append(bun.default_allocator, .{ .ctx = ctx, .func = func }));
+}
+
+/// Invoke only after a successful JSC heap destruction, not generic VM deinit:
+/// build-only VM paths may deinit Zig state without destroying their JSC heap.
+pub fn runPostHeapCleanupHooks(this: *RareData) void {
+    for (this.post_heap_cleanup_hooks.items) |hook| hook.func(hook.ctx);
+    this.post_heap_cleanup_hooks.clearAndFree(bun.default_allocator);
 }
 
 pub fn boringEngine(rare: *RareData) *BoringSSL.ENGINE {
@@ -831,6 +871,9 @@ pub fn defaultCSRFSecret(this: *RareData) []const u8 {
 }
 
 pub fn deinit(this: *RareData) void {
+    // Any undrained native code remains valid for a surviving JSC heap. The
+    // process-exit path will reclaim it; deinit alone cannot prove GC is done.
+    this.post_heap_cleanup_hooks.clearAndFree(bun.default_allocator);
     if (this.temp_pipe_read_buffer) |pipe| {
         this.temp_pipe_read_buffer = null;
         bun.default_allocator.destroy(pipe);

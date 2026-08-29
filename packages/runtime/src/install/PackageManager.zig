@@ -989,8 +989,8 @@ pub fn initWithRuntime(
     allocator: std.mem.Allocator,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
-) *PackageManager {
-    init_with_runtime_once.call(.{
+) !*PackageManager {
+    try init_with_runtime_once.call(.{
         log,
         bun_install,
         allocator,
@@ -1008,23 +1008,25 @@ pub fn initWithRuntimeOnce(
     allocator: std.mem.Allocator,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
-) void {
+) !void {
     if (env.get("BUN_INSTALL_VERBOSE") != null) {
         PackageManager.verbose_install = true;
     }
 
-    const cpu_count = bun.getThreadCount();
-    PackageManager.allocatePackageManager();
-    const manager = PackageManager.get();
-    var root_dir = Fs.FileSystem.instance.fs.readDirectory(
+    // Validate before publishing the singleton. The once wrapper retains
+    // initialization errors so later resolutions cannot observe a partial PM.
+    const root_dir = switch ((try Fs.FileSystem.instance.fs.readDirectory(
         Fs.FileSystem.instance.top_level_dir,
         null,
         0,
         true,
-    ) catch |err| {
-        Output.err(err, "failed to read root directory: '{s}'", .{Fs.FileSystem.instance.top_level_dir});
-        @panic("Failed to initialize package manager");
+    )).*) {
+        .entries => |entries| entries,
+        .err => |err| return err.canonical_error,
     };
+    const cpu_count = bun.getThreadCount();
+    PackageManager.allocatePackageManager();
+    const manager = PackageManager.get();
 
     // var progress = Progress{};
     // var node = progress.start(name: []const u8, estimated_total_items: usize)
@@ -1045,7 +1047,7 @@ pub fn initWithRuntimeOnce(
         .network_task_fifo = NetworkQueue.init(),
         .allocator = allocator,
         .log = log,
-        .root_dir = root_dir.entries,
+        .root_dir = root_dir,
         .env = env,
         .cpu_count = cpu_count,
         .thread_pool = ThreadPool.init(.{
@@ -1113,7 +1115,7 @@ pub fn initWithRuntimeOnce(
         // When using bun, we only do staleness checks once per day
     ) -| std.time.s_per_day;
 
-    if (root_dir.entries.hasComptimeQuery("bun.lockb")) {
+    if (root_dir.hasComptimeQuery("bun.lockb")) {
         switch (manager.lockfile.loadFromCwd(
             manager,
             allocator,

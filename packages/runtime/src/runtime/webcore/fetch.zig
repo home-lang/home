@@ -242,6 +242,7 @@ fn fetchImpl(
     var disable_timeout = false;
     var disable_keepalive = false;
     var disable_decompression = false;
+    var compress: ?http.compress_body.CompressOption = null;
     var verbose: http.HTTPVerboseLevel = if (vm.log.level.atLeast(.debug)) .headers else .none;
     if (verbose == .none) {
         verbose = vm.getVerboseFetch();
@@ -447,6 +448,24 @@ fn fetchImpl(
     if (globalThis.hasException()) {
         is_error = true;
         return .zero;
+    }
+
+    // "compress: boolean | string | { encoding, level? }"
+    extract_compress: {
+        const objects_to_try = [_]JSValue{ options_object orelse .zero, request_init_object orelse .zero };
+        for (objects_to_try) |object| {
+            if (object == .zero) continue;
+            if (try object.get(globalThis, "compress")) |value| {
+                if (!value.isUndefined()) {
+                    compress = try @import("fetch/compress_body.zig").fromJS(globalThis, value);
+                    break :extract_compress;
+                }
+            }
+            if (globalThis.hasException()) {
+                is_error = true;
+                return .zero;
+            }
+        }
     }
 
     // "tls: TLSConfig"
@@ -1174,7 +1193,7 @@ fn fetchImpl(
                 .result => |fd| fd,
             };
 
-            if (proxy == null and bun.http.SendFile.isEligible(url)) {
+            if (proxy == null and compress == null and bun.http.SendFile.isEligible(url)) {
                 use_sendfile: {
                     const stat: bun.Stat = switch (bun.sys.fstat(opened_fd)) {
                         .result => |result| result,
@@ -1221,20 +1240,22 @@ fn fetchImpl(
             }
 
             // TODO: make this async + lazy
-            const res = jsc.Node.fs.NodeFS.readFile(
-                globalThis.bunVM().nodeFS(),
-                .{
-                    .encoding = .buffer,
-                    .path = .{ .fd = opened_fd },
-                    .offset = body.AnyBlob.Blob.offset,
-                    .max_size = body.AnyBlob.Blob.size,
-                },
-                .sync,
-            );
-
-            if (body.store().?.data.file.pathlike == .path) {
-                opened_fd.close();
-            }
+            const res = read_file: {
+                // Both path-backed opens and descriptor-backed dup() calls
+                // produce an owned fd. readFile borrows it; only sendfile
+                // above transfers ownership out of this scope.
+                defer opened_fd.close();
+                break :read_file jsc.Node.fs.NodeFS.readFile(
+                    globalThis.bunVM().nodeFS(),
+                    .{
+                        .encoding = .buffer,
+                        .path = .{ .fd = opened_fd },
+                        .offset = body.AnyBlob.Blob.offset,
+                        .max_size = body.AnyBlob.Blob.size,
+                    },
+                    .sync,
+                );
+            };
 
             switch (res) {
                 .err => |err| {
@@ -1251,6 +1272,20 @@ fn fetchImpl(
                 },
             }
         }
+    }
+
+    // Commit to compression only after file bodies have been read. Streams,
+    // empty bodies, explicit Content-Encoding and signed S3 requests opt out.
+    if (compress != null and body == .AnyBlob and !url.isS3()) {
+        const already_encoded = if (headers) |h| h.getContentEncoding() != null else false;
+        if (!already_encoded and body.slice().len > 0) {
+            if (headers == null) headers = .{ .allocator = allocator };
+            bun.handleOom(headers.?.append("Content-Encoding", compress.?.encoding.headerValue()));
+        } else {
+            compress = null;
+        }
+    } else {
+        compress = null;
     }
 
     if (url.isS3()) {
@@ -1444,6 +1479,7 @@ fn fetchImpl(
             .disable_keepalive = disable_keepalive,
             .disable_timeout = disable_timeout,
             .disable_decompression = disable_decompression,
+            .compress = compress,
             .reject_unauthorized = reject_unauthorized,
             .redirect_type = redirect_type,
             .verbose = verbose,

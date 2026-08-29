@@ -805,7 +805,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
     }
 
     if (show_trace) {
-        verbose_error_trace = show_trace;
+        bun.crash_handler.verbose_error_trace = show_trace;
         handleErrorReturnTraceExtra(err, error_return_trace, true);
     }
 
@@ -1610,8 +1610,6 @@ fn crash() noreturn {
     }
 }
 
-pub var verbose_error_trace = false;
-
 noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: @Int(.unsigned, @bitSizeOf(anyerror)), trace: *std.builtin.StackTrace, comptime is_root: bool) void {
     @branchHint(.cold);
     const err = @errorFromInt(err_int_workaround_for_zig_ccall_bug);
@@ -1633,7 +1631,7 @@ noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: @In
 
     if (is_debug) {
         if (is_root) {
-            if (verbose_error_trace) {
+            if (bun.crash_handler.verbose_error_trace) {
                 Output.note("Release build will not have this trace by default:", .{});
             }
         } else {
@@ -1672,7 +1670,7 @@ noinline fn coldHandleErrorReturnTrace(err_int_workaround_for_zig_ccall_bug: @In
 
 inline fn handleErrorReturnTraceExtra(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, comptime is_root: bool) void {
     if (!builtin.have_error_return_tracing) return;
-    if (!verbose_error_trace and !is_root) return;
+    if (!bun.crash_handler.verbose_error_trace and !is_root) return;
 
     if (maybe_trace) |trace| {
         coldHandleErrorReturnTrace(@intFromError(err), trace, is_root);

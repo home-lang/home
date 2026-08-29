@@ -61,6 +61,8 @@ pub fn SSLWrapper(comptime T: type) type {
             write: *const fn (T, []const u8) void,
             onData: *const fn (T, []const u8) void,
             onClose: *const fn (T) void,
+            onSession: ?*const fn (T, []const u8) void = null,
+            onKeylog: ?*const fn (T, []const u8) void = null,
         };
 
         /// Initialize the SSLWrapper with a specific SSL_CTX*, remember to call SSL_CTX_up_ref if you want to keep the SSL_CTX alive after the SSLWrapper is deinitialized
@@ -106,6 +108,13 @@ pub fn SSLWrapper(comptime T: type) type {
             _ = BoringSSL.BIO_set_mem_eof_return(output, -1);
             // Set the input and output BIOs
             BoringSSL.SSL_set_bio(ssl, input, output);
+
+            // New-session and keylog callbacks fire from inside BoringSSL.
+            // Opt in only when the owner will drain their parked queues after
+            // the SSL stack unwinds.
+            if (handlers.onSession != null or handlers.onKeylog != null) {
+                us_ssl_enable_pending_events(ssl);
+            }
 
             return .{
                 .handlers = handlers,
@@ -537,7 +546,6 @@ pub fn SSLWrapper(comptime T: type) type {
         }
 
         fn handleTraffic(this: *This) void {
-
             // always handle the handshake first
             if (this.updateHandshakeState()) {
                 // shared stack buffer for reading and writing
@@ -549,6 +557,30 @@ pub fn SSLWrapper(comptime T: type) type {
                 while (this.hasPendingRead() and this.handleReading(&buffer)) {
                     // read data can trigger writing so we need to handle it
                     this.handleWriting(&buffer);
+                }
+
+                // BoringSSL may have produced these events inside the calls
+                // above. Dispatch only now, when those frames are gone; each
+                // callback may close and deinitialize the wrapper.
+                this.flushPendingEvents(&buffer);
+            }
+        }
+
+        fn flushPendingEvents(this: *This, buffer: *[BUFFER_SIZE]u8) void {
+            if (this.handlers.onSession) |onSession| {
+                while (true) {
+                    const ssl = this.ssl orelse return;
+                    const len = us_ssl_pop_pending_session(ssl, buffer, BUFFER_SIZE);
+                    if (len <= 0) break;
+                    onSession(this.handlers.ctx, buffer[0..@intCast(len)]);
+                }
+            }
+            if (this.handlers.onKeylog) |onKeylog| {
+                while (true) {
+                    const ssl = this.ssl orelse return;
+                    const len = us_ssl_pop_pending_keylog(ssl, buffer, BUFFER_SIZE);
+                    if (len <= 0) break;
+                    onKeylog(this.handlers.ctx, buffer[0..@intCast(len)]);
                 }
             }
         }
@@ -566,6 +598,9 @@ fn alwaysContinueVerify(_: c_int, _: ?*BoringSSL.X509_STORE_CTX) callconv(.c) c_
 /// up_ref'd per consumer so the ~150-cert load happens once total, not per
 /// CTX. Returns null if root loading fails (treated as "no roots").
 extern fn us_get_shared_default_ca_store() ?*BoringSSL.X509_STORE;
+extern fn us_ssl_enable_pending_events(ssl: *BoringSSL.SSL) void;
+extern fn us_ssl_pop_pending_session(ssl: *BoringSSL.SSL, out: [*]u8, out_cap: c_int) c_int;
+extern fn us_ssl_pop_pending_keylog(ssl: *BoringSSL.SSL, out: [*]u8, out_cap: c_int) c_int;
 
 const bun = @import("bun");
 const jsc = bun.jsc;

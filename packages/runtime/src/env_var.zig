@@ -8,6 +8,8 @@ const std = @import("std");
 const Environment = @import("environment.zig");
 
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
+pub const NODE_PRESERVE_SYMLINKS_MAIN = @import("bun_core/env_var.zig").NODE_PRESERVE_SYMLINKS_MAIN;
 
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
 /// upstream Bun implementation uses native syscalls on Windows; until
@@ -55,6 +57,7 @@ fn BoolEnv(comptime name: []const u8, comptime default: bool) type {
 
 pub const PATH = StringEnv("PATH");
 pub const BUN_OPTIONS = StringEnv("BUN_OPTIONS");
+pub const BUN_INSPECT_PRELOAD = StringEnv("BUN_INSPECT_PRELOAD");
 pub const BUN_CONFIG_HTTP_IDLE_TIMEOUT = IntEnv("BUN_CONFIG_HTTP_IDLE_TIMEOUT", 0);
 pub const BUN_WATCHER_TRACE = StringEnv("BUN_WATCHER_TRACE");
 pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");
@@ -65,6 +68,7 @@ pub const LIBRARY_PATH = StringEnv("LIBRARY_PATH");
 pub const BUN_INSTALL_GLOBAL_DIR = StringEnv("BUN_INSTALL_GLOBAL_DIR");
 pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
 pub const BUN_INSTALL_BIN = StringEnv("BUN_INSTALL_BIN");
+pub const npm_lifecycle_event = StringEnv("npm_lifecycle_event");
 pub const NODE_CHANNEL_FD = StringEnv("NODE_CHANNEL_FD");
 pub const TMPDIR = StringEnv("TMPDIR");
 pub const TMP = StringEnv("TMP");
@@ -107,6 +111,8 @@ pub const CI = struct {
 };
 
 pub const SHELL = struct {
+    pub const platformGet = @import("bun_core/env_var.zig").SHELL.platformGet;
+
     pub fn get() ?[]const u8 {
         return rawGet("SHELL");
     }

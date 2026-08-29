@@ -10,6 +10,7 @@
 // in the subdirectory `PORTING_STATUS.md` files.
 
 const std = @import("std");
+pub const exe_suffix = if (Environment.isWindows) ".exe" else "";
 const builtin = @import("builtin");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
@@ -200,6 +201,7 @@ pub const validators = @import("runtime/node/util/validators.zig");
 pub const windows = @import("sys/windows/windows.zig");
 pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
 pub var argv: [][:0]const u8 = &[_][:0]const u8{};
+pub var auto_reload_on_crash = false;
 /// Bindgen namespace (upstream `bun.gen`). Hand-written stand-in until the
 /// bindgen codegen lands; provides `gen.node_os` (node_os.zig references it).
 pub const gen = @import("runtime/node/GeneratedBindings.zig");
@@ -498,7 +500,7 @@ pub fn errnoToZigErr(err: anytype) anyerror {
     return error.Unexpected;
 }
 pub const Generation = u16;
-pub const Wyhash11 = std.hash.Wyhash;
+pub const Wyhash11 = @import("wyhash/wyhash.zig").Wyhash11;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
 /// Mirrors Bun's `bun.json` (`interchange.json` → `parsers/json.zig`): the
 /// JSON / package.json / tsconfig parser leaf of the resolver/macro/PM cone.
@@ -1440,11 +1442,12 @@ pub const timespec = extern struct {
         force_real_time,
     };
 
-    /// Faithful to upstream `bun.zig:3222` (`getRoughTickCount`). Home reads the
-    /// monotonic clock directly; the jest `FakeTimers` mock path re-attaches with
-    /// the fake-timers subsystem, so `.allow_mocked_time` falls through to real.
+    /// Timer deadlines and fake-clock advancement must share the same clock.
+    /// Internal timers can explicitly opt into the real monotonic clock.
     pub fn now(comptime mock_mode: MockMode) timespec {
-        _ = mock_mode;
+        if (enable_jsc_link and mock_mode == .allow_mocked_time) {
+            if (jsc.Jest.bun_test.FakeTimers.current_time.getTimespecNow()) |mocked| return mocked;
+        }
         var ts: std.c.timespec = undefined;
         _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
         return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
@@ -1545,8 +1548,39 @@ pub const timespec = extern struct {
         return new_timespec;
     }
 
-    pub fn addMsFloat(this: *const timespec, interval: f64) timespec {
-        return this.addMs(@intFromFloat(interval));
+    pub fn addMsFloat(this: *const timespec, interval_ms: f64) timespec {
+        const ns_per_ms_f = @as(f64, @floatFromInt(std.time.ns_per_ms)); // 1_000_000
+
+        // Start from the current time
+        var new_timespec = this.*;
+
+        // Split into whole ms and sub-ms remainder (matches sinon/fake-timers logic)
+        // Use modulo to extract fractional milliseconds as nanoseconds
+        const ms_whole_f = @floor(interval_ms);
+        const ms_inc: i64 = std.math.lossyCast(i64, ms_whole_f);
+
+        // nanoRemainder: floor((msFloat * 1e6) % 1e6)
+        const ns_total_f = interval_ms * ns_per_ms_f;
+        const ns_remainder_f = @mod(ns_total_f, ns_per_ms_f);
+        const nsec_inc: i64 = @intFromFloat(@floor(ns_remainder_f));
+
+        // Convert milliseconds to seconds
+        const sec_inc = @divTrunc(ms_inc, std.time.ms_per_s);
+        const ms_remainder = @mod(ms_inc, std.time.ms_per_s);
+
+        new_timespec.sec +%= sec_inc;
+        new_timespec.nsec +%= ms_remainder * std.time.ns_per_ms + nsec_inc;
+
+        // Normalize nsec into [0, ns_per_s)
+        if (new_timespec.nsec >= std.time.ns_per_s) {
+            new_timespec.sec +%= 1;
+            new_timespec.nsec -%= std.time.ns_per_s;
+        } else if (new_timespec.nsec < 0) {
+            new_timespec.sec -%= 1;
+            new_timespec.nsec +%= std.time.ns_per_s;
+        }
+
+        return new_timespec;
     }
 };
 
@@ -2086,11 +2120,7 @@ pub fn runtimeEmbedFile(comptime root: RuntimeEmbedRoot, comptime sub_path: []co
     return @embedFile("codegen/" ++ sub_path);
 }
 
-pub const HTTPThread = struct {
-    pub fn init(opts: anytype) void {
-        _ = opts;
-    }
-};
+pub const HTTPThread = http.HTTPThread;
 
 fn ReinterpretSliceType(comptime T: type, comptime Slice: type) type {
     const is_const = @typeInfo(Slice).pointer.attrs.@"const";
@@ -2610,10 +2640,16 @@ pub const ObjectPool = object_pool.ObjectPool;
 // ---- src/cli/ ----------------------------------------------------------
 // Bun's CLI surface. Copy-in-progress; see src/cli/PORTING_STATUS.md.
 pub const cli = struct {
+    pub const Cli = @import("runtime/cli/cli.zig").Cli;
+    pub const ShellCompletions = @import("runtime/cli/shell_completions.zig");
     pub var pretend_to_be_node = false;
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
+    pub const BunxCommand = @import("runtime/cli/bunx_command.zig").BunxCommand;
+    pub const AddCommand = @import("runtime/cli/add_command.zig").AddCommand;
+    pub const BuildCommand = @import("runtime/cli/build_command.zig").BuildCommand;
+    pub const InstallCommand = @import("runtime/cli/install_command.zig").InstallCommand;
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
     pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;
@@ -2622,17 +2658,7 @@ pub const cli = struct {
     pub const PackageManagerCommand = @import("runtime/cli/package_manager_command.zig").PackageManagerCommand;
     pub const PublishCommand = @import("runtime/cli/publish_command.zig").PublishCommand;
     pub const PackCommand = @import("runtime/cli/pack_command.zig").PackCommand;
-    pub const Arguments = struct {
-        pub const auto_params = [_]struct {
-            takes_value: enum { none, optional, required },
-            names: struct {
-                long: ?[]const u8 = null,
-                short: ?u8 = null,
-            },
-        }{
-            .{ .takes_value = .required, .names = .{ .long = "eval", .short = 'e' } },
-        };
-    };
+    pub const Arguments = @import("runtime/cli/Arguments.zig");
     // Faithful to upstream `cli/cli.zig:5`: process-title override slot.
     pub var Bun__Node__ProcessTitle: ?[]const u8 = null;
     // Faithful to upstream `cli.Command` (`runtime/cli/cli.zig:306`).
@@ -2654,7 +2680,22 @@ pub const jsc = struct {
     // size-class tables. It MUST run once before any `Zig__GlobalObject__create`
     // (VirtualMachine.init), otherwise JSC::VM::tryCreate crashes inside
     // MarkedSpace::sizeClasses(). JSCInitialize itself is `std::call_once`-guarded.
+    var process_stdio_once = once(initializeProcessStdio);
+    fn initializeProcessStdio() void {
+        if (comptime enable_jsc_link) {
+            const native = struct {
+                extern "c" fn bun_initialize_process() void;
+                extern "c" fn bun_restore_stdio() void;
+            };
+            // Capture inherited TTY state before JS runs. The native process
+            // builtins use bun_stdio_tty to choose real node:tty streams.
+            native.bun_initialize_process();
+            Global.addExitCallback(native.bun_restore_stdio);
+        }
+    }
+
     pub fn initialize(eval_mode: bool) void {
+        process_stdio_once.call(.{});
         // Forked std has no `std.os.environ` slice; build one from `std.c.environ`
         // (a null-terminated array of `?[*:0]u8`, bit-identical to `[*:0]u8`).
         const env = std.mem.span(std.c.environ);
@@ -3076,6 +3117,8 @@ pub const jsc = struct {
             reject_unauthorized: ?bool = null,
             request_cert: bool = false,
             secure_options: i32 = 0,
+            ssl_min_version: i32 = 0,
+            ssl_max_version: i32 = 0,
             ca: SSLConfigFile = .none,
             cert: SSLConfigFile = .none,
             key: SSLConfigFile = .none,
@@ -3123,6 +3166,16 @@ pub const jsc = struct {
                 }
                 if (try value.get(globalObject, "secureOptions")) |v| {
                     if (v.isNumber()) result.secure_options = v.toInt32();
+                }
+                inline for (.{ .{ "minVersion", "ssl_min_version" }, .{ "maxVersion", "ssl_max_version" } }) |field| {
+                    if (try value.get(globalObject, field[0])) |v| {
+                        if (!v.isUndefinedOrNull()) @field(result, field[1]) = try v.coerce(i32, globalObject);
+                    }
+                }
+                inline for (.{ .{ "clientRenegotiationLimit", "client_renegotiation_limit" }, .{ "clientRenegotiationWindow", "client_renegotiation_window" } }) |field| {
+                    if (try value.get(globalObject, field[0])) |v| {
+                        if (!v.isUndefinedOrNull()) @field(result, field[1]) = @bitCast(try v.coerce(i32, globalObject));
+                    }
                 }
                 // ALPNProtocols: node:tls converts the user's protocol list to a
                 // wire-format Buffer (length-prefixed) before it reaches native, so
@@ -3183,6 +3236,10 @@ pub const jsc = struct {
             onEnd: JSValue = .zero,
             onError: JSValue = .zero,
             onHandshake: JSValue = .zero,
+            onSession: JSValue = .zero,
+            onKeylog: JSValue = .zero,
+            onServerName: JSValue = .zero,
+            onALPNCallback: JSValue = .zero,
 
             pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SocketConfigHandlers {
                 // Read the socket handler callbacks from the `socket` options
@@ -3194,11 +3251,13 @@ pub const jsc = struct {
                 var result: SocketConfigHandlers = .{};
                 if (!value.isObject()) return result;
                 const pairs = .{
-                    .{ "open", "onOpen" },           .{ "close", "onClose" },
-                    .{ "data", "onData" },           .{ "drain", "onWritable" },
-                    .{ "timeout", "onTimeout" },     .{ "connectError", "onConnectError" },
-                    .{ "end", "onEnd" },             .{ "error", "onError" },
-                    .{ "handshake", "onHandshake" },
+                    .{ "open", "onOpen" },                 .{ "close", "onClose" },
+                    .{ "data", "onData" },                 .{ "drain", "onWritable" },
+                    .{ "timeout", "onTimeout" },           .{ "connectError", "onConnectError" },
+                    .{ "end", "onEnd" },                   .{ "error", "onError" },
+                    .{ "handshake", "onHandshake" },       .{ "session", "onSession" },
+                    .{ "keylog", "onKeylog" },             .{ "serverName", "onServerName" },
+                    .{ "alpnCallback", "onALPNCallback" },
                 };
                 inline for (pairs) |pair| {
                     if (try value.get(globalObject, pair[0])) |v| {
@@ -3218,7 +3277,9 @@ pub const jsc = struct {
             data: JSValue = .zero,
             unix_: MaybeString = .{},
             hostname: MaybeString = .{},
+            local_address: MaybeString = .{},
             port: ?u16 = null,
+            local_port: ?u16 = null,
             exclusive: bool = false,
             allow_half_open: bool = false,
             reuse_port: bool = false,
@@ -3237,11 +3298,17 @@ pub const jsc = struct {
                 if (try opts.get(globalObject, "hostname")) |h| {
                     result.hostname = try MaybeString.fromJS(globalObject, h);
                 }
+                if (try opts.get(globalObject, "localAddress")) |h| {
+                    result.local_address = try MaybeString.fromJS(globalObject, h);
+                }
                 if (try opts.get(globalObject, "unix")) |u| {
                     result.unix_ = try MaybeString.fromJS(globalObject, u);
                 }
                 if (try opts.get(globalObject, "port")) |p| {
                     if (p.isNumber()) result.port = @truncate(@as(u32, @bitCast(p.toInt32())));
+                }
+                if (try opts.get(globalObject, "localPort")) |p| {
+                    if (p.isNumber()) result.local_port = @truncate(@as(u32, @bitCast(p.toInt32())));
                 }
                 if (try opts.get(globalObject, "fd")) |fd| {
                     if (fd.isNumber()) result.fd = fd.toInt32();
@@ -3266,6 +3333,7 @@ pub const jsc = struct {
             pub fn deinit(this: *SocketConfig) void {
                 this.unix_.deinit();
                 this.hostname.deinit();
+                this.local_address.deinit();
                 if (this.tls == .object) this.tls.object.deinit();
             }
         };
@@ -3721,6 +3789,9 @@ pub const meta = struct {
 // the full crash handler (stack walking, JSC stop-the-world, native
 // signal handlers) re-lands in a later sub-phase.
 pub const crash_handler = struct {
+    // Shared CLI/reporter configuration; keep parsing independent of native
+    // crash-handler exports while the complete reporter is being ported.
+    pub var verbose_error_trace = false;
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
     // NOTE: crash_handler/crash_handler.zig has fork-`**`-spacing issues; its
@@ -4168,10 +4239,7 @@ pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
 }
 
 pub fn getRoughTickCountMs(comptime mock_mode: timespec.MockMode) u64 {
-    _ = mock_mode;
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(u64, @intCast(ts.nsec)), std.time.ns_per_ms);
+    return timespec.now(mock_mode).msUnsigned();
 }
 
 pub const Ordinal = @import("jsc/ZigStackFramePosition.zig").Ordinal;
@@ -5374,6 +5442,9 @@ pub const sys = struct {
     pub const chdir = @import("sys/sys.zig").chdir;
     pub const pipe = @import("sys/sys.zig").pipe;
     pub const umask = std.c.umask;
+    pub const Sigaction = @import("sys/sys.zig").Sigaction;
+    pub const sigaction = @import("sys/sys.zig").sigaction;
+    pub const sigemptyset = @import("sys/sys.zig").sigemptyset;
     pub const WindowsSymlinkOptions = @import("sys/sys.zig").WindowsSymlinkOptions;
     pub const existsAt = @import("sys/sys.zig").existsAt;
     pub const symlinkRunningExecutable = @import("sys/sys.zig").symlinkRunningExecutable;

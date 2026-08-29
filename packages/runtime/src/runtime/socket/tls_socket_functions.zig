@@ -146,9 +146,63 @@ pub fn getPeerCertificate(this: *This, globalObject: *jsc.JSGlobalObject, callfr
         return .js_undefined;
     }
 
-    // TODO: we need to support the non abbreviated version of this
-    return .js_undefined;
+    // Link each object immediately so the whole chain remains reachable while
+    // the next certificate conversion allocates. The server's leaf is a +1
+    // reference above; client-side chains already include the borrowed leaf.
+    const first_obj = try X509.toJS(first_cert.?, globalObject);
+    first_obj.protect();
+    defer first_obj.unprotect();
+    var previous = first_obj;
+    var last_cert = first_cert.?;
+    if (cert_chain) |chain| {
+        var i: usize = if (cert == null) 1 else 0;
+        while (BoringSSL.sk_X509_value(chain, i)) |next| : (i += 1) {
+            const obj = try X509.toJS(next, globalObject);
+            previous.put(globalObject, "issuerCertificate", obj);
+            previous = obj;
+            last_cert = next;
+        }
+    }
+
+    // Include the issuer from the local trust store even when the peer did
+    // not send the root. Every get1_issuer result is owned until conversion
+    // and the final self-issued check are complete; cap cycles at 16 hops.
+    var store = BoringSSL.SSL_CTX_get_cert_store(BoringSSL.SSL_get_SSL_CTX(ssl_ptr));
+    var shared_store: ?*BoringSSL.X509_STORE = null;
+    defer if (shared_store) |owned| BoringSSL.X509_STORE_free(owned);
+    if (store == null or certificate_native.OPENSSL_sk_num(@ptrCast(BoringSSL.X509_STORE_get0_objects(store))) == 0) {
+        shared_store = certificate_native.us_get_shared_default_ca_store();
+        if (shared_store != null) store = shared_store;
+    }
+    var last_is_self_issued = false;
+    if (BoringSSL.X509_STORE_CTX_new()) |store_ctx| {
+        defer BoringSSL.X509_STORE_CTX_free(store_ctx);
+        if (store != null and BoringSSL.X509_STORE_CTX_init(store_ctx, store, null, null) == 1) {
+            var extras: [16]*BoringSSL.X509 = undefined;
+            var count: usize = 0;
+            defer for (extras[0..count]) |owned| BoringSSL.X509_free(owned);
+            while (count < extras.len and certificate_native.X509_check_issued(last_cert, last_cert) != 0) {
+                var issuer: ?*BoringSSL.X509 = null;
+                if (BoringSSL.X509_STORE_CTX_get1_issuer(&issuer, store_ctx, last_cert) <= 0 or issuer == null) break;
+                extras[count] = issuer.?;
+                count += 1;
+                const obj = try X509.toJS(issuer.?, globalObject);
+                previous.put(globalObject, "issuerCertificate", obj);
+                previous = obj;
+                last_cert = issuer.?;
+            }
+            last_is_self_issued = certificate_native.X509_check_issued(last_cert, last_cert) == 0;
+        }
+    }
+    if (last_is_self_issued) previous.put(globalObject, "issuerCertificate", previous);
+    return first_obj;
 }
+
+const certificate_native = struct {
+    extern fn OPENSSL_sk_num(?*const anyopaque) usize;
+    extern fn X509_check_issued(*const BoringSSL.X509, *const BoringSSL.X509) c_int;
+    extern fn us_get_shared_default_ca_store() ?*BoringSSL.X509_STORE;
+};
 
 pub fn getCertificate(this: *This, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
     const ssl_ptr = this.socket.ssl() orelse return .js_undefined;

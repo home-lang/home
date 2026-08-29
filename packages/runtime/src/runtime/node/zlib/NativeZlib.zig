@@ -20,7 +20,6 @@ pub const finalize = impl.finalize;
 ref_count: RefCount,
 globalThis: *jsc.JSGlobalObject,
 stream: Context = .{},
-write_result: ?[*]u32 = null,
 poll_ref: CountedKeepAlive = .{},
 this_value: jsc.Strong.Optional = .empty,
 write_in_progress: bool = false,
@@ -71,9 +70,8 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     const level = try validators.validateInt32(globalThis, arguments[1], "level", .{}, null, null);
     const memLevel = try validators.validateInt32(globalThis, arguments[2], "memLevel", .{}, null, null);
     const strategy = try validators.validateInt32(globalThis, arguments[3], "strategy", .{}, null, null);
-    // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    // updateWriteResult writes two u32s through this pointer, so the
-    // caller-supplied array must be a Uint32Array with at least 2 elements.
+    // Completion re-resolves this cached view before writing, so validate the
+    // initial value's element type and minimum length here.
     const write_result_buf = arguments[4].asArrayBuffer(globalThis) orelse
         return globalThis.throwInvalidArgumentTypeValue("writeResult", "Uint32Array", arguments[4]);
     if (write_result_buf.typed_array_type != .Uint32Array)
@@ -82,12 +80,11 @@ pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Cal
     if (write_result_slice.len < 2) {
         return globalThis.ERR(.INVALID_ARG_VALUE, "writeResult must be a Uint32Array with at least 2 elements", .{}).throw();
     }
-    const writeResult = write_result_slice.ptr;
     const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[5]);
     const dictionary = if (arguments[6].isUndefined()) null else (arguments[6].asArrayBuffer(globalThis) orelse
         return globalThis.throwInvalidArgumentTypeValue("dictionary", "Buffer, TypedArray, or DataView", arguments[6])).byteSlice();
 
-    this.write_result = writeResult;
+    js.writeResultSetCached(this_value, globalThis, arguments[4]);
     js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));
 
     // Keep the dictionary alive by keeping a reference to it in the JS object.

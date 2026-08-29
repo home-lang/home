@@ -1,4 +1,5 @@
 const std = @import("std");
+const native_bindings = @import("build-support/native_bindings.zig");
 
 /// Compile flags for the vendored SQLite amalgamation (Bun's feature set:
 /// fast, small, threadsafe). Applied only when statically compiling sqlite3.c
@@ -102,6 +103,15 @@ const native_vendor_roots = [_][]const u8{
 const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/uv-posix-stubs.c.o",
     "src/jsc/bindings/napi.cpp.o",
+    "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
+    "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
+    "unified/UnifiedSource-src_jsc_bindings-0.cpp.o", // contains Home-owned WorkerGlobalScope
+    "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp.o", // contains Home-owned AbortSignal GC reachability
+    "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp.o", // contains Home-owned JSMessagePort
+    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort and JSWorker
+    "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp.o", // contains Home-owned MessagePortPipe
+    "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp.o", // contains Home-owned Worker
+    "unified/UnifiedSource-src_uws_sys-0.cpp.o", // contains Home-owned uWS parser and C ABI
 };
 
 fn shouldLinkBunObject(path: []const u8) bool {
@@ -147,6 +157,17 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         return;
     };
     defer dir.close(io);
+
+    m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.messagePortObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.messagePortPipeObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.workerObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.workerScopeObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.jsMessagePortObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.jsAbortSignalObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.uwsObject(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return;
     defer walker.deinit();
@@ -1296,6 +1317,15 @@ pub fn build(b: *std.Build) void {
     const run_tpm_tests = b.addRunArtifact(tpm_tests);
 
     const test_step = b.step("test", "Run all tests");
+    const native_binding_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build-support/native_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_native_binding_tests = b.addRunArtifact(native_binding_tests);
+    dependOnTest(test_step, &run_native_binding_tests.step, test_filter, "native-bindings");
     dependOnTest(test_step, &run_lexer_tests.step, test_filter, "lexer");
     dependOnTest(test_step, &run_parser_tests.step, test_filter, "parser");
     dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
@@ -1340,11 +1370,21 @@ pub fn build(b: *std.Build) void {
 
     // Home Runtime substrate tests
     const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
+    const home_rt_test_launcher = b.addExecutable(.{
+        .name = "home-rt-test-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/home_test/src/home_rt_test_launcher.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
     // Pantry Zig's server-mode test runner deadlocks for the native-linked
-    // home_rt binary before it sends the metadata query. Run this one artifact
-    // in terminal mode while preserving the compiled test dependency.
-    const run_home_rt_tests = b.addSystemCommand(&.{"/usr/bin/env"});
-    run_home_rt_tests.setName("run test home_rt");
+    // home_rt binary before it sends the metadata query. A tiny host launcher
+    // keeps terminal mode cross-platform while passing the emitted Home path to
+    // native corpus children without relying on the install prefix.
+    const run_home_rt_tests = std.Build.Step.Run.create(b, "run test home_rt");
+    run_home_rt_tests.addFileArg(home_rt_test_launcher.getEmittedBin());
+    run_home_rt_tests.addFileArg(exe.getEmittedBin());
     run_home_rt_tests.addFileArg(home_rt_tests.getEmittedBin());
     // NOTE: `b.graph.random_seed` is no longer exposed to build.zig's configure
     // phase in this toolchain (the random seed is now a make-phase-only concept

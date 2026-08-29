@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test";
 import { bunEnv, bunExe, isASAN } from "harness";
 
+// https://github.com/home-lang/home/issues/466: close() has a pending receive
+// window. Measure completed closure, not messages legitimately retained until
+// its asynchronous close event. Resolve without Event payloads so these waits
+// do not themselves retain the closed targets across GC.
+const closeHelpers = `
+  function closed(port) {
+    return new Promise(resolve => port.addEventListener("close", () => resolve(), { once: true }));
+  }
+  async function waitForCloses(promises) {
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(promises),
+        new Promise((resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("MessagePort close completion timed out")), 10_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+`;
+
 // https://bugs.webkit.org/show_bug.cgi?id=281662
 // Transferring buffers to a closed MessageChannel causes memory leaks
 describe("MessagePortChannel closed port", () => {
@@ -10,8 +33,15 @@ describe("MessagePortChannel closed port", () => {
         bunExe(),
         "-e",
         `
+          ${closeHelpers}
           const { port1, port2 } = new MessageChannel();
+          const senderClosed = closed(port1);
+          const receiverClosed = closed(port2);
+          // Keep the unstarted sender open to exercise the closed destination,
+          // rather than the separate already-closed sender no-op path.
+          port2.postMessage("keep sender open");
           port2.close();
+          await waitForCloses([receiverClosed]);
 
           // Warm up: first batch establishes allocator high-water mark
           for (let i = 0; i < 5000; i++) {
@@ -38,8 +68,9 @@ describe("MessagePortChannel closed port", () => {
             console.error("FAIL: RSS grew by", deltaMB.toFixed(2), "MB on second batch");
             process.exit(1);
           }
-          console.log("PASS: delta", deltaMB.toFixed(2), "MB");
           port1.close();
+          await waitForCloses([senderClosed]);
+          console.log("PASS: delta", deltaMB.toFixed(2), "MB");
         `,
       ],
       env: bunEnv,
@@ -64,28 +95,35 @@ describe("MessagePortChannel closed port", () => {
           bunExe(),
           "-e",
           `
+            ${closeHelpers}
             const closeBeforePost = ${closeBeforePost};
             const ITERATIONS = 1000;
             const PAYLOAD_SIZE = 128 * 1024;
 
-            function round() {
+            async function round() {
+              const pendingCloses = [];
               for (let i = 0; i < ITERATIONS; i++) {
                 const carrier = new MessageChannel();
                 const inner = new MessageChannel();
+                const receiverClosed = closed(carrier.port2);
+                pendingCloses.push(closed(carrier.port1), receiverClosed, closed(inner.port1), closed(inner.port2));
 
                 // Queue a large payload on the side of the inner channel that is about
                 // to be transferred. If the inner channel leaks, this payload leaks with it.
                 inner.port2.postMessage(Buffer.alloc(PAYLOAD_SIZE).toString());
 
                 if (closeBeforePost) {
-                  // Drop path: MessagePortPipe::send() sees the Closed state-bit on the
-                  // destination side and returns; the moved-in message destructs and
-                  // ~TransferredMessagePort closes the inner pipe side.
+                  // Keep the unstarted sender open while its peer finishes closing.
+                  carrier.port2.postMessage("keep sender open");
                   carrier.port2.close();
+                  await waitForCloses([receiverClosed]);
+                  // Drop path: send() sees completed closure on the destination
+                  // side and returns; the moved-in message destructs and
+                  // ~TransferredMessagePort closes the inner pipe side.
                   carrier.port1.postMessage(null, [inner.port1]);
                 } else {
-                  // Drop path: MessagePortPipe::close() swaps out the inbox; the dropped
-                  // message's TransferredMessagePort is harvested into the close worklist.
+                  // Drop path: close completion swaps out the inbox; the dropped
+                  // TransferredMessagePort is harvested into the close worklist.
                   carrier.port1.postMessage(null, [inner.port1]);
                   carrier.port2.close();
                 }
@@ -93,15 +131,17 @@ describe("MessagePortChannel closed port", () => {
                 inner.port2.close();
                 carrier.port1.close();
               }
+              await waitForCloses(pendingCloses);
+              pendingCloses.length = 0;
               Bun.gc(true);
               Bun.gc(true);
             }
 
             // Warm up to establish allocator high-water mark.
-            round();
+            await round();
 
             const rssBefore = process.memoryUsage().rss;
-            round();
+            await round();
             const rssAfter = process.memoryUsage().rss;
             const deltaMB = (rssAfter - rssBefore) / 1024 / 1024;
 
@@ -138,11 +178,16 @@ describe("MessagePortChannel closed port", () => {
         bunExe(),
         "-e",
         `
+          ${closeHelpers}
           const DEPTH = 20_000;
           let head = new MessageChannel();
           const tail = head;
+          const pendingCloses = [closed(head.port1), closed(head.port2)];
+          let cascadeClosed;
           for (let i = 0; i < DEPTH; i++) {
             const next = new MessageChannel();
+            cascadeClosed = closed(next.port2);
+            pendingCloses.push(closed(next.port1), cascadeClosed);
             // head.port1's inbox now holds next.port1; closing head.port1 must
             // cascade to next.port1, whose inbox holds the following link, etc.
             head.port2.postMessage(null, [next.port1]);
@@ -150,7 +195,10 @@ describe("MessagePortChannel closed port", () => {
             head = next;
           }
           tail.port1.close();
+          // Only the completed orphan cascade can close this final peer.
+          await waitForCloses([cascadeClosed]);
           head.port2.close();
+          await waitForCloses(pendingCloses);
           console.log("PASS");
         `,
       ],
@@ -162,7 +210,7 @@ describe("MessagePortChannel closed port", () => {
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
     // Without the iterative drain the subprocess segfaults (stack overflow) during
-    // tail.port1.close() and never prints PASS.
+    // completion of tail.port1.close() and never prints PASS.
     expect({ stdout: stdout.trim(), exitCode, signalCode: proc.signalCode, stderr }).toEqual({
       stdout: "PASS",
       exitCode: 0,

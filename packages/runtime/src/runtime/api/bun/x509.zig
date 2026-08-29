@@ -5,13 +5,8 @@
 //   - @import("bun")                       → @import("home")
 //   - bun.BoringSSL.c                      → home_rt.boringssl_sys.boringssl
 //
-// Stubs:
-//   - `jsc.JSGlobalObject`, `JSValue`, `bun.JSError`, and
-//     `bun.jsc.fromJSHostCall` are not yet wired through home_rt.
-//     The two `toJS*` bridges are preserved as extern declarations
-//     plus thin wrappers; their bodies are parked under the same
-//     comptime gate used by `home_rt/jsc/JSArray.zig` so the file
-//     compiles standalone. `isSafeAltName` is pure and fully tested.
+// Native conversions use the JSC exception boundary; certificate storage is
+// borrowed by legacy conversion and transferred to X509Certificate wrappers.
 
 const std = @import("std");
 const home_rt = @import("home");
@@ -64,13 +59,7 @@ pub inline fn isSafeAltName(name: []const u8, utf8: bool) bool {
 }
 
 pub fn toJS(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) JSError!JSValue {
-    // Upstream wraps the call via `bun.jsc.fromJSHostCall` for exception-scope
-    // bookkeeping. Until that helper lands in home_rt.jsc, dispatch directly;
-    // the C++ side returns `JSValue.zero` on throw, which we treat as the
-    // sentinel error.
-    const v = Bun__X509__toJSLegacyEncoding(cert, globalObject);
-    if (v == .zero) return error.JSError;
-    return v;
+    return home_rt.jsc.fromJSHostCall(globalObject, @src(), Bun__X509__toJSLegacyEncoding, .{ cert, globalObject });
 }
 
 pub fn toJSObject(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) JSError!JSValue {

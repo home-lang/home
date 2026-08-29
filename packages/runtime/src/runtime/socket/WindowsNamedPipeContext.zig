@@ -62,6 +62,14 @@ fn onData(this: *WindowsNamedPipeContext, decoded_data: []const u8) void {
     }
 }
 
+fn onSession(this: *WindowsNamedPipeContext, session: []const u8) void {
+    if (this.socket == .tls) this.socket.tls.onSession(session) catch {};
+}
+
+fn onKeylog(this: *WindowsNamedPipeContext, line: []const u8) void {
+    if (this.socket == .tls) this.socket.tls.onKeylog(line) catch {};
+}
+
 fn onHandshake(this: *WindowsNamedPipeContext, success: bool, ssl_error: uws.us_bun_verify_error_t) void {
     switch (this.socket) {
         .tls => |tls| {
@@ -104,6 +112,55 @@ fn onWritable(this: *WindowsNamedPipeContext) void {
     }
 }
 
+const ConnectFailureTiming = enum {
+    synchronous,
+    asynchronous,
+};
+
+const ConnectFailurePlan = struct {
+    take_socket_from_context: bool,
+    close_callback_reenters_socket: bool,
+    explicit_socket_derefs: u8,
+    context_deinit_socket_derefs: u8,
+};
+
+fn connectFailurePlan(timing: ConnectFailureTiming) ConnectFailurePlan {
+    return switch (timing) {
+        // The socket is already attached. handleConnectError consumes its
+        // active/connect ref; we take and release the Context-owned ref now so
+        // the later raw-pipe close callback cannot re-enter dead handlers.
+        .asynchronous => .{
+            .take_socket_from_context = true,
+            .close_callback_reenters_socket = false,
+            .explicit_socket_derefs = 1,
+            .context_deinit_socket_derefs = 0,
+        },
+        // The Listener has not attached the socket yet, so handleConnectError
+        // cannot consume the Listener's unconditional connect ref. Release it
+        // explicitly and leave the Context-owned ref for Context.deinit.
+        .synchronous => .{
+            .take_socket_from_context = false,
+            .close_callback_reenters_socket = false,
+            .explicit_socket_derefs = 1,
+            .context_deinit_socket_derefs = 1,
+        },
+    };
+}
+
+fn reportConnectErrorAndReleaseSocketRef(socket: SocketType, errno: c_int) void {
+    switch (socket) {
+        .tls => |tls| {
+            tls.handleConnectError(errno) catch {};
+            tls.deref();
+        },
+        .tcp => |tcp| {
+            tcp.handleConnectError(errno) catch {};
+            tcp.deref();
+        },
+        .none => {},
+    }
+}
+
 fn onError(this: *WindowsNamedPipeContext, err: bun.sys.Error) void {
     if (this.is_open) {
         switch (this.socket) {
@@ -116,15 +173,11 @@ fn onError(this: *WindowsNamedPipeContext, err: bun.sys.Error) void {
             else => {},
         }
     } else {
-        switch (this.socket) {
-            .tls => |tls| {
-                tls.handleConnectError(err.errno) catch {};
-            },
-            .tcp => |tcp| {
-                tcp.handleConnectError(err.errno) catch {};
-            },
-            else => {},
-        }
+        const plan = connectFailurePlan(.asynchronous);
+        bun.assert(plan.take_socket_from_context);
+        const socket = this.socket;
+        this.socket = .none;
+        reportConnectErrorAndReleaseSocketRef(socket, err.errno);
     }
 }
 
@@ -199,6 +252,8 @@ pub fn create(globalThis: *jsc.JSGlobalObject, socket: SocketType) *WindowsNamed
         .onError = @ptrCast(&WindowsNamedPipeContext.onError),
         .onTimeout = @ptrCast(&WindowsNamedPipeContext.onTimeout),
         .onClose = @ptrCast(&WindowsNamedPipeContext.onClose),
+        .onSession = @ptrCast(&WindowsNamedPipeContext.onSession),
+        .onKeylog = @ptrCast(&WindowsNamedPipeContext.onKeylog),
     }, vm);
     this.task = jsc.AnyTask.New(WindowsNamedPipeContext, WindowsNamedPipeContext.runEvent).init(this);
 
@@ -224,20 +279,19 @@ pub fn open(globalThis: *jsc.JSGlobalObject, fd: bun.FD, ssl_config: ?jsc.API.Se
     // TODO: reuse the same context for multiple connections when possibles
 
     const this = WindowsNamedPipeContext.create(globalThis, socket);
+    var failure_errno: c_int = @backingInt(bun.sys.SystemErrno.ENOENT);
 
     errdefer {
-        switch (socket) {
-            .tls => |tls| {
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
-            },
-            .tcp => |tcp| {
-                tcp.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
-            },
-            .none => {},
-        }
+        const plan = connectFailurePlan(.synchronous);
+        bun.assert(!plan.take_socket_from_context);
+        reportConnectErrorAndReleaseSocketRef(socket, failure_errno);
         this.deref();
     }
-    try this.named_pipe.open(fd, ssl_config, owned_ctx).unwrap();
+    const result = this.named_pipe.open(fd, ssl_config, owned_ctx);
+    if (result.asErr()) |err| {
+        failure_errno = @intCast(err.errno);
+        return error.NamedPipeOpenFailed;
+    }
     return &this.named_pipe;
 }
 
@@ -246,23 +300,22 @@ pub fn connect(globalThis: *jsc.JSGlobalObject, path: []const u8, ssl_config: ?j
     // TODO: reuse the same context for multiple connections when possibles
 
     const this = WindowsNamedPipeContext.create(globalThis, socket);
+    var failure_errno: c_int = @backingInt(bun.sys.SystemErrno.ENOENT);
     errdefer {
-        switch (socket) {
-            .tls => |tls| {
-                tls.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
-            },
-            .tcp => |tcp| {
-                tcp.handleConnectError(@intFromEnum(bun.sys.SystemErrno.ENOENT)) catch {};
-            },
-            .none => {},
-        }
+        const plan = connectFailurePlan(.synchronous);
+        bun.assert(!plan.take_socket_from_context);
+        reportConnectErrorAndReleaseSocketRef(socket, failure_errno);
         this.deref();
     }
 
     if (path[path.len - 1] == 0) {
         // is already null terminated
         const slice_z = path[0 .. path.len - 1 :0];
-        try this.named_pipe.connect(slice_z, ssl_config, owned_ctx).unwrap();
+        const result = this.named_pipe.connect(slice_z, ssl_config, owned_ctx);
+        if (result.asErr()) |err| {
+            failure_errno = @intCast(err.errno);
+            return error.NamedPipeConnectFailed;
+        }
     } else {
         var path_buf: bun.PathBuffer = undefined;
         // we need to null terminate the path
@@ -271,7 +324,11 @@ pub fn connect(globalThis: *jsc.JSGlobalObject, path: []const u8, ssl_config: ?j
         @memcpy(path_buf[0..len], path[0..len]);
         path_buf[len] = 0;
         const slice_z = path_buf[0..len :0];
-        try this.named_pipe.connect(slice_z, ssl_config, owned_ctx).unwrap();
+        const result = this.named_pipe.connect(slice_z, ssl_config, owned_ctx);
+        if (result.asErr()) |err| {
+            failure_errno = @intCast(err.errno);
+            return error.NamedPipeConnectFailed;
+        }
     }
     return &this.named_pipe;
 }
@@ -305,3 +362,17 @@ const uv = bun.windows.libuv;
 
 const TCPSocket = jsc.API.TCPSocket;
 const TLSSocket = jsc.API.TLSSocket;
+
+test "named pipe connect failure has a single socket cleanup path" {
+    const asynchronous = connectFailurePlan(.asynchronous);
+    try std.testing.expect(asynchronous.take_socket_from_context);
+    try std.testing.expect(!asynchronous.close_callback_reenters_socket);
+    try std.testing.expectEqual(@as(u8, 1), asynchronous.explicit_socket_derefs);
+    try std.testing.expectEqual(@as(u8, 0), asynchronous.context_deinit_socket_derefs);
+
+    const synchronous = connectFailurePlan(.synchronous);
+    try std.testing.expect(!synchronous.take_socket_from_context);
+    try std.testing.expect(!synchronous.close_callback_reenters_socket);
+    try std.testing.expectEqual(@as(u8, 1), synchronous.explicit_socket_derefs);
+    try std.testing.expectEqual(@as(u8, 1), synchronous.context_deinit_socket_derefs);
+}

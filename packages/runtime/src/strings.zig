@@ -17,6 +17,7 @@ pub fn indexOfAnyT(comptime T: type, haystack: []const T, needles: []const T) ?u
 }
 
 pub const repeatingAlloc = @import("string/immutable.zig").repeatingAlloc;
+pub const mustEscapeYAMLString = @import("string/immutable.zig").mustEscapeYAMLString;
 pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
 pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
 
@@ -97,6 +98,7 @@ pub const charIsAnySlash = @import("string/immutable.zig").charIsAnySlash;
 pub const hasPrefixComptime = @import("string/immutable.zig").hasPrefixComptime;
 pub const startsWithWindowsDriveLetter = @import("string/immutable.zig").startsWithWindowsDriveLetter;
 pub const startsWithWindowsDriveLetterT = @import("string/immutable.zig").startsWithWindowsDriveLetterT;
+pub const eqlAnyComptime = @import("string/immutable.zig").eqlAnyComptime;
 pub const eqlComptimeUTF16 = @import("string/immutable.zig").eqlComptimeUTF16;
 pub const hasPrefixWithWordBoundary = @import("string/immutable.zig").hasPrefixWithWordBoundary;
 pub const hasSuffixComptime = @import("string/immutable.zig").hasSuffixComptime;

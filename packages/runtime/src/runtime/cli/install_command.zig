@@ -48,7 +48,7 @@ fn install(ctx: Command.Context) !void {
             .onFetch = @ptrCast(&Analyzer.onAnalyze),
         };
 
-        try bun.cli.BuildCommand.exec(bun.cli.Command.get(), &fetcher);
+        try bun.cli.BuildCommand.analyze(bun.cli.Command.get(), &fetcher);
         return;
     }
 

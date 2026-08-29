@@ -130,6 +130,8 @@ extern struct us_socket_t *us_dispatch_connect_error(us_socket_r s, int code);
 extern struct us_connecting_socket_t *us_dispatch_connecting_error(struct us_connecting_socket_t *c, int code);
 extern void us_dispatch_handshake(us_socket_r s, int success, struct us_bun_verify_error_t err);
 extern struct us_socket_t *us_dispatch_ssl_raw_tap(us_socket_r s, char *data, int length);
+extern void us_dispatch_session(us_socket_r s, const unsigned char *data, int length);
+extern void us_dispatch_keylog(us_socket_r s, const unsigned char *data, int length);
 
 extern int Bun__addrinfo_get(struct us_loop_t* loop, const char* host, uint16_t port,  struct addrinfo_request** ptr);
 extern int Bun__addrinfo_set(struct addrinfo_request* ptr, struct us_connecting_socket_t* socket);
@@ -265,6 +267,11 @@ struct us_socket_t {
    * Used by Bun's `socket.upgradeTLS()` so the returned [raw, tls] pair's
    * `raw` half can observe ciphertext (node:net Duplex.ondata semantics). */
   unsigned char ssl_raw_tap : 1;
+  /* JS callbacks may destroy a socket while BoringSSL still has its SSL on
+   * the stack. Defer detach/close until that stack unwinds. */
+  unsigned char ssl_in_use : 1;
+  unsigned char ssl_pending_detach : 1;
+  unsigned char ssl_pending_close_code;
 
   struct us_socket_group_t *group;
   /* NULL for plain TCP. Direct BoringSSL `SSL*`; set by us_internal_ssl_attach
@@ -378,7 +385,8 @@ struct us_listen_socket_t {
   struct ssl_ctx_st *ssl_ctx;
   /* SNI hostname → {SSL_CTX*, user*} tree. Owned. */
   void *sni;
-  void (*on_server_name)(struct us_listen_socket_t *, const char *hostname);
+  struct ssl_ctx_st *(*on_server_name)(struct us_listen_socket_t *, const char *hostname,
+      int *abort_handshake, struct us_socket_t *socket);
   unsigned int socket_ext_size;
   /* kind to stamp on accepted sockets. */
   unsigned char accept_kind;
@@ -390,5 +398,8 @@ void us_internal_socket_group_link_connecting_socket(us_socket_group_r group, st
 void us_internal_socket_group_unlink_connecting_socket(us_socket_group_r group, struct us_connecting_socket_t *c);
 
 int us_raw_root_certs(struct us_cert_string_t **out);
+
+void us_internal_ssl_loop_state_save(void *ssl, void **out5);
+void us_internal_ssl_loop_state_restore(void **saved5);
 
 #endif // INTERNAL_H

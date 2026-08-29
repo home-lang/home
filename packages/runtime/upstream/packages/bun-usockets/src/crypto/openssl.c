@@ -117,7 +117,14 @@ static int us_ctx_ex_idx = -1;
 static int us_sni_ex_idx = -1;
 static int us_ctx_cache_ex_idx = -1;
 static int us_ssl_reneg_state_idx = -1;
+static int us_ssl_sni_pending_idx = -1;
 static int us_ssl_listener_ex_idx = -1;
+/* Only SSLs owned by Bun's node:tls sockets or an opted-in SSLWrapper park
+ * session/keylog events. Other TLS consumers avoid the serialization cost. */
+static int us_ssl_pending_events_ex_idx = -1;
+static int us_ssl_pending_session_idx = -1;
+static int us_ssl_pending_keylog_idx = -1;
+extern const unsigned char BUN_SOCKET_KIND_BUN_SOCKET_TLS;
 #ifdef _WIN32
 static INIT_ONCE us_ex_idx_once = INIT_ONCE_STATIC_INIT;
 #else
@@ -128,6 +135,21 @@ static pthread_once_t us_ex_idx_once = PTHREAD_ONCE_INIT;
 #define US_RENEG_PACK(limit, window) ((void *)(uintptr_t)(((uint64_t)(limit) << 32) | (uint32_t)(window)))
 #define US_RENEG_LIMIT(p)  ((uint32_t)((uint64_t)(uintptr_t)(p) >> 32))
 #define US_RENEG_WINDOW(p) ((uint32_t)((uint64_t)(uintptr_t)(p)))
+
+struct us_ssl_sni_pending_t {
+  /* 0 = none, 1 = waiting, 2 = resolved, 3 = error */
+  int state;
+  struct ssl_ctx_st *resolved_ctx;
+};
+
+static void us_ssl_sni_pending_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
+                                    int index, long argl, void *argp) {
+  (void)parent; (void)ad; (void)index; (void)argl; (void)argp;
+  struct us_ssl_sni_pending_t *state = ptr;
+  if (!state) return;
+  if (state->resolved_ctx) SSL_CTX_free(state->resolved_ctx);
+  us_free(state);
+}
 
 struct us_ssl_reneg_state_t {
   uint64_t window_start_ms;
@@ -145,6 +167,71 @@ static void us_ssl_reneg_state_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
   us_free(ptr);
 }
 
+#define US_SSL_PENDING_SESSION_MAX 65536
+#define US_SSL_PENDING_KEYLOG_LINE_MAX 4096
+
+struct us_ssl_pending_event_t {
+  struct us_ssl_pending_event_t *next;
+  uint32_t length;
+  unsigned char data[];
+};
+
+static void us_ssl_pending_event_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
+                                      int index, long argl, void *argp) {
+  (void)parent; (void)ad; (void)index; (void)argl; (void)argp;
+  struct us_ssl_pending_event_t *pending = ptr;
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    us_free(pending);
+    pending = next;
+  }
+}
+
+static void us_ssl_pending_append(SSL *ssl, int index,
+                                  struct us_ssl_pending_event_t *pending) {
+  struct us_ssl_pending_event_t *head = SSL_get_ex_data(ssl, index);
+  if (!head) {
+    SSL_set_ex_data(ssl, index, pending);
+    return;
+  }
+  while (head->next) head = head->next;
+  head->next = pending;
+}
+
+/* BoringSSL invokes both callbacks from inside handshake/read frames. Never
+ * run JS there: copy each payload to an SSL-owned FIFO and drain it only after
+ * the TLS stack unwinds. */
+static int us_ssl_new_session_cb(SSL *ssl, SSL_SESSION *session) {
+  if (!SSL_get_ex_data(ssl, us_ssl_pending_events_ex_idx)) return 0;
+  int length = i2d_SSL_SESSION(session, NULL);
+  if (length <= 0 || length > US_SSL_PENDING_SESSION_MAX) return 0;
+
+  struct us_ssl_pending_event_t *pending =
+      us_malloc(sizeof(struct us_ssl_pending_event_t) + (size_t)length);
+  if (!pending) return 0;
+  unsigned char *out = pending->data;
+  pending->length = (uint32_t)i2d_SSL_SESSION(session, &out);
+  pending->next = NULL;
+  us_ssl_pending_append(ssl, us_ssl_pending_session_idx, pending);
+  return 0;
+}
+
+static void us_ssl_keylog_cb(const SSL *const_ssl, const char *line) {
+  SSL *ssl = (SSL *)const_ssl;
+  if (!SSL_get_ex_data(ssl, us_ssl_pending_events_ex_idx)) return;
+  size_t line_length = strlen(line);
+  if (!line_length || line_length > US_SSL_PENDING_KEYLOG_LINE_MAX) return;
+
+  struct us_ssl_pending_event_t *pending =
+      us_malloc(sizeof(struct us_ssl_pending_event_t) + line_length + 1);
+  if (!pending) return;
+  memcpy(pending->data, line, line_length);
+  pending->data[line_length] = '\n';
+  pending->length = (uint32_t)(line_length + 1);
+  pending->next = NULL;
+  us_ssl_pending_append(ssl, us_ssl_pending_keylog_idx, pending);
+}
+
 /* Defined in Zig (`SSLContextCache.zig`): tombstones the cache entry on
  * SSL_CTX refcount→0 so the per-VM weak SSL_CTX cache learns the pointer is
  * dead without holding a ref of its own. */
@@ -156,7 +243,11 @@ static void us_ex_idx_init(void) {
   us_sni_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
   us_ctx_cache_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, bun_ssl_ctx_cache_on_free);
   us_ssl_reneg_state_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_reneg_state_free);
+  us_ssl_sni_pending_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_sni_pending_free);
   us_ssl_listener_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+  us_ssl_pending_events_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+  us_ssl_pending_session_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_event_free);
+  us_ssl_pending_keylog_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_event_free);
 }
 
 #ifdef _WIN32
@@ -178,6 +269,63 @@ static inline void us_ex_idx_ensure(void) {
 static inline int us_ssl_ctx_ex_idx(void) {
   us_ex_idx_ensure();
   return us_ctx_ex_idx;
+}
+
+void us_ssl_enable_pending_events(SSL *ssl) {
+  us_ex_idx_ensure();
+  SSL_set_ex_data(ssl, us_ssl_pending_events_ex_idx, (void *)1);
+}
+
+static int us_ssl_pop_pending(SSL *ssl, int index,
+                              unsigned char *out, int out_cap) {
+  if (!ssl || !out || out_cap <= 0 || index < 0) return 0;
+  struct us_ssl_pending_event_t *pending = SSL_get_ex_data(ssl, index);
+  if (!pending) return 0;
+  SSL_set_ex_data(ssl, index, pending->next);
+  int length = pending->length <= (uint32_t)out_cap ? (int)pending->length : 0;
+  if (length) memcpy(out, pending->data, (size_t)length);
+  us_free(pending);
+  return length;
+}
+
+int us_ssl_pop_pending_session(SSL *ssl, unsigned char *out, int out_cap) {
+  return us_ssl_pop_pending(ssl, us_ssl_pending_session_idx, out, out_cap);
+}
+
+int us_ssl_pop_pending_keylog(SSL *ssl, unsigned char *out, int out_cap) {
+  return us_ssl_pop_pending(ssl, us_ssl_pending_keylog_idx, out, out_cap);
+}
+
+static void ssl_flush_pending_session(struct us_socket_t *s) {
+  if (!s->ssl || us_socket_is_closed(s)) return;
+  struct us_ssl_pending_event_t *pending =
+      SSL_get_ex_data(s_ssl(s), us_ssl_pending_session_idx);
+  if (!pending) return;
+  SSL_set_ex_data(s_ssl(s), us_ssl_pending_session_idx, NULL);
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    if (s->ssl && !us_socket_is_closed(s)) {
+      us_dispatch_session(s, pending->data, (int)pending->length);
+    }
+    us_free(pending);
+    pending = next;
+  }
+}
+
+static void ssl_flush_pending_keylog(struct us_socket_t *s) {
+  if (!s->ssl || us_socket_is_closed(s)) return;
+  struct us_ssl_pending_event_t *pending =
+      SSL_get_ex_data(s_ssl(s), us_ssl_pending_keylog_idx);
+  if (!pending) return;
+  SSL_set_ex_data(s_ssl(s), us_ssl_pending_keylog_idx, NULL);
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    if (s->ssl && !us_socket_is_closed(s)) {
+      us_dispatch_keylog(s, pending->data, (int)pending->length);
+    }
+    us_free(pending);
+    pending = next;
+  }
 }
 
 int us_ssl_ctx_cache_ex_idx(void) {
@@ -234,8 +382,35 @@ static long BIO_s_custom_ctrl(BIO *bio, int cmd, long num, void *user) {
   }
 }
 
+void us_internal_ssl_loop_state_save(void *ssl_ptr, void **out) {
+  SSL *ssl = (SSL *)ssl_ptr;
+  struct loop_ssl_data *data =
+      (struct loop_ssl_data *)BIO_get_data(SSL_get_wbio(ssl));
+  out[0] = data;
+  out[1] = data ? (void *)data->ssl_socket : NULL;
+  out[2] = data ? (void *)data->ssl_read_input : NULL;
+  out[3] = data ? (void *)(uintptr_t)data->ssl_read_input_length : NULL;
+  out[4] = data ? (void *)(uintptr_t)data->ssl_read_input_offset : NULL;
+}
+
+void us_internal_ssl_loop_state_restore(void **saved) {
+  struct loop_ssl_data *data = (struct loop_ssl_data *)saved[0];
+  if (!data) return;
+  data->ssl_socket = (struct us_socket_t *)saved[1];
+  data->ssl_read_input = (char *)saved[2];
+  data->ssl_read_input_length = (unsigned int)(uintptr_t)saved[3];
+  data->ssl_read_input_offset = (unsigned int)(uintptr_t)saved[4];
+}
+
 static int BIO_s_custom_write(BIO *bio, const char *data, int length) {
   struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)BIO_get_data(bio);
+
+  /* A callback requested deferred destruction. Swallow the alert BoringSSL
+   * may try to flush while it unwinds; the epilogue closes the raw socket. */
+  if (loop_ssl_data->ssl_socket && loop_ssl_data->ssl_socket->ssl_pending_detach) {
+    BIO_clear_retry_flags(bio);
+    return length;
+  }
 
   int written = us_socket_raw_write(loop_ssl_data->ssl_socket, data, length);
 
@@ -603,6 +778,12 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
     SSL_CTX_set_options(ssl_context, options.secure_options);
   }
 
+  SSL_CTX_set_session_cache_mode(ssl_context, SSL_SESS_CACHE_CLIENT |
+      SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_INTERNAL |
+      SSL_SESS_CACHE_NO_AUTO_CLEAR);
+  SSL_CTX_sess_set_new_cb(ssl_context, us_ssl_new_session_cb);
+  SSL_CTX_set_keylog_callback(ssl_context, us_ssl_keylog_cb);
+
   return ssl_context;
 }
 
@@ -650,6 +831,10 @@ void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
   struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)s->group->loop->data.ssl_data;
 
   SSL *ssl = SSL_new(ctx);
+  if (ssl && (us_socket_kind(s) == BUN_SOCKET_KIND_BUN_SOCKET_TLS ||
+              (listener && listener->accept_kind == BUN_SOCKET_KIND_BUN_SOCKET_TLS))) {
+    us_ssl_enable_pending_events(ssl);
+  }
   SSL_set_bio(ssl, loop_ssl_data->shared_rbio, loop_ssl_data->shared_wbio);
   BIO_up_ref(loop_ssl_data->shared_rbio);
   BIO_up_ref(loop_ssl_data->shared_wbio);
@@ -688,11 +873,18 @@ void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
   s->ssl_read_wants_write = 0;
   s->ssl_fatal_error = 0;
   s->ssl_raw_tap = 0;
+  s->ssl_in_use = 0;
+  s->ssl_pending_detach = 0;
+  s->ssl_pending_close_code = 0;
   s->ssl_is_server = is_client ? 0 : 1;
 }
 
 void us_internal_ssl_detach(struct us_socket_t *s) {
   if (s->ssl) {
+    if (s->ssl_in_use) {
+      s->ssl_pending_detach = 1;
+      return;
+    }
     SSL_free(s_ssl(s));
     s->ssl = NULL;
   }
@@ -851,6 +1043,11 @@ static int ssl_handle_shutdown(struct us_socket_t *s, int force_fast_shutdown) {
 }
 
 struct us_socket_t *us_internal_ssl_close(struct us_socket_t *s, int code, void *reason) {
+  if (s->ssl && s->ssl_in_use) {
+    s->ssl_pending_detach = 1;
+    s->ssl_pending_close_code = (unsigned char)code;
+    return s;
+  }
   /* SEMI_SOCKET never connected — SSL was attached eagerly on the fast-path
    * connect, but no bytes were ever exchanged. Firing on_handshake(0) here
    * lands in JS after onConnectError already tore down `this`/its handlers. */
@@ -907,7 +1104,15 @@ static void ssl_update_handshake(struct us_socket_t *s) {
     return;
   }
 
+  unsigned char ssl_was_in_use = s->ssl_in_use;
+  s->ssl_in_use = 1;
   int result = SSL_do_handshake(s_ssl(s));
+  s->ssl_in_use = ssl_was_in_use;
+  if (!ssl_was_in_use && s->ssl_pending_detach) {
+    s->ssl_pending_detach = 0;
+    us_socket_close(s, s->ssl_pending_close_code, NULL);
+    return;
+  }
 
   if (SSL_get_shutdown(s_ssl(s)) & SSL_RECEIVED_SHUTDOWN) {
     ssl_close(s, 0, NULL);
@@ -916,6 +1121,10 @@ static void ssl_update_handshake(struct us_socket_t *s) {
 
   if (result <= 0) {
     int err = SSL_get_error(s_ssl(s), result);
+    if (err == SSL_ERROR_PENDING_CERTIFICATE) {
+      s->ssl_handshake_state = HANDSHAKE_PENDING;
+      return;
+    }
     if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
       if (err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL) {
         ERR_clear_error();
@@ -1011,19 +1220,31 @@ struct us_socket_t *us_internal_ssl_on_data(struct us_socket_t *s, char *data, i
   int read = 0;
 restart:
   while (1) {
+    unsigned char ssl_was_in_use = s->ssl_in_use;
+    s->ssl_in_use = 1;
     int just_read = SSL_read(s_ssl(s),
                              loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING + read,
                              LIBUS_RECV_BUFFER_LENGTH - read);
+    s->ssl_in_use = ssl_was_in_use;
+    if (!ssl_was_in_use && s->ssl_pending_detach) {
+      s->ssl_pending_detach = 0;
+      return us_socket_close(s, s->ssl_pending_close_code, NULL);
+    }
 
     if (just_read <= 0) {
       int err = SSL_get_error(s_ssl(s), just_read);
-      if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+      if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE &&
+          err != SSL_ERROR_PENDING_CERTIFICATE) {
         if (err == SSL_ERROR_WANT_RENEGOTIATE) {
           if (ssl_renegotiate(s)) continue;
           if (ssl_gone(s)) return NULL;
           err = SSL_ERROR_SSL;
         } else if (err == SSL_ERROR_ZERO_RETURN) {
-          /* Remote close_notify. Flush what we decrypted, then close. */
+          /* Tickets/keylog lines precede any decrypted bytes from this read.
+           * Deliver them first; the callback may close the socket. */
+          ssl_flush_pending_session(s);
+          ssl_flush_pending_keylog(s);
+          if (ssl_gone(s)) return NULL;
           if (read) {
             s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
             if (!s || ssl_gone(s)) return NULL;
@@ -1060,6 +1281,9 @@ restart:
         }
         if (!read) break;
 
+        ssl_flush_pending_session(s);
+        ssl_flush_pending_keylog(s);
+        if (ssl_gone(s)) return NULL;
         s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
         if (!s || ssl_gone(s)) return NULL;
         break;
@@ -1087,12 +1311,28 @@ restart:
     read += just_read;
 
     if (read == LIBUS_RECV_BUFFER_LENGTH) {
+      char *saved_input = loop_ssl_data->ssl_read_input;
+      unsigned int saved_length = loop_ssl_data->ssl_read_input_length;
+      unsigned int saved_offset = loop_ssl_data->ssl_read_input_offset;
+      ssl_flush_pending_session(s);
+      ssl_flush_pending_keylog(s);
+      if (ssl_gone(s)) return NULL;
       s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
       if (!s || ssl_gone(s)) return NULL;
+      loop_ssl_data->ssl_read_input = saved_input;
+      loop_ssl_data->ssl_read_input_length = saved_length;
+      loop_ssl_data->ssl_read_input_offset = saved_offset;
+      loop_ssl_data->ssl_socket = s;
       read = 0;
       goto restart;
     }
   }
+
+  /* The read stack is fully unwound. Session callbacks run before the data
+   * consumer can destroy the socket, matching Node's NewSessionCallback order. */
+  ssl_flush_pending_session(s);
+  ssl_flush_pending_keylog(s);
+  if (ssl_gone(s)) return NULL;
 
   /* If the last SSL_write failed with WANT_READ and we've now read, give the
    * application a writable callback — but not if SSL_read just told us it
@@ -1191,6 +1431,31 @@ void us_internal_ssl_shutdown(struct us_socket_t *s) {
   }
 }
 
+void us_socket_sni_resolve(struct us_socket_t *s, struct ssl_ctx_st *ctx, int error) {
+  if (!s || us_socket_is_closed(s) || !s->ssl || !s_ssl(s) ||
+      us_ssl_sni_pending_idx < 0) {
+    if (ctx) SSL_CTX_free(ctx);
+    return;
+  }
+  struct us_ssl_sni_pending_t *pending =
+      SSL_get_ex_data(s_ssl(s), us_ssl_sni_pending_idx);
+  if (!pending || pending->state != 1) {
+    if (ctx) SSL_CTX_free(ctx);
+    return;
+  }
+  if (error) {
+    pending->state = 3;
+    if (ctx) SSL_CTX_free(ctx);
+    s->ssl_pending_detach = 1;
+    s->ssl_pending_close_code = 0;
+  } else {
+    pending->state = 2;
+    pending->resolved_ctx = ctx;
+  }
+  ssl_set_loop_data(s);
+  ssl_update_handshake(s);
+}
+
 void us_internal_ssl_handshake_abort(struct us_socket_t *s) {
   s->ssl_fatal_error = 1;
   ssl_close(s, 0, NULL);
@@ -1234,13 +1499,156 @@ static void sni_node_destructor(void *user) {
 
 static struct sni_node_t *resolve_listener_ctx(struct us_listen_socket_t *ls, const char *hostname) {
   if (!ls->sni) return NULL;
-  struct sni_node_t *node = (struct sni_node_t *)sni_find(ls->sni, hostname);
-  if (!node) {
-    if (!ls->on_server_name) return NULL;
-    ls->on_server_name(ls, hostname);
-    node = (struct sni_node_t *)sni_find(ls->sni, hostname);
+  return (struct sni_node_t *)sni_find(ls->sni, hostname);
+}
+
+/* Extracts the host_name from the ClientHello's server_name extension.
+ * Returns the length written to `out` (NUL-terminated), or 0 if absent /
+ * malformed. BoringSSL does document SSL_get_servername as usable inside
+ * select_certificate_cb (extract_sni runs before the callback), but every
+ * caller here reads the raw ClientHello instead so the lookup depends only
+ * on the early-callback contract, not on SSL* handshake state. */
+static size_t us_client_hello_servername(const SSL_CLIENT_HELLO *hello, char *out, size_t out_len) {
+  const uint8_t *ext;
+  size_t ext_len;
+  if (!SSL_early_callback_ctx_extension_get(hello, TLSEXT_TYPE_server_name, &ext, &ext_len)) {
+    return 0;
   }
-  return node;
+  /* server_name extension: u16 list_len, then entries of (u8 type, u16 len, bytes). */
+  if (ext_len < 5) return 0;
+  size_t list_len = ((size_t)ext[0] << 8) | ext[1];
+  if (list_len + 2 != ext_len) return 0;
+  const uint8_t *p = ext + 2;
+  size_t remaining = list_len;
+  while (remaining >= 3) {
+    uint8_t type = p[0];
+    size_t name_len = ((size_t)p[1] << 8) | p[2];
+    if (name_len + 3 > remaining) return 0;
+    if (type == TLSEXT_NAMETYPE_host_name) {
+      if (name_len == 0 || name_len >= out_len) return 0;
+      memcpy(out, p + 3, name_len);
+      out[name_len] = 0;
+      return name_len;
+    }
+    p += 3 + name_len;
+    remaining -= 3 + name_len;
+  }
+  return 0;
+}
+
+/* The async-capable certificate selector. Registered (instead of relying on
+ * sni_cb alone) on listener contexts that have a dynamic JS resolver, so an
+ * SNICallback that cannot answer synchronously suspends the handshake
+ * (ssl_select_cert_retry -> SSL_ERROR_PENDING_CERTIFICATE) instead of falling
+ * through to the default context. us_socket_sni_resolve() resumes it. */
+static enum ssl_select_cert_result_t us_select_cert_cb(const SSL_CLIENT_HELLO *hello) {
+  SSL *ssl = hello->ssl;
+  if (!ssl || us_ssl_listener_ex_idx < 0) return ssl_select_cert_success;
+
+  /* A previous suspension being resumed: consume the stored result. */
+  struct us_ssl_sni_pending_t *pending =
+      us_ssl_sni_pending_idx >= 0 ? SSL_get_ex_data(ssl, us_ssl_sni_pending_idx) : NULL;
+  if (pending && pending->state == 2) {
+    pending->state = 0;
+    if (pending->resolved_ctx) {
+      SSL_set_SSL_CTX(ssl, pending->resolved_ctx);
+      SSL_CTX_free(pending->resolved_ctx);
+      pending->resolved_ctx = NULL;
+      return ssl_select_cert_success;
+    }
+    /* The asynchronous resolution selected nothing (cb(null, null)): fall
+     * through to the static SNI tree below, exactly like a synchronous
+     * resolver returning null - the resume must not skip the tree fallback
+     * the sync path gets. */
+    struct us_listen_socket_t *resumed_ls =
+        (struct us_listen_socket_t *)SSL_get_ex_data(ssl, us_ssl_listener_ex_idx);
+    if (resumed_ls) {
+      /* Read the servername from the raw ClientHello, same as the first-call
+       * path below: that is the read the early-callback contract guarantees
+       * (SSL_get_servername happens to be populated by the resume re-drive
+       * today, but the raw parse does not depend on that). */
+      char resumed_host[256];
+      if (us_client_hello_servername(hello, resumed_host, sizeof(resumed_host))) {
+        struct sni_node_t *resumed_node = resolve_listener_ctx(resumed_ls, resumed_host);
+        if (resumed_node) {
+          SSL_set_SSL_CTX(ssl, resumed_node->ctx);
+        }
+      }
+    }
+    return ssl_select_cert_success;
+  }
+  if (pending && pending->state == 3) {
+    pending->state = 0;
+    return ssl_select_cert_error;
+  }
+  if (pending && pending->state == 1) {
+    /* Still waiting (a spurious re-drive); keep suspending. */
+    return ssl_select_cert_retry;
+  }
+
+  struct us_listen_socket_t *ls =
+      (struct us_listen_socket_t *)SSL_get_ex_data(ssl, us_ssl_listener_ex_idx);
+  if (!ls || !ls->on_server_name) return ssl_select_cert_success;
+
+  char hostname[256];
+  if (!us_client_hello_servername(hello, hostname, sizeof(hostname))) {
+    return ssl_select_cert_success;
+  }
+
+  /* The dynamic resolver (the user's SNICallback) runs FIRST, matching Node
+   * where a user-provided SNICallback replaces the default SNI handling
+   * entirely - including for the bind hostname, which Listener.rs always
+   * registers in the static tree (so tree-first would shadow the callback
+   * for the most-requested name and break per-connection cert rotation).
+   * The static tree (bind hostname + addContext entries) is the fallback
+   * when the resolver selects nothing, which is also the no-user-callback
+   * path: the JS dispatch returns undefined immediately in that case. */
+
+  /* The socket processing this ClientHello - the JS resolver needs it as the
+   * resume handle for an asynchronous SNICallback. */
+  struct loop_ssl_data *cb_lsd = (struct loop_ssl_data *)BIO_get_data(SSL_get_wbio(ssl));
+  struct us_socket_t *cb_socket = cb_lsd ? cb_lsd->ssl_socket : NULL;
+
+  void *saved_loop_state[5];
+  us_internal_ssl_loop_state_save(ssl, saved_loop_state);
+  int abort_handshake = 0;
+  SSL_CTX *dyn = ls->on_server_name(ls, hostname, &abort_handshake, cb_socket);
+  us_internal_ssl_loop_state_restore(saved_loop_state);
+
+  if (abort_handshake == 1) {
+    /* Error/invalid context: drop the connection without an alert (the
+     * deferred-close + BIO-swallow path, same as sni_cb). */
+    struct loop_ssl_data *lsd = (struct loop_ssl_data *)BIO_get_data(SSL_get_wbio(ssl));
+    if (lsd && lsd->ssl_socket) {
+      lsd->ssl_socket->ssl_pending_detach = 1;
+      lsd->ssl_socket->ssl_pending_close_code = 0;
+    }
+    return ssl_select_cert_error;
+  }
+  if (abort_handshake == 2) {
+    /* The JS resolver answered "pending": suspend until us_socket_sni_resolve. */
+    if (us_ssl_sni_pending_idx >= 0) {
+      if (!pending) {
+        pending = us_calloc(1, sizeof(*pending));
+        SSL_set_ex_data(ssl, us_ssl_sni_pending_idx, pending);
+      }
+      pending->state = 1;
+    }
+    return ssl_select_cert_retry;
+  }
+  if (dyn) {
+    SSL_set_SSL_CTX(ssl, dyn);
+    SSL_CTX_free(dyn);
+    return ssl_select_cert_success;
+  }
+
+  /* No dynamic selection: fall back to the static SNI tree (the bind
+   * hostname and addContext() entries). */
+  struct sni_node_t *node = resolve_listener_ctx(ls, hostname);
+  if (node) {
+    SSL_set_SSL_CTX(ssl, node->ctx);
+  }
+  return ssl_select_cert_success;
 }
 
 static int sni_cb(SSL *ssl, int *al, void *arg) {
@@ -1251,10 +1659,23 @@ static int sni_cb(SSL *ssl, int *al, void *arg) {
   struct us_listen_socket_t *ls =
       (struct us_listen_socket_t *)SSL_get_ex_data(ssl, us_ssl_listener_ex_idx);
   if (!ls) return SSL_TLSEXT_ERR_OK;
+  if (ls->on_server_name) {
+    /* A dynamic resolver (user SNICallback) exists: us_select_cert_cb already
+     * ran it - and the static-tree fallback - at the earlier
+     * select-certificate stage. Consulting the tree again here would
+     * OVERWRITE the resolver's per-connection selection with the tree entry
+     * (the bind hostname is always registered there), undoing the
+     * SNICallback-takes-precedence contract. */
+    return SSL_TLSEXT_ERR_OK;
+  }
   const char *hostname = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
   if (hostname && hostname[0]) {
+    /* Static SNI tree only (no dynamic resolver registered for this
+     * listener). */
     struct sni_node_t *node = resolve_listener_ctx(ls, hostname);
-    if (node) SSL_set_SSL_CTX(ssl, node->ctx);
+    if (node) {
+      SSL_set_SSL_CTX(ssl, node->ctx);
+    }
   }
   return SSL_TLSEXT_ERR_OK;
 }
@@ -1304,9 +1725,31 @@ void *us_listen_socket_find_server_name_userdata(struct us_listen_socket_t *ls,
   return node ? node->user : NULL;
 }
 
+/* Returns the SSL_CTX registered for `hostname_pattern` via
+ * us_listen_socket_add_server_name, or NULL. Owned - the caller must release
+ * the reference. The on_server_name resolvers return owned references (the
+ * SNI dispatcher frees them after SSL_set_SSL_CTX takes its own), so the
+ * tree's reference must not be handed out as a borrow. */
+struct ssl_ctx_st *us_listen_socket_find_server_name_ctx(struct us_listen_socket_t *ls,
+                                                         const char *hostname_pattern) {
+  if (!ls->sni) return NULL;
+  struct sni_node_t *node = (struct sni_node_t *)sni_find(ls->sni, hostname_pattern);
+  if (!node || !node->ctx) return NULL;
+  SSL_CTX_up_ref(node->ctx);
+  return node->ctx;
+}
+
 void us_listen_socket_on_server_name(struct us_listen_socket_t *ls,
-                                     void (*cb)(struct us_listen_socket_t *, const char *)) {
+                                     struct ssl_ctx_st *(*cb)(struct us_listen_socket_t *, const char *, int *, struct us_socket_t *)) {
   ls->on_server_name = cb;
+  /* The dynamic resolver may need to suspend the handshake (async
+   * SNICallback); only the early select-certificate callback supports retry,
+   * so register it on the listener's default context. The servername-stage
+   * sni_cb stays registered for the static SNI tree (it is a no-op when the
+   * early callback already installed a context). */
+  if (ls->ssl_ctx) {
+    SSL_CTX_set_select_certificate_cb(ls->ssl_ctx, us_select_cert_cb);
+  }
 }
 
 void *us_socket_server_name_userdata(struct us_socket_t *s) {

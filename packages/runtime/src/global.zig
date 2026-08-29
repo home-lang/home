@@ -1,8 +1,7 @@
 // Home Runtime — process-level globals.
 //
 // Mirrors the small subset of Bun's `Global` namespace that the copied
-// cli leaves need: `exit` for fatal error paths, `crash` for panics
-// (no-op in tests).
+// cli leaves need, including flushing diagnostics before fatal exits.
 
 const std = @import("std");
 
@@ -40,6 +39,9 @@ pub const user_agent = @import("bun_core/Global.zig").user_agent;
 pub const os_name = @import("bun_core/Global.zig").os_name;
 pub const arch_name = @import("bun_core/Global.zig").arch_name;
 
+// Bun retains this allocator tuning hook as a no-op on all platforms.
+pub const configureAllocator = @import("bun_core/Global.zig").configureAllocator;
+
 pub const ExitFn = *const fn () callconv(.c) void;
 var exit_callbacks: std.ArrayListUnmanaged(ExitFn) = .empty;
 
@@ -56,14 +58,32 @@ pub fn runExitCallbacks() void {
 
 pub fn exit(code: u8) noreturn {
     runExitCallbacks();
+    @import("output.zig").flush();
     std.process.exit(code);
 }
 
 pub fn crash() noreturn {
-    @panic("home_rt: crash() called");
+    // Upstream Global.crash is an ordinary failed CLI exit, not a panic.
+    exit(1);
 }
 
 pub fn raiseIgnoringPanicHandler(signal: anytype) noreturn {
+    runExitCallbacks();
+    @import("output.zig").flush();
+    if (comptime !@import("environment.zig").isWindows) {
+        const native_signal: std.posix.SIG = @fromBackingInt(@intCast(@backingInt(signal)));
+        var action: std.posix.Sigaction = .{
+            .handler = .{ .handler = std.posix.SIG.DFL },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        // KILL and STOP cannot be caught, so sigaction would reject them.
+        if (native_signal != .KILL and native_signal != .STOP) std.posix.sigaction(native_signal, &action, null);
+        var mask = std.posix.sigemptyset();
+        std.posix.sigaddset(&mask, native_signal);
+        std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &mask, null);
+        _ = std.c.raise(native_signal);
+    }
     std.process.exit(signal.toExitCode() orelse 1);
 }
 

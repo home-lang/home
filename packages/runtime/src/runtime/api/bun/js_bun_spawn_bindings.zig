@@ -134,6 +134,15 @@ pub fn spawnMaybeSync(
         .{ .inherit = {} },
     };
 
+    // Parsed payloads are owned until Writable.init transfers them to the
+    // native writer. Also release them when later option parsing/spawn fails.
+    defer for (&stdio) |*io| {
+        switch (io.*) {
+            .blob, .array_buffer => io.deinit(),
+            else => {}, // memfd descriptors have their separate cleanup below
+        }
+    };
+
     if (comptime is_sync) {
         stdio[1] = .{ .pipe = {} };
         stdio[2] = .{ .pipe = {} };
@@ -320,6 +329,7 @@ pub fn spawnMaybeSync(
                             // extract() leaves `out_stdio` untouched when `value` is undefined, so this
                             // must be initialized to a sane default instead of `undefined`.
                             var new_item: Stdio = .{ .ignore = {} };
+                            defer new_item.deinit();
                             try new_item.extract(globalThis, i, value, is_sync);
 
                             const opt = switch (new_item.asSpawnOption(i)) {
@@ -440,6 +450,11 @@ pub fn spawnMaybeSync(
                         return globalThis.throwInvalidArguments("terminal must be a Terminal object or options object", .{});
                     }
 
+                    // Terminal stdio replaces any previously parsed payloads.
+                    for (&stdio) |*io| {
+                        io.deinit();
+                        io.* = .ignore;
+                    }
                     if (comptime Environment.isPosix) {
                         const terminal = existing_terminal orelse terminal_info.?.terminal;
                         const slave_fd = terminal.getSlaveFd();
@@ -962,6 +977,20 @@ pub fn spawnMaybeSync(
     }
 
     should_close_memfd = false;
+
+    // Keep socket-fd entries owned through every fallible setup path above.
+    // Only now can JS receive .stdio[i] and take sole ownership of the fd.
+    if (comptime Environment.isPosix and !is_sync) {
+        for (extra_fds.items, 0..) |option, i| {
+            if (option == .socket_fd and i < subprocess.stdio_pipes.items.len) {
+                const slot = &subprocess.stdio_pipes.items[i];
+                if (slot.* == .owned_fd) {
+                    const fd = slot.owned_fd;
+                    slot.* = .{ .unowned_fd = fd };
+                }
+            }
+        }
+    }
 
     // Once everything is set up, we can add the abort listener
     // Adding the abort listener may call the onAbortSignal callback immediately if it was already aborted

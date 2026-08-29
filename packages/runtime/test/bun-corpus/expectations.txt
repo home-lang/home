@@ -2,7 +2,6 @@
 # Format: [modifier] test-name [[ expectations ]] [# comment]
 
 # Tests that are broken
-test/cli/create/create-jsx.test.ts [ FAIL ] # false > react spa (no tailwind) > build
 [ WINDOWS-AARCH64 ] test/js/node/test/parallel/test-repl-close.js [ FAIL ] # EPIPE on stdin.write to closed child process
 
 # Exposed by the bun -e/--eval fix that stopped swallowing uncaught exceptions (see PR #31826):
@@ -23,12 +22,6 @@ test/cli/create/create-jsx.test.ts [ FAIL ] # false > react spa (no tailwind) > 
 # alpine 3.23 x64 + x64-baseline only).
 [ LINUX-X64-MUSL ] test/js/node/test/parallel/test-tls-connect-memleak.js [ FLAKY ] # JSC FinalizationRegistry callback delivery vs setImmediate timing on musl x64
 
-# Vendored node v26.3.0 stream tests blocked on missing native subsystems (see PR #31826)
-test/js/node/test/parallel/test-stream-pipeline.js [ SKIP ] # block at L271 hangs: pipeline(rs, req) writes 11x'hello' raw after a never-ended GET's \r\n\r\n; node's llhttp rejects lowercase 'h' as a method char (HPE_INVALID_METHOD -> clientError -> 400+close -> req 'close' -> pipeline callback fires), but bun's uWS HttpParser buffers any incomplete run of valid tchars waiting for the request-line, so the connection stays open and the callback never fires. Pre-existing server-parser leniency; needs uWS HttpParser to reject non-uppercase method bytes like llhttp.
-test/js/node/test/parallel/test-stream-wrap.js [ FAIL ] # needs internal/test/binding + js_stream (net.Socket({handle}) libuv compat layer)
-test/js/node/test/parallel/test-stream-wrap-drain.js [ FAIL ] # needs internal/js_stream_socket (net.Socket({handle}) libuv compat layer)
-test/js/node/test/parallel/test-stream-wrap-encoding.js [ FAIL ] # needs internal/js_stream_socket (net.Socket({handle}) libuv compat layer)
-
 # Pre-existing fs.watch leak unmasked by this PR's eval-entry exception fix:
 # the child's thrown leak error ("fs.watch(dir) leaked N MB") used to be
 # swallowed by the silent-exit-0 eval bug (uncaught throw in a CJS -e script
@@ -37,9 +30,6 @@ test/js/node/test/parallel/test-stream-wrap-encoding.js [ FAIL ] # needs interna
 # unmodified main once the error actually surfaces. Needs a PathWatcher
 # investigation; the #29854 resolved_path fix covers only the ~path-length
 # portion.
-
-# Tests that are flaky
-test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 
 # Tests skipped due to different log/line outputs
 [ ASAN ] test/js/bun/util/reportError.test.ts [ SKIP ] # log line mismatch
@@ -125,22 +115,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # known follow-up in the PR description; quarantined here until the Windows
 # teardown path is reworked.
 
-# Pre-existing on main (flagged [pre-existing] by ci:errors, e.g. build 61989 on
-# darwin-14-aarch64 and build 62204 on darwin-26-aarch64, both at the
-# `expect(e.name).toBe("TimeoutError")` assertions). The two connect-race cases
-# assume connect() to TEST-NET-1 (192.0.2.1) stays in EINPROGRESS so the
-# AbortSignal.timeout wins; that only holds when the host has a default route that
-# silently blackholes the SYN. The darwin CI agents have no route to 192.0.2.1 and
-# return an immediate ENETUNREACH/EHOSTUNREACH, so the connect error wins the race
-# and fetch rejects with a generic "Error" instead of "TimeoutError" (verified: a
-# fast-failing connect to 127.0.0.1:1 reproduces the same connect-error-beats-timeout
-# outcome locally — correct behavior, not a bun abort bug). Consistently fails on
-# darwin-26 (no route), intermittently on darwin-14 (routing varies per agent).
-# Quarantined on darwin; still runs on Linux/Windows where the route blackholes
-# reliably. Follow-up: rewrite without the external-IP dependence (repo rule forbids
-# contacting external hosts) using a deterministic local hanging connect.
-[ DARWIN ] test/js/bun/io/fetch/fetch-abort-slow-connect.test.ts [ FLAKY ] # connect-during-abort race depends on host routing of 192.0.2.1; darwin CI agents return an immediate routing error
-
 # AddressSanitizer findings under investigation on the HTTP/2 inbound path
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-close-error.js [ SKIP ] # ASan report under investigation
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2-client-stream-error.js [ SKIP ] # ASan report under investigation
@@ -152,7 +126,6 @@ test/js/bun/spawn/spawn-maxbuf.test.ts [ FLAKY ]
 # that contradict node's (e.g. 'ping' events for PING ACKs, connection-error codes for
 # wrong-size frames that RFC 9113 defines as stream errors). Tracked for reconciliation;
 # the ported node parallel suite covers the node-faithful contract.
-test/js/node/http2/node-http2.test.js [ FAIL ] # full compatibility matrix and settings shape tracked in home-lang/home#427
 [ ASAN ] test/js/third_party/grpc-js/test-server.test.ts [ SKIP ] # connect-race socket lifetime report under investigation
 
 # The connect-race socket-lifetime report can surface in any http2 test on the ASan pipeline;
@@ -160,9 +133,6 @@ test/js/node/http2/node-http2.test.js [ FAIL ] # full compatibility matrix and s
 [ ASAN ] test/js/node/test/parallel/test-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/test/parallel/test-diagnostics-channel-http2 [ SKIP ] # socket-layer connect-race lifetime under investigation
 [ ASAN ] test/js/node/http2/ [ SKIP ] # socket-layer connect-race lifetime under investigation
-
-# localhost dual-stack resolution makes this flap across platforms (passes on retry)
-test/js/node/test/parallel/test-http2-pipe.js [ FLAKY ]
 
 # node:http servers cannot listen on Windows named pipes yet (ENOENT from
 # uv_pipe bind), so common.PIPE-based http tests cannot run there.

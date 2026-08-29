@@ -7,19 +7,13 @@ timers: TimerHeap = .{ .context = {} },
 
 pub var current_time: struct {
     const min_timespec = bun.timespec{ .sec = std.math.minInt(i64), .nsec = std.math.minInt(i64) };
-    const RwLock = struct {
-        pub fn lockShared(_: *RwLock) void {}
-        pub fn unlockShared(_: *RwLock) void {}
-        pub fn lock(_: *RwLock) void {}
-        pub fn unlock(_: *RwLock) void {}
-    };
     /// starts at 0. offset in milliseconds.
     offset_raw: bun.timespec = min_timespec,
-    offset_lock: RwLock = .{},
+    offset_lock: bun.Mutex = .{},
     date_now_offset: f64 = 0,
     pub fn getTimespecNow(this: *@This()) ?bun.timespec {
-        this.offset_lock.lockShared();
-        defer this.offset_lock.unlockShared();
+        this.offset_lock.lock();
+        defer this.offset_lock.unlock();
         const value = this.offset_raw;
         if (value.eql(&min_timespec)) return null;
         return value;
@@ -29,16 +23,15 @@ pub var current_time: struct {
         js: ?f64 = null,
     }) void {
         const vm = globalObject.bunVM();
-        {
+        const timespec_ms: f64 = @floatFromInt(v.offset.ms());
+        const date_now = blk: {
             this.offset_lock.lock();
             defer this.offset_lock.unlock();
             this.offset_raw = v.offset.*;
-        }
-        const timespec_ms: f64 = @floatFromInt(v.offset.ms());
-        if (v.js) |js| {
-            this.date_now_offset = @floor(js) - timespec_ms;
-        }
-        bun.cpp.JSMock__setOverridenDateNow(globalObject, this.date_now_offset + timespec_ms);
+            if (v.js) |js| this.date_now_offset = @floor(js) - timespec_ms;
+            break :blk this.date_now_offset + timespec_ms;
+        };
+        bun.cpp.JSMock__setOverridenDateNow(globalObject, date_now);
 
         vm.overridden_performance_now = @bitCast(v.offset.ns());
     }
@@ -76,22 +69,46 @@ fn activate(this: *FakeTimers, js_now: f64, globalObject: *jsc.JSGlobalObject) v
     this.@"#active" = true;
     current_time.set(globalObject, .{ .offset = &.epoch, .js = js_now });
 }
-fn deactivate(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) void {
+fn deactivate(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) CancelledTimers {
     this.assertValid(.locked);
     defer this.assertValid(.locked);
 
-    this.clear();
+    const pending = this.clear();
     current_time.clear(globalObject);
     this.@"#active" = false;
+    return pending;
 }
-fn clear(this: *FakeTimers) void {
+
+const CancelledTimers = std.ArrayListUnmanaged(*bun.api.Timer.EventLoopTimer);
+
+/// Unlink under the heap lock; release references after unlocking because
+/// cancellation can re-enter Timer.All and destroy its owning JS wrapper.
+fn clear(this: *FakeTimers) CancelledTimers {
     this.assertValid(.locked);
     defer this.assertValid(.locked);
 
+    var pending: CancelledTimers = .empty;
     while (this.timers.deleteMin()) |timer| {
         timer.state = .CANCELLED;
         timer.in_heap = .none;
+        switch (timer.tag) {
+            .TimeoutObject, .ImmediateObject, .AbortSignalTimeout => bun.handleOom(pending.append(bun.default_allocator, timer)),
+            else => {}, // native timers remain owned by their subsystem
+        }
     }
+    return pending;
+}
+
+fn releaseCancelledTimers(pending: CancelledTimers, vm: *jsc.VirtualMachine) void {
+    var owned = pending;
+    defer owned.deinit(bun.default_allocator);
+    for (owned.items) |timer| switch (timer.tag) {
+        .TimeoutObject => @as(*bun.api.Timer.TimeoutObject, @fieldParentPtr("event_loop_timer", timer)).internals.releaseHeapPin(vm),
+        // Immediate tasks retain their queue reference until dispatched.
+        .ImmediateObject => @as(*bun.api.Timer.ImmediateObject, @fieldParentPtr("event_loop_timer", timer)).internals.cancel(vm),
+        .AbortSignalTimeout => @as(*jsc.AbortSignal.Timeout, @fieldParentPtr("event_loop_timer", timer)).cancelForIsolation(vm),
+        else => unreachable,
+    };
 }
 fn executeNext(this: *FakeTimers, globalObject: *jsc.JSGlobalObject) bool {
     this.assertValid(.unlocked);
@@ -241,11 +258,12 @@ fn useRealTimers(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
     const timers = &vm.timer;
     const this = &timers.fake_timers;
 
-    {
+    const pending = blk: {
         timers.lock.lock();
         defer timers.lock.unlock();
-        this.deactivate(globalObject);
-    }
+        break :blk this.deactivate(globalObject);
+    };
+    releaseCancelledTimers(pending, vm);
 
     // Remove the setTimeout.clock marker when switching back to real timers.
     setFakeTimerMarker(globalObject, false);
@@ -329,11 +347,12 @@ fn clearAllTimers(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) 
     const this = &timers.fake_timers;
     try errorUnlessFakeTimers(globalObject);
 
-    {
+    const pending = blk: {
         timers.lock.lock();
         defer timers.lock.unlock();
-        this.clear();
-    }
+        break :blk this.clear();
+    };
+    releaseCancelledTimers(pending, vm);
 
     return callframe.this();
 }
@@ -376,8 +395,9 @@ const bindgen_generated = struct {
     pub const FakeTimersConfig = struct {
         now: jsc.JSValue = .js_undefined,
 
-        pub fn fromJS(_: *jsc.JSGlobalObject, _: jsc.JSValue) bun.JSError!FakeTimersConfig {
-            return .{};
+        pub fn fromJS(globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!FakeTimersConfig {
+            if (!value.isObject()) return globalObject.throwInvalidArguments("useFakeTimers() expects an options object", .{});
+            return .{ .now = (try value.get(globalObject, "now")) orelse .js_undefined };
         }
 
         pub fn deinit(_: *FakeTimersConfig) void {}

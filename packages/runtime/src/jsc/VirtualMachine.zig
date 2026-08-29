@@ -18,6 +18,8 @@ comptime {
     @export(&scriptExecutionStatus, .{ .name = "Bun__VM__scriptExecutionStatus" });
     @export(&setEntryPointEvalResultESM, .{ .name = "Bun__VM__setEntryPointEvalResultESM" });
     @export(&setEntryPointEvalResultCJS, .{ .name = "Bun__VM__setEntryPointEvalResultCJS" });
+    @export(&onResolveEntryPointResult, .{ .name = "Bun__onResolveEntryPointResult" });
+    @export(&onRejectEntryPointResult, .{ .name = "Bun__onRejectEntryPointResult" });
     @export(&specifierIsEvalEntryPoint, .{ .name = "Bun__VM__specifierIsEvalEntryPoint" });
     @export(&string_allocation_limit, .{ .name = "Bun__stringSyntheticAllocationLimit" });
     @export(&allowAddons, .{ .name = "Bun__VM__allowAddons" });
@@ -696,6 +698,16 @@ pub fn uncaughtException(this: *jsc.VirtualMachine, globalObject: *JSGlobalObjec
         return true;
     }
 
+    if (this.worker != null and (this.is_handling_uncaught_exception or this.exit_on_uncaught_exception)) {
+        // The main-thread shortcuts below call process.exit() as noreturn.
+        // A worker instead reports to its parent and requests termination;
+        // freeing its VM or panicking here would unwind through live JS.
+        this.unhandled_error_counter += 1;
+        this.exit_handler.exit_code = if (this.is_handling_uncaught_exception) 7 else 1;
+        this.onUnhandledRejection(this, globalObject, err);
+        return false;
+    }
+
     if (this.is_handling_uncaught_exception) {
         this.runErrorHandler(err, null);
         bun.api.node.process.exit(globalObject, 7);
@@ -750,7 +762,9 @@ pub fn defaultOnUnhandledRejection(this: *jsc.VirtualMachine, _: *JSGlobalObject
 }
 
 pub inline fn packageManager(this: *VirtualMachine) *PackageManager {
-    return this.transpiler.getPackageManager();
+    // Async package tasks can only be queued after fallible resolver init
+    // succeeds; the resolver reports user-facing initialization errors.
+    return this.transpiler.getPackageManager() catch @panic("package manager init must succeed before enqueuing tasks");
 }
 
 pub fn garbageCollect(this: *const VirtualMachine, sync: bool) usize {
@@ -869,9 +883,12 @@ pub fn onBeforeExit(this: *VirtualMachine) void {
     this.exit_handler.dispatchOnBeforeExit();
     var dispatch = false;
     while (true) {
+        if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
         while (this.isEventLoopAlive()) : (dispatch = true) {
             this.tick();
+            if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
             this.eventLoop().autoTickActive();
+            if (this.worker) |worker| if (worker.hasRequestedTerminate()) return;
         }
 
         if (dispatch) {
@@ -923,6 +940,25 @@ pub fn setEntryPointEvalResultCJS(this: *VirtualMachine, value: JSValue) callcon
     }
 }
 
+/// These names are part of GlobalObject::promiseHandlerID's fixed callback
+/// table. Keep the CLI's pending completion handlers on the registered symbols
+/// rather than passing an arbitrary function pointer to JSValue.then2.
+pub fn onResolveEntryPointResult(global: *JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+    const result = callframe.arguments_old(1).slice()[0];
+    result.print(global, .Log, .Log);
+    Output.flush();
+    Global.exit(global.bunVM().exit_handler.exit_code);
+}
+
+pub fn onRejectEntryPointResult(global: *JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+    // Match Bun's CLI: both callbacks display the settled completion and exit
+    // with the VM's chosen status; unhandled-error accounting sets that status.
+    const result = callframe.arguments_old(1).slice()[0];
+    result.print(global, .Log, .Log);
+    Output.flush();
+    Global.exit(global.bunVM().exit_handler.exit_code);
+}
+
 pub fn onExit(this: *VirtualMachine) void {
     // Write CPU profile if profiling was enabled - do this FIRST before any shutdown begins
     // Grab the config and null it out to make this idempotent
@@ -944,6 +980,11 @@ pub fn onExit(this: *VirtualMachine) void {
 
     this.exit_handler.dispatchOnExit();
     this.is_shutting_down = true;
+    // Native worker snapshot handles belong to this VM. Clear them here on
+    // their owning thread, before Node-API cleanup hooks and JSC destruction.
+    // Workers and late notifications carry only request IDs, so they cannot
+    // free a parent HandleSet node after this point. Applies to main + workers.
+    Home__Worker__cancelSnapshotsForVM(this.global);
 
     const rare_data = this.rare_data orelse return;
     defer rare_data.cleanup_hooks.clearAndFree(bun.default_allocator);
@@ -959,6 +1000,7 @@ pub fn onExit(this: *VirtualMachine) void {
 }
 
 extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
+extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
 
 pub fn globalExit(this: *VirtualMachine) noreturn {
     bun.assert(this.isShuttingDown());
@@ -974,7 +1016,12 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // termination of every live worker and wait for each to reach
         // shutdown() (past all resolver access) first. Node.js does the
         // equivalent in Environment::stop_sub_worker_contexts().
-        webcore.WebWorker.terminateAllAndWait(10_000);
+        if (!webcore.WebWorker.terminateAllAndWait(10_000)) {
+            // A timeout is not proof that detached workers stopped borrowing
+            // this VM or the resolver. Exit the process without freeing those
+            // resources underneath live threads; the OS reclaims them.
+            bun.Global.exit(this.exit_handler.exit_code);
+        }
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).
@@ -982,7 +1029,11 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // / postgres / etc. socket is an LSAN leak under
         // BUN_DESTRUCT_VM_ON_EXIT.
         if (this.rare_data) |rare| rare.closeAllSocketGroups(this);
+        // Match worker teardown: last-chance Node-API finalizers must run now,
+        // not enqueue tasks on an event loop that is about to be destroyed.
+        this.global.requestTermination();
         Zig__GlobalObject__destructOnExit(this.global);
+        if (this.rare_data) |rare| rare.runPostHeapCleanupHooks();
         // lastChanceToFinalize() above runs Listener/Server finalize → their
         // own embedded group.closeAll() → sockets land in loop.closed_head.
         // The pre-JSC drain in closeAllSocketGroups() can't see those (the
@@ -1964,45 +2015,14 @@ pub fn resolveMaybeNeedsTrailingSlash(
     }
     jsc_vm._resolve(&result, specifier_utf8.slice(), normalizeSource(source_utf8.slice()), is_esm, is_a_file_path) catch |err_| {
         var err = err_;
-        if (err == error.ModuleNotFound and Resolver.isPackagePath(specifier_utf8.slice())) {
-            // A missing bare package is where Bun initializes auto-install.
-            // Preserve an unreadable process cwd as the primary resolver error
-            // instead of hiding it behind a generic package-not-found message.
-            // This also keeps the failure catchable at the JS boundary.
-            if (bun.getcwdAlloc(jsc_vm.allocator) catch null) |process_cwd| {
-                defer jsc_vm.allocator.free(process_cwd);
-                if (jsc_vm.transpiler.fs.fs.readDirectory(
-                    process_cwd,
-                    null,
-                    jsc_vm.transpiler.resolver.generation,
-                    false,
-                ) catch null) |cwd_entry| {
-                    if (cwd_entry.* == .err) {
-                        log.addErrorFmt(
-                            null,
-                            logger.Loc.Empty,
-                            jsc_vm.allocator,
-                            "Cannot read directory \"{s}\": {s}",
-                            .{
-                                process_cwd,
-                                @errorName(cwd_entry.err.original_err),
-                            },
-                        ) catch {};
-                    }
-                }
-            }
-        }
         const msg: logger.Msg = brk: {
             const msgs: []logger.Msg = log.msgs.items;
-            var resolver_detail: ?logger.Msg = null;
-
+            // Only resolver metadata can replace the canonical error. An
+            // installer GET/404 log is not a missing-module diagnostic.
             for (msgs) |m| {
                 if (m.metadata == .resolve) {
                     err = m.metadata.resolve.err;
                     break :brk m;
-                }
-                if (resolver_detail == null and m.kind == .err) {
-                    resolver_detail = m;
                 }
             }
 
@@ -2013,20 +2033,13 @@ pub fn resolveMaybeNeedsTrailingSlash(
             else
                 .require;
 
-            const printed = if (resolver_detail) |detail|
-                try std.fmt.allocPrint(
-                    jsc_vm.allocator,
-                    "{s} while resolving \"{s}\"",
-                    .{ detail.data.text, specifier_utf8.slice() },
-                )
-            else
-                try bun.api.ResolveMessage.fmt(
-                    jsc_vm.allocator,
-                    specifier_utf8.slice(),
-                    source_utf8.slice(),
-                    err,
-                    import_kind,
-                );
+            const printed = try bun.api.ResolveMessage.fmt(
+                jsc_vm.allocator,
+                specifier_utf8.slice(),
+                source_utf8.slice(),
+                err,
+                import_kind,
+            );
             break :brk logger.Msg{
                 .data = logger.rangeData(
                     null,
@@ -2556,7 +2569,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     this.eventLoop().drainMicrotasks() catch {};
 
     if (this.rare_data) |rare| {
-        rare.closeAllWatchersForIsolation();
+        rare.closeAllHandlesForIsolation();
     }
 
     {
@@ -2601,6 +2614,11 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     this.auto_killer.clear();
 
     this.test_isolation_generation +%= 1;
+
+    // A long timeout would otherwise retain the outgoing global until its
+    // deadline. Close the watchFile scheduler first while its timer is live.
+    @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdownForIsolation(this);
+    this.timer.cancelAllTimeoutObjects(this);
 
     this.overridden_main.deinit();
     this.entry_point_result.value.deinit();
@@ -3079,8 +3097,8 @@ fn remapOneFrameSlow(this: *VirtualMachine, frame: *jsc.ZigStackFrame, path: []c
 /// `Error` subclasses are NOT here — their divot stays on `new`.
 fn isBuiltinErrorConstructorName(name: []const u8) bool {
     const names = [_][]const u8{
-        "Error",          "EvalError",   "RangeError",     "ReferenceError",
-        "SyntaxError",    "TypeError",   "URIError",       "AggregateError",
+        "Error",           "EvalError", "RangeError", "ReferenceError",
+        "SyntaxError",     "TypeError", "URIError",   "AggregateError",
         "SuppressedError",
     };
     for (names) |n| {
@@ -4170,6 +4188,17 @@ pub fn bustDirCache(vm: *VirtualMachine, path: []const u8) bool {
 
 pub const ExitHandler = struct {
     exit_code: u8 = 0,
+    did_dispatch_exit: bool = false,
+
+    /// A Worker owns a separate process object and exit lifecycle. This state
+    /// must belong to its VM, not a process-wide (or thread-local) C++ static.
+    /// Dispatch runs on the owning VM thread; set the guard before user code
+    /// can re-enter process.exit().
+    pub export fn Bun__Process__beginExitDispatch(vm: *VirtualMachine) bool {
+        if (vm.exit_handler.did_dispatch_exit) return false;
+        vm.exit_handler.did_dispatch_exit = true;
+        return true;
+    }
 
     pub export fn Bun__getExitCode(vm: *VirtualMachine) u8 {
         return vm.exit_handler.exit_code;

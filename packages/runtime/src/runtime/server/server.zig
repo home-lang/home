@@ -1092,17 +1092,18 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
             if (comptime has_h3) if (this.h3_app) |h3a| h3a.clearRoutes();
 
             // only reload those two, but ignore if they're not specified.
-            if (this.config.onRequest != new_config.onRequest and (new_config.onRequest != .zero and !new_config.onRequest.isUndefined())) {
+            if (new_config.onRequest != .zero and !new_config.onRequest.isUndefined()) {
                 this.config.onRequest.unprotect();
                 this.config.onRequest = new_config.onRequest;
+                new_config.onRequest = .zero;
             }
-            if (this.config.onNodeHTTPRequest != new_config.onNodeHTTPRequest) {
-                this.config.onNodeHTTPRequest.unprotect();
-                this.config.onNodeHTTPRequest = new_config.onNodeHTTPRequest;
-            }
-            if (this.config.onError != new_config.onError and (new_config.onError != .zero and !new_config.onError.isUndefined())) {
+            this.config.onNodeHTTPRequest.unprotect();
+            this.config.onNodeHTTPRequest = new_config.onNodeHTTPRequest;
+            new_config.onNodeHTTPRequest = .zero;
+            if (new_config.onError != .zero and !new_config.onError.isUndefined()) {
                 this.config.onError.unprotect();
                 this.config.onError = new_config.onError;
+                new_config.onError = .zero;
             }
 
             if (new_config.websocket) |*ws| {
@@ -1114,13 +1115,12 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
 
                     ws.globalObject = globalThis;
                     this.config.websocket = ws.*;
-                } else {
-                    // We don't replace the existing websocket config here, but
-                    // the new one was already protected in WebSocketServerContext.onCreate.
-                    // Unprotect the discarded handlers so they don't leak.
-                    ws.unprotect();
+                    new_config.websocket = null;
                 }
             }
+            // Moved callbacks were cleared above (also for identical JS
+            // functions); release only discarded parse-time references.
+            new_config.releaseCallbackRefs();
 
             // These get re-applied when we set the static routes again.
             if (this.dev_server) |dev_server| {
@@ -1628,6 +1628,9 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
 
         pub fn stopListening(this: *ThisServer, abrupt: bool) void {
             httplog("stopListening", .{});
+            if (this.vm.test_isolation_enabled) {
+                this.vm.rareData().removeServerForIsolation(AnyServer.from(this));
+            }
             if (comptime has_h3) {
                 if (this.h3_listener) |h3l| {
                     this.h3_listener = null;
@@ -1733,6 +1736,9 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
             // This should've already been handled in stopListening
             // However, when the JS VM terminates, it hypothetically might not call stopListening
             this.notifyInspectorServerStopped();
+            if (this.vm.test_isolation_enabled) {
+                this.vm.rareData().removeServerForIsolation(AnyServer.from(this));
+            }
 
             this.all_closed_promise.deinit();
             for (this.user_routes.items) |*user_route| {
@@ -3293,6 +3299,16 @@ pub const AnyServer = struct {
         DebugHTTPServer: []const DebugHTTPServer.UserRoute,
         DebugHTTPSServer: []const DebugHTTPSServer.UserRoute,
     };
+
+    pub fn stop(this: AnyServer, abrupt: bool) void {
+        switch (this.ptr.tag()) {
+            Ptr.case(HTTPServer) => this.ptr.as(HTTPServer).stop(abrupt),
+            Ptr.case(HTTPSServer) => this.ptr.as(HTTPSServer).stop(abrupt),
+            Ptr.case(DebugHTTPServer) => this.ptr.as(DebugHTTPServer).stop(abrupt),
+            Ptr.case(DebugHTTPSServer) => this.ptr.as(DebugHTTPSServer).stop(abrupt),
+            else => bun.unreachablePanic("Invalid pointer tag", .{}),
+        }
+    }
 
     pub fn userRoutes(this: AnyServer) AnyUserRouteList {
         return switch (this.ptr.tag()) {

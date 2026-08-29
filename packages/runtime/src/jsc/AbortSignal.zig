@@ -47,7 +47,10 @@ pub const AbortSignal = opaque {
         /// The `Timeout`'s lifetime is owned by the AbortSignal, but the C++
         /// side holds a ref-count increment that `signal()` releases once the
         /// abort completes.
-        signal: *AbortSignal,
+        signal: ?*AbortSignal,
+        // GC's opaque-root check must not treat an isolation-cancelled timer
+        // as active merely because the signal still owns this timeout box.
+        active: std.atomic.Value(bool) = .init(true),
 
         /// Reused for the EventLoopTimer's "epoch" bookkeeping (see
         /// `EventLoopTimer.jsTimerInternalsFlags`).
@@ -85,16 +88,30 @@ pub const AbortSignal = opaque {
             this.event_loop_timer.state = .FIRED;
             this.cancel(vm);
 
+            this.active.store(false, .release);
+            const signal_ptr = this.signal orelse return;
+            this.signal = null;
+
             // The signal and its handlers belong to a previous isolated test
             // file's global; firing now would run them against the new global.
             // Drop the extra ref that `signal()` would otherwise release.
             if (this.generation != vm.test_isolation_generation) {
-                this.signal.unref();
+                signal_ptr.unref();
                 return;
             }
 
             // Dispatching the signal may cause the Timeout to get freed.
-            dispatch(vm, this.signal);
+            dispatch(vm, signal_ptr);
+        }
+
+        /// Break the signal/timeout reference cycle before replacing the
+        /// global. The signal owns this box and may free it during unref.
+        pub fn cancelForIsolation(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            this.cancel(vm);
+            this.active.store(false, .release);
+            const signal_ptr = this.signal orelse return;
+            this.signal = null;
+            signal_ptr.unref();
         }
 
         fn dispatch(vm: *jsc.VirtualMachine, signal_ptr: *AbortSignal) void {
@@ -111,6 +128,10 @@ pub const AbortSignal = opaque {
             return Timeout.init(vm, signal_, milliseconds);
         }
 
+        pub fn isActive(this: *const Timeout) callconv(.c) bool {
+            return this.active.load(.acquire);
+        }
+
         pub fn runFromC(this: *Timeout, vm: *jsc.VirtualMachine) callconv(.c) void {
             this.run(vm);
         }
@@ -123,6 +144,7 @@ pub const AbortSignal = opaque {
         }
 
         comptime {
+            @export(&Timeout.isActive, .{ .name = "Home__AbortSignalTimeout__isActive" });
             @export(&Timeout.create, .{ .name = "AbortSignal__Timeout__create" });
             @export(&Timeout.runFromC, .{ .name = "AbortSignal__Timeout__run" });
             @export(&Timeout.deinit, .{ .name = "AbortSignal__Timeout__deinit" });

@@ -18,6 +18,44 @@ comptime {
 
 pub var is_allowed_to_use_internal_testing_apis = false;
 
+const internal_stream_wrap_template = @embedFile("internal-stream-wrap.js");
+const internal_stream_wrap_marker = "__HOME_NODE_STREAM__";
+const internal_stream_wrap_marker_index = std.mem.indexOf(u8, internal_stream_wrap_template, internal_stream_wrap_marker) orelse
+    @compileError("internal stream wrapper lost its node:stream placeholder");
+const internal_stream_wrap_runtime_source =
+    internal_stream_wrap_template[0..internal_stream_wrap_marker_index] ++
+    "require(\"node:stream\")" ++
+    internal_stream_wrap_template[internal_stream_wrap_marker_index + internal_stream_wrap_marker.len ..];
+const internal_commonjs_wrapper_start = "(function(exports,require,module,__filename,__dirname){\n";
+const internal_js_stream_socket_source = internal_commonjs_wrapper_start ++
+    internal_stream_wrap_runtime_source ++
+    "\nmodule.exports = HomeJSStreamSocket;\n})";
+const internal_test_binding_source = internal_commonjs_wrapper_start ++
+    internal_stream_wrap_runtime_source ++
+    "\nmodule.exports = { internalBinding: homeInternalTestBinding };\n})";
+const internal_async_context_frame_source = internal_commonjs_wrapper_start ++
+    "module.exports = require(\"bun:internal-for-testing\").exposedInternals[\"internal/async_context_frame\"];\n})";
+const internal_async_hooks_source = internal_commonjs_wrapper_start ++
+    "module.exports = require(\"bun:internal-for-testing\").exposedInternals[\"internal/async_hooks\"];\n})";
+const internal_add_abort_signal_source = internal_commonjs_wrapper_start ++
+    "module.exports = require(\"bun:internal-for-testing\").exposedInternals[\"internal/streams/add-abort-signal\"];\n})";
+
+fn internalTestingAliasGated(specifier: []const u8) bool {
+    return HardcodedModule.isInternalTestingSpecifier(specifier) and
+        !is_allowed_to_use_internal_testing_apis;
+}
+
+fn internalTestingBridgeSource(hardcoded: HardcodedModule) ?[]const u8 {
+    return switch (hardcoded) {
+        .@"internal/async_context_frame" => internal_async_context_frame_source,
+        .@"internal/async_hooks" => internal_async_hooks_source,
+        .@"internal/js_stream_socket" => internal_js_stream_socket_source,
+        .@"internal/streams/add-abort-signal" => internal_add_abort_signal_source,
+        .@"internal/test/binding" => internal_test_binding_source,
+        else => null,
+    };
+}
+
 /// This must be called after calling transpileSourceCode
 pub fn resetArena(this: *ModuleLoader, jsc_vm: *VirtualMachine) void {
     bun.assert(&jsc_vm.module_loader == this);
@@ -842,6 +880,8 @@ pub export fn Bun__resolveAndFetchBuiltinModule(
 
     const specifier_slice = specifier.toUTF8(bun.default_allocator);
     defer specifier_slice.deinit();
+    if (HardcodedModule.streamIterAliasGated(specifier_slice.slice())) return false;
+    if (internalTestingAliasGated(specifier_slice.slice())) return false;
     const alias = HardcodedModule.Alias.bun_aliases.get(specifier_slice.slice()) orelse
         return false;
     const hardcoded = HardcodedModule.map.get(alias.path) orelse {
@@ -865,6 +905,18 @@ pub export fn Bun__fetchBuiltinModule(
     jsc.markBinding(@src());
     var log = logger.Log.init(jsc_vm.transpiler.allocator);
     defer log.deinit();
+
+    const specifier_slice = specifier.toUTF8(bun.default_allocator);
+    defer specifier_slice.deinit();
+    if (is_allowed_to_use_internal_testing_apis and
+        HardcodedModule.isInternalTestingSpecifier(specifier_slice.slice()))
+    {
+        // These adapters are CommonJS wrappers. Let Bun__transpileFile return
+        // them to require()'s already-created module object instead of routing
+        // them through the builtin ESM bridge, which would discard that
+        // placeholder module's source code.
+        return false;
+    }
 
     if (ModuleLoader.fetchBuiltinModule(
         jsc_vm,
@@ -906,6 +958,15 @@ pub export fn Bun__transpileFile(
     var referrer_slice = referrer.toUTF8(jsc_vm.allocator);
     defer _specifier.deinit();
     defer referrer_slice.deinit();
+
+    if (is_allowed_to_use_internal_testing_apis) {
+        if (HardcodedModule.map.get(_specifier.slice())) |hardcoded| {
+            if (internalTestingBridgeSource(hardcoded) != null) {
+                ret.* = jsc.ErrorableResolvedSource.ok(getHardcodedModule(jsc_vm, specifier_ptr.*, hardcoded).?);
+                return null;
+            }
+        }
+    }
 
     var type_attribute_str: ?string = null;
     if (type_attribute) |attribute| if (attribute.asUTF8()) |attr_utf8| {
@@ -1151,7 +1212,24 @@ export fn Bun__runVirtualModule(globalObject: *JSGlobalObject, specifier_ptr: *c
 }
 
 fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded: HardcodedModule) ?ResolvedSource {
+    if (internalTestingBridgeSource(hardcoded)) |source| {
+        if (!is_allowed_to_use_internal_testing_apis) return null;
+        return .{
+            .allocator = null,
+            .source_code = bun.String.cloneUTF8(source),
+            .specifier = specifier.dupeRef(),
+            .source_url = specifier.dupeRef(),
+            .is_commonjs_module = true,
+            .source_code_needs_deref = true,
+        };
+    }
     return switch (hardcoded) {
+        .@"internal/async_context_frame",
+        .@"internal/async_hooks",
+        .@"internal/js_stream_socket",
+        .@"internal/streams/add-abort-signal",
+        .@"internal/test/binding",
+        => unreachable,
         .@"bun:main" => if (jsc_vm.entry_point.generated) .{
             .allocator = null,
             .source_code = bun.String.cloneUTF8(jsc_vm.entry_point.contents),
@@ -1195,6 +1273,8 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
 pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?ResolvedSource {
     const specifier_slice = specifier.toUTF8(bun.default_allocator);
     defer specifier_slice.deinit();
+    if (HardcodedModule.streamIterAliasGated(specifier_slice.slice())) return null;
+    if (internalTestingAliasGated(specifier_slice.slice())) return null;
     if (HardcodedModule.map.get(specifier_slice.slice())) |hardcoded| {
         return getHardcodedModule(jsc_vm, specifier, hardcoded);
     }
@@ -1329,6 +1409,8 @@ export fn Bun__resolveEmbeddedNodeFile(vm: *VirtualMachine, in_out_str: *bun.Str
 
 export fn ModuleLoader__isBuiltin(data: [*]const u8, len: usize) bool {
     const str = data[0..len];
+    if (HardcodedModule.streamIterAliasGated(str)) return false;
+    if (internalTestingAliasGated(str)) return false;
     return HardcodedModule.Alias.bun_aliases.get(str) != null;
 }
 

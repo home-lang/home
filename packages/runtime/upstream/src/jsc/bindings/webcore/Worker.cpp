@@ -44,18 +44,144 @@
 #include "BunWorkerGlobalScope.h"
 #include "CloseEvent.h"
 #include "JSMessagePort.h"
+#include "HomeMessagePortLifecycle.h"
+#include "HomeWorkerSnapshots.h"
 #include "JSBroadcastChannel.h"
+#include "EventLoopTask.h"
+#include <wtf/HashSet.h>
+#include <wtf/NeverDestroyed.h>
+#include <memory>
 
 namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(Worker);
 
-// ---- Zig FFI -----------------------------------------------------------------------------------
-// The Zig WebWorker struct is owned by this Worker (freed in ~Worker) and drives the worker
-// thread. See src/jsc/web_worker.zig for the matching side of each entry point.
+// The virtual parent endpoint is owned by the native Worker transport. Its
+// peer is a real transferable MessagePort, created on the worker thread before
+// user code. Keep this state outside Worker so linked class layouts do not drift.
+struct HomeParentPort {
+    Ref<MessagePortPipe> pipe;
+    Ref<MessagePort> port;
+    bool ready { false };
+};
+static Lock homeParentPortsLock;
+static NeverDestroyed<HashMap<Worker*, std::unique_ptr<HomeParentPort>>> homeParentPorts;
+static NeverDestroyed<HashMap<MessagePortPipe*, Worker*>> homeParentPortOwners;
+
+bool WorkerParentPort::send(MessagePortPipe& pipe, uint8_t side, MessageWithMessagePorts&& message)
+{
+    if (side != 1)
+        return false;
+    Locker locker { homeParentPortsLock };
+    auto it = homeParentPortOwners->find(&pipe);
+    if (it == homeParentPortOwners->end())
+        return false;
+    // Registry removal precedes release of the worker's create-time reference.
+    // Enqueue while holding that lifetime boundary; no JS executes here.
+    it->value->enqueueToParent(WTF::move(message));
+    return true;
+}
+
+void WorkerParentPort::startForGlobalListener(ScriptExecutionContext& context)
+{
+    Locker locker { homeParentPortsLock };
+    for (auto& entry : homeParentPorts.get()) {
+        if (entry.key->clientIdentifier() == context.identifier()) {
+            entry.value->port->start();
+            return;
+        }
+    }
+}
+
+void WorkerParentPort::forwardGlobalEvent(MessagePort& port, ScriptExecutionContext& context, MessageEvent& event)
+{
+    auto* global = defaultGlobalObject(context.globalObject());
+    if (!global || global->isShuttingDown()
+        || Zig::GlobalObject::scriptExecutionStatus(global, global) != ScriptExecutionStatus::Running
+        || !global->globalEventScope->hasActiveEventListeners(event.type()))
+        return;
+    {
+        Locker locker { homeParentPortsLock };
+        auto it = homeParentPortOwners->find(port.pipe());
+        if (it == homeParentPortOwners->end() || it->value->clientIdentifier() != context.identifier())
+            return;
+    }
+    // MessageEvent::create already deserialized once and rooted its cached
+    // data. Share that value and the same transferred endpoints with the Web
+    // Worker event surface; never deserialize the transfer list a second time.
+    MessageEvent::Init init;
+    init.data = event.cachedData().getValue(jsUndefined());
+    init.ports = event.ports();
+    auto forwarded = MessageEvent::create(event.type(), WTF::move(init), Event::IsTrusted::Yes);
+    global->globalEventScope->dispatchEvent(forwarded);
+}
+
+extern "C" void Home__Worker__prepareParentPort(Worker* worker, Zig::GlobalObject* global)
+{
+    auto pipe = MessagePortPipe::create();
+    auto port = MessagePort::entangle(*global->scriptExecutionContext(), TransferredMessagePort { pipe.copyRef(), 1 });
+    {
+        Locker locker { homeParentPortsLock };
+        RELEASE_ASSERT(!homeParentPorts->contains(worker));
+        homeParentPortOwners->add(pipe.ptr(), worker);
+        homeParentPorts->add(worker, std::make_unique<HomeParentPort>(HomeParentPort { WTF::move(pipe), WTF::move(port) }));
+    }
+    // Atomically migrate pre-start messages before admitting direct pipe sends.
+    worker->drainToWorker(*global->scriptExecutionContext());
+}
+
+extern "C" void Home__Worker__closeParentPort(Worker* worker)
+{
+    std::unique_ptr<HomeParentPort> state;
+    {
+        Locker locker { homeParentPortsLock };
+        state = homeParentPorts->take(worker);
+        if (state)
+            homeParentPortOwners->remove(state->pipe.ptr());
+    }
+    // Closing transferred endpoints can post other tasks. Destruct outside the
+    // registry lock, on the worker's owning thread, while its VM is still alive.
+    if (state)
+        state->pipe->close(0);
+}
+
+// A stopped parent drains only these native exit-cleanup tasks. Other C++
+// callbacks may own thread-affine resources and are not safe to execute here.
+static Lock homeWorkerExitTasksLock;
+static NeverDestroyed<HashSet<EventLoopTask*>> homeWorkerExitTasks;
+
+struct HomeWorkerExitTaskMarker {
+    EventLoopTask* task { nullptr };
+    ~HomeWorkerExitTaskMarker()
+    {
+        Locker locker { homeWorkerExitTasksLock };
+        homeWorkerExitTasks->remove(task);
+    }
+};
+
+extern "C" bool Home__Worker__isExitTask(EventLoopTask* task)
+{
+    Locker locker { homeWorkerExitTasksLock };
+    return homeWorkerExitTasks->contains(task);
+}
+
+extern "C" void Home__Worker__performExitTask(Zig::GlobalObject* globalObject, EventLoopTask* task)
+{
+    RELEASE_ASSERT(globalObject->isShuttingDown());
+    RELEASE_ASSERT(globalObject->scriptExecutionContext()->isContextThread());
+    RELEASE_ASSERT(Home__Worker__isExitTask(task));
+    // This narrowly marked callback runs no JS during shutdown. Do not route
+    // through the ordinary JS exception bridge: an existing termination
+    // exception must not turn native resource cleanup into a second failure.
+    task->performTask(*globalObject->scriptExecutionContext());
+}
+
+// ---- Native FFI --------------------------------------------------------------------------------
+// The native WebWorker struct is owned by this Worker (freed in ~Worker) and drives the worker
+// thread. See src/jsc/web_worker.rs for the matching side of each entry point.
 extern "C" {
 
-// Allocate the Zig WebWorker, take a keep-alive on the parent event loop, and spawn the worker
+// Allocate the native WebWorker, take a keep-alive on the parent event loop, and spawn the worker
 // thread. Returns null (and sets errorMessage) on any failure; nothing needs cleanup in that case.
 void* WebWorker__create(
     Worker* worker,
@@ -87,8 +213,9 @@ void WebWorker__setRef(void* worker, bool ref);
 // thread.
 void WebWorker__releaseParentPollRef(void* worker);
 
-// Free the Zig WebWorker struct. Called from ~Worker.
+// Free the native WebWorker struct. Called from ~Worker.
 void WebWorker__destroy(void* worker);
+Zig::GlobalObject* Home__Worker__parentGlobalForExit(void* worker);
 
 } // extern "C"
 // -------------------------------------------------------------------------------------------------
@@ -219,16 +346,26 @@ ExceptionOr<void> Worker::postMessage(JSC::JSGlobalObject& state, JSC::JSValue m
 void Worker::enqueueToWorker(MessageWithMessagePorts&& message)
 {
     {
+        Locker portLocker { homeParentPortsLock };
+        auto channel = homeParentPorts->find(this);
+        if (channel != homeParentPorts->end() && channel->value->ready) {
+            channel->value->pipe->send(0, WTF::move(message));
+            return;
+        }
         Locker locker { m_toWorker.lock };
+        const auto state = m_state.load();
+        // dispatchExit seals this inbox under the same lock before taking
+        // its queued messages. A post racing shutdown either joins that
+        // discarded batch or returns here without retaining its transfers.
+        if (state >= State::Closing)
+            return;
         m_toWorker.queue.append(WTF::move(message));
         // If the worker isn't Running yet, just buffer; fireEarlyMessages()
-        // drains the inbox on the worker thread once it is. If Closing/
-        // Closed, also buffer (dropped with the Worker) — postMessage()
-        // already rejects on Closed, so only the close-handler window lands
-        // here. If a drain is already scheduled, don't double-schedule.
+        // drains the inbox on the worker thread once it is. If a drain is
+        // already scheduled, don't double-schedule.
         // drainScheduled is only set/cleared under the lock so the
         // load/store pair is not a race.
-        if (m_state.load() != State::Running || m_toWorker.drainScheduled.load(std::memory_order_relaxed))
+        if (state != State::Running || m_toWorker.drainScheduled.load(std::memory_order_relaxed))
             return;
         m_toWorker.drainScheduled.store(true, std::memory_order_relaxed);
     }
@@ -326,6 +463,18 @@ static inline bool drainInbox(Worker::MessageInbox& inbox, Zig::GlobalObject* gl
 
 void Worker::drainToWorker(ScriptExecutionContext& context)
 {
+    {
+        Locker portLocker { homeParentPortsLock };
+        auto channel = homeParentPorts->find(this);
+        if (channel != homeParentPorts->end()) {
+            Locker inboxLocker { m_toWorker.lock };
+            while (!m_toWorker.queue.isEmpty())
+                channel->value->pipe->send(0, m_toWorker.queue.takeFirst());
+            channel->value->ready = true;
+            m_toWorker.drainScheduled.store(false, std::memory_order_relaxed);
+            return;
+        }
+    }
     auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(context.jsGlobalObject());
     if (!globalObject) {
         Locker locker { m_toWorker.lock };
@@ -427,6 +576,10 @@ void Worker::dispatchOnline(Zig::GlobalObject* workerGlobalObject)
     // worker.getHeapSnapshot()` in worker_threads.test.ts.
     {
         Locker lock(m_pendingTasksMutex);
+        // Shutdown is terminal. Do not let a delayed startup notification
+        // reopen the inbox or accept generic tasks after dispatchExit seals it.
+        if (m_state.load() != State::Pending)
+            return;
         m_state.store(State::Running);
     }
 
@@ -516,39 +669,100 @@ bool Worker::dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSVal
 
 bool Worker::dispatchExit(int32_t exitCode)
 {
+    // The worker VM has stopped, so its incoming messages cannot be delivered.
+    // Release their transferred endpoints even if JS retains this Worker (or
+    // an uncancelled native task retains it: https://github.com/home-lang/home/issues/465).
+    // The Pending/Running transition and both task-admission paths observe
+    // Closing under their respective locks. No path acquires these in reverse.
+    Deque<MessageWithMessagePorts> dropped;
+    {
+        Locker pendingLocker { m_pendingTasksMutex };
+        Locker inboxLocker { m_toWorker.lock };
+        m_state.store(State::Closing);
+        dropped = std::exchange(m_toWorker.queue, {});
+        m_toWorker.drainScheduled.store(false, std::memory_order_relaxed);
+    }
+    // TransferredMessagePort destruction can close other pipes and post tasks.
+    // It must not run under either Worker lock or the global contexts-map lock.
+    dropped.clear();
+
+    if (auto* parentGlobal = Home__Worker__parentGlobalForExit(impl_)) {
+        // Nested parents keep their VM alive until every direct child has
+        // finished shutdown. This lifetime barrier permits direct publication
+        // of a specifically marked task, without a generic callback wrapper.
+        auto marker = std::make_unique<HomeWorkerExitTaskMarker>();
+        auto* markerPointer = marker.get();
+        auto* task = new EventLoopTask([exitCode, marker = WTF::move(marker), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
+            (void)marker; // lifetime removes the task from the private registry
+            auto* globalObject = defaultGlobalObject(context.globalObject());
+            WorkerSnapshots::cancelForWorker(protectedThis.get(), context);
+            if (!globalObject->isShuttingDown() && !context.isJSExecutionForbidden()
+                && Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) == ScriptExecutionStatus::Running
+                && protectedThis->hasEventListeners(eventNames().closeEvent)) {
+                auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
+                protectedThis->EventTargetWithInlineData::dispatchEvent(event);
+            }
+            protectedThis->m_state.store(State::Closed);
+            WebWorker__releaseParentPollRef(protectedThis->impl_);
+        });
+        markerPointer->task = task;
+        {
+            Locker locker { homeWorkerExitTasksLock };
+            homeWorkerExitTasks->add(task);
+        }
+        // Match postTaskTo's pre-enqueue hook: the task's captured Ref exists
+        // before the create-time ref is released, and release happens before
+        // the parent can execute/destroy that task. No `this` access follows.
+        deref();
+        parentGlobal->queueTaskConcurrently(task);
+        return true;
+    }
+
     // Runs on the worker thread after its JSC VM has been torn down. Post the
     // close event to the parent; that task additionally releases parent_poll_ref
-    // and drops the worker-thread-held ref (both parent-thread-only operations).
+    // (parent-thread-only).
     //
-    // If posting fails — parent context no longer exists (nested worker whose
-    // middle thread has already torn down) — the ref and poll are intentionally
-    // leaked: dropping the ref here would run ~Worker → ~EventTarget on the
-    // worker thread and trip EventListenerMap's single-thread assert. Parent
-    // teardown implies process shutdown (or at least that nothing observes the
-    // leak), so this is bounded. The proper fix is for a worker to stop+join
-    // its sub-workers before tearing down its own context.
-    return postTaskToParent([exitCode, protectedThis = Ref { *this }](ScriptExecutionContext&) {
-        // Closing → dispatch 'close' → Closed. The split lets 'close'/'exit'
-        // handlers observe threadId == -1 and isOnline() == false while
-        // postMessage() (gated only on Closed) still accepts and drops the
-        // message, matching browser/Node and pre-refactor behaviour.
-        protectedThis->m_state.store(State::Closing);
+    // This remaining path targets a main-thread parent. If its context is
+    // already gone, retain the existing failure behavior: do not drop the
+    // final Worker ref on the worker thread and destroy EventTarget there.
+    // General main-thread queued-task cancellation remains separate work.
+    //
+    // The create-time ref (taken in create() to keep `this` alive while the
+    // worker thread runs) is released via the `betweenLookupAndEnqueue` hook —
+    // i.e. after the parent context is found-live and the lambda's captured
+    // `Ref` exists, but BEFORE the task is enqueued. Once enqueued the parent
+    // can run-and-destroy the lambda (dropping `protectedThis`) and sweep the
+    // JSWorker before this frame resumes; deref()ing after that point can be
+    // the last ref and run ~Worker on the worker thread (the 71d7f78f5e74
+    // race). Releasing inside the lambda body instead would re-introduce the
+    // shutdown leak that commit closed: when global_exit() destroys queued
+    // close tasks without running them, the inner deref() never fires and the
+    // WebWorker box leaks.
+    return ScriptExecutionContext::postTaskTo(
+        m_parentContextId,
+        [this] { this->deref(); },
+        [exitCode, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
+            WorkerSnapshots::cancelForWorker(protectedThis.get(), context);
+            // Closing was published when the stopped inbox was discarded.
+            // Closing → dispatch 'close' → Closed lets 'close'/'exit'
+            // handlers observe threadId == -1 and isOnline() == false while
+            // postMessage() (gated only on Closed) still accepts and drops the
+            // message, matching browser/Node and pre-refactor behaviour.
+            if (protectedThis->hasEventListeners(eventNames().closeEvent)) {
+                auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
+                protectedThis->EventTargetWithInlineData::dispatchEvent(event);
+            }
 
-        if (protectedThis->hasEventListeners(eventNames().closeEvent)) {
-            auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
-            protectedThis->EventTargetWithInlineData::dispatchEvent(event);
-        }
-
-        protectedThis->m_state.store(State::Closed);
-        WebWorker__releaseParentPollRef(protectedThis->impl_);
-        // Drop the ref taken in create(). protectedThis keeps us alive across
-        // this line; its own deref happens at lambda destruction on the parent
-        // thread, so ~Worker never runs on the worker thread.
-        protectedThis->deref();
-    });
+            protectedThis->m_state.store(State::Closed);
+            WebWorker__releaseParentPollRef(protectedThis->impl_);
+            // protectedThis (and the JSWorker GC cell, if still rooted) keep us
+            // alive across the close-event dispatch; both deref on the parent
+            // thread (lambda destruction here / GC sweep), so ~Worker never runs
+            // on the worker thread.
+        });
 }
 
-// ---- extern "C" shims (called from Zig) -------------------------------------
+// ---- extern "C" shims (called from native code) ------------------------------
 
 extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
 {
@@ -557,7 +771,14 @@ extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
 
     {
         auto scope = DECLARE_THROW_SCOPE(vm);
-        globalObject->moduleLoader()->clearAll();
+        {
+            auto* moduleLoader = globalObject->moduleLoader();
+            // JSModuleLoader::visitChildrenImpl iterates these maps on the GC
+            // thread under cellLock(); take the same lock so clearing them
+            // can't race a concurrent marker.
+            WTF::Locker locker { moduleLoader->cellLock() };
+            moduleLoader->clearAll();
+        }
         globalObject->requireMap()->clear(globalObject);
         scope.exception(); // TODO: handle or assert none?
         vm.deleteAllCode(JSC::DeleteAllCodeEffort::PreventCollectionAndDeleteAllCode);
@@ -570,9 +791,7 @@ extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
     // Drop the single ref taken by `Zig__GlobalObject__create`
     // (`vmPtr->refSuppressingSaferCPPChecking()`), bringing the VM refcount
     // to zero — `~VM` runs here while the API lock is still held by this
-    // thread, exactly as in the Zig build (where `pthread_exit` skipped the
-    // outer `JSLockHolder` destructor and a second `deref` here released its
-    // abandoned ref). The Rust port acquires the API lock manually with no
+    // thread. The worker thread acquires the API lock manually with no
     // extra VM ref (see `WebWorker::thread_main`), so a second `deref` would
     // run `~VM` twice / dereference the freed VM.
     vm.derefSuppressingSaferCPPChecking(); // NOLINT
@@ -593,11 +812,12 @@ extern "C" void WebWorker__fireEarlyMessages(Worker* worker, Zig::GlobalObject* 
     worker->fireEarlyMessages(globalObject);
 }
 
-extern "C" void WebWorker__dispatchError(Zig::GlobalObject* globalObject, Worker* worker, BunString message, JSC::EncodedJSValue errorValue)
+extern "C" void WebWorker__dispatchError(Zig::GlobalObject* globalObject, Worker* worker, BunString* message, JSC::EncodedJSValue errorValue)
 {
     JSValue error = JSC::JSValue::decode(errorValue);
+    WTF::String messageStr = message->transferToWTFString();
     ErrorEvent::Init init;
-    init.message = message.toWTFString(BunString::ZeroCopy).isolatedCopy();
+    init.message = messageStr.isolatedCopy();
     init.error = error;
     init.cancelable = false;
     init.bubbles = false;
@@ -605,11 +825,11 @@ extern "C" void WebWorker__dispatchError(Zig::GlobalObject* globalObject, Worker
     globalObject->globalEventScope->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, init, EventIsTrusted::Yes));
     switch (worker->options().kind) {
     case WorkerOptions::Kind::Web:
-        return worker->dispatchErrorWithMessage(message.toWTFString(BunString::ZeroCopy));
+        return worker->dispatchErrorWithMessage(WTF::move(messageStr));
     case WorkerOptions::Kind::Node:
         if (!worker->dispatchErrorWithValue(globalObject, error)) {
             // If serialization threw an error, use the string instead
-            worker->dispatchErrorWithMessage(message.toWTFString(BunString::ZeroCopy));
+            worker->dispatchErrorWithMessage(WTF::move(messageStr));
         }
         return;
     }
@@ -650,9 +870,16 @@ JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
     auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     JSValue workerData = jsNull();
     JSValue threadId = jsNumber(0);
+    RefPtr<MessagePort> parentPort;
     JSMap* environmentData = nullptr;
 
     if (auto* worker = WebWorker__getParentWorker(globalObject->bunVM())) {
+        {
+            Locker locker { homeParentPortsLock };
+            auto channel = homeParentPorts->find(worker);
+            RELEASE_ASSERT(channel != homeParentPorts->end());
+            parentPort = channel->value->port.ptr();
+        }
         auto& options = worker->options();
         auto ports = MessagePort::entanglePorts(*ScriptExecutionContext::getScriptExecutionContext(worker->clientIdentifier()), WTF::move(options.dataMessagePorts));
         RefPtr<WebCore::SerializedScriptValue> serialized = WTF::move(options.workerDataAndEnvironmentData);
@@ -691,12 +918,13 @@ JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
     ASSERT(environmentData);
     globalObject->setNodeWorkerEnvironmentData(environmentData);
 
-    JSObject* array = constructEmptyArray(globalObject, nullptr, 4);
+    JSObject* array = constructEmptyArray(globalObject, nullptr, 5);
     RETURN_IF_EXCEPTION(scope, {});
     array->putDirectIndex(globalObject, 0, workerData);
     array->putDirectIndex(globalObject, 1, threadId);
     array->putDirectIndex(globalObject, 2, JSFunction::create(vm, globalObject, 1, "receiveMessageOnPort"_s, jsReceiveMessageOnPort, ImplementationVisibility::Public, NoIntrinsic));
     array->putDirectIndex(globalObject, 3, environmentData);
+    array->putDirectIndex(globalObject, 4, parentPort ? toJS(globalObject, globalObject, *parentPort) : jsNull());
     return array;
 }
 

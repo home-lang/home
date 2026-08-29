@@ -476,6 +476,13 @@ pub extern "C" fn Bun__fetchBuiltinModule(
 /// `BUN_ALIASES` const tables (PERF(port): Phase B replaces with phf).
 #[inline]
 fn bun_aliases_get(name: &[u8]) -> Option<bun_resolve_builtins::Alias> {
+    // Keep the raw-table scan in agreement with `Alias::get`'s flag gate so
+    // `require.resolve.paths` / `Module._resolveLookupPaths` (which reach
+    // here via `ModuleLoader__isBuiltin`) don't report a gated-off specifier
+    // as a builtin that `require` would then fail to load.
+    if bun_resolve_builtins::stream_iter_alias_gated(name) {
+        return None;
+    }
     for table in bun_resolve_builtins::HardcodedModule::BUN_ALIASES {
         for (k, v) in *table {
             if *k == name {

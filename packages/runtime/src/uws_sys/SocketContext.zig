@@ -18,6 +18,10 @@ pub const BunSocketContextOptions = extern struct {
     ca: ?[*]const ?[*:0]const u8 = null,
     ca_count: u32 = 0,
     secure_options: u32 = 0,
+    // Keep these in the C ABI order: omitting them passes renegotiation
+    // defaults as certificate-verification flags when passed by value.
+    ssl_min_version: i32 = 0,
+    ssl_max_version: i32 = 0,
     reject_unauthorized: i32 = 0,
     request_cert: i32 = 0,
     client_renegotiation_limit: u32 = 3,
@@ -101,6 +105,8 @@ pub const BunSocketContextOptions = extern struct {
         feedArr(&h, self.cert, self.cert_count);
         feedArr(&h, self.ca, self.ca_count);
         h.update(std.mem.asBytes(&self.secure_options));
+        h.update(std.mem.asBytes(&self.ssl_min_version));
+        h.update(std.mem.asBytes(&self.ssl_max_version));
         h.update(std.mem.asBytes(&self.reject_unauthorized));
         h.update(std.mem.asBytes(&self.request_cert));
         h.update(std.mem.asBytes(&self.client_renegotiation_limit));

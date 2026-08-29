@@ -350,8 +350,12 @@ void us_listen_socket_remove_server_name(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
 void *us_listen_socket_find_server_name_userdata(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
+struct ssl_ctx_st *us_listen_socket_find_server_name_ctx(struct us_listen_socket_t *ls,
+    const char *hostname_pattern) nonnull_fn_decl;
 void us_listen_socket_on_server_name(struct us_listen_socket_t *ls,
-    void (*cb)(struct us_listen_socket_t *, const char *hostname)) nonnull_fn_decl;
+    struct ssl_ctx_st *(*cb)(struct us_listen_socket_t *, const char *hostname,
+        int *abort_handshake, struct us_socket_t *socket)) nonnull_fn_decl;
+void us_socket_sni_resolve(us_socket_r s, struct ssl_ctx_st *ctx, int error);
 void *us_socket_server_name_userdata(us_socket_r s);
 
 /* ── Connect ──────────────────────────────────────────────────────────────
@@ -518,6 +522,11 @@ struct us_socket_group_t *us_socket_group(us_socket_r s) nonnull_fn_decl __attri
 unsigned char us_socket_kind(us_socket_r s) nonnull_fn_decl;
 void us_socket_set_kind(us_socket_r s, unsigned char kind) nonnull_fn_decl;
 void us_socket_set_ssl_raw_tap(us_socket_r s, int enabled) nonnull_fn_decl;
+
+/* Parked TLS events for SSLWrapper owners without a us_socket_t. */
+void us_ssl_enable_pending_events(struct ssl_st *ssl);
+int us_ssl_pop_pending_session(struct ssl_st *ssl, unsigned char *out, int out_cap);
+int us_ssl_pop_pending_keylog(struct ssl_st *ssl, unsigned char *out, int out_cap);
 
 void us_socket_flush(us_socket_r s) nonnull_fn_decl;
 void us_socket_shutdown(us_socket_r s) nonnull_fn_decl;

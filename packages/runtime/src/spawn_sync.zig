@@ -27,11 +27,11 @@ pub const Options = struct {
     windows: if (Environment.isWindows) WindowsOptions else void = if (Environment.isWindows) .{} else {},
 };
 
-/// Minimal process status: enough for `Result.isOK()`.
+/// Retain exit and signal details for native command dispatch.
 pub const Status = union(enum) {
-    exited: struct { code: u8 },
-    signaled,
-    err,
+    exited: struct { code: u8, signal: bun.SignalCode = @fromBackingInt(@intCast(0)) },
+    signaled: bun.SignalCode,
+    err: bun.sys.Error,
 
     pub fn isOK(this: *const Status) bool {
         return switch (this.*) {
@@ -71,46 +71,69 @@ pub fn spawn(options: *const Options) !bun.sys.Maybe(Result) {
         }
     }
 
-    const run_result = try std.process.run(bun.default_allocator, threaded.io(), .{
+    // Inherited streams must remain the actual descriptors: capturing and
+    // replaying them loses stdin, TTY identity and live output ordering.
+    if (options.stdin == .buffer) return error.UnsupportedStdinBuffer;
+    if (options.ipc != null) return error.UnsupportedIpcDescriptor;
+    if (options.detached) return error.UnsupportedDetachedSpawn;
+    const io = threaded.io();
+    var child = try std.process.spawn(io, .{
         .argv = options.argv,
         .cwd = if (options.cwd.len > 0) .{ .path = options.cwd } else .inherit,
         .environ_map = if (options.envp != null) &env_map else null,
+        .stdin = if (options.stdin == .inherit) .inherit else .ignore,
+        .stdout = switch (options.stdout) {
+            .inherit => .inherit,
+            .ignore => .ignore,
+            .buffer => .pipe,
+        },
+        .stderr = switch (options.stderr) {
+            .inherit => .inherit,
+            .ignore => .ignore,
+            .buffer => .pipe,
+        },
     });
+    defer child.kill(io);
 
     var stdout = std.array_list.Managed(u8).init(bun.default_allocator);
+    errdefer stdout.deinit();
     var stderr = std.array_list.Managed(u8).init(bun.default_allocator);
-
-    if (options.stdout == .buffer) {
-        stdout.items = run_result.stdout;
-        stdout.capacity = run_result.stdout.len;
-    } else {
-        defer bun.default_allocator.free(run_result.stdout);
-        if (options.stdout == .inherit and run_result.stdout.len > 0) {
-            try bun.Output.writer().writeAll(run_result.stdout);
-            bun.Output.flush();
+    errdefer stderr.deinit();
+    var files: [2]std.Io.File = undefined;
+    var count: u32 = 0;
+    if (child.stdout) |file| {
+        files[count] = file;
+        count += 1;
+    }
+    if (child.stderr) |file| {
+        files[count] = file;
+        count += 1;
+    }
+    if (count > 0) {
+        var storage: std.Io.File.MultiReader.Buffer(2) = undefined;
+        const streams = storage.toStreams();
+        streams.len = count;
+        var reader: std.Io.File.MultiReader = undefined;
+        reader.init(bun.default_allocator, io, streams, files[0..count]);
+        defer reader.deinit();
+        while (reader.fill(4096, .none)) |_| {} else |err| switch (err) {
+            error.EndOfStream => {},
+            else => return err,
+        }
+        try reader.checkAnyError();
+        if (child.stdout != null) {
+            stdout.items = try reader.toOwnedSlice(0);
+            stdout.capacity = stdout.items.len;
+        }
+        if (child.stderr != null) {
+            stderr.items = try reader.toOwnedSlice(if (child.stdout != null) 1 else 0);
+            stderr.capacity = stderr.items.len;
         }
     }
-
-    if (options.stderr == .buffer) {
-        stderr.items = run_result.stderr;
-        stderr.capacity = run_result.stderr.len;
-    } else {
-        defer bun.default_allocator.free(run_result.stderr);
-        if (options.stderr == .inherit and run_result.stderr.len > 0) {
-            try bun.Output.errorWriter().writeAll(run_result.stderr);
-            bun.Output.flush();
-        }
-    }
-
-    const status: Status = switch (run_result.term) {
+    const status: Status = switch (try child.wait(io)) {
         .exited => |code| .{ .exited = .{ .code = code } },
-        .signal, .stopped => .signaled,
-        .unknown => .err,
+        .signal, .stopped => |signal| .{ .signaled = @fromBackingInt(@intCast(@backingInt(signal))) },
+        .unknown => return error.UnknownChildStatus,
     };
-
-    return .{ .result = .{
-        .status = status,
-        .stdout = stdout,
-        .stderr = stderr,
-    } };
+    return .{ .result = .{ .status = status, .stdout = stdout, .stderr = stderr } };
 }

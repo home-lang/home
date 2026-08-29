@@ -62,7 +62,10 @@
 #include <wtf/URL.h>
 #include "SerializedScriptValue.h"
 #include "BunProcess.h"
+#include "HomeWorkerSnapshots.h"
 #include <JavaScriptCore/JSMap.h>
+#include <wtf/NeverDestroyed.h>
+#include <memory>
 
 namespace WebCore {
 using namespace JSC;
@@ -647,6 +650,97 @@ JSC_DEFINE_HOST_FUNCTION(jsWorkerPrototypeFunction_unref, (JSGlobalObject * lexi
     return IDLOperation<JSWorker>::call<jsWorkerPrototypeFunction_unrefBody>(*lexicalGlobalObject, *callFrame, "unref");
 }
 
+// Strong handles are created, read and destroyed only on their parent VM's
+// thread. Cross-thread tasks carry monotonically unique IDs, never handles,
+// Worker refs or snapshot payloads. The registry owns the whole round trip:
+// a dropped task cannot abandon a Strong or retain a completed JSON string.
+struct HomeWorkerSnapshotRequest {
+    HomeWorkerSnapshotRequest(Worker& worker, Zig::GlobalObject& global, JSPromise* promise)
+        : worker(&worker)
+        , parentVM(&global.vm())
+        , parentId(global.scriptExecutionContext()->identifier())
+        , promise(global.vm(), promise)
+    {
+    }
+
+    Worker* worker; // identity only; the Worker exit callback cancels before releasing it
+    VM* parentVM;
+    ScriptExecutionContextIdentifier parentId;
+    Strong<JSPromise> promise;
+    String snapshot; // moved under the lock; consumed/destroyed on the parent thread
+};
+static Lock homeWorkerSnapshotsLock;
+static NeverDestroyed<HashMap<uint64_t, std::unique_ptr<HomeWorkerSnapshotRequest>>> homeWorkerSnapshots;
+static std::atomic<uint64_t> homeWorkerSnapshotIdentifier { 1 };
+
+static std::unique_ptr<HomeWorkerSnapshotRequest> takeWorkerSnapshot(uint64_t identifier, ScriptExecutionContext& context)
+{
+    RELEASE_ASSERT(context.isContextThread());
+    Locker locker { homeWorkerSnapshotsLock };
+    auto it = homeWorkerSnapshots->find(identifier);
+    if (it == homeWorkerSnapshots->end())
+        return nullptr;
+    RELEASE_ASSERT(it->value->parentVM == &context.vm());
+    RELEASE_ASSERT(it->value->parentId == context.identifier());
+    return homeWorkerSnapshots->take(identifier);
+}
+
+static void rejectWorkerSnapshot(HomeWorkerSnapshotRequest& request, ScriptExecutionContext& context)
+{
+    RELEASE_ASSERT(context.isContextThread());
+    RELEASE_ASSERT(request.parentVM == &context.vm());
+    auto* global = defaultGlobalObject(context.globalObject());
+    // During parent teardown only native ownership is released; never enqueue
+    // JS reactions or manufacture errors in a stopping VM.
+    if (global->isShuttingDown() || context.isJSExecutionForbidden()
+        || Zig::GlobalObject::scriptExecutionStatus(global, global) != ScriptExecutionStatus::Running)
+        return;
+    request.promise.get()->reject(context.vm(),
+        Bun::createError(global, Bun::ErrorCode::ERR_WORKER_NOT_RUNNING, "Worker instance not running"_s));
+}
+
+void WorkerSnapshots::cancelForWorker(Worker& worker, ScriptExecutionContext& context)
+{
+    RELEASE_ASSERT(context.isContextThread());
+    Vector<std::unique_ptr<HomeWorkerSnapshotRequest>> cancelled;
+    {
+        Locker locker { homeWorkerSnapshotsLock };
+        Vector<uint64_t> identifiers;
+        for (auto& entry : homeWorkerSnapshots.get()) {
+            if (entry.value->worker == &worker) {
+                RELEASE_ASSERT(entry.value->parentVM == &context.vm());
+                identifiers.append(entry.key);
+            }
+        }
+        for (auto identifier : identifiers)
+            cancelled.append(homeWorkerSnapshots->take(identifier));
+    }
+    // Promise settlement and HandleSet mutation must not hold the registry
+    // lock. A worker completing concurrently now finds no request and drops
+    // its local payload; a queued notification is an inert ID-only callback.
+    for (auto& request : cancelled)
+        rejectWorkerSnapshot(*request, context);
+}
+
+extern "C" void Home__Worker__cancelSnapshotsForVM(Zig::GlobalObject* global)
+{
+    RELEASE_ASSERT(global->scriptExecutionContext()->isContextThread());
+    RELEASE_ASSERT(global->isShuttingDown());
+    Vector<std::unique_ptr<HomeWorkerSnapshotRequest>> cancelled;
+    {
+        Locker locker { homeWorkerSnapshotsLock };
+        Vector<uint64_t> identifiers;
+        for (auto& entry : homeWorkerSnapshots.get()) {
+            if (entry.value->parentVM == &global->vm())
+                identifiers.append(entry.key);
+        }
+        for (auto identifier : identifiers)
+            cancelled.append(homeWorkerSnapshots->take(identifier));
+    }
+    // Destruct the handles now, on their owning thread and before VM teardown.
+    // This also covers a failed return post after the parent has stopped.
+}
+
 static inline JSC::EncodedJSValue jsWorkerPrototypeFunction_getHeapSnapshotBody(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame, typename IDLOperation<JSWorker>::ClassParameter castedThis)
 {
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
@@ -673,30 +767,28 @@ static inline JSC::EncodedJSValue jsWorkerPrototypeFunction_getHeapSnapshotBody(
     }
 
     auto* promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
-    if (!worker.isOnline()) {
-        promise->reject(vm, globalObject,
+    if (!worker.isOnline() || globalObject->isShuttingDown()) {
+        promise->reject(vm,
             Bun::createError(globalObject,
                 Bun::ErrorCode::ERR_WORKER_NOT_RUNNING,
                 "Worker instance not running"_s));
         return JSValue::encode(promise);
     }
 
-    // Keep the promise alive across the round-trip. Heap-allocate the Strong
-    // and pass only the raw pointer through the cross-thread lambdas so the
-    // worker thread never touches the parent VM's HandleSet (Strong<T> has no
-    // move ctor; capturing it by value would copy-construct/destroy it on the
-    // worker thread, racing the parent VM's "Strong Handles" GC constraint).
-    //
-    // Leak windows (accepted trade-off vs the crash above):
-    //   - task queued but worker terminated before it runs: the lambda is
-    //     destroyed on the worker thread; the raw pointer is dropped and
-    //     promiseHandle leaks in the (still-live) parent VM. Freeing it
-    //     there would be exactly the cross-thread HandleSet mutation we're
-    //     avoiding. Pre-fix the promise already hung in this case.
-    //   - postTaskTo(parentId, …) on the return trip fails: see below.
-    auto* promiseHandle = new Strong<JSPromise>(vm, promise);
+    auto identifier = homeWorkerSnapshotIdentifier.fetch_add(1);
+    RELEASE_ASSERT(identifier && identifier != std::numeric_limits<uint64_t>::max());
     auto parentId = globalObject->scriptExecutionContext()->identifier();
-    bool accepted = worker.postTaskToWorkerGlobalScope([promiseHandle, parentId](ScriptExecutionContext& workerCtx) {
+    {
+        auto request = std::make_unique<HomeWorkerSnapshotRequest>(worker, *globalObject, promise);
+        Locker locker { homeWorkerSnapshotsLock };
+        homeWorkerSnapshots->add(identifier, WTF::move(request));
+    }
+    bool accepted = worker.postTaskToWorkerGlobalScope([identifier, parentId](ScriptExecutionContext& workerCtx) {
+        {
+            Locker locker { homeWorkerSnapshotsLock };
+            if (!homeWorkerSnapshots->contains(identifier))
+                return;
+        }
         auto& vm = workerCtx.vm();
         vm.ensureHeapProfiler();
         auto& heapProfiler = *vm.heapProfiler();
@@ -704,24 +796,33 @@ static inline JSC::EncodedJSValue jsWorkerPrototypeFunction_getHeapSnapshotBody(
         JSC::BunV8HeapSnapshotBuilder builder(heapProfiler);
         String snapshot = builder.json();
 
-        // Post the result back. If the parent context is gone this returns
-        // false and promiseHandle leaks; we cannot safely destroy a
-        // parent-VM Strong from the worker thread, and the parent VM is
-        // tearing down anyway.
-        ScriptExecutionContext::postTaskTo(parentId,
-            [promiseHandle, snapshot = snapshot.isolatedCopy()](ScriptExecutionContext& parentCtx) {
-                std::unique_ptr<Strong<JSPromise>> handle(promiseHandle);
-                handle->get()->resolve(parentCtx.globalObject(), parentCtx.vm(), jsString(parentCtx.vm(), snapshot));
-            });
+        auto isolated = snapshot.isolatedCopy();
+        {
+            Locker locker { homeWorkerSnapshotsLock };
+            auto it = homeWorkerSnapshots->find(identifier);
+            if (it == homeWorkerSnapshots->end())
+                return;
+            it->value->snapshot = WTF::move(isolated);
+        }
+        // No request/VM-owned resources escape into this notification. If the
+        // context is already gone, its owner-thread shutdown hook has cleared
+        // the registry; no cross-thread Strong destruction is needed.
+        ScriptExecutionContext::postTaskTo(parentId, [identifier](ScriptExecutionContext& parentCtx) {
+            auto request = takeWorkerSnapshot(identifier, parentCtx);
+            if (!request)
+                return;
+            auto* global = defaultGlobalObject(parentCtx.globalObject());
+            if (global->isShuttingDown() || parentCtx.isJSExecutionForbidden()
+                || Zig::GlobalObject::scriptExecutionStatus(global, global) != ScriptExecutionStatus::Running)
+                return;
+            request->promise.get()->resolve(global, parentCtx.vm(), jsString(parentCtx.vm(), request->snapshot));
+        });
     });
     if (!accepted) {
         // Worker raced to Closing/Closed between isOnline() and the post.
-        // Still on the parent thread — safe to destroy the handle here.
-        delete promiseHandle;
-        promise->reject(vm, globalObject,
-            Bun::createError(globalObject,
-                Bun::ErrorCode::ERR_WORKER_NOT_RUNNING,
-                "Worker instance not running"_s));
+        auto request = takeWorkerSnapshot(identifier, *globalObject->scriptExecutionContext());
+        if (request)
+            rejectWorkerSnapshot(*request, *globalObject->scriptExecutionContext());
     }
     return JSValue::encode(promise);
 }

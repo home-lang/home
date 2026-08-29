@@ -1,5 +1,14 @@
 pub const Loop = uws.Loop;
 
+// EV_ERROR data is already an errno value, not a -1/errno syscall result.
+fn keventChangeError(data: i64) bun.sys.Maybe(void) {
+    return .errno(bun.sys.SystemErrno.init(data) orelse .EINVAL, .kevent);
+}
+
+fn deregistrationAlreadyGone(errno: bun.sys.E) bool {
+    return errno == .NOENT or errno == .BADF;
+}
+
 /// Track if an object whose file descriptor is being watched should keep the event loop alive.
 /// This is not reference counted. It only tracks active or inactive.
 pub const KeepAlive = struct {
@@ -161,7 +170,7 @@ pub const FilePoll = struct {
     const ShellStaticPipeWriter = bun.shell.subproc.ShellSubprocess.StaticPipeWriter.Poll;
     const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
     const FileSink = jsc.WebCore.FileSink.Poll;
-    // const TerminalPoll = bun.api.Terminal.Poll; // terminal not for corpus
+    const TerminalPoll = bun.api.Terminal.Poll;
     const DNSResolver = bun.api.dns.Resolver;
     const GetAddrInfoRequest = bun.api.dns.GetAddrInfoRequest;
     const Request = bun.api.dns.internal.Request;
@@ -193,7 +202,7 @@ pub const FilePoll = struct {
         // LifecycleScriptSubprocessOutputReader,
         Process,
         ShellBufferedWriter, // i do not know why, but this has to be here otherwise compiler will complain about dependency loop
-        // TerminalPoll,
+        TerminalPoll,
         ParentDeathWatchdog,
     });
 
@@ -432,7 +441,11 @@ pub const FilePoll = struct {
                 Request.MacAsyncDNS.onMachportChange(loader);
             },
 
-            // TerminalPoll case: terminal not for corpus
+            @field(Owner.Tag, @typeName(TerminalPoll)) => {
+                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) Terminal", .{poll.fd});
+                var handler: *TerminalPoll = ptr.as(TerminalPoll);
+                handler.onPoll(size_or_offset, poll.flags.contains(.hup));
+            },
             @field(Owner.Tag, @typeName(ParentDeathWatchdog)) => {
                 if (comptime !Environment.isMac) unreachable;
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) ParentDeathWatchdog", .{poll.fd});
@@ -948,7 +961,7 @@ pub const FilePoll = struct {
             // with EV_ERROR set in flags and the system error in data. xnu ORs
             // EV_ERROR into the existing action bits, so test the bit.
             if ((changelist[0].flags & std.c.EV.ERROR) != 0 and changelist[0].data != 0) {
-                return bun.sys.Maybe(void).errnoSys(changelist[0].data, .kevent).?;
+                return keventChangeError(changelist[0].data);
                 // Otherwise, -1 will be returned, and errno will be set to
                 // indicate the error condition.
             }
@@ -1093,8 +1106,8 @@ pub const FilePoll = struct {
                 null,
             );
 
-            if (bun.sys.Maybe(void).errnoSys(ctl, .epoll_ctl)) |errno| {
-                return errno;
+            if (bun.sys.Maybe(void).errnoSys(ctl, .epoll_ctl)) |err| {
+                if (!deregistrationAlreadyGone(err.err.getErrno())) return err;
             }
         } else if (comptime Environment.isMac) {
             var changelist = std.mem.zeroes([2]std.posix.system.kevent64_s);
@@ -1176,7 +1189,7 @@ pub const FilePoll = struct {
                 // Global failure (e.g. EBADF on the kqueue fd): the eventlist
                 // was not written, so per-entry checks below would read our
                 // own input. Report errno and stop.
-                std.math.minInt(@TypeOf(rc))...-1 => return bun.sys.Maybe(void).errnoSys(@intFromEnum(errno), .kevent).?,
+                std.math.minInt(@TypeOf(rc))...-1 => return .errno(errno, .kevent),
                 else => {},
             }
 
@@ -1187,11 +1200,12 @@ pub const FilePoll = struct {
             // such error events; they are packed from index 0 regardless of
             // which change failed. xnu ORs EV_ERROR into the existing action
             // bits (EV_DELETE|EV_ERROR = 0x4002), so test the bit, not equality.
-            if (rc >= 1 and (changelist[0].flags & std.c.EV.ERROR) != 0 and changelist[0].data != 0) {
-                return bun.sys.Maybe(void).errnoSys(changelist[0].data, .kevent).?;
-            }
-            if (rc >= 2 and (changelist[1].flags & std.c.EV.ERROR) != 0 and changelist[1].data != 0) {
-                return bun.sys.Maybe(void).errnoSys(changelist[1].data, .kevent).?;
+            for (changelist[0..@intCast(@min(rc, 2))]) |event| {
+                if ((event.flags & std.c.EV.ERROR) == 0 or event.data == 0) continue;
+                const err = keventChangeError(event.data);
+                // close() and one-shot delivery can remove the registration
+                // first. Still clear our flags below, so teardown cannot retry it.
+                if (!deregistrationAlreadyGone(err.err.getErrno())) return err;
             }
         } else if (comptime Environment.isFreeBSD) {
             var changelist = std.mem.zeroes([2]std.c.Kevent);
@@ -1249,7 +1263,7 @@ pub const FilePoll = struct {
                 null,
             );
             if (bun.sys.Maybe(void).errnoSys(rc, .kevent)) |err| {
-                return err;
+                if (!deregistrationAlreadyGone(err.err.getErrno())) return err;
             }
         } else {
             @compileError("unsupported platform");

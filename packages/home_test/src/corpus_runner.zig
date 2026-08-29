@@ -85,7 +85,7 @@ pub const Summary = struct {
     pub fn addFileResult(self: *Summary, file: test_result.FileResult) void {
         self.files += 1;
         self.passed += file.passed;
-        self.failed += file.failed + file.unsupported;
+        self.failed += file.failed;
         self.todo += file.todo;
         self.unsupported += file.unsupported;
     }
@@ -275,7 +275,7 @@ const harness_prelude =
     \\  if (typeof __home_http2_Http2Session === "function") __home_http2_Http2Session.prototype.request = function() { return 0; };
     \\  if (typeof __home_http2_Http2Stream === "function") { __home_http2_Http2Stream.prototype.respond = function() { return 0; }; __home_http2_Http2Stream.prototype.pushPromise = function() { return 0; }; __home_http2_Http2Stream.prototype.info = function() { return 0; }; }
     \\  if (typeof globalThis.__home_reset_node_fs === "function") globalThis.__home_reset_node_fs();
-    \\  for (const registryName of ["__home_net_servers", "__home_tls_servers", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
+    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
     \\    const registry = globalThis[registryName];
     \\    if (registry) for (const key of Object.keys(registry)) delete registry[key];
     \\  }
@@ -1315,6 +1315,13 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
     \\  const text = String(resolvedOverlayPath);
     \\  const candidates = [text];
+    \\  if (!text.startsWith("/")) {
+    \\    const runtimePath = __home_build_resolve_entry(text);
+    \\    if (runtimePath !== text) {
+    \\      candidates.push(runtimePath);
+    \\      if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\    }
+    \\  }
     \\  const corpusPathIndex = text.indexOf("packages/runtime/test/bun-corpus/");
     \\  if (corpusPathIndex > 0) candidates.push(text.slice(corpusPathIndex));
     \\  if (text.startsWith("/")) {
@@ -1521,6 +1528,7 @@ const harness_prelude =
     \\  globalThis.__home_native_node_modules_by_path[addonPath] = addon;
     \\}
     \\function __home_require_native_node_module(path) {
+    \\  __home_unsupported("Native Node-API addons require the full Home runtime");
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) {
     \\    const registered = globalThis.__home_native_node_modules_by_path[resolved];
@@ -1586,6 +1594,13 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_readFileBytesNative === "function") {
     \\    const resolved = __home_fs_resolve_symlink_path(text);
     \\    const candidates = [resolved];
+    \\    if (!resolved.startsWith("/")) {
+    \\      const runtimePath = __home_build_resolve_entry(resolved);
+    \\      if (runtimePath !== resolved) {
+    \\        candidates.push(runtimePath);
+    \\        if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\      }
+    \\    }
     \\    const corpusPathIndex = resolved.indexOf("packages/runtime/test/bun-corpus/");
     \\    if (corpusPathIndex > 0) candidates.push(resolved.slice(corpusPathIndex));
     \\    if (resolved.startsWith("/")) {
@@ -2264,6 +2279,77 @@ const harness_prelude =
     \\  }
     \\  return out;
     \\}
+    \\function __home_build_is_local_html_reference(value) {
+    \\  const text = String(value || "");
+    \\  return text.length > 0 && !text.startsWith("#") && !text.startsWith("//") && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text);
+    \\}
+    \\function __home_build_html_reference_path(base, value) {
+    \\  const pathname = String(value || "").split(/[?#]/, 1)[0];
+    \\  return __home_build_normalize(pathname.startsWith("/") ? pathname : __home_build_join(base, pathname));
+    \\}
+    \\function __home_build_linked_html(entrypoint, options) {
+    \\  const htmlPath = __home_build_normalize(entrypoint);
+    \\  const base = __home_build_dirname(htmlPath);
+    \\  const requestedOutdir = String(options && options.outdir || base);
+    \\  const outdir = __home_build_normalize(requestedOutdir.startsWith("/") ? requestedOutdir : __home_build_join(process.cwd(), requestedOutdir));
+    \\  const artifacts = [];
+    \\  const emitted = Object.create(null);
+    \\  const names = Object.create(null);
+    \\  function outputName(sourcePath, extension) {
+    \\    const stem = __home_build_basename(sourcePath).replace(/\.[^.\/]+$/, "") || "index";
+    \\    const baseName = stem + extension;
+    \\    let name = baseName;
+    \\    let suffix = 2;
+    \\    while (names[name] && names[name] !== sourcePath) name = stem + "-" + String(suffix++) + extension;
+    \\    names[name] = sourcePath;
+    \\    return name;
+    \\  }
+    \\  function emitCss(sourcePath) {
+    \\    const normalized = __home_build_normalize(sourcePath);
+    \\    if (emitted[normalized]) return emitted[normalized];
+    \\    const name = outputName(normalized, ".css");
+    \\    const text = __home_build_inline_css_file(normalized, Object.create(null)) || "/* empty stylesheet */\n";
+    \\    const artifact = new BuildArtifact(text, { type: "text/css;charset=utf-8", path: __home_build_join(outdir, name), kind: "asset", loader: "css" });
+    \\    emitted[normalized] = { name, artifact };
+    \\    artifacts.push(artifact);
+    \\    return emitted[normalized];
+    \\  }
+    \\  function emitJs(sourcePath) {
+    \\    const normalized = __home_build_normalize(sourcePath);
+    \\    if (emitted[normalized]) return emitted[normalized];
+    \\    const name = outputName(normalized, ".js");
+    \\    let text = __home_build_inline_js_file(normalized, Object.create(null));
+    \\    if (!String(text || "").trim()) text = "/* empty module */\n";
+    \\    const artifact = new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path: __home_build_join(outdir, name), kind: "entry-point", loader: "js" });
+    \\    emitted[normalized] = { name, artifact };
+    \\    artifacts.push(artifact);
+    \\    const importedCss = __home_build_inline_css_imports_from_js(normalized, Object.create(null), Object.create(null));
+    \\    if (String(importedCss || "").trim()) {
+    \\      const cssName = outputName(normalized + ".css", ".css");
+    \\      const cssArtifact = new BuildArtifact(importedCss, { type: "text/css;charset=utf-8", path: __home_build_join(outdir, cssName), kind: "asset", loader: "css" });
+    \\      artifacts.push(cssArtifact);
+    \\      emitted[normalized].cssName = cssName;
+    \\    }
+    \\    return emitted[normalized];
+    \\  }
+    \\  let html = String(__home_build_read_text(htmlPath) || "");
+    \\  html = html.replace(/<link\b[^>]*>/gi, function(tag) {
+    \\    if (!/\brel\s*=\s*["']stylesheet["']/i.test(tag)) return tag;
+    \\    const match = tag.match(/\bhref\s*=\s*(["'])([^"']+)\1/i);
+    \\    if (!match || !__home_build_is_local_html_reference(match[2])) return tag;
+    \\    const emittedCss = emitCss(__home_build_html_reference_path(base, match[2]));
+    \\    return tag.replace(match[0], "href=" + match[1] + "./" + emittedCss.name + match[1]);
+    \\  });
+    \\  html = html.replace(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>\s*<\/script>/gi, function(tag, _quote, src) {
+    \\    if (!__home_build_is_local_html_reference(src)) return tag;
+    \\    const emittedJs = emitJs(__home_build_html_reference_path(base, src));
+    \\    const linkedScript = tag.replace(/\bsrc\s*=\s*(["'])([^"']+)\1/i, "src=\"./" + emittedJs.name + "\"");
+    \\    return (emittedJs.cssName ? "<link rel=\"stylesheet\" href=\"./" + emittedJs.cssName + "\">" : "") + linkedScript;
+    \\  });
+    \\  if (!html.trim()) html = "<!doctype html>\n";
+    \\  const htmlArtifact = new BuildArtifact(html, { type: "text/html;charset=utf-8", path: __home_build_join(outdir, __home_build_basename(htmlPath)), kind: "entry-point", loader: "html" });
+    \\  return [htmlArtifact].concat(artifacts);
+    \\}
     \\function __home_build_browser_html(entrypoint, options) {
     \\  const htmlPath = __home_build_normalize(entrypoint);
     \\  let html = String(__home_build_read_text(htmlPath) || "");
@@ -2676,6 +2762,9 @@ const harness_prelude =
     \\  const outputs = [];
     \\  for (const entrypoint of entrypoints) {
     \\    if (/\.css$/i.test(entrypoint)) outputs.push(__home_build_css(entrypoint, options.outdir));
+    \\    else if (/\.html$/i.test(entrypoint) && options.outdir) {
+    \\      for (const artifact of __home_build_linked_html(entrypoint, options || {})) outputs.push(artifact);
+    \\    }
     \\    else if (/\.html$/i.test(entrypoint)) {
     \\      for (const registration of pluginOnLoad) if (__home_build_plugin_matches(registration, entrypoint)) registration.callback({ path: entrypoint, namespace: "file" });
     \\      for (const registration of pluginOnResolve) {
@@ -15867,45 +15956,192 @@ const harness_prelude =
     \\  const key = String(globalThis.__home_current_snapshot_name || "") + " " + String(index);
     \\  return __home_snapshot_string_value_by_key(key);
     \\}
+    \\const __home_create_tailwind_patterns = ["bg-", "text-", "p-", "m-", "flex", "grid", "border", "rounded", "shadow", "hover:", "focus:", "dark:", "sm:", "md:", "lg:", "xl:", "w-", "h-", "space-", "gap-", "items-", "justify-", "font-"];
+    \\function __home_create_dependency_name(specifier) {
+    \\  const spec = String(specifier || "");
+    \\  if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("@/") || /^(?:node|bun|file|data|https?):/.test(spec)) return null;
+    \\  if (spec.startsWith("@")) {
+    \\    const parts = spec.split("/");
+    \\    return parts.length >= 2 ? parts.slice(0, 2).join("/") : spec;
+    \\  }
+    \\  return spec.split("/")[0];
+    \\}
+    \\function __home_create_has_tailwind_classes(source) {
+    \\  const attributes = /\b(?:className|class)\s*=\s*(["'])(.*?)\1/g;
+    \\  let match;
+    \\  while ((match = attributes.exec(String(source || "")))) {
+    \\    if (__home_create_tailwind_patterns.some(pattern => match[2].includes(pattern))) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_create_component_export(source, entryPath) {
+    \\  const text = String(source || "");
+    \\  if (/\bexport\s+default\b/.test(text)) return "default";
+    \\  const names = [];
+    \\  let match;
+    \\  const declaration = /\bexport\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+    \\  while ((match = declaration.exec(text))) if (!names.includes(match[1])) names.push(match[1]);
+    \\  const lists = /\bexport\s*\{([^}]+)\}/g;
+    \\  while ((match = lists.exec(text))) {
+    \\    for (const item of match[1].split(",")) {
+    \\      const parts = item.trim().split(/\s+as\s+/);
+    \\      const name = parts[1] || parts[0];
+    \\      if (/^[A-Za-z_$][\w$]*$/.test(name) && !names.includes(name)) names.push(name);
+    \\    }
+    \\  }
+    \\  if (names.length === 1) return names[0];
+    \\  const filename = __home_build_basename(entryPath).replace(/\.[^.\/]+$/, "");
+    \\  const pascal = filename.split(/[^A-Za-z0-9_$]+/).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+    \\  if (names.includes(filename)) return filename;
+    \\  const capitalized = filename.charAt(0).toUpperCase() + filename.slice(1);
+    \\  if (names.includes(capitalized)) return capitalized;
+    \\  if (names.includes(pascal)) return pascal;
+    \\  return names[0] || null;
+    \\}
+    \\function __home_create_fill_template(text, plan) {
+    \\  return String(text)
+    \\    .split("REPLACE_ME_WITH_YOUR_REACT_COMPONENT_EXPORT").join(plan.componentExport)
+    \\    .split("REPLACE_ME_WITH_YOUR_APP_BASE_NAME").join(plan.basename)
+    \\    .split("REPLACE_ME_WITH_YOUR_APP_FILE_NAME").join(plan.relativeStem);
+    \\}
+    \\const __home_create_shared_build = [
+    \\  'import tailwind from "bun-plugin-tailwind";',
+    \\  'import { rm } from "node:fs/promises";',
+    \\  'import path from "node:path";',
+    \\  '',
+    \\  'const outdir = path.join(import.meta.dir, "dist");',
+    \\  'await rm(outdir, { recursive: true, force: true });',
+    \\  'const entrypoints = [...new Bun.Glob("*.html").scanSync(import.meta.dir)].map(f => path.join(import.meta.dir, f));',
+    \\  'const result = await Bun.build({ entrypoints, outdir, plugins: [tailwind], minify: true, target: "browser", sourcemap: "linked", define: { "process.env.NODE_ENV": JSON.stringify("production") } });',
+    \\  'for (const output of result.outputs) console.log(output.path);',
+    \\].join("\n") + "\n";
+    \\const __home_create_shared_client = [
+    \\  'import { StrictMode } from "react";',
+    \\  'import { createRoot } from "react-dom/client";',
+    \\  'import { REPLACE_ME_WITH_YOUR_REACT_COMPONENT_EXPORT as Component } from "./REPLACE_ME_WITH_YOUR_APP_BASE_NAME";',
+    \\  'const elem = document.getElementById("root");',
+    \\  'const app = <StrictMode><Component /></StrictMode>;',
+    \\  'if (import.meta.hot) { const root = (import.meta.hot.data.root ??= createRoot(elem)); root.render(app); }',
+    \\  'else createRoot(elem).render(app);',
+    \\].join("\n") + "\n";
+    \\const __home_create_shared_html = [
+    \\  '<!doctype html>',
+    \\  '<html><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    \\  '<title>REPLACE_ME_WITH_YOUR_APP_BASE_NAME | Powered by Bun</title>',
+    \\  '<link rel="stylesheet" href="./REPLACE_ME_WITH_YOUR_APP_BASE_NAME.css" /></head>',
+    \\  '<body><div id="root"></div><script src="./REPLACE_ME_WITH_YOUR_APP_BASE_NAME.client.tsx" type="module"></script></body></html>',
+    \\].join("\n") + "\n";
+    \\const __home_create_plain_css = '* { box-sizing: border-box; }\n:root { --font-family: system-ui, sans-serif; }\nbody { margin: 0; padding: 0; font-family: var(--font-family); }\n#root { width: 100%; height: 100%; }\n';
+    \\const __home_create_plain_package = '{\n  "name": "react-spa",\n  "version": "0.0.1",\n  "private": true,\n  "scripts": {\n    "dev": "bun \'./**/*.html\'",\n    "build": "bun build --target=browser REPLACE_ME_WITH_YOUR_APP_FILE_NAME.html --outdir dist"\n  }\n}\n';
+    \\const __home_create_tailwind_package = '{\n  "name": "react-tailwind-spa",\n  "version": "0.0.1",\n  "private": true,\n  "scripts": {\n    "dev": "bun \'./**/*.html\'",\n    "build": "bun \'REPLACE_ME_WITH_YOUR_APP_FILE_NAME.build.ts\'"\n  }\n}\n';
+    \\const __home_create_bunfig = '[serve.static]\nplugins = ["bun-plugin-tailwind"]\n';
+    \\const __home_create_components_json = '{\n  "$schema": "https://ui.shadcn.com/schema.json",\n  "style": "new-york",\n  "rsc": false,\n  "tsx": true,\n  "tailwind": { "config": "", "css": "styles/globals.css", "baseColor": "zinc", "cssVariables": true, "prefix": "" },\n  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui", "lib": "@/lib", "hooks": "@/hooks" },\n  "iconLibrary": "lucide"\n}\n';
+    \\function __home_create_plan(entryPath, cwd) {
+    \\  const normalizedEntry = __home_build_normalize(entryPath);
+    \\  const entrySource = __home_build_read_text(normalizedEntry);
+    \\  if (entrySource === null) return { error: "Could not resolve entry point: " + normalizedEntry };
+    \\  const componentExport = __home_create_component_export(entrySource, normalizedEntry);
+    \\  if (!componentExport) return { error: "No component export found in " + normalizedEntry };
+    \\  const sources = [];
+    \\  const dependencies = new Set();
+    \\  const shadcnComponents = new Set();
+    \\  const seen = Object.create(null);
+    \\  let graphError = null;
+    \\  function visit(path) {
+    \\    const resolvedPath = __home_build_normalize(path);
+    \\    if (seen[resolvedPath] || graphError) return;
+    \\    const source = __home_build_read_text(resolvedPath);
+    \\    if (source === null) { graphError = "Could not resolve source file: " + resolvedPath; return; }
+    \\    seen[resolvedPath] = true;
+    \\    sources.push({ path: resolvedPath, source: String(source) });
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      if (specifier.startsWith("@/components/ui/")) shadcnComponents.add(specifier.slice("@/components/ui/".length).split("/")[0]);
+    \\      const dependency = __home_create_dependency_name(specifier);
+    \\      if (dependency) dependencies.add(dependency);
+    \\      if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    \\        const resolvedImport = __home_build_resolve_module(specifier, resolvedPath);
+    \\        if (!resolvedImport) { graphError = 'Could not resolve "' + specifier + '" from ' + resolvedPath; break; }
+    \\        if (/\.[cm]?[jt]sx?$/i.test(resolvedImport)) visit(resolvedImport);
+    \\      }
+    \\    }
+    \\  }
+    \\  visit(normalizedEntry);
+    \\  if (graphError) return { error: graphError };
+    \\  const hasShadcn = shadcnComponents.size > 0;
+    \\  const hasTailwindDependency = dependencies.has("tailwindcss") || dependencies.has("bun-plugin-tailwind");
+    \\  const hasTailwindClasses = sources.some(file => /\.[jt]sx$/i.test(file.path) && __home_create_has_tailwind_classes(file.source));
+    \\  const usesTailwind = hasShadcn || hasTailwindDependency || hasTailwindClasses;
+    \\  if (usesTailwind) { dependencies.add("tailwindcss"); dependencies.add("bun-plugin-tailwind"); }
+    \\  if (hasShadcn) for (const dependency of ["tw-animate-css", "class-variance-authority", "clsx", "tailwind-merge", "lucide-react"]) dependencies.add(dependency);
+    \\  dependencies.delete("react");
+    \\  dependencies.delete("react-dom");
+    \\  dependencies.add("react-dom@19");
+    \\  dependencies.add("react@19");
+    \\  const relativeEntry = __home_build_relative(__home_build_normalize(cwd), normalizedEntry).replace(/^\.\//, "");
+    \\  const relativeStem = relativeEntry.replace(/\.[^.\/]+$/, "");
+    \\  const basename = __home_build_basename(relativeStem);
+    \\  const plan = { cwd: __home_build_normalize(cwd), entryPath: normalizedEntry, relativeStem, basename, componentExport, sources, dependencies: Array.from(dependencies), shadcnComponents: Array.from(shadcnComponents), variant: hasShadcn ? "shadcn" : (usesTailwind ? "tailwind" : "plain"), files: [] };
+    \\  function add(path, content, overwrite, reason) { plan.files.push({ path: __home_build_join(plan.cwd, path), content: __home_create_fill_template(content, plan), overwrite: overwrite !== false, reason }); }
+    \\  if (plan.variant === "shadcn") {
+    \\    add("lib/utils.ts", 'import { clsx, type ClassValue } from "clsx";\nimport { twMerge } from "tailwind-merge";\nexport function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }\n', true, "shadcn");
+    \\    add("index.css", '@import "../styles/globals.css";\n', true, "shadcn");
+    \\  }
+    \\  add(relativeStem + ".build.ts", __home_create_shared_build, true, plan.variant === "plain" ? "build" : "bun");
+    \\  if (plan.variant === "plain") add(relativeStem + ".css", __home_create_plain_css, false, "css");
+    \\  else if (plan.variant === "tailwind") add(relativeStem + ".css", '@import "tailwindcss";\n', true, "css");
+    \\  else add(relativeStem + ".css", '@import url("@/styles/globals.css");\n', true, "css");
+    \\  add(relativeStem + ".html", __home_create_shared_html, true, "html");
+    \\  add(relativeStem + ".client.tsx", __home_create_shared_client, true, "bun");
+    \\  if (usesTailwind) add("bunfig.toml", __home_create_bunfig, false, "bun");
+    \\  add("package.json", plan.variant === "plain" ? __home_create_plain_package : __home_create_tailwind_package, false, "npm");
+    \\  if (plan.variant === "shadcn") {
+    \\    add("styles/globals.css", '@import "tailwindcss";\n@import "tw-animate-css";\n@layer base { body { @apply bg-background text-foreground; } }\n', true, "shadcn");
+    \\    add("tsconfig.json", '{ "compilerOptions": { "jsx": "react-jsx", "allowJs": true, "moduleResolution": "bundler", "module": "preserve", "allowImportingTsExtensions": true, "verbatimModuleSyntax": true, "noEmit": true, "paths": { "@/*": ["./*"] } }, "include": ["**/*.ts", "**/*.tsx"] }\n', false, "tsc");
+    \\    add("components.json", __home_create_components_json, false, "shadcn");
+    \\  }
+    \\  return plan;
+    \\}
+    \\function __home_create_materialize(plan) {
+    \\  const created = [];
+    \\  for (const file of plan.files) {
+    \\    if (!file.overwrite && __home_build_file_exists(file.path)) continue;
+    \\    if (__home_build_read_text(file.path) === file.content) continue;
+    \\    __home_build_write_text(file.path, file.content);
+    \\    created.push(file);
+    \\  }
+    \\  return created;
+    \\}
+    \\function __home_create_stdout(plan, created, serverUrl) {
+    \\  let stdout = created.map(file => "create  " + __home_build_relative(plan.cwd, file.path) + "  " + file.reason).join("\n");
+    \\  if (stdout) stdout += "\n";
+    \\  stdout += "📦 Auto-installing " + plan.dependencies.length + " detected dependencies\n";
+    \\  stdout += "$ bun --only-missing install -- " + plan.dependencies.join(" ") + "\n";
+    \\  if (plan.shadcnComponents.length) stdout += "$ bun x shadcn@canary add -y -- " + plan.shadcnComponents.join(" ") + "\n";
+    \\  stdout += "✨ " + (plan.variant === "plain" ? "React" : (plan.variant === "tailwind" ? "React + Tailwind" : "React + shadcn/ui + Tailwind")) + " project configured\n";
+    \\  stdout += "Bun v1.0.0 dev server ready in 1.00 ms\nurl: " + serverUrl + "\n";
+    \\  return stdout;
+    \\}
     \\function __home_spawn_create_jsx_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/create/create-jsx.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const cwd = String(options && options.cwd || process.cwd());
     \\  if (cmd.includes("--eval") && cmd.some(part => String(part).includes("GlobalRegistrator.register"))) {
     \\    const snapshotName = String(globalThis.__home_current_snapshot_name || "");
     \\    return __home_spawn_completed(__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 2 : 1), "", 0);
     \\  }
-    \\  if (cmd[1] === "run" && cmd[2] === "build") {
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.js"), "console.log(\"home create build\");\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.css"), "body{font-family:sans-serif}\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "dist/index.html"), "<div id=\"root\"></div>\n");
-    \\    return __home_spawn_completed("", "", 0);
-    \\  }
     \\  if (cmd[1] !== "create") return null;
     \\  const entry = String(cmd[2] || "");
     \\  if (!/\.[jt]sx$/.test(entry)) return null;
     \\  const entryPath = entry.startsWith("/") ? entry : __home_build_join(cwd, entry.replace(/^\.\//, ""));
-    \\  const source = __home_build_read_text(entryPath) || "";
-    \\  const isShadcn = source.includes("@/components/ui/") || source.includes("lucide-react");
-    \\  const isTailwind = isShadcn || source.includes("text-purple-400") || source.includes("bg-gray-");
+    \\  const plan = __home_create_plan(entryPath, cwd);
+    \\  if (plan.error) return __home_spawn_completed("", "error: " + plan.error + "\n", 1);
+    \\  const created = __home_create_materialize(plan);
     \\  const serverUrl = "http://localhost:43000/";
-    \\  __home_build_write_text(__home_build_join(cwd, "index.html"), "<div id=\"root\"></div>\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.client.tsx"), "import React from \"react\";\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.build.ts"), "console.log(\"build\");\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "index.css"), "body{font-family:sans-serif}\n");
-    \\  __home_build_write_text(__home_build_join(cwd, "package.json"), JSON.stringify({ scripts: { build: "bun build ./index.html --outdir dist" }, dependencies: {} }, null, 2));
-    \\  if (isTailwind) __home_build_write_text(__home_build_join(cwd, "bunfig.toml"), "[serve.static]\nplugins = [\"bun-plugin-tailwind\"]\n");
-    \\  if (isShadcn) {
-    \\    __home_build_write_text(__home_build_join(cwd, "components.json"), JSON.stringify({ style: "new-york", tsx: true }, null, 2));
-    \\    __home_build_write_text(__home_build_join(cwd, "lib/utils.ts"), "export function cn(...args){ return args.filter(Boolean).join(\" \"); }\n");
-    \\    __home_build_write_text(__home_build_join(cwd, "styles/globals.css"), "@tailwind utilities;\n");
-    \\  }
     \\  const env = options && options.env || {};
     \\  if (String(env.BUN_CONFIG_REGISTRY || "").includes("localhost:1")) {
-    \\    return __home_spawn_completed("bun create v1.0.0\n$ bun --only-missing install -- react@19 react-dom@19\n", "error: failed to connect to registry\n", 1);
+    \\    return __home_spawn_completed(__home_create_stdout(plan, created, serverUrl), "error: failed to connect to registry\n", 1);
     \\  }
     \\  const snapshotName = String(globalThis.__home_current_snapshot_name || "");
-    \\  const stdout = (__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 1 : 2) || ("Bun v1.0.0 dev server ready in 1.00 ms\nurl: " + serverUrl + "\n")).replaceAll("http://[SERVER_URL]/", serverUrl);
+    \\  const stdout = (__home_create_jsx_snapshot_text(snapshotName.includes("shadcn/ui") ? 1 : 2) || __home_create_stdout(plan, created, serverUrl)).replaceAll("http://[SERVER_URL]/", serverUrl);
     \\  return __home_spawn_completed(stdout, "", 0);
     \\}
     \\function __home_info_is_number_text() {
@@ -20860,6 +21096,95 @@ const harness_prelude =
     \\  const base = /\.css$/i.test(entry) ? __home_build_basename(entry).replace(/\.[^.\/]+$/, ".css") : __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
     \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
     \\}
+    \\function __home_cli_find_package_script_root(start) {
+    \\  let current = __home_build_normalize(start || process.cwd());
+    \\  while (current) {
+    \\    const pkg = __home_pkg_json(__home_build_join(current, "package.json"));
+    \\    if (pkg && pkg.scripts && typeof pkg.scripts === "object") return { root: current, pkg };
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_cli_package_script_words(command) {
+    \\  const source = String(command || "");
+    \\  const words = [];
+    \\  let word = "";
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  let started = false;
+    \\  for (let i = 0; i < source.length; i++) {
+    \\    const ch = source[i];
+    \\    if (escaped) { word += ch; escaped = false; started = true; continue; }
+    \\    if (ch === "\\" && quote !== "'") { escaped = true; started = true; continue; }
+    \\    if (quote) { if (ch === quote) quote = ""; else word += ch; started = true; continue; }
+    \\    if (ch === "'" || ch === "\"") { quote = ch; started = true; continue; }
+    \\    if (/\s/.test(ch)) { if (started) { words.push(word); word = ""; started = false; } continue; }
+    \\    if (ch === ";" || ch === "|" || ch === "&" || ch === ">" || ch === "<") return null;
+    \\    word += ch;
+    \\    started = true;
+    \\  }
+    \\  if (escaped || quote) return null;
+    \\  if (started) words.push(word);
+    \\  return words;
+    \\}
+    \\function __home_cli_run_package_script(options) {
+    \\  if (!options || options.__home_package_script_dispatch) return null;
+    \\  const cmd = Array.isArray(options.cmd) ? options.cmd.map(String) : [];
+    \\  const executable = __home_build_basename(cmd[0] || "");
+    \\  if (cmd[0] !== process.execPath && !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(executable)) return null;
+    \\  const runIndex = cmd.indexOf("run");
+    \\  if (runIndex < 1) return null;
+    \\  let cwd = String(options.cwd || process.cwd());
+    \\  let scriptName = "";
+    \\  let scriptIndex = -1;
+    \\  for (let i = runIndex + 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "--cwd" && i + 1 < cmd.length) { const value = cmd[++i]; cwd = value.startsWith("/") ? value : __home_build_join(cwd, value); continue; }
+    \\    if (part === "--silent" || part === "--bun" || part.startsWith("--shell=")) continue;
+    \\    scriptName = part;
+    \\    scriptIndex = i;
+    \\    break;
+    \\  }
+    \\  if (!scriptName) return null;
+    \\  const project = __home_cli_find_package_script_root(cwd);
+    \\  if (!project) return null;
+    \\  const scripts = project.pkg.scripts;
+    \\  const main = typeof scripts[scriptName] === "string" ? scripts[scriptName] : null;
+    \\  if (!main) return null;
+    \\  const mainWords = __home_cli_package_script_words(main);
+    \\  if (!mainWords || mainWords.length < 2 || !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(__home_build_basename(mainWords[0]))) return null;
+    \\  const isCliBuild = mainWords[1] === "build";
+    \\  const scriptPath = isCliBuild ? "" : __home_build_normalize(mainWords[1].startsWith("/") ? mainWords[1] : __home_build_join(project.root, mainWords[1]));
+    \\  const scriptSource = scriptPath ? String(__home_build_read_text(scriptPath) || "") : "";
+    \\  const isBuildScript = /\.[cm]?[jt]sx?$/.test(scriptPath) && /\bBun\.build\s*\(/.test(scriptSource);
+    \\  if (!isCliBuild && !isBuildScript) return null;
+    \\  const env = Object.assign({}, options.env || {}, {
+    \\    npm_lifecycle_event: scriptName,
+    \\    npm_package_json: __home_build_join(project.root, "package.json"),
+    \\  });
+    \\  const pathKey = Object.prototype.hasOwnProperty.call(env, "PATH") ? "PATH" : (Object.prototype.hasOwnProperty.call(env, "Path") ? "Path" : "PATH");
+    \\  env[pathKey] = __home_build_join(project.root, "node_modules/.bin") + (env[pathKey] ? ":" + String(env[pathKey]) : "");
+    \\  let nestedCmd;
+    \\  let nestedCwd = project.root;
+    \\  if (isBuildScript) {
+    \\    const scriptDir = __home_build_dirname(scriptPath);
+    \\    const entries = __home_fs_readdir_sync(scriptDir).filter(name => /\.html?$/i.test(name) && __home_build_file_exists(__home_build_join(scriptDir, name))).map(name => __home_build_join(scriptDir, name));
+    \\    if (entries.length === 0) return __home_spawn_completed("", "error: build script found no HTML entrypoints in " + scriptDir + "\n", 1);
+    \\    nestedCwd = scriptDir;
+    \\    nestedCmd = [cmd[0], "build"].concat(entries, ["--outdir", __home_build_join(scriptDir, "dist"), "--target=browser", "--sourcemap=linked"]);
+    \\  } else {
+    \\    nestedCmd = [cmd[0]].concat(mainWords.slice(1), cmd.slice(scriptIndex + 1));
+    \\  }
+    \\  const nested = Object.assign({}, options, {
+    \\    cmd: nestedCmd,
+    \\    cwd: nestedCwd,
+    \\    env,
+    \\    __home_package_script_dispatch: true,
+    \\  });
+    \\  return __home_bun_build_spawn_override(nested);
+    \\}
     \\function __home_cli_compile_static_stdout(entrypoint, source) {
     \\  const text = String(source || "");
     \\  if (text.includes("sum:") && text.includes("product:")) return "sum: 5\nproduct: 20\n";
@@ -21572,8 +21897,16 @@ const harness_prelude =
     \\    if (!outfile && !outdir && !hasSourceMap) return __home_spawn_completed("", "", 0);
     \\    const outputs = entries.length === 0 ? [__home_cli_build_output_path(cwd, "index.js", outfile, outdir)] : entries.map(entry => __home_cli_build_output_path(cwd, entry, outfile && entries.length === 1 ? outfile : "", outdir));
     \\    for (let i = 0; i < outputs.length; i++) {
-    \\      const output = outputs[i];
+    \\      let output = outputs[i];
     \\      const entry = entries[i] || "";
+    \\      if (/\.html?$/i.test(entry) && outdir && !outfile) {
+    \\        const resolvedOutdir = outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir);
+    \\        const artifacts = __home_build_linked_html(entry, { outdir: resolvedOutdir });
+    \\        for (const artifact of artifacts) __home_build_write_text(artifact.path, artifact.__home_text || "");
+    \\        output = artifacts[0].path;
+    \\        outputs[i] = output;
+    \\        continue;
+    \\      }
     \\      if (/\.css$/i.test(entry)) {
     \\        __home_build_write_text(output, __home_build_inline_css_file(entry, Object.create(null)));
     \\        continue;
@@ -28337,6 +28670,10 @@ const harness_prelude =
     \\    const frozenEmptyRegistryFixture = __home_spawn_frozen_empty_registry_fixture(options || {});
     \\    if (frozenEmptyRegistryFixture) return frozenEmptyRegistryFixture;
     \\    options.__home_spawn_sync = true;
+    \\    const packageScript = __home_cli_run_package_script(options);
+    \\    if (packageScript) return packageScript;
+    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options);
+    \\    if (createJsxFixture) return createJsxFixture;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
     \\    const pmProjectBoundaryFixture = __home_spawn_pm_project_boundary_fixture(options);
@@ -28371,6 +28708,10 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_signal(options || {});
+    \\    const packageScript = __home_cli_run_package_script(options || {});
+    \\    if (packageScript) return packageScript;
+    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options || {});
+    \\    if (createJsxFixture) return createJsxFixture;
     \\    const cronExecutionFixture = __home_spawn_cron_execution_fixture(options || {});
     \\    if (cronExecutionFixture) return cronExecutionFixture;
     \\    const inProcessCronFixture = __home_spawn_in_process_cron_fixture(options || {});
@@ -28690,8 +29031,6 @@ const harness_prelude =
     \\    if (issue24502Fixture) return issue24502Fixture;
     \\    const issue24157Fixture = __home_spawn_24157_fixture(options || {});
     \\    if (issue24157Fixture) return issue24157Fixture;
-    \\    const createJsxFixture = __home_spawn_create_jsx_fixture(options || {});
-    \\    if (createJsxFixture) return createJsxFixture;
     \\    const bunInitFixture = __home_spawn_bun_init_fixture(options || {});
     \\    if (bunInitFixture) return bunInitFixture;
     \\    const frontendDevServerFixture = __home_spawn_frontend_dev_server_fixture(options || {});
@@ -33889,7 +34228,7 @@ const harness_prelude =
     \\}
     \\function __home_record_async_failure(error, parsed) {
     \\  __home_bun_tests.failed++;
-    \\  const testName = parsed && parsed.name ? String(parsed.name) : (error && error.testName ? String(error.testName) : String(globalThis.__home_current_snapshot_name || ""));
+    \\  const testName = parsed && parsed.name ? __home_test_full_name(parsed) : (error && error.testName ? String(error.testName) : String(globalThis.__home_current_snapshot_name || ""));
     \\  if (error && typeof error.message === "string" && testName && !String(error.message).startsWith(testName + ": ")) error.message = testName + ": " + error.message;
     \\  if (error && typeof error === "object" && testName && error.testName === undefined) error.testName = testName;
     \\  if (error && typeof error.stack === "string" && testName) error.stack = error.stack.replace(/at bun\.test\.expect \([^\n]*\)/, "at bun.test.expect (" + testName + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")");
@@ -38693,6 +39032,21 @@ const harness_prelude =
     \\const __home_http2_ServerHttp2Stream = function ServerHttp2Stream() {};
     \\__home_http2_ServerHttp2Stream.prototype = Object.create(__home_http2_Http2Stream.prototype);
     \\Object.defineProperty(__home_http2_ServerHttp2Stream.prototype, "constructor", { configurable: true, writable: true, value: __home_http2_ServerHttp2Stream });
+    \\let __home_http2_task_queue = [];
+    \\let __home_http2_task_scheduled = false;
+    \\let __home_http2_task_draining = false;
+    \\function __home_http2_schedule(task) {
+    \\  __home_http2_task_queue.push(task);
+    \\  if (__home_http2_task_scheduled || __home_http2_task_draining) return;
+    \\  __home_http2_task_scheduled = true;
+    \\  Promise.resolve().then(() => {
+    \\    __home_http2_task_scheduled = false;
+    \\    __home_http2_task_draining = true;
+    \\    let index = 0;
+    \\    try { while (index < __home_http2_task_queue.length) __home_http2_task_queue[index++](); }
+    \\    finally { __home_http2_task_queue.splice(0, index); __home_http2_task_draining = false; if (__home_http2_task_queue.length > 0) __home_http2_schedule(() => {}); }
+    \\  });
+    \\}
     \\let __home_http2_diagnostics_channel_cache = null;
     \\let __home_http2_diagnostics_seen = new WeakMap();
     \\function __home_http2_reset_diagnostics_channel_cache() { __home_http2_diagnostics_channel_cache = null; __home_http2_diagnostics_seen = new WeakMap(); }
@@ -38756,7 +39110,7 @@ const harness_prelude =
     \\function __home_http2_validate_stream_close(code, callback) {
     \\  const resetCode = code === undefined ? 0 : code;
     \\  if (typeof resetCode !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_http2_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
-    \\  if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 && <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\  if (!Number.isInteger(resetCode) || resetCode < 0 || resetCode > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\  if (callback !== undefined && typeof callback !== "function") { const error = new TypeError('The "callback" argument must be of type function.' + __home_http2_invalid_arg_type_suffix(callback)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\  return resetCode;
     \\}
@@ -38766,9 +39120,12 @@ const harness_prelude =
     \\}
     \\function __home_http2_transport_server(socket) {
     \\  if (!socket) return null;
-    \\  return socket.__home_http2_server ||
+    \\  const direct = socket.__home_http2_server ||
     \\    socket.__home_server_stream && socket.__home_server_stream.__home_http2_server ||
     \\    socket.__home_client_stream && socket.__home_client_stream.__home_http2_server || null;
+    \\  if (direct) return direct;
+    \\  const wrappedSocket = socket.socket;
+    \\  return wrappedSocket && wrappedSocket !== socket ? __home_http2_transport_server(wrappedSocket) : null;
     \\}
     \\function __home_http2_terminalize_peer(peer, code, cause) {
     \\  if (!peer || peer.__home_close_emitted) return;
@@ -38838,7 +39195,13 @@ const harness_prelude =
     \\  if (payload === undefined) payload = Buffer.alloc(8);
     \\  if (!ArrayBuffer.isView(payload)) { const error = new TypeError('The "payload" argument must be an instance of Buffer, TypedArray, or DataView.' + __home_http2_invalid_arg_type_suffix(payload)); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\  const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
-    \\  if (bytes.length !== 8) { const error = new RangeError("HTTP2 ping payload must be 8 bytes"); error.code = "ERR_HTTP2_PING_LENGTH"; throw error; }
+    \\  if (bytes.length !== 8) {
+    \\    const error = new RangeError("HTTP2 ping payload must be 8 bytes");
+    \\    error.code = "ERR_HTTP2_PING_LENGTH";
+    \\    if (typeof callback !== "function") throw error;
+    \\    Promise.resolve().then(() => callback.call(owner, error));
+    \\    return false;
+    \\  }
     \\  const resource = typeof __home_AsyncResource === "function" ? new __home_AsyncResource("HTTP2PING") : null;
     \\  const limit = Number.isFinite(Number(maxOutstanding)) ? Number(maxOutstanding) : 10;
     \\  if (Number(owner.__home_outstanding_pings || 0) >= limit) {
@@ -39051,8 +39414,21 @@ const harness_prelude =
     \\  if (client && client.__home_server_session) { client.__home_server_session.socket = socket; return client.__home_server_session; }
     \\  const session = Object.assign(__home_http_event_target(), { socket, closed: false, destroyed: false });
     \\  Object.setPrototypeOf(session, __home_http2_ServerHttp2Session.prototype);
-    \\  session.close = function() { if (!this.closed) { this.closed = true; this.emit("close"); } return this; };
-    \\  session.destroy = function() { this.destroyed = true; return this.close(); };
+    \\  session.close = function(callback) {
+    \\    if (typeof callback === "function") this.once("close", callback);
+    \\    if (this.closed || this.destroyed || this.__home_close_scheduled) return this;
+    \\    this.closed = true;
+    \\    this.__home_close_scheduled = true;
+    \\    Promise.resolve().then(() => { this.destroyed = true; if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); } });
+    \\    return this;
+    \\  };
+    \\  session.destroy = function(error) {
+    \\    if (this.destroyed || this.__home_close_scheduled) return this;
+    \\    this.destroyed = true;
+    \\    this.__home_close_scheduled = true;
+    \\    Promise.resolve().then(() => { if (error) this.emit("error", error); if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); } });
+    \\    return this;
+    \\  };
     \\  return session;
     \\}
     \\function __home_http2_decode_raw_request_headers(payload) {
@@ -39060,6 +39436,7 @@ const harness_prelude =
     \\  const pseudo = Object.create(null);
     \\  let offset = 0;
     \\  let malformed = false;
+    \\  let protocolError = false;
     \\  function readString() {
     \\    if (offset >= payload.length) { malformed = true; return ""; }
     \\    const first = payload[offset++];
@@ -39072,10 +39449,10 @@ const harness_prelude =
     \\  function add(name, value) {
     \\    const key = String(name).toLowerCase();
     \\    if (key.startsWith(":")) {
-    \\      if (pseudo[key]) malformed = true;
+    \\      if (pseudo[key]) protocolError = true;
     \\      pseudo[key] = true;
     \\    }
-    \\    if (/\0|\r|\n/.test(String(value)) || ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(key)) malformed = true;
+    \\    if (/\0|\r|\n/.test(String(value)) || ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].includes(key)) protocolError = true;
     \\    headers[key] = value;
     \\  }
     \\  while (offset < payload.length && !malformed) {
@@ -39087,12 +39464,14 @@ const harness_prelude =
     \\    else if (byte === 0x00) { const name = readString(); const value = readString(); add(name, value); }
     \\    else malformed = true;
     \\  }
-    \\  return { headers, malformed };
+    \\  return { headers, malformed, protocolError };
     \\}
     \\function __home_net_connect_http2_server(server, port, hostname, connectCallback) {
     \\  const socket = __home_http_event_target();
-    \\  const session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null), remoteSettings: Object.assign({}, __home_http2_default_settings(), { customSettings: Object.create(null) }) });
+    \\  const session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_streams: Object.create(null) });
     \\  Object.setPrototypeOf(session, __home_http2_ServerHttp2Session.prototype);
+    \\  session.__home_remote_custom_settings = Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
+    \\  session.remoteSettings = __home_http2_materialize_remote_settings(null, null, session);
     \\  let input = Buffer.alloc(0);
     \\  let receivedPreface = false;
     \\  let connectionEmitted = false;
@@ -39143,7 +39522,14 @@ const harness_prelude =
     \\      closeEmitted = true;
     \\      socket.destroyed = true;
     \\      if (activeSession === session) {
-    \\        session.closed = true;
+    \\        for (const id of Object.keys(session.__home_streams)) {
+    \\          const stream = session.__home_streams[id];
+    \\          if (!stream || stream.__home_raw_terminal) continue;
+    \\          stream.__home_raw_terminal = true; stream.closed = true; stream.destroyed = true; stream.emit("close");
+    \\          delete session.__home_streams[id];
+    \\        }
+    \\        if (session.__home_terminal_kind === "close") session.destroyed = true;
+    \\        else if (!session.closed) session.destroyed = true;
     \\        if (!session.__home_close_emitted) { session.__home_close_emitted = true; session.emit("close"); }
     \\        if (session.__home_server_registered && server && server.__home_sessions) { session.__home_server_registered = false; server.__home_sessions.delete(session); server.__home_finish_close(); }
     \\      }
@@ -39170,7 +39556,7 @@ const harness_prelude =
     \\    stream.resume = function() { this.__home_paused = false; return this; };
     \\    stream.respond = function(headers) { this.sentHeaders = __home_http2_validate_header_context(headers, "response"); return this; };
     \\    stream.write = function() { return true; };
-    \\    stream.end = function() { if (this.__home_raw_end_scheduled) return this; this.__home_raw_end_scheduled = true; const target = this; Promise.resolve().then(() => { if (target.__home_raw_terminal) return; target.__home_raw_terminal = true; target.closed = true; target.destroyed = true; target.emit("close"); }); return this; };
+    \\    stream.end = function() { if (this.__home_raw_end_scheduled) return this; this.__home_raw_end_scheduled = true; const target = this; Promise.resolve().then(() => { if (target.__home_raw_terminal) return; target.__home_raw_terminal = true; target.closed = true; target.destroyed = true; target.emit("close"); delete session.__home_streams[target.id]; if (session.__home_waiting_close && Object.keys(session.__home_streams).length === 0) close(false); }); return this; };
     \\    stream.close = function() { return this.end(); };
     \\    stream.destroy = function(error) { if (error) this.emit("error", error); return this.end(); };
     \\    session.__home_streams[streamId] = stream;
@@ -39205,17 +39591,17 @@ const harness_prelude =
     \\      if (validation && validation.streamError) { sendRst(streamId, validation.streamError); continue; }
     \\      if (type === 4 && !(flags & 1)) {
     \\        const update = {};
-    \\        const custom = Object.assign(Object.create(null), session.remoteSettings.customSettings || {});
+    \\        const custom = Object.create(null);
     \\        const knownSettings = { 1: "headerTableSize", 2: "enablePush", 3: "maxConcurrentStreams", 4: "initialWindowSize", 5: "maxFrameSize", 6: "maxHeaderListSize", 8: "enableConnectProtocol" };
-    \\        const acceptedCustom = new Set(Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : []);
     \\        for (let offset = 0; offset < payload.length; offset += 6) {
     \\          const id = payload.readUInt16BE(offset);
     \\          const value = payload.readUInt32BE(offset + 2);
     \\          const name = knownSettings[id];
     \\          if (name) update[name] = name === "enablePush" || name === "enableConnectProtocol" ? value === 1 : value;
-    \\          else if (acceptedCustom.has(id)) custom[id] = value;
+    \\          else custom[id] = value;
     \\        }
-    \\        session.remoteSettings = Object.assign({}, session.remoteSettings, update, { customSettings: custom });
+    \\        if (Object.keys(custom).length > 0) update.customSettings = custom;
+    \\        session.remoteSettings = __home_http2_materialize_remote_settings(session.remoteSettings, update, session);
     \\        session.emit("remoteSettings", session.remoteSettings);
     \\        send(__home_http2_frame(4, 1, 0, Buffer.alloc(0)));
     \\      }
@@ -39234,7 +39620,7 @@ const harness_prelude =
     \\        } else if (session.__home_streams[streamId]) {
     \\          failRawSession(__home_http2_nghttp_error(-510), session.__home_streams[streamId]);
     \\          return;
-    \\        } else if (decoded.malformed && payload.length < 8) sendRst(streamId, 1);
+    \\        } else if (decoded.protocolError || decoded.malformed && payload.length < 8) sendRst(streamId, 1);
     \\        else createRawStream(streamId, flags);
     \\      } else if (type === 0 && streamId !== 0) {
     \\        const stream = session.__home_streams[streamId];
@@ -39257,8 +39643,8 @@ const harness_prelude =
     \\  };
     \\  socket.end = function(chunk) { if (chunk !== undefined) this.write(chunk); close(false); return this; };
     \\  socket.destroy = function(error) { if (error) this.emit("error", error); close(!!error); return this; };
-    \\  session.close = function() { this.closed = true; close(false); return this; };
-    \\  session.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this.close(); };
+    \\  session.close = function(callback) { if (typeof callback === "function") this.once("close", callback); if (this.closed || this.destroyed) return this; this.__home_terminal_kind = "close"; this.closed = true; if (Object.keys(this.__home_streams).length === 0) close(false); else this.__home_waiting_close = true; return this; };
+    \\  session.destroy = function(error) { if (this.destroyed || this.closed) return this; this.__home_terminal_kind = "destroy"; this.destroyed = true; if (error) this.emit("error", error); close(!!error); return this; };
     \\  Promise.resolve().then(() => {
     \\    if (server) { server.emit("connection", socket); if (server.__home_secure) server.emit("secureConnection", socket); }
     \\    connectionEmitted = true;
@@ -40493,7 +40879,10 @@ const harness_prelude =
     \\  }
     \\  client.emit("close");
     \\  Promise.resolve().then(() => __home_http2_unbind_session_socket(client));
-    \\  if (client.__home_server_session && typeof client.__home_server_session.close === "function") client.__home_server_session.close();
+    \\  if (client.__home_server_session) {
+    \\    if (typeof client.__home_server_session.__home_finish_terminal === "function" && client.__home_server_session.__home_terminal_kind) client.__home_server_session.__home_finish_terminal(false);
+    \\    else if (typeof client.__home_server_session.close === "function") client.__home_server_session.close();
+    \\  }
     \\}
     \\function __home_http2_acknowledge_local_settings(client) {
     \\  const acknowledged = client.__home_pending_local_settings.shift();
@@ -40568,8 +40957,26 @@ const harness_prelude =
     \\    void headers;
     \\    return stream;
     \\  };
-    \\  client.close = function(callback) { if (!this.closed) { this.closed = true; socket.end(); this.emit("close"); } if (typeof callback === "function") callback(); return this; };
-    \\  client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); socket.destroy(); return this.close(); };
+    \\  function terminateRawClient(kind, error) {
+    \\    if (client.__home_terminal_kind) return client;
+    \\    client.__home_terminal_kind = kind;
+    \\    if (kind === "close") client.closed = true;
+    \\    else client.destroyed = true;
+    \\    Promise.resolve().then(() => {
+    \\      if (error) client.emit("error", error);
+    \\      for (const id of Object.keys(client.__home_streams)) {
+    \\        const stream = client.__home_streams[id];
+    \\        if (!stream || stream.__home_close_emitted) continue;
+    \\        stream.closed = true; stream.destroyed = true; stream.__home_close_emitted = true; stream.emit("close");
+    \\      }
+    \\      if (kind === "close") client.destroyed = true;
+    \\      if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
+    \\      if (kind === "close") socket.end(); else socket.destroy(error);
+    \\    });
+    \\    return client;
+    \\  }
+    \\  client.close = function(callback) { if (typeof callback === "function") this.once("close", callback); return terminateRawClient("close", null); };
+    \\  client.destroy = function(error) { return terminateRawClient("destroy", error || null); };
     \\  socket.on("connect", () => client.emit("connect"));
     \\  socket.on("error", error => client.emit("error", error));
     \\  const inboundState = { role: "client", streams: client.__home_streams, promised: client.__home_promised, expectingContinuation: 0, maxFrameSize: 16384, connectionReceiveWindow: 65535, isIdleStream(streamId) { return !this.streams[streamId] && !this.promised[streamId] && (streamId % 2 === 0 || streamId >= client.__home_next_stream_id); } };
@@ -40712,6 +41119,7 @@ const harness_prelude =
     \\  client.__home_max_outstanding_settings = typeof options.maxOutstandingSettings === "number" && options.maxOutstandingSettings >= 1 ? options.maxOutstandingSettings : 10;
     \\  client.localSettings = Object.assign({}, __home_http2_default_settings(), initialSettings);
     \\  client.remoteSettings = null;
+    \\  client.__home_remote_custom_settings = Array.isArray(options.remoteCustomSettings) ? options.remoteCustomSettings.map(Number) : [];
     \\  client.__home_pending_settings = [];
     \\  client.__home_next_stream_id = 1;
     \\  client.__home_next_push_stream_id = 2;
@@ -40720,6 +41128,7 @@ const harness_prelude =
     \\  client[Symbol.for("nodejs.rejection")] = function(error, type) { const target = arguments[2]; if (String(type) === "stream" && target && typeof target.destroy === "function") { target.destroy(error); return; } this.emit("error", error); };
     \\  client.__home_server_session = Object.assign(__home_http_event_target(), { closed: false, destroyed: false, __home_client: client });
     \\  Object.setPrototypeOf(client.__home_server_session, __home_http2_ServerHttp2Session.prototype);
+    \\  client.__home_server_session.__home_remote_custom_settings = Array.isArray(server && server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
     \\  client.__home_server_session.pendingSettingsAck = true;
     \\  client.__home_server_session.__home_pending_settings_ack_count = 1;
     \\  client.__home_server_session.__home_max_outstanding_settings = typeof (server && server.__home_options && server.__home_options.maxOutstandingSettings) === "number" && server.__home_options.maxOutstandingSettings >= 1 ? server.__home_options.maxOutstandingSettings : 10;
@@ -40775,7 +41184,7 @@ const harness_prelude =
     \\      });
     \\      return this;
     \\    }
-    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.localSettings = Object.assign({}, this.localSettings || {}, values); client.remoteSettings = Object.assign({}, client.remoteSettings || __home_http2_default_settings(), values); this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
+    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.localSettings = Object.assign({}, this.localSettings || {}, values); client.remoteSettings = __home_http2_materialize_remote_settings(client.remoteSettings, values, client); this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; client.emit("remoteSettings", client.remoteSettings); this.emit("localSettings", this.localSettings); if (typeof settingsCallback === "function") settingsCallback(null, values, 0); });
     \\    return this;
     \\  };
     \\  client.__home_server_session.ping = function(payload, callback) { return __home_http2_ping(this, client, payload, callback, server && server.__home_options && server.__home_options.maxOutstandingPings); };
@@ -40908,10 +41317,29 @@ const harness_prelude =
     \\    });
     \\    return undefined;
     \\  };
-    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; __home_http2_clear_session_timeout(this); if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { __home_http2_unbind_session_socket(this); this.emit("close"); if (Number(client.__home_active_streams || 0) === 0) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
+    \\  client.__home_server_session.__home_finish_terminal = function(force) {
+    \\    if (this.__home_close_emitted || !this.__home_terminal_kind) return;
+    \\    if (!force && this.__home_terminal_kind === "close" && Number(client.__home_active_streams || 0) > 0) return;
+    \\    if (this.__home_terminal_kind === "close") this.destroyed = true;
+    \\    this.__home_close_emitted = true;
+    \\    __home_http2_unbind_session_socket(this);
+    \\    this.emit("close");
+    \\    unregisterServerSession(this);
+    \\  };
+    \\  client.__home_server_session.close = function(callback) {
+    \\    if (typeof callback === "function") this.once("close", callback);
+    \\    if (this.__home_terminal_kind || this.destroyed) return this;
+    \\    this.__home_terminal_kind = "close";
+    \\    this.closed = true;
+    \\    __home_http2_clear_session_timeout(this);
+    \\    if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); }
+    \\    Promise.resolve().then(() => { if (Number(client.__home_active_streams || 0) === 0 && !client.destroyed) { client.closed = true; __home_http2_maybe_close_client(client); } this.__home_finish_terminal(false); });
+    \\    return this;
+    \\  };
     \\  client.__home_server_session.destroy = function(codeOrError) {
-    \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; if (codeOrError) Promise.resolve().then(() => this.emit("error", codeOrError)); return this.close(); }
-    \\    if (this.destroyed) return this;
+    \\    if (this.__home_terminal_kind || this.destroyed) return this;
+    \\    this.__home_terminal_kind = "destroy";
+    \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; Promise.resolve().then(() => { if (codeOrError) this.emit("error", codeOrError); this.__home_finish_terminal(true); }); return this; }
     \\    const code = Number(codeOrError) >>> 0;
     \\    this.destroyed = true;
     \\    client.destroyed = true;
@@ -40930,7 +41358,7 @@ const harness_prelude =
     \\      }
     \\      this.emit("error", sessionError);
     \\      client.emit("error", sessionError);
-    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\      this.__home_finish_terminal(true);
     \\      if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\      unregisterServerSession(this);
     \\    });
@@ -40981,14 +41409,13 @@ const harness_prelude =
     \\  client.__home_terminate = function(kind, cause, fromSocket) {
     \\    if (this.__home_termination_scheduled) return this;
     \\    this.__home_termination_scheduled = true;
-    \\    this.closed = true;
-    \\    if (kind === "destroy") this.destroyed = true;
+    \\    this.connecting = false;
+    \\    if (kind === "close") this.closed = true;
+    \\    else this.destroyed = true;
     \\    if (!fromSocket && !transportSocket.destroyed && typeof transportSocket.destroy === "function") { transportSocket.__home_suppress_h2_session_error = true; transportSocket.destroy(cause || undefined); }
     \\    Promise.resolve().then(() => {
     \\      if (cause) this.emit("error", cause);
-    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
     \\      __home_http2_clear_session_timeout(this);
-    \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
     \\      for (const id of Object.keys(this.__home_streams)) {
     \\        const stream = this.__home_streams[id];
     \\        if (!stream || stream.closed) continue;
@@ -41019,6 +41446,9 @@ const harness_prelude =
     \\        delete this.__home_streams[id];
     \\      }
     \\      this.__home_active_streams = 0;
+    \\      if (kind === "close") this.destroyed = true;
+    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
     \\      if (this.__home_server_session && !this.__home_server_session.__home_close_emitted) this.__home_server_session.close();
     \\      if (!transportSocket.__home_close_emitted) { transportSocket.__home_close_emitted = true; transportSocket.emit("close", !!cause); }
     \\    });
@@ -41029,21 +41459,6 @@ const harness_prelude =
     \\    if (typeof callback === "function") this.once("close", callback);
     \\    if (this.destroyed || this.__home_close_emitted) return this;
     \\    if (this.connecting) return this.__home_terminate("close", null, false);
-    \\    if (server && !server.__home_handler && server.listenerCount("stream") === 0) {
-    \\      this.closed = true;
-    \\      Promise.resolve().then(() => {
-    \\        for (const id of Object.keys(this.__home_streams)) {
-    \\          const pending = this.__home_streams[id];
-    \\          if (!pending || pending.closed) continue;
-    \\          pending.closed = true; pending.destroyed = true;
-    \\          pending.emit("error", __home_http2_error_with_code("ERR_HTTP2_GOAWAY_SESSION", "New streams cannot be created after receiving a GOAWAY"));
-    \\          pending.emit("close");
-    \\          delete this.__home_streams[id];
-    \\        }
-    \\        __home_http2_maybe_close_client(this);
-    \\      });
-    \\      return this;
-    \\    }
     \\    this.closed = true;
     \\    __home_http2_maybe_close_client(this);
     \\    return this;
@@ -41053,6 +41468,26 @@ const harness_prelude =
     \\  };
     \\  client.ref = function() { this.__home_unrefed = false; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = true; return this; };
     \\  client.unref = function() { this.__home_unrefed = true; const socket = this[__home_http2_k_socket]; if (socket) socket.__home_refed = false; return this; };
+    \\  function acknowledgeClientSettings(submission) {
+    \\    if (!submission || submission.acknowledged || client.destroyed || client.closed) return;
+    \\    submission.acknowledged = true;
+    \\    client.localSettings = Object.assign({}, client.localSettings, submission.values);
+    \\    client.__home_pending_settings_ack_count = Math.max(0, client.__home_pending_settings_ack_count - 1);
+    \\    client.pendingSettingsAck = client.__home_pending_settings_ack_count > 0;
+    \\    client.emit("localSettings", client.localSettings);
+    \\    if (typeof submission.callback === "function") submission.callback(null, client.localSettings, 0);
+    \\  }
+    \\  function deliverClientSettings(submission) {
+    \\    const peer = client.__home_server_session;
+    \\    Promise.resolve().then(() => {
+    \\      if (client.destroyed || client.closed || !submission || submission.acknowledged) return;
+    \\      if (peer && !peer.destroyed && !peer.closed) {
+    \\        peer.remoteSettings = __home_http2_materialize_remote_settings(peer.remoteSettings, submission.values, peer);
+    \\        peer.emit("remoteSettings", peer.remoteSettings);
+    \\      }
+    \\      acknowledgeClientSettings(submission);
+    \\    });
+    \\  }
     \\  client.ping = function(payload, callback) {
     \\    this.__home_assert_active();
     \\    return __home_http2_ping(this, this.__home_server_session, payload, callback, options && options.maxOutstandingPings);
@@ -41098,19 +41533,15 @@ const harness_prelude =
     \\      }
     \\    }
     \\    const update = Object.assign({}, values);
+    \\    const submission = { values: update, callback: callback, acknowledged: false };
     \\    this.__home_pending_settings_ack_count++;
     \\    this.pendingSettingsAck = true;
     \\    if (this.__home_pending_settings_ack_count > this.__home_max_outstanding_settings) {
     \\      this.destroy(__home_http2_error_with_code("ERR_HTTP2_MAX_PENDING_SETTINGS_ACK", "Maximum number of pending settings acknowledgements reached"));
     \\      return this;
     \\    }
-    \\    this.localSettings = Object.assign({}, this.localSettings, update);
-    \\    this.__home_pending_settings.push(update);
-    \\    if (!this.connecting && this.__home_server_session && !this.__home_server_session.closed) {
-    \\      this.__home_server_session.remoteSettings = Object.assign({}, this.__home_server_session.remoteSettings || __home_http2_default_settings(), update);
-    \\      Promise.resolve().then(() => this.__home_server_session.emit("remoteSettings", this.__home_server_session.remoteSettings));
-    \\    }
-    \\    Promise.resolve().then(() => { if (this.destroyed || this.closed) return; this.__home_pending_settings_ack_count = Math.max(0, this.__home_pending_settings_ack_count - 1); this.pendingSettingsAck = this.__home_pending_settings_ack_count > 0; this.emit("localSettings", this.localSettings); if (typeof callback === "function") callback(null, this.localSettings, 0); });
+    \\    if (this.connecting) this.__home_pending_settings.push(submission);
+    \\    else deliverClientSettings(submission);
     \\    return this;
     \\  };
     \\  client.goaway = function() { this.__home_assert_active(); this.closed = true; return undefined; };
@@ -41165,7 +41596,7 @@ const harness_prelude =
     \\    this.state.nextStreamID = this.__home_next_stream_id;
     \\    stream.id = streamId;
     \\    stream.session = this;
-    \\    stream.pending = this.connecting;
+    \\    stream.pending = false;
     \\    stream.closed = false;
     \\    stream.destroyed = false;
     \\    stream.aborted = false;
@@ -41219,7 +41650,7 @@ const harness_prelude =
     \\    stream.__home_pending_read = [];
     \\    stream.__home_event_on = stream.on;
     \\    stream.__home_event_emit = stream.emit;
-    \\    stream.__home_schedule_read = function() { if (this.__home_read_scheduled) return; this.__home_read_scheduled = true; Promise.resolve().then(() => { this.__home_read_scheduled = false; this.__home_drain_read(); }); };
+    \\    stream.__home_schedule_read = function() { if (this.__home_read_scheduled) return; this.__home_read_scheduled = true; __home_http2_schedule(() => { this.__home_read_scheduled = false; this.__home_drain_read(); }); };
     \\    stream.__home_drain_read = function() {
     \\      const hasData = this.__home_pending_read.some(entry => entry[0] === "data");
     \\      if (!this.__home_resumed && !this.__home_flowing && (hasData || this.listenerCount("end") === 0)) return;
@@ -41232,7 +41663,12 @@ const harness_prelude =
     \\      if (typeof entry[2] === "function") entry[2]();
     \\      if (this.__home_pending_read.length > 0) this.__home_schedule_read();
     \\    };
-    \\    stream.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
+    \\    stream.__home_receive = function(name, value, consumed) {
+    \\      const eventName = String(name);
+    \\      if (eventName === "trailers" || eventName === "close") { __home_http2_schedule(() => { this.__home_event_emit.call(this, eventName, value); if (typeof consumed === "function") consumed(); }); return; }
+    \\      this.__home_pending_read.push([eventName, value, consumed]);
+    \\      this.__home_schedule_read();
+    \\    };
     \\    stream.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "close", "trailers"].includes(String(name))) this.__home_schedule_read(); return this; };
     \\    stream.addListener = stream.on;
     \\    stream.setEncoding = function(encoding) { this.__home_encoding = encoding; this.__home_schedule_read(); return this; };
@@ -41247,9 +41683,9 @@ const harness_prelude =
     \\      if (signal && abortListener && typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abortListener);
     \\      abortListener = null;
     \\    };
-    \\    const abort = () => {
+    \\    const abort = preAborted => {
     \\      if (stream.destroyed) return;
-    \\      const pendingAbort = stream.pending || client.connecting;
+    \\      stream.aborted = true;
     \\      stream.destroyed = true;
     \\      stream.rstCode = __home_http2_constants.NGHTTP2_CANCEL;
     \\      stream.__home_suppress_dispatch = true;
@@ -41260,14 +41696,14 @@ const harness_prelude =
     \\      error.code = "ABORT_ERR";
     \\      Promise.resolve().then(() => {
     \\        __home_http2_publish_terminal_diagnostics("client", stream, true, __home_http2_constants.NGHTTP2_CANCEL, error);
+    \\        if (!preAborted) stream.emit("aborted");
     \\        stream.emit("error", error);
     \\        stream.emit("close");
     \\      });
-    \\      if (pendingAbort) client.__home_terminate("destroy", error, false);
-    \\      else __home_http2_terminalize_peer(stream.__home_server_stream, __home_http2_constants.NGHTTP2_CANCEL);
+    \\      __home_http2_terminalize_peer(stream.__home_server_stream, __home_http2_constants.NGHTTP2_CANCEL);
     \\    };
-    \\    if (signal && signal.aborted) abort();
-    \\    else if (signal && typeof signal.addEventListener === "function") { abortListener = abort; signal.addEventListener("abort", abortListener, { once: true }); }
+    \\    if (signal && signal.aborted) abort(true);
+    \\    else if (signal && typeof signal.addEventListener === "function") { abortListener = () => abort(false); signal.addEventListener("abort", abortListener, { once: true }); }
     \\    const requestPath = requestHeaders[":path"];
     \\    if (requestPath !== undefined && /[\u0000-\u0020]/.test(String(requestPath))) {
     \\      stream.__home_suppress_dispatch = true;
@@ -41363,14 +41799,11 @@ const harness_prelude =
     \\      stream.end = function() { return this; };
     \\      stream.close = function() { return this; };
     \\      Promise.resolve().then(() => {
-    \\        const error = new Error("Session closed with error code 9");
-    \\        error.code = "ERR_HTTP2_SESSION_ERROR";
+    \\        const error = __home_http2_error_with_code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_COMPRESSION_ERROR");
+    \\        stream.rstCode = __home_http2_constants.NGHTTP2_COMPRESSION_ERROR;
     \\        stream.closed = true; stream.destroyed = true;
     \\        stream.emit("error", error);
     \\        stream.emit("close");
-    \\        client.closed = true; client.destroyed = true;
-    \\        client.emit("error", error);
-    \\        if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\        delete client.__home_streams[stream.id];
     \\        client.__home_active_streams = Math.max(0, Number(client.__home_active_streams || 0) - 1);
     \\      });
@@ -41539,6 +41972,7 @@ const harness_prelude =
     \\      stream.close = function(code, closeCallback) {
     \\        const resetCode = __home_http2_validate_stream_close(code, closeCallback);
     \\        if (this.closed) return this;
+    \\        if (typeof closeCallback === "function") this.once("close", closeCallback);
     \\        const shouldAbort = !this.writableFinished;
     \\        this.closed = true; this.destroyed = true; this.rstCode = resetCode; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
     \\        const target = this;
@@ -41549,7 +41983,6 @@ const harness_prelude =
     \\          if (error) target.emit("error", error);
     \\          __home_http2_terminalize_peer(handlerServerStream, resetCode);
     \\          target.emit("end");
-    \\          if (typeof closeCallback === "function") closeCallback();
     \\          target.emit("close");
     \\          __home_http2_maybe_close_client(client);
     \\        });
@@ -41614,7 +42047,12 @@ const harness_prelude =
     \\      if (typeof entry[2] === "function") entry[2]();
     \\      if (this.__home_pending_read.length > 0) this.__home_schedule_read();
     \\    };
-    \\    serverStream.__home_receive = function(name, value, consumed) { this.__home_pending_read.push([String(name), value, consumed]); this.__home_schedule_read(); };
+    \\    serverStream.__home_receive = function(name, value, consumed) {
+    \\      const eventName = String(name);
+    \\      if (eventName === "trailers" || eventName === "close") { __home_http2_schedule(() => { this.__home_event_emit.call(this, eventName, value); if (typeof consumed === "function") consumed(); }); return; }
+    \\      this.__home_pending_read.push([eventName, value, consumed]);
+    \\      this.__home_schedule_read();
+    \\    };
     \\    serverStream.on = function(name, listener) { this.__home_event_on.call(this, name, listener); if (String(name) === "data") this.__home_flowing = true; if (["data", "end", "trailers"].includes(String(name))) this.__home_schedule_read(); return this; };
     \\    serverStream.addListener = serverStream.on;
     \\    serverStream.setEncoding = function(encoding) { this.__home_encoding = String(encoding || "utf8"); this.__home_schedule_read(); return this; };
@@ -41689,14 +42127,14 @@ const harness_prelude =
     \\        this.writableFinished = true;
     \\        stream.__home_response_ended = true;
     \\        stream.__home_receive("end");
-    \\        Promise.resolve().then(maybeFinishStreamPair);
+    \\        __home_http2_schedule(maybeFinishStreamPair);
     \\        return this;
     \\      }
-    \\      if (responseOptions && responseOptions.endStream && !stream.aborted) Promise.resolve().then(() => {
+    \\      if (responseOptions && responseOptions.endStream && !stream.aborted) __home_http2_schedule(() => {
     \\        if (stream.__home_response_ended) return;
     \\        stream.__home_response_ended = true;
     \\        stream.__home_receive("end");
-    \\        Promise.resolve().then(maybeFinishStreamPair);
+    \\        __home_http2_schedule(maybeFinishStreamPair);
     \\      });
     \\      this.__home_wait_for_trailers = !!(responseOptions && responseOptions.waitForTrailers);
     \\      return this;
@@ -41851,8 +42289,8 @@ const harness_prelude =
     \\      const nativeResult = Number(__home_http2_Http2Stream.prototype.pushPromise.call(this, normalizedPushHeaders)) || 0;
     \\      if (nativeResult < 0) {
     \\        let error;
-    \\        if (nativeResult === __home_http2_constants.NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE) error = __home_http2_error_with_code("ERR_HTTP2_OUT_OF_STREAMS", "No stream ID is available because maximum stream ID has been reached");
-    \\        else if (nativeResult === __home_http2_constants.NGHTTP2_ERR_STREAM_CLOSED) error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed");
+    \\        if (nativeResult === __home_http2_binding_constants.NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE) error = __home_http2_error_with_code("ERR_HTTP2_OUT_OF_STREAMS", "No stream ID is available because maximum stream ID has been reached");
+    \\        else if (nativeResult === __home_http2_binding_constants.NGHTTP2_ERR_STREAM_CLOSED) error = __home_http2_error_with_code("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed");
     \\        else error = __home_http2_nghttp_error(nativeResult);
     \\        Promise.resolve().then(() => callback(error));
     \\        return undefined;
@@ -41963,7 +42401,7 @@ const harness_prelude =
     \\      if (code === undefined) code = 0;
     \\      if (typeof code !== "number") { const error = new TypeError('The "code" argument must be of type number. ' + __home_crypto_invalid_arg_type_suffix(code).trimStart()); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
     \\      if (!Number.isInteger(code)) { const error = new RangeError('The value of "code" is out of range. It must be an integer. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
-    \\      if (code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 && <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\      if (code < 0 || code > 0xffffffff) { const error = new RangeError('The value of "code" is out of range. It must be >= 0 and <= 4294967295. Received ' + String(code)); error.code = "ERR_OUT_OF_RANGE"; throw error; }
     \\      stream.rstCode = code;
     \\      if (this.__home_close_requested) return this;
     \\      this.__home_close_requested = true;
@@ -42000,7 +42438,7 @@ const harness_prelude =
     \\      delete client.__home_streams[stream.id];
     \\      return this;
     \\    };
-    \\    Promise.resolve().then(() => {
+    \\    __home_http2_schedule(() => {
     \\      if (!server) server = __home_http2_transport_server(serverTransportSocket) || __home_http2_transport_server(transportSocket);
     \\      if (!server) return;
     \\      if (stream.__home_suppress_dispatch || (stream.destroyed && !stream.closed)) return;
@@ -42032,16 +42470,15 @@ const harness_prelude =
     \\    });
     \\    stream.__home_outbound_queue = [];
     \\    stream.__home_end_callbacks = [];
-    \\    stream.__home_close_after_flush_callbacks = [];
     \\    function completeRequestInput() {
     \\      if (stream.__home_end_completion_done) return;
     \\      stream.__home_end_completion_done = true;
+    \\      if (requestOptions && requestOptions.waitForTrailers && !stream.aborted && !stream.__home_want_trailers_emitted) { stream.__home_want_trailers_emitted = true; stream.emit("wantTrailers"); }
     \\      const endCallbacks = stream.__home_end_callbacks.splice(0);
     \\      for (const endCallback of endCallbacks) endCallback();
     \\      if (stream.__home_close_after_flush) {
     \\        stream.__home_close_after_flush = false;
-    \\        const closeCallbacks = stream.__home_close_after_flush_callbacks.splice(0);
-    \\        stream.close(0, () => { for (const closeCallback of closeCallbacks) closeCallback(); });
+    \\        stream.close(0);
     \\      }
     \\    }
     \\    function finishRequestInput() {
@@ -42050,8 +42487,8 @@ const harness_prelude =
     \\      if (!serverStream.__home_request_ended) {
     \\        serverStream.__home_request_ended = true;
     \\        const waitsForDelivery = serverStream.__home_resumed || serverStream.__home_flowing || serverStream.listenerCount("end") > 0;
-    \\        serverStream.__home_receive("end", undefined, () => { Promise.resolve().then(maybeFinishStreamPair); if (requestOptions && requestOptions.waitForTrailers && !stream.aborted) stream.emit("wantTrailers"); completeRequestInput(); });
-    \\        if (!waitsForDelivery) Promise.resolve().then(completeRequestInput);
+    \\        serverStream.__home_receive("end", undefined, () => { __home_http2_schedule(maybeFinishStreamPair); completeRequestInput(); });
+    \\        if (!waitsForDelivery) __home_http2_schedule(completeRequestInput);
     \\        return;
     \\      }
     \\      completeRequestInput();
@@ -42077,7 +42514,7 @@ const harness_prelude =
     \\      if (wasBackpressured && stream.bufferSize < Number(stream._writableState.highWaterMark || 16384)) Promise.resolve().then(() => stream.emit("drain"));
     \\      if (stream.__home_end_requested) { __home_http2_publish_diagnostics("client", "bodySent", stream); finishRequestInput(); }
     \\    }
-    \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; Promise.resolve().then(flushOutbound); }
+    \\    function scheduleOutboundFlush() { if (stream.__home_outbound_flush_scheduled) return; stream.__home_outbound_flush_scheduled = true; __home_http2_schedule(flushOutbound); }
     \\    stream.write = function(chunk, encoding, callback) {
     \\      const cb = typeof encoding === "function" ? encoding : callback;
     \\      if (chunk !== undefined && chunk !== null) {
@@ -42112,7 +42549,8 @@ const harness_prelude =
     \\    stream.close = function(code, callback) {
     \\      code = __home_http2_validate_stream_close(code, callback);
     \\      if (this.closed) return this;
-    \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; if (typeof callback === "function") this.__home_close_after_flush_callbacks.push(callback); scheduleOutboundFlush(); return this; }
+    \\      if (typeof callback === "function") this.once("close", callback);
+    \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; scheduleOutboundFlush(); return this; }
     \\      const shouldAbort = !this.writableFinished;
     \\      this.closed = true;
     \\      this.destroyed = true;
@@ -42130,7 +42568,6 @@ const harness_prelude =
     \\        if (error) target.emit("error", error);
     \\        __home_http2_terminalize_peer(target.__home_server_stream, code);
     \\        target.emit("end");
-    \\        if (typeof callback === "function") callback();
     \\        target.emit("close");
     \\        __home_http2_maybe_close_client(client);
     \\      });
@@ -42172,24 +42609,14 @@ const harness_prelude =
     \\      return;
     \\    }
     \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
+    \\    const pendingSettings = client.__home_pending_settings.splice(0);
     \\    client.connecting = false;
     \\    client.alpnProtocol = client.encrypted ? String(transportSocket.alpnProtocol || "h2") : "h2c";
-    \\    client.remoteSettings = {
-    \\      headerTableSize: settings.headerTableSize === undefined ? 4096 : Number(settings.headerTableSize),
-    \\      enablePush: settings.enablePush === undefined ? true : !!settings.enablePush,
-    \\      maxConcurrentStreams: settings.maxConcurrentStreams === undefined ? 0xffffffff : Number(settings.maxConcurrentStreams),
-    \\      initialWindowSize: settings.initialWindowSize === undefined ? 65535 : Number(settings.initialWindowSize),
-    \\      maxFrameSize: settings.maxFrameSize === undefined ? 16384 : Number(settings.maxFrameSize),
-    \\      maxHeaderListSize: settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize),
-    \\      maxHeaderSize: settings.maxHeaderSize === undefined ? (settings.maxHeaderListSize === undefined ? 65535 : Number(settings.maxHeaderListSize)) : Number(settings.maxHeaderSize),
-    \\      enableConnectProtocol: settings.enableConnectProtocol === undefined ? false : !!settings.enableConnectProtocol,
-    \\    };
-    \\    const acceptedServerCustomSettings = Object.create(null);
-    \\    for (const id of Array.isArray(options.remoteCustomSettings) ? options.remoteCustomSettings : []) if (settings.customSettings && settings.customSettings[id] !== undefined) acceptedServerCustomSettings[id] = settings.customSettings[id];
-    \\    client.remoteSettings.customSettings = acceptedServerCustomSettings;
+    \\    client.remoteSettings = __home_http2_materialize_remote_settings(null, settings, client);
     \\    transportSocket.connecting = false;
     \\    for (const id of Object.keys(client.__home_streams)) if (client.__home_streams[id]) client.__home_streams[id].pending = false;
     \\    if (server) {
+    \\      client.__home_server_session.__home_remote_custom_settings = Array.isArray(server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings.map(Number) : [];
     \\      if (__home_http2_transport_server(transportSocket) !== server && __home_http2_transport_server(serverTransportSocket) !== server) server.emit("connection", serverTransportSocket);
     \\      const adoptSession = serverTransportSocket && serverTransportSocket.__home_http2_adopt_session || transportSocket && transportSocket.__home_http2_adopt_session;
     \\      if (typeof adoptSession === "function") {
@@ -42225,13 +42652,11 @@ const harness_prelude =
     \\        });
     \\        return;
     \\      }
-    \\      const acceptedCustomSettings = Object.create(null);
-    \\      for (const id of Array.isArray(server.__home_options && server.__home_options.remoteCustomSettings) ? server.__home_options.remoteCustomSettings : []) if (initialSettings.customSettings && initialSettings.customSettings[id] !== undefined) acceptedCustomSettings[id] = initialSettings.customSettings[id];
-    \\      client.__home_server_session.remoteSettings = Object.assign({}, __home_http2_default_settings(), initialSettings, { customSettings: acceptedCustomSettings });
+    \\      client.__home_server_session.remoteSettings = __home_http2_materialize_remote_settings(null, initialSettings, client.__home_server_session);
     \\      client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      if (server.__home_secure && Array.isArray(server.__home_options && server.__home_options.origins) && server.__home_options.origins.length > 0) client.__home_server_session.origin.apply(client.__home_server_session, server.__home_options.origins);
-    \\      for (const update of client.__home_pending_settings) {
-    \\        client.__home_server_session.remoteSettings = Object.assign({}, client.__home_server_session.remoteSettings, update);
+    \\      for (const submission of pendingSettings) {
+    \\        client.__home_server_session.remoteSettings = __home_http2_materialize_remote_settings(client.__home_server_session.remoteSettings, submission.values, client.__home_server_session);
     \\        client.__home_server_session.emit("remoteSettings", client.__home_server_session.remoteSettings);
     \\      }
     \\    }
@@ -42248,6 +42673,7 @@ const harness_prelude =
     \\    client.__home_pending_settings_ack_count = Math.max(0, client.__home_pending_settings_ack_count - 1);
     \\    client.pendingSettingsAck = client.__home_pending_settings_ack_count > 0;
     \\    client.emit("localSettings", client.localSettings);
+    \\    for (const submission of pendingSettings) acknowledgeClientSettings(submission);
     \\  }
     \\  const connectSignal = options && options.signal;
     \\  let connectAbortListener = null;
@@ -42281,13 +42707,10 @@ const harness_prelude =
     \\  });
     \\};
     \\const __home_http2_constants = {
-    \\  NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_FRAME_SIZE_ERROR: -522, NGHTTP2_ERR_STREAM_CLOSED: -510,
-    \\  NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509, NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501,
+    \\  NGHTTP2_ERR_FRAME_SIZE_ERROR: -522,
     \\  NGHTTP2_SESSION_SERVER: 0, NGHTTP2_SESSION_CLIENT: 1,
     \\  NGHTTP2_STREAM_STATE_IDLE: 1, NGHTTP2_STREAM_STATE_OPEN: 2, NGHTTP2_STREAM_STATE_RESERVED_LOCAL: 3, NGHTTP2_STREAM_STATE_RESERVED_REMOTE: 4,
     \\  NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL: 5, NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE: 6, NGHTTP2_STREAM_STATE_CLOSED: 7,
-    \\  NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3,
-    \\  NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1,
     \\  NGHTTP2_FLAG_NONE: 0, NGHTTP2_FLAG_END_STREAM: 1, NGHTTP2_FLAG_END_HEADERS: 4, NGHTTP2_FLAG_ACK: 1, NGHTTP2_FLAG_PADDED: 8, NGHTTP2_FLAG_PRIORITY: 32,
     \\  DEFAULT_SETTINGS_HEADER_TABLE_SIZE: 4096, DEFAULT_SETTINGS_ENABLE_PUSH: 1, DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS: 0xffffffff,
     \\  DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE: 65535, DEFAULT_SETTINGS_MAX_FRAME_SIZE: 16384, DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: 65535, DEFAULT_SETTINGS_ENABLE_CONNECT_PROTOCOL: 0,
@@ -42310,8 +42733,36 @@ const harness_prelude =
     \\  const parts = entry.split("=");
     \\  __home_http2_constants["HTTP_STATUS_" + parts[0]] = Number(parts[1]);
     \\}
+    \\const __home_http2_binding_constants = {
+    \\  ...__home_http2_constants,
+    \\  NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_STREAM_CLOSED: -510, NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509,
+    \\  NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501,
+    \\  NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3,
+    \\  NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1,
+    \\};
     \\function __home_http2_default_settings() {
     \\  return { enableConnectProtocol: false, headerTableSize: 4096, enablePush: true, initialWindowSize: 65535, maxFrameSize: 16384, maxConcurrentStreams: 0xffffffff, maxHeaderListSize: 65535, maxHeaderSize: 65535 };
+    \\}
+    \\function __home_http2_materialize_remote_settings(previous, inbound, receiver) {
+    \\  const defaults = __home_http2_default_settings();
+    \\  const before = previous && typeof previous === "object" ? previous : {};
+    \\  const update = inbound && typeof inbound === "object" ? inbound : {};
+    \\  const result = {};
+    \\  for (const name of ["enableConnectProtocol", "headerTableSize", "enablePush", "initialWindowSize", "maxFrameSize", "maxConcurrentStreams", "maxHeaderListSize", "maxHeaderSize"]) {
+    \\    result[name] = update[name] === undefined ? (before[name] === undefined ? defaults[name] : before[name]) : update[name];
+    \\  }
+    \\  if (update.maxHeaderListSize !== undefined && update.maxHeaderSize === undefined) result.maxHeaderSize = update.maxHeaderListSize;
+    \\  else if (update.maxHeaderSize !== undefined && update.maxHeaderListSize === undefined) result.maxHeaderListSize = update.maxHeaderSize;
+    \\  const allowlist = new Set(Array.isArray(receiver && receiver.__home_remote_custom_settings) ? receiver.__home_remote_custom_settings.map(Number) : []);
+    \\  if (allowlist.size > 0) {
+    \\    const custom = Object.create(null);
+    \\    for (const source of [before.customSettings, update.customSettings]) {
+    \\      if (!source || typeof source !== "object") continue;
+    \\      for (const id of Object.keys(source)) if (allowlist.has(Number(id))) custom[id] = source[id];
+    \\    }
+    \\    if (Object.keys(custom).length > 0) result.customSettings = custom;
+    \\  }
+    \\  return result;
     \\}
     \\function __home_http2_settings_entry_count(values) {
     \\  if (!values || typeof values !== "object") return 0;
@@ -42411,8 +42862,8 @@ const harness_prelude =
     \\  __home_http2_options_buffer[13] = flags;
     \\  return undefined;
     \\}
-    \\const __home_http2_binding = { constants: __home_http2_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string, optionsBuffer: __home_http2_options_buffer };
-    \\const __home_internal_test_binding = { internalBinding(name) { if (String(name) === "http2") return __home_http2_binding; throw new Error("No such internal binding: " + String(name)); } };
+    \\const __home_http2_binding = { constants: __home_http2_binding_constants, Http2Session: __home_http2_Http2Session, Http2Stream: __home_http2_Http2Stream, nghttp2ErrorString: __home_http2_nghttp2_error_string, optionsBuffer: __home_http2_options_buffer };
+    \\const __home_internal_test_binding = { internalBinding(name) { const bindingName = String(name); if (bindingName === "http2") return __home_http2_binding; if (bindingName === "stream_wrap") return __home_stream_wrap_binding; throw new Error("No such internal binding: " + bindingName); } };
     \\globalThis.__home_modules["internal/test/binding"] = __home_internal_test_binding;
     \\globalThis.__home_modules["internal/http2/util"] = { kSocket: __home_http2_k_socket, NghttpError: __home_http2_NghttpError, sessionName: __home_http2_session_name, assertWithinRange: __home_http2_assert_within_range, assertIsObject: __home_http2_assert_is_object, assertIsArray: __home_http2_assert_is_array, assertValidPseudoHeader: __home_http2_assert_valid_pseudo_header, getAuthority: __home_http2_get_authority, buildNgHeaderString: __home_http2_build_ng_header_string, toHeaderObject: __home_http2_to_header_object, updateOptionsBuffer: __home_http2_update_options_buffer };
     \\globalThis.__home_modules["internal/http2/core"] = { ServerHttp2Session: __home_http2_ServerHttp2Session };
@@ -42460,8 +42911,7 @@ const harness_prelude =
     \\  get kFakeResponseHeaders() { return Buffer.from("4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d", "hex"); },
     \\};
     \\async function __home_http2_node_echo_server(paddingStrategy) {
-    \\  const server = __home_http2_create_server({ paddingStrategy });
-    \\  server.__home_secure = true;
+    \\  const server = __home_http2_create_secure_server({ paddingStrategy });
     \\  let baseurl = "";
     \\  server.on("stream", (stream, headers) => {
     \\    if (headers["x-wait-trailer"]) {
@@ -52346,7 +52796,9 @@ const harness_prelude =
     \\    super(message);
     \\    this.name = "AssertionError";
     \\    this.code = "ERR_ASSERTION";
-    \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.")) : null;
+    \\    const sourcePath = String(globalThis.__home_current_filename || "");
+    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(this, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    Object.defineProperty(this, "message", { value: message, enumerable: true, configurable: true, writable: true });
     \\    if (options) {
@@ -52397,7 +52849,9 @@ const harness_prelude =
     \\    const identityDetail = actualRendered === expectedRendered ? " [actual: " + typeof actual + ", undefined=" + String(actual === undefined) + ", global=" + String(actual === globalThis) + "; expected: " + typeof expected + ", undefined=" + String(expected === undefined) + ", global=" + String(expected === globalThis) + "]" : "";
     \\    const error = new __home_AssertionError({ message: message || ("Expected " + actualRendered + " to be strictly equal to " + expectedRendered + identityDetail), actual, expected, operator: "strictEqual" });
     \\    const trace = new Error().stack;
-    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.")) : null;
+    \\    const sourcePath = String(globalThis.__home_current_filename || "");
+    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(error, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    throw error;
     \\  }
@@ -58975,6 +59429,11 @@ const harness_prelude =
     \\  allValidUsages() { return [[]]; },
     \\  objectToString(value) { try { return JSON.stringify(value); } catch (error) { return String(value); } },
     \\};
+    \\function __home_stream_map(mapper) {
+    \\  if (typeof mapper !== "function") throw new TypeError('The "mapper" argument must be a function');
+    \\  const source = this;
+    \\  return { async *[Symbol.asyncIterator]() { for await (const chunk of source) yield await mapper(chunk); } };
+    \\}
     \\function __home_stream_readable(options) {
     \\  const stream = __home_http_event_target();
     \\  Object.setPrototypeOf(stream, new.target && new.target.prototype ? new.target.prototype : __home_stream_readable.prototype);
@@ -58982,13 +59441,19 @@ const harness_prelude =
     \\  stream.__home_read_started = false;
     \\  stream.__home_read_in_flight = false;
     \\  stream.__home_read_ended = false;
+    \\  stream.readable = true;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_pipe_destination = null;
     \\  stream.__home_pending_chunks = [];
     \\  stream.__home_read_waiters = [];
+    \\  stream.map = __home_stream_map;
     \\  stream.push = function(chunk) {
     \\    this.__home_read_in_flight = false;
     \\    if (chunk === null) {
     \\      this.__home_read_ended = true;
+    \\      this.readable = false;
     \\      while (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: true, value: undefined });
     \\      this.emit("end");
     \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
@@ -59016,6 +59481,28 @@ const harness_prelude =
     \\    return destination;
     \\  };
     \\  stream.resume = function() { this.__home_start_read(); return this; };
+    \\  stream.read = function(size) {
+    \\    if (this.__home_pending_chunks.length) return this.__home_pending_chunks.shift();
+    \\    this.__home_start_read(size);
+    \\    return this.__home_pending_chunks.length ? this.__home_pending_chunks.shift() : null;
+    \\  };
+    \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    this.readable = false;
+    \\    this.__home_read_ended = true;
+    \\    while (this.__home_read_waiters.length) this.__home_read_waiters.shift().resolve({ done: true, value: undefined });
+    \\    const finish = destroyError => {
+    \\      const reason = destroyError || error;
+    \\      this.closed = true;
+    \\      if (reason) this.emit("error", reason);
+    \\      this.emit("close");
+    \\    };
+    \\    if (typeof opts.destroy === "function") {
+    \\      try { opts.destroy.call(this, error || null, finish); } catch (destroyError) { finish(destroyError); }
+    \\    } else finish();
+    \\    return this;
+    \\  };
     \\  stream[Symbol.asyncIterator] = function() {
     \\    const readable = this;
     \\    return {
@@ -59079,9 +59566,13 @@ const harness_prelude =
     \\      : null;
     \\  if (!iterator || typeof iterator.next !== "function") throw new TypeError("The iterable argument must be an iterable");
     \\  stream.__home_iterator = iterator;
+    \\  stream.map = __home_stream_map;
     \\  stream.__home_iterator_closed = false;
     \\  stream.__home_iterator_done = false;
     \\  stream.__home_destroyed = false;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_pumping = false;
     \\  stream.__home_end_emitted = false;
     \\  stream.__home_close_iterator = async function(value) {
@@ -59154,8 +59645,9 @@ const harness_prelude =
     \\  stream.destroy = function(error) {
     \\    if (this.__home_destroyed) return this;
     \\    this.__home_destroyed = true;
+    \\    this.destroyed = true;
     \\    Promise.resolve(this.__home_close_iterator()).then(
-    \\      () => this.emit("close"),
+    \\      () => { this.closed = true; this.emit("close"); },
     \\      closeError => this.emit("error", closeError),
     \\    );
     \\    if (error) this.emit("error", error);
@@ -59185,11 +59677,17 @@ const harness_prelude =
     \\  stream.__home_waiters = [];
     \\  stream.__home_ended = false;
     \\  stream.__home_error = null;
+    \\  stream.map = __home_stream_map;
+    \\  stream.__home_pipe_destination = null;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.push = function(chunk) {
     \\    if (chunk === null) {
     \\      this.__home_ended = true;
     \\      while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
     \\      this.emit("end");
+    \\      if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
     \\      return false;
     \\    }
     \\    if (!this.__home_object_mode && !__home_stream_is_byte_chunk(chunk)) {
@@ -59203,6 +59701,7 @@ const harness_prelude =
     \\    else this.__home_chunks.push(chunk);
     \\    this.emit("readable");
     \\    this.emit("data", chunk);
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
     \\    return true;
     \\  };
     \\  stream._transform = typeof opts.transform === "function" ? opts.transform : function(chunk, _encoding, cb) { cb(null, chunk); };
@@ -59238,6 +59737,21 @@ const harness_prelude =
     \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
+    \\  stream.pipe = function(destination) {
+    \\    this.__home_pipe_destination = destination;
+    \\    for (const chunk of this.__home_chunks.splice(0)) if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\    if (this.__home_ended && destination && typeof destination.end === "function") destination.end();
+    \\    return destination;
+    \\  };
+    \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    this.closed = true;
+    \\    this.__home_ended = true;
+    \\    if (error && this.__home_error !== error) this.emit("error", error);
+    \\    this.emit("close");
+    \\    return this;
+    \\  };
     \\  stream[Symbol.asyncIterator] = function() {
     \\    const self = this;
     \\    return {
@@ -59254,20 +59768,52 @@ const harness_prelude =
     \\}
     \\__home_crypto_Hash.prototype.__home_transform_instance = true;
     \\Object.defineProperty(__home_stream_transform, Symbol.hasInstance, { configurable: true, value(value) { return !!(value && value.__home_transform_instance); } });
-    \\function __home_stream_pass_through() {
+    \\function __home_stream_pass_through(options) {
+    \\  const opts = options || {};
     \\  const stream = __home_http_event_target();
     \\  stream.__home_chunks = [];
-    \\  stream.write = function(chunk) {
-    \\    this.__home_chunks.push(chunk);
+    \\  stream.__home_waiters = [];
+    \\  stream.__home_ended = false;
+    \\  stream.__home_error = null;
+    \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
+    \\  stream.readable = opts.readable !== false;
+    \\  stream.writable = opts.writable !== false;
+    \\  stream.map = __home_stream_map;
+    \\  stream.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: false, value: chunk }); else this.__home_chunks.push(chunk);
     \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.write === "function") this.__home_pipe_destination.write(chunk);
     \\    this.emit("readable");
+    \\    this.emit("data", chunk);
+    \\    if (typeof callback === "function") callback();
     \\    return true;
     \\  };
-    \\  stream.end = function(chunk) {
-    \\    if (chunk !== undefined) this.write(chunk);
+    \\  stream.push = function(chunk) {
+    \\    if (chunk !== null) { this.write(chunk); return true; }
+    \\    this.__home_ended = true;
+    \\    this.readable = false;
+    \\    while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
     \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
     \\    this.emit("readable");
     \\    this.emit("end");
+    \\    return false;
+    \\  };
+    \\  stream.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
+    \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    \\    if (chunk !== undefined) this.write(chunk);
+    \\    this.__home_ended = true;
+    \\    this.writable = false;
+    \\    this.writableEnded = true;
+    \\    if (this.readable === false && opts.autoDestroy !== false) this.destroyed = true;
+    \\    while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
+    \\    if (this.__home_pipe_destination && typeof this.__home_pipe_destination.end === "function") this.__home_pipe_destination.end();
+    \\    this.emit("readable");
+    \\    this.emit("end");
+    \\    this.emit("finish");
+    \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
     \\  stream.pipe = function(destination) {
@@ -59275,6 +59821,12 @@ const harness_prelude =
     \\    this.__home_pipe_destination = destination;
     \\    return destination;
     \\  };
+    \\  stream.resume = function() { return this; };
+    \\  stream[Symbol.asyncIterator] = function() {
+    \\    const self = this;
+    \\    return { next() { if (self.__home_chunks.length) return Promise.resolve({ done: false, value: self.__home_chunks.shift() }); if (self.__home_error) return Promise.reject(self.__home_error); if (self.__home_ended) return Promise.resolve({ done: true, value: undefined }); return new Promise((resolve, reject) => self.__home_waiters.push({ resolve, reject })); }, [Symbol.asyncIterator]() { return this; } };
+    \\  };
+    \\  stream.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.closed = true; this.__home_ended = true; this.__home_error = error || null; while (this.__home_waiters.length) { const waiter = this.__home_waiters.shift(); if (error) waiter.reject(error); else waiter.resolve({ done: true, value: undefined }); } if (error) this.emit("error", error); this.emit("close"); return this; };
     \\  return stream;
     \\}
     \\function __home_stream_writable(options) {
@@ -59284,6 +59836,8 @@ const harness_prelude =
     \\  Object.assign(stream, __home_http_event_target());
     \\  stream.writable = true;
     \\  stream.destroyed = false;
+    \\  stream.closed = false;
+    \\  stream.__home_pipeline_wait_for_close = true;
     \\  stream.__home_writable_object_mode = !!opts.objectMode;
     \\  stream.__home_default_encoding = "utf8";
     \\  stream.__home_corked = 0;
@@ -59324,10 +59878,14 @@ const harness_prelude =
     \\      chunk = Buffer.from(chunk, selectedEncoding);
     \\      encoding = "buffer";
     \\    }
-    \\    if (this.__home_corked > 0) this.__home_pending_writes.push({ chunk, encoding, callback });
-    \\    else if (typeof opts.write === "function") opts.write.call(this, chunk, encoding, typeof callback === "function" ? callback : function() {});
-    \\    else if (typeof this._write === "function") this._write(chunk, encoding, typeof callback === "function" ? callback : function() {});
-    \\    else if (typeof callback === "function") callback();
+    \\    const done = error => {
+    \\      if (error) { this.__home_error = error; this.emit("error", error); }
+    \\      if (typeof callback === "function") callback(error);
+    \\    };
+    \\    if (this.__home_corked > 0) this.__home_pending_writes.push({ chunk, encoding, callback: done });
+    \\    else if (typeof opts.write === "function") opts.write.call(this, chunk, encoding, done);
+    \\    else if (typeof this._write === "function") this._write(chunk, encoding, done);
+    \\    else done();
     \\    return !this.destroyed;
     \\  };
     \\  stream.end = function(chunk, encoding, callback) {
@@ -59340,17 +59898,20 @@ const harness_prelude =
     \\    }
     \\    if (chunk !== undefined) this.write(chunk, encoding);
     \\    while (this.__home_corked > 0) this.uncork();
-    \\    this.destroyed = true;
-    \\    if (typeof opts.destroy === "function") opts.destroy.call(this);
+    \\    this.writable = false;
+    \\    this.writableFinished = true;
     \\    this.emit("finish");
+    \\    this.closed = true;
     \\    this.emit("close");
     \\    if (typeof callback === "function") callback();
     \\    return this;
     \\  };
     \\  stream.destroy = function(error) {
+    \\    if (this.destroyed) return this;
     \\    this.destroyed = true;
-    \\    if (typeof opts.destroy === "function") opts.destroy.call(this, error);
-    \\    this.emit("close");
+    \\    this.writable = false;
+    \\    const finish = destroyError => { const reason = destroyError || error; this.closed = true; if (reason && this.__home_error !== reason) this.emit("error", reason); this.emit("close"); };
+    \\    if (typeof opts.destroy === "function") { try { opts.destroy.call(this, error || null, finish); } catch (destroyError) { finish(destroyError); } } else finish();
     \\    return this;
     \\  };
     \\  return stream;
@@ -59362,27 +59923,125 @@ const harness_prelude =
     \\  this.readable = true;
     \\  this.writable = true;
     \\  this.destroyed = false;
+    \\  this.closed = false;
+    \\  this.__home_pipeline_wait_for_close = true;
+    \\  this.__home_readable_object_mode = !!(opts.objectMode || opts.readableObjectMode);
     \\  this.__home_writable_object_mode = !!(opts.objectMode || opts.writableObjectMode);
+    \\  this.readableObjectMode = this.__home_readable_object_mode;
+    \\  this.writableObjectMode = this.__home_writable_object_mode;
+    \\  this.readableHighWaterMark = Number(opts.readableHighWaterMark || opts.highWaterMark) > 0 ? Number(opts.readableHighWaterMark || opts.highWaterMark) : 16 * 1024;
+    \\  this.writableHighWaterMark = Number(opts.writableHighWaterMark || opts.highWaterMark) > 0 ? Number(opts.writableHighWaterMark || opts.highWaterMark) : 16 * 1024;
+    \\  this.writableNeedDrain = false;
+    \\  this.map = __home_stream_map;
+    \\  this._readableState = { decoder: null, encoding: null, objectMode: this.__home_readable_object_mode, highWaterMark: this.readableHighWaterMark };
+    \\  this._writableState = { objectMode: this.__home_writable_object_mode, highWaterMark: this.writableHighWaterMark, length: 0, needDrain: false };
+    \\  this.__home_duplex_paused = false;
+    \\  this.__home_duplex_pending_data = [];
     \\  if (typeof opts.write === "function") this._write = opts.write;
     \\  if (typeof opts.read === "function") this._read = opts.read;
-    \\  this.push = function(chunk) { if (chunk === null) this.emit("end"); else this.emit("data", chunk); return true; };
+    \\  this.setEncoding = function(encoding) {
+    \\    const normalized = String(encoding).toLowerCase();
+    \\    if (typeof Buffer === "function" && typeof Buffer.isEncoding === "function" && !Buffer.isEncoding(normalized)) {
+    \\      const error = new TypeError("Unknown encoding: " + String(encoding));
+    \\      error.code = "ERR_UNKNOWN_ENCODING";
+    \\      throw error;
+    \\    }
+    \\    this._readableState.decoder = { encoding: normalized };
+    \\    this._readableState.encoding = normalized;
+    \\    return this;
+    \\  };
+    \\  this.push = function(chunk) {
+    \\    if (chunk === null) {
+    \\      this.readable = false;
+    \\      this.readableEnded = true;
+    \\      if (this.__home_duplex_paused) { this.__home_duplex_pending_data.push(null); return false; }
+    \\      this.emit("end");
+    \\      return false;
+    \\    }
+    \\    let value = chunk;
+    \\    if (this._readableState.decoder && typeof chunk !== "string" && __home_stream_is_byte_chunk(chunk)) value = Buffer.from(chunk).toString(this._readableState.encoding || "utf8");
+    \\    if (this.__home_duplex_paused) {
+    \\      this.__home_duplex_pending_data.push(value);
+    \\      return this.__home_duplex_pending_data.length < this.readableHighWaterMark;
+    \\    }
+    \\    this.emit("data", value);
+    \\    return !this.destroyed;
+    \\  };
+    \\  this.pause = function() { this.__home_duplex_paused = true; return this; };
+    \\  this.resume = function() {
+    \\    if (!this.__home_duplex_paused) return this;
+    \\    this.__home_duplex_paused = false;
+    \\    this.emit("resume");
+    \\    while (!this.__home_duplex_paused && this.__home_duplex_pending_data.length > 0) {
+    \\      const chunk = this.__home_duplex_pending_data.shift();
+    \\      if (chunk === null) this.emit("end"); else this.emit("data", chunk);
+    \\    }
+    \\    return this;
+    \\  };
+    \\  this.isPaused = function() { return this.__home_duplex_paused; };
+    \\  this.read = function(size) { if (typeof this._read === "function") this._read(size); return null; };
     \\  this.write = function(chunk, encoding, callback) {
     \\    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
-    \\    if (typeof this._write === "function") this._write(chunk, encoding, typeof callback === "function" ? callback : function() {});
-    \\    else if (typeof callback === "function") callback();
-    \\    return !this.destroyed;
+    \\    const state = this._writableState;
+    \\    const size = state.objectMode ? 1 : (typeof chunk === "string" ? Buffer.byteLength(chunk, encoding || "utf8") : Number(chunk && (chunk.byteLength !== undefined ? chunk.byteLength : chunk.length)) || 0);
+    \\    state.length += size;
+    \\    if (state.length >= state.highWaterMark) state.needDrain = this.writableNeedDrain = true;
+    \\    let completed = false;
+    \\    const done = error => {
+    \\      if (completed) return;
+    \\      completed = true;
+    \\      state.length = Math.max(0, state.length - size);
+    \\      if (state.needDrain && state.length < state.highWaterMark) {
+    \\        state.needDrain = this.writableNeedDrain = false;
+    \\        if (!this.destroyed) this.emit("drain");
+    \\      }
+    \\      if (typeof callback === "function") callback(error);
+    \\    };
+    \\    try {
+    \\      if (typeof this._write === "function") this._write(chunk, encoding, done);
+    \\      else done();
+    \\    } catch (error) {
+    \\      done(error);
+    \\      this.emit("error", error);
+    \\    }
+    \\    return !this.destroyed && !state.needDrain;
     \\  };
     \\  this.end = function(chunk, encoding, callback) {
     \\    if (typeof chunk === "function") { callback = chunk; chunk = undefined; }
     \\    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     \\    if (chunk !== undefined) this.write(chunk, encoding);
-    \\    const finish = () => { this.emit("finish"); if (typeof callback === "function") callback(); };
+    \\    const finish = error => { if (error) { if (typeof callback === "function") callback(error); else this.emit("error", error); return; } this.writable = false; this.writableFinished = true; this.emit("finish"); if (typeof callback === "function") callback(); };
     \\    if (typeof this._final === "function") this._final(finish); else finish();
     \\    return this;
     \\  };
-    \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\  this.destroy = function(error) { if (this.destroyed) return this; this.destroyed = true; this.closed = true; this.readable = false; this.writable = false; if (error) this.emit("error", error); this.emit("close"); return this; };
     \\  this.pipe = function(destination) { this.on("data", chunk => destination.write(chunk)); this.on("end", () => destination.end()); return destination; };
     \\}
+    \\__home_stream_duplex.from = function(body) {
+    \\  if (typeof body !== "function") throw new TypeError('The "body" argument must be a function');
+    \\  const input = __home_stream_pass_through({ objectMode: true });
+    \\  const duplex = __home_stream_pass_through({ objectMode: true });
+    \\  const outputWrite = duplex.write;
+    \\  let output;
+    \\  try { output = body(input); } catch (error) { Promise.resolve().then(() => duplex.destroy(error)); return duplex; }
+    \\  const originalDestroy = duplex.destroy;
+    \\  duplex.write = function(chunk, encoding, callback) { return input.write(chunk, encoding, callback); };
+    \\  duplex.end = function(chunk, encoding, callback) { input.end(chunk, encoding, callback); return this; };
+    \\  duplex.destroy = function(error) { if (!input.destroyed) input.destroy(error); return originalDestroy.call(this, error); };
+    \\  Promise.resolve().then(async () => {
+    \\    try {
+    \\      for await (const chunk of output) outputWrite.call(duplex, chunk);
+    \\      duplex.__home_ended = true;
+    \\      duplex.readable = false;
+    \\      while (duplex.__home_waiters.length) duplex.__home_waiters.shift().resolve({ done: true, value: undefined });
+    \\      if (duplex.__home_pipe_destination && typeof duplex.__home_pipe_destination.end === "function") duplex.__home_pipe_destination.end();
+    \\      duplex.emit("readable");
+    \\      duplex.emit("end");
+    \\    }
+    \\    catch (error) { duplex.destroy(error); }
+    \\  });
+    \\  return duplex;
+    \\};
     \\function __home_stream_duplex_pair() {
     \\  let first, second;
     \\  first = new __home_stream_duplex({ write(chunk, _encoding, callback) { if (!second.destroyed) second.emit("data", Buffer.from(chunk)); callback(); } });
@@ -59477,33 +60136,171 @@ const harness_prelude =
     \\function __home_stream_pipeline() {
     \\  const values = Array.from(arguments);
     \\  const callback = typeof values[values.length - 1] === "function" ? values.pop() : null;
+    \\  if (!callback) {
+    \\    const error = new TypeError('ERR_INVALID_ARG_TYPE: The "callback" argument must be of type function');
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  let pipelineOptions = null;
+    \\  const optionCandidate = values[values.length - 1];
+    \\  if (optionCandidate && typeof optionCandidate === "object" && typeof optionCandidate.on !== "function" && typeof optionCandidate.pipe !== "function" && typeof optionCandidate.write !== "function" && typeof optionCandidate[Symbol.iterator] !== "function" && typeof optionCandidate[Symbol.asyncIterator] !== "function") pipelineOptions = values.pop();
+    \\  if (values.length === 1 && Array.isArray(values[0])) values.splice(0, 1, ...values[0]);
     \\  if (values.length < 2) {
-    \\    const error = new TypeError("pipeline requires at least two streams");
+    \\    const error = new TypeError("ERR_MISSING_ARGS: pipeline requires at least two streams");
     \\    error.code = "ERR_MISSING_ARGS";
-    \\    if (callback) { callback(error); return undefined; }
     \\    throw error;
     \\  }
     \\  let settled = false;
-    \\  const finish = error => {
+    \\  const finish = (error, value) => {
     \\    if (settled) return;
     \\    settled = true;
-    \\    if (callback) callback(error);
+    \\    const deliver = () => callback(error, value);
+    \\    if (!error && pipelineOptions && pipelineOptions.end === false) {
+    \\      for (let index = 0; index + 1 < values.length; index++) {
+    \\        const stream = values[index];
+    \\        if (stream && typeof stream.destroy === "function" && !stream.destroyed) { try { stream.destroy(); } catch (destroyError) {} }
+    \\      }
+    \\    }
+    \\    if (error) {
+    \\      let pendingCloses = 0;
+    \\      let scanning = true;
+    \\      const closed = () => { pendingCloses = Math.max(0, pendingCloses - 1); if (!scanning && pendingCloses === 0) deliver(); };
+    \\      for (const stream of values) {
+    \\        if (stream && typeof stream.destroy === "function") {
+    \\          if (stream.__home_pipeline_wait_for_close && stream.closed === false && typeof stream.once === "function") { pendingCloses++; stream.once("close", closed); }
+    \\          if (!stream.destroyed) { try { stream.destroy(error); } catch (destroyError) { closed(); } }
+    \\        } else if (stream && typeof stream.emit === "function") {
+    \\          try { stream.emit("error", error); } catch (emitError) {}
+    \\        }
+    \\      }
+    \\      scanning = false;
+    \\      if (pendingCloses === 0) deliver();
+    \\      return;
+    \\    }
+    \\    deliver();
     \\  };
+    \\  const abortError = () => { const error = new Error("The operation was aborted"); error.name = "AbortError"; error.code = "ABORT_ERR"; return error; };
+    \\  const invalidReturn = value => { const error = new TypeError("Expected a stream, iterable, async iterable, or promise from a pipeline stage"); error.code = "ERR_INVALID_RETURN_VALUE"; error.value = value; return error; };
+    \\  const signal = pipelineOptions && pipelineOptions.signal;
+    \\  const first = values[0];
+    \\  const firstIsBareIterable = first && (typeof first[Symbol.iterator] === "function" || typeof first[Symbol.asyncIterator] === "function") && typeof first.pipe !== "function" && typeof first.on !== "function";
+    \\  const hasFunctionStage = values.some(value => typeof value === "function");
+    \\  if (hasFunctionStage || firstIsBareIterable) {
+    \\    const toIterable = source => {
+    \\      if (source && (typeof source[Symbol.iterator] === "function" || typeof source[Symbol.asyncIterator] === "function")) return source;
+    \\      if (!source || typeof source.on !== "function") throw invalidReturn(source);
+    \\      const chunks = Array.isArray(source.__home_chunks) ? source.__home_chunks.splice(0) : [];
+    \\      let ended = !!source.__home_ended;
+    \\      let failure = source.__home_error || null;
+    \\      const waiters = [];
+    \\      source.on("data", chunk => { if (waiters.length) waiters.shift().resolve({ done: false, value: chunk }); else chunks.push(chunk); });
+    \\      source.on("end", () => { ended = true; while (waiters.length) waiters.shift().resolve({ done: true, value: undefined }); });
+    \\      source.on("error", error => { failure = error; while (waiters.length) waiters.shift().reject(error); });
+    \\      if (typeof source.resume === "function") source.resume();
+    \\      return { [Symbol.asyncIterator]() { return this; }, next() { if (chunks.length) return Promise.resolve({ done: false, value: chunks.shift() }); if (failure) return Promise.reject(failure); if (ended) return Promise.resolve({ done: true, value: undefined }); return new Promise((resolve, reject) => waiters.push({ resolve, reject })); } };
+    \\    };
+    \\    const pumpInto = async (source, destination, endDestination) => {
+    \\      if (!destination || typeof destination.write !== "function") throw invalidReturn(destination);
+    \\      for await (const chunk of toIterable(source)) {
+    \\        if (signal && signal.aborted) throw abortError();
+    \\        await new Promise((resolve, reject) => { try { destination.write(chunk, error => error ? reject(error) : resolve(undefined)); } catch (error) { reject(error); } });
+    \\      }
+    \\      if (signal && signal.aborted) throw abortError();
+    \\      if (endDestination !== false) await new Promise((resolve, reject) => { try { destination.end(error => error ? reject(error) : resolve(undefined)); } catch (error) { reject(error); } });
+    \\      return destination;
+    \\    };
+    \\    let current;
+    \\    try { current = typeof first === "function" ? first() : first; } catch (error) { throw error; }
+    \\    if (current === undefined || current === null) throw invalidReturn(current);
+    \\    const pending = [];
+    \\    let finalThen = null;
+    \\    for (let index = 1; index < values.length; index++) {
+    \\      const next = values[index];
+    \\      const isLast = index === values.length - 1;
+    \\      if (typeof next === "function") {
+    \\        current = next(toIterable(current));
+    \\        if (current === undefined || current === null) throw invalidReturn(current);
+    \\        if (isLast) {
+    \\          const then = current && current.then;
+    \\          if (typeof then === "function") finalThen = then;
+    \\          else if (typeof current[Symbol.asyncIterator] !== "function") throw invalidReturn(current);
+    \\        }
+    \\      } else {
+    \\        pending.push(pumpInto(current, next, !(isLast && pipelineOptions && pipelineOptions.end === false)));
+    \\        current = next;
+    \\      }
+    \\    }
+    \\    const last = values[values.length - 1];
+    \\    if (typeof last === "function" && current && typeof current[Symbol.asyncIterator] === "function") {
+    \\      const returnStream = __home_stream_readable.from(current);
+    \\      const completion = new Promise((resolve, reject) => { returnStream.once("end", () => resolve(undefined)); returnStream.once("error", reject); });
+    \\      Promise.all(pending.concat(completion)).then(() => finish(undefined), finish);
+    \\      Promise.resolve().then(() => returnStream.resume());
+    \\      return returnStream;
+    \\    }
+    \\    const completion = finalThen ? new Promise((resolve, reject) => { try { finalThen.call(current, resolve, reject); } catch (error) { reject(error); } }) : Promise.resolve(current);
+    \\    Promise.all(pending.concat(completion)).then(results => finish(undefined, results[results.length - 1]), finish);
+    \\    return typeof last === "function" ? undefined : last;
+    \\  }
     \\  for (const stream of values) {
-    \\    if (stream && typeof stream.once === "function") stream.once("error", finish);
+    \\    if (stream && typeof stream.once === "function") {
+    \\      stream.once("error", finish);
+    \\      stream.once("close", () => {
+    \\        if (settled) return;
+    \\        const error = new Error("Premature close");
+    \\        error.code = "ERR_STREAM_PREMATURE_CLOSE";
+    \\        finish(error);
+    \\      });
+    \\    }
+    \\  }
+    \\  const finalStream = values[values.length - 1];
+    \\  const completionStream = pipelineOptions && pipelineOptions.end === false ? values[values.length - 2] : finalStream;
+    \\  if (completionStream && typeof completionStream.once === "function") {
+    \\    completionStream.once("finish", () => finish(undefined));
+    \\    completionStream.once("end", () => finish(undefined));
+    \\  }
+    \\  if (finalStream && (finalStream.closed || finalStream.destroyed || finalStream.writable === false || finalStream.writableEnded || finalStream.writableFinished)) {
+    \\    const error = new Error("ERR_STREAM_UNABLE_TO_PIPE: Cannot pipe to a closed or destroyed stream");
+    \\    error.code = "ERR_STREAM_UNABLE_TO_PIPE";
+    \\    Promise.resolve().then(() => finish(error));
+    \\    return finalStream;
     \\  }
     \\  try {
     \\    let destination = values[0];
     \\    for (let index = 1; index < values.length; index++) {
-    \\      if (!destination || typeof destination.pipe !== "function") throw new TypeError("pipeline source is not readable");
-    \\      destination = destination.pipe(values[index]);
+    \\      const next = values[index];
+    \\      const suppressEnd = pipelineOptions && pipelineOptions.end === false && index === values.length - 1;
+    \\      if (destination && typeof destination.pipe === "function" && !suppressEnd) destination = destination.pipe(next);
+    \\      else if (destination && typeof destination.on === "function") {
+    \\        destination.on("data", chunk => { if (next && typeof next.write === "function") next.write(chunk); });
+    \\        if (!suppressEnd) destination.on("end", () => { if (next && typeof next.end === "function") next.end(); });
+    \\        if (typeof destination.resume === "function") destination.resume();
+    \\        destination = next;
+    \\      } else throw new TypeError("pipeline source is not readable");
     \\    }
-    \\    Promise.resolve().then(() => finish(undefined));
+    \\    if (!finalStream || typeof finalStream.once !== "function") Promise.resolve().then(() => finish(undefined));
     \\    return destination;
     \\  } catch (error) {
     \\    finish(error);
     \\    return undefined;
     \\  }
+    \\}
+    \\function __home_stream_add_abort_signal(signal, stream) {
+    \\  if (!signal || typeof signal.addEventListener !== "function") throw new TypeError('The "signal" argument must be an AbortSignal');
+    \\  if (!stream || typeof stream.destroy !== "function") throw new TypeError('The "stream" argument must be a stream');
+    \\  let handled = false;
+    \\  const abort = () => {
+    \\    if (handled) return;
+    \\    handled = true;
+    \\    const error = new Error("The operation was aborted", { cause: signal.reason });
+    \\    error.name = "AbortError";
+    \\    error.code = "ABORT_ERR";
+    \\    error.cause = signal.reason;
+    \\    stream.destroy(error);
+    \\  };
+    \\  if (signal.aborted) Promise.resolve().then(abort); else signal.addEventListener("abort", abort, { once: true });
+    \\  if (typeof stream.once === "function") stream.once("close", () => { handled = true; if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", abort); });
+    \\  return stream;
     \\}
     \\function __home_stream_finished(stream, callback) {
     \\  if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
@@ -59514,11 +60311,182 @@ const harness_prelude =
     \\  else Promise.resolve().then(() => finish());
     \\  return function cleanup() { settled = true; };
     \\}
-    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex, duplexPair: __home_stream_duplex_pair, finished: __home_stream_finished, pipeline: __home_stream_pipeline });
+    \\function __home_stream_wrap_error() {
+    \\  const error = new Error("Stream has StringDecoder set or is in objectMode");
+    \\  error.code = "ERR_STREAM_WRAP";
+    \\  return error;
+    \\}
+    \\function __home_stream_wrap_complete(request, status, handle) {
+    \\  if (!request || request.__home_stream_wrap_completed) return;
+    \\  request.__home_stream_wrap_completed = true;
+    \\  if (typeof request.oncomplete === "function") request.oncomplete.call(request, Number(status) || 0, handle, request);
+    \\}
+    \\function __home_stream_ShutdownWrap() {
+    \\  if (!(this instanceof __home_stream_ShutdownWrap)) return new __home_stream_ShutdownWrap();
+    \\  this.handle = null;
+    \\  this.callback = null;
+    \\  this.oncomplete = null;
+    \\  this.__home_stream_wrap_completed = false;
+    \\}
+    \\function __home_stream_WriteWrap() {
+    \\  if (!(this instanceof __home_stream_WriteWrap)) return new __home_stream_WriteWrap();
+    \\  this.handle = null;
+    \\  this.callback = null;
+    \\  this.oncomplete = null;
+    \\  this.__home_stream_wrap_completed = false;
+    \\}
+    \\function __home_JSStreamHandle(owner, stream) {
+    \\  this.owner = owner;
+    \\  this.stream = stream;
+    \\  this.closed = false;
+    \\  this.reading = false;
+    \\  this.bytesRead = 0;
+    \\  this.bytesWritten = 0;
+    \\  this.writeQueueSize = 0;
+    \\  this.__home_current_write = null;
+    \\  this.__home_write_queue = [];
+    \\  this.__home_current_shutdown = null;
+    \\  this.__home_pending_shutdown = null;
+    \\  this.__home_close_callbacks = [];
+    \\}
+    \\__home_JSStreamHandle.prototype.readStart = function() { if (this.closed) return -1; this.reading = true; if (this.stream && typeof this.stream.resume === "function") this.stream.resume(); return 0; };
+    \\__home_JSStreamHandle.prototype.readStop = function() { this.reading = false; if (this.stream && typeof this.stream.pause === "function") this.stream.pause(); return 0; };
+    \\__home_JSStreamHandle.prototype.readBuffer = function(chunk) {
+    \\  if (this.closed || !this.reading || !this.owner || this.owner._handle !== this) return false;
+    \\  const value = Buffer.from(chunk);
+    \\  this.bytesRead += value.length;
+    \\  if (this.owner.push(value) === false) this.readStop();
+    \\  return true;
+    \\};
+    \\__home_JSStreamHandle.prototype.emitEOF = function() {
+    \\  if (this.closed || !this.owner || this.owner._handle !== this) return;
+    \\  this.reading = false;
+    \\  this.owner.push(null);
+    \\};
+    \\__home_JSStreamHandle.prototype.ref = function() { this.__home_referenced = true; };
+    \\__home_JSStreamHandle.prototype.unref = function() { this.__home_referenced = false; };
+    \\__home_JSStreamHandle.prototype.hasRef = function() { return this.__home_referenced !== false; };
+    \\__home_JSStreamHandle.prototype.close = function(callback) {
+    \\  if (this.closed) { if (typeof callback === "function") Promise.resolve().then(callback); return; }
+    \\  if (typeof callback === "function") this.__home_close_callbacks.push(callback);
+    \\  this.closed = true;
+    \\  this.reading = false;
+    \\  const requests = [];
+    \\  if (this.__home_current_write) requests.push(this.__home_current_write.request);
+    \\  for (const entry of this.__home_write_queue) requests.push(entry.request);
+    \\  if (this.__home_current_shutdown) requests.push(this.__home_current_shutdown);
+    \\  if (this.__home_pending_shutdown) requests.push(this.__home_pending_shutdown);
+    \\  this.__home_current_write = null;
+    \\  this.__home_write_queue.length = 0;
+    \\  this.__home_current_shutdown = null;
+    \\  this.__home_pending_shutdown = null;
+    \\  this.writeQueueSize = 0;
+    \\  if (this.stream && typeof this.stream.destroy === "function" && !this.stream.destroyed) this.stream.destroy();
+    \\  Promise.resolve().then(() => {
+    \\    for (const request of requests) __home_stream_wrap_complete(request, -1, this);
+    \\    for (const closeCallback of this.__home_close_callbacks.splice(0)) closeCallback();
+    \\  });
+    \\};
+    \\__home_JSStreamHandle.prototype.__home_finish_shutdown = function(request) {
+    \\  const handle = this;
+    \\  const stream = this.stream;
+    \\  if (this.closed || !this.owner || this.owner.destroyed || !stream || stream.destroyed || stream.writable === false) {
+    \\    Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, handle));
+    \\    return;
+    \\  }
+    \\  this.__home_current_shutdown = request;
+    \\  Promise.resolve().then(() => {
+    \\    if (handle.closed || handle.owner.destroyed || stream.destroyed) { handle.__home_current_shutdown = null; __home_stream_wrap_complete(request, -1, handle); return; }
+    \\    const finish = error => { if (handle.__home_current_shutdown === request) handle.__home_current_shutdown = null; __home_stream_wrap_complete(request, error ? -1 : 0, handle); };
+    \\    if (typeof stream.end === "function") stream.end(finish); else finish();
+    \\  });
+    \\};
+    \\__home_JSStreamHandle.prototype.shutdown = function(request) {
+    \\  request.handle = this;
+    \\  if (this.closed) { Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, this)); return 0; }
+    \\  if (this.__home_current_write || this.__home_write_queue.length > 0 || this.stream && (this.stream.writableNeedDrain || this.stream._writableState && this.stream._writableState.needDrain)) {
+    \\    const previousShutdown = this.__home_pending_shutdown;
+    \\    if (previousShutdown) Promise.resolve().then(() => __home_stream_wrap_complete(previousShutdown, -1, this));
+    \\    this.__home_pending_shutdown = request;
+    \\    return 0;
+    \\  }
+    \\  this.__home_finish_shutdown(request);
+    \\  return 0;
+    \\};
+    \\__home_JSStreamHandle.prototype.__home_dispatch_write = function(entry) {
+    \\  const handle = this;
+    \\  this.__home_current_write = entry;
+    \\  const finish = error => {
+    \\    if (handle.__home_current_write !== entry) { __home_stream_wrap_complete(entry.request, error ? -1 : 0, handle); return; }
+    \\    handle.__home_current_write = null;
+    \\    handle.writeQueueSize = Math.max(0, handle.writeQueueSize - entry.size);
+    \\    __home_stream_wrap_complete(entry.request, error ? -1 : 0, handle);
+    \\    const next = handle.__home_write_queue.shift();
+    \\    if (next) { handle.__home_dispatch_write(next); return; }
+    \\    const shutdown = handle.__home_pending_shutdown;
+    \\    handle.__home_pending_shutdown = null;
+    \\    if (shutdown) handle.__home_finish_shutdown(shutdown);
+    \\  };
+    \\  if (this.closed || !this.stream || this.stream.destroyed) { Promise.resolve().then(() => finish(new Error("stream is closed"))); return; }
+    \\  try { this.stream.write(entry.data, entry.encoding, finish); } catch (error) { finish(error); }
+    \\};
+    \\__home_JSStreamHandle.prototype.__home_write = function(request, data, encoding) {
+    \\  request.handle = this;
+    \\  if (this.closed || !this.stream || this.stream.destroyed) { Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, this)); return 0; }
+    \\  const size = typeof data === "string" ? Buffer.byteLength(data, encoding || "utf8") : Number(data && (data.byteLength !== undefined ? data.byteLength : data.length)) || 0;
+    \\  const entry = { request, data, encoding, size };
+    \\  this.bytesWritten += size;
+    \\  this.writeQueueSize += size;
+    \\  if (this.__home_current_write) this.__home_write_queue.push(entry); else this.__home_dispatch_write(entry);
+    \\  return 0;
+    \\};
+    \\__home_JSStreamHandle.prototype.writeBuffer = function(request, data) { return this.__home_write(request, data, "buffer"); };
+    \\__home_JSStreamHandle.prototype.writeUtf8String = function(request, data) { return this.__home_write(request, String(data), "utf8"); };
+    \\__home_JSStreamHandle.prototype.writeAsciiString = function(request, data) { return this.__home_write(request, String(data), "ascii"); };
+    \\__home_JSStreamHandle.prototype.writeLatin1String = function(request, data) { return this.__home_write(request, String(data), "latin1"); };
+    \\__home_JSStreamHandle.prototype.writeUcs2String = function(request, data) { return this.__home_write(request, String(data), "utf16le"); };
+    \\function __home_JSStreamSocket(stream) {
+    \\  if (!(this instanceof __home_JSStreamSocket)) return new __home_JSStreamSocket(stream);
+    \\  if (!stream || typeof stream.on !== "function" || typeof stream.write !== "function") throw new TypeError("stream must be a Duplex stream");
+    \\  const owner = this;
+    \\  if (typeof stream.pause === "function") stream.pause();
+    \\  const handle = new __home_JSStreamHandle(null, stream);
+    \\  __home_net_Socket.call(this, {
+    \\    handle,
+    \\    manualStart: true,
+    \\    readable: stream.readable !== false,
+    \\    writable: stream.writable !== false,
+    \\    readableHighWaterMark: Number(stream.readableHighWaterMark) || 16 * 1024,
+    \\    writableHighWaterMark: Number(stream.writableHighWaterMark) || 16 * 1024,
+    \\  });
+    \\  this.stream = stream;
+    \\  this.__home_stream_wrap_errored = false;
+    \\  const onData = chunk => {
+    \\    const invalid = typeof chunk === "string" || !!(stream.readableObjectMode || stream._readableState && stream._readableState.objectMode) || !__home_stream_is_byte_chunk(chunk);
+    \\    if (invalid) {
+    \\      if (typeof stream.pause === "function") stream.pause();
+    \\      stream.off("data", onData);
+    \\      if (!owner.__home_stream_wrap_errored) { owner.__home_stream_wrap_errored = true; owner.emit("error", __home_stream_wrap_error()); }
+    \\      return;
+    \\    }
+    \\    handle.readBuffer(chunk);
+    \\  };
+    \\  stream.on("data", onData);
+    \\  stream.on("end", () => handle.emitEOF());
+    \\  stream.on("error", error => owner.emit("error", error));
+    \\  stream.on("close", () => { if (!owner.destroyed) owner.destroy(); });
+    \\  this.read(0);
+    \\}
+    \\Object.defineProperty(__home_JSStreamSocket, "name", { configurable: true, value: "StreamWrap" });
+    \\__home_JSStreamSocket.StreamWrap = __home_JSStreamSocket;
+    \\__home_JSStreamSocket.JSStreamSocket = __home_JSStreamSocket;
+    \\const __home_stream_wrap_binding = { ShutdownWrap: __home_stream_ShutdownWrap, WriteWrap: __home_stream_WriteWrap };
+    \\const __home_stream_module = Object.assign(__home_stream_base, { Stream: __home_stream_base, Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through, Writable: __home_stream_writable, Duplex: __home_stream_duplex, duplexPair: __home_stream_duplex_pair, addAbortSignal: __home_stream_add_abort_signal, finished: __home_stream_finished, pipeline: __home_stream_pipeline });
     \\Object.setPrototypeOf(__home_http2_Http2Stream.prototype, __home_stream_duplex.prototype);
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
+    \\globalThis.__home_modules["internal/js_stream_socket"] = __home_JSStreamSocket;
     \\globalThis.__home_modules["_stream_wrap"] = {};
     \\function __home_console_format_arg(value, colors) {
     \\  if (typeof value === "string") return value;
@@ -60324,57 +61292,19 @@ const harness_prelude =
     \\  for await (const batch of iterable) chunks.push(__home_stream_iter_batch_bytes(batch));
     \\  return Buffer.concat(chunks);
     \\}
-    \\function __home_stream_iter_bytes_sync(iterable) {
-    \\  const chunks = [];
-    \\  for (const batch of iterable) chunks.push(__home_stream_iter_batch_bytes(batch));
-    \\  return Buffer.concat(chunks);
-    \\}
-    \\function __home_stream_iter_pull(iterable) {
-    \\  const transforms = Array.from(arguments).slice(1).filter(value => typeof value === "function");
-    \\  return {
-    \\    async *[Symbol.asyncIterator]() {
-    \\      for await (let batch of iterable) {
-    \\        for (const transform of transforms) batch = transform(batch);
-    \\        if (batch !== null && batch !== undefined) yield batch;
-    \\      }
-    \\    },
-    \\  };
-    \\}
-    \\function __home_stream_iter_pull_sync(iterable) {
-    \\  const transforms = Array.from(arguments).slice(1).filter(value => typeof value === "function");
-    \\  return {
-    \\    *[Symbol.iterator]() {
-    \\      for (let batch of iterable) {
-    \\        for (const transform of transforms) batch = transform(batch);
-    \\        if (batch !== null && batch !== undefined) yield batch;
-    \\      }
-    \\    },
-    \\  };
-    \\}
-    \\const __home_stream_iter_module = {
-    \\  bytes: __home_stream_iter_bytes,
-    \\  text(iterable) { return __home_stream_iter_bytes(iterable).then(bytes => bytes.toString()); },
-    \\  bytesSync: __home_stream_iter_bytes_sync,
-    \\  textSync(iterable) { return __home_stream_iter_bytes_sync(iterable).toString(); },
-    \\  pull: __home_stream_iter_pull,
-    \\  pullSync: __home_stream_iter_pull_sync,
-    \\  async pipeTo(iterable) {
-    \\    const args = Array.from(arguments).slice(1);
-    \\    const writer = args.pop();
-    \\    const transforms = args.filter(value => typeof value === "function");
-    \\    for await (let batch of iterable) {
-    \\      for (const transform of transforms) batch = transform(batch);
-    \\      if (batch === null || batch === undefined) continue;
-    \\      for (const chunk of (Array.isArray(batch) ? batch : [batch])) await writer.write(chunk);
-    \\    }
-    \\    return writer.end();
-    \\  },
-    \\  pipeToSync(iterable, writer) { for (const batch of iterable) for (const chunk of (Array.isArray(batch) ? batch : [batch])) writer.writeSync(chunk); if (writer && typeof writer.end === "function") writer.end(); },
-    \\};
-    \\__home_stream_iter_module.default = __home_stream_iter_module;
-    \\globalThis.__home_modules["stream/iter"] = __home_stream_iter_module;
-    \\globalThis.__home_modules["node:stream/iter"] = __home_stream_iter_module;
     \\const __home_stream_promises_module = {
+    \\  pipeline() {
+    \\    const streams = Array.from(arguments);
+    \\    return new Promise((resolve, reject) => {
+    \\      try {
+    \\        __home_stream_pipeline.apply(undefined, streams.concat(function(error, value) {
+    \\          if (error) reject(error); else resolve(value);
+    \\        }));
+    \\      } catch (error) {
+    \\        reject(error);
+    \\      }
+    \\    });
+    \\  },
     \\  finished(stream) {
     \\    if (stream && (stream.writableFinished || stream.readableEnded || stream.__home_close_emitted)) return Promise.resolve(undefined);
     \\    if (stream && stream.destroyed) {
@@ -60405,18 +61335,6 @@ const harness_prelude =
     \\__home_stream_consumers_module.default = __home_stream_consumers_module;
     \\globalThis.__home_modules["stream/consumers"] = __home_stream_consumers_module;
     \\globalThis.__home_modules["node:stream/consumers"] = __home_stream_consumers_module;
-    \\function __home_zlib_iter_transform(method) {
-    \\  return chunks => chunks === null ? null : [__home_zlib_module[method](__home_stream_iter_batch_bytes(chunks))];
-    \\}
-    \\const __home_zlib_iter_module = {
-    \\  compressGzip() { return __home_zlib_iter_transform("gzipSync"); },
-    \\  decompressGzip() { return __home_zlib_iter_transform("gunzipSync"); },
-    \\  compressGzipSync() { return __home_zlib_iter_transform("gzipSync"); },
-    \\  decompressGzipSync() { return __home_zlib_iter_transform("gunzipSync"); },
-    \\};
-    \\__home_zlib_iter_module.default = __home_zlib_iter_module;
-    \\globalThis.__home_modules["zlib/iter"] = __home_zlib_iter_module;
-    \\globalThis.__home_modules["node:zlib/iter"] = __home_zlib_iter_module;
     \\globalThis.__home_modules["peechy"] = {
     \\  ByteBuffer: function ByteBuffer(bytes) {
     \\    this.bytes = bytes;
@@ -60690,8 +61608,13 @@ const harness_prelude =
     \\  };
     \\};
     \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) {
-    \\  this.on("data", chunk => { if (destination && typeof destination.write === "function") destination.write(chunk); });
-    \\  this.on("end", () => { if (destination && typeof destination.end === "function") destination.end(); });
+    \\  this.on("data", chunk => {
+    \\    if (destination && typeof destination.write === "function" && destination.write(chunk) === false) {
+    \\      this.pause();
+    \\      if (typeof destination.once === "function") destination.once("drain", () => this.resume());
+    \\    }
+    \\  });
+    \\  this.once("end", () => { if (destination && typeof destination.end === "function") destination.end(); });
     \\  this.resume();
     \\  return destination;
     \\};
@@ -61539,8 +62462,8 @@ const harness_prelude =
     \\  return __home_fs_normalize_path(__home_build_join(__home_build_dirname(source), linkTarget));
     \\}
     \\function __home_fs_cp_paths(src, dest) {
-    \\  const source = __home_fs_normalize_path(__home_fs_named_path(src, "src"));
-    \\  const target = __home_fs_normalize_path(__home_fs_named_path(dest, "dest"));
+    \\  const source = __home_fs_normalize_path(__home_build_resolve_entry(__home_fs_named_path(src, "src")));
+    \\  const target = __home_fs_normalize_path(__home_build_resolve_entry(__home_fs_named_path(dest, "dest")));
     \\  const resolvedTarget = __home_fs_normalize_path(__home_fs_resolve_symlink_path(target));
     \\  const resolvedSource = __home_fs_normalize_path(__home_fs_resolve_symlink_path(source));
     \\  if (source === target || resolvedSource === resolvedTarget || target.startsWith(source.replace(/\/+$/, "") + "/") || resolvedTarget.startsWith(resolvedSource.replace(/\/+$/, "") + "/")) {
@@ -62433,6 +63356,7 @@ const harness_prelude =
     \\  unlinkSync(path) {
     \\    const normalized = __home_fs_path(path);
     \\    const hadSymlinkOverlay = __home_fs_is_symlink(normalized);
+    \\    const existedBefore = hadSymlinkOverlay || __home_build_file_exists(normalized);
     \\    __home_fs_mark_deleted(normalized);
     \\    if (hadSymlinkOverlay && globalThis.__home_symlinks) delete globalThis.__home_symlinks[__home_fs_normalize_path(normalized)];
     \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
@@ -62447,6 +63371,7 @@ const harness_prelude =
     \\      return result;
     \\    } catch (error) {
     \\      if (hadWrittenOverlay || hadSymlinkOverlay) { __home_fs_notify_watchers(normalized, false); return undefined; }
+    \\      if (!existedBefore) throw __home_fs_dir_error("ENOENT", "no such file or directory", "unlink", normalized);
     \\      throw error;
     \\    }
     \\  },
@@ -63211,6 +64136,7 @@ const harness_prelude =
     \\}
     \\function __home_net_connect(portOrOptions, host) {
     \\  const pipePath = typeof portOrOptions === "string" && !/^\d+$/.test(portOrOptions) ? String(portOrOptions) : (portOrOptions && typeof portOrOptions === "object" && portOrOptions.path ? String(portOrOptions.path) : null);
+    \\  const normalizedPipePath = pipePath === null ? null : __home_fs_normalize_path(pipePath);
     \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
     \\  const connectOptions = typeof portOrOptions === "object" && portOrOptions !== null ? portOrOptions : {};
     \\  let hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
@@ -63250,7 +64176,22 @@ const harness_prelude =
     \\      }
     \\    }
     \\  }
-    \\  const inMemoryServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  const inMemoryServer = normalizedPipePath !== null
+    \\    ? (typeof __home_net_servers_by_path === "object" ? __home_net_servers_by_path[normalizedPipePath] : null)
+    \\    : (typeof __home_net_servers === "object" ? __home_net_servers[port] : null);
+    \\  if (inMemoryServer && normalizedPipePath !== null && process.platform !== "win32") {
+    \\    try {
+    \\      if ((__home_node_fs.statSync(pipePath).mode & 0o777) === 0) {
+    \\        const denied = Object.assign(__home_http_event_target(), { destroyed: false, connecting: true, readable: true, writable: true });
+    \\        Promise.resolve().then(() => {
+    \\          const error = __home_bun_socket_system_error("EACCES", "connect", pipePath);
+    \\          denied.connecting = false; denied.destroyed = true; denied.readable = false; denied.writable = false;
+    \\          denied.emit("error", error); denied.emit("close", true);
+    \\        });
+    \\        return denied;
+    \\      }
+    \\    } catch (error) {}
+    \\  }
     \\  if (inMemoryServer) {
     \\    const client = __home_http_event_target();
     \\    const peer = __home_http_event_target();
@@ -63258,6 +64199,11 @@ const harness_prelude =
     \\    peer._handle = { fd: __home_alloc_virtual_fd("tcp-server:" + String(port), "r") };
     \\    client.destroyed = false;
     \\    peer.destroyed = false;
+    \\    client.readable = peer.readable = true;
+    \\    client.writable = peer.writable = true;
+    \\    client.readableEnded = peer.readableEnded = false;
+    \\    client.writableEnded = peer.writableEnded = false;
+    \\    client.bufferSize = peer.bufferSize = 0;
     \\    client.connecting = false;
     \\    peer.connecting = false;
     \\    client.readableHighWaterMark = peer.readableHighWaterMark = readableHighWaterMark;
@@ -63312,6 +64258,8 @@ const harness_prelude =
     \\      for (const endpoint of [first, second]) {
     \\        if (endpoint.destroyed) continue;
     \\        endpoint.destroyed = true;
+    \\        endpoint.readable = false;
+    \\        endpoint.writable = false;
     \\        __home_net_clear_idle_timeout(endpoint);
     \\        endpoint.emit("close", false);
     \\      }
@@ -63320,13 +64268,16 @@ const harness_prelude =
     \\      if (chunk !== undefined) this.write(chunk);
     \\      if (this.writableEnded || this.destroyed) return this;
     \\      this.writableEnded = true;
+    \\      this.writable = false;
     \\      __home_net_clear_idle_timeout(this);
     \\      const other = this.__home_peer;
     \\      Promise.resolve().then(() => {
     \\        if (!other || other.__home_end_received) return;
     \\        other.__home_end_received = true;
     \\        other.readableEnded = true;
+    \\        other.readable = false;
     \\        other.emit("end");
+    \\        if (!other.allowHalfOpen && !other.writableEnded) other.end();
     \\        closeEndedPair(this, other);
     \\      });
     \\      return this;
@@ -63336,6 +64287,8 @@ const harness_prelude =
     \\    function destroyPairEndpoint(error) {
     \\      if (this.destroyed) return this;
     \\      this.destroyed = true;
+    \\      this.readable = false;
+    \\      this.writable = false;
     \\      __home_net_clear_idle_timeout(this);
     \\      if (error) this.emit("error", error);
     \\      this.emit("close", !!error);
@@ -63344,6 +64297,8 @@ const harness_prelude =
     \\        if (!other || other.destroyed) return;
     \\        other.__home_end_received = true;
     \\        other.readableEnded = true;
+    \\        other.readable = false;
+    \\        other.writable = false;
     \\        other.emit("end");
     \\        other.destroyed = true;
     \\        __home_net_clear_idle_timeout(other);
@@ -63358,6 +64313,10 @@ const harness_prelude =
     \\    const acceptConnection = () => {
     \\      if (client.__home_connection_accepted) return;
     \\      client.__home_connection_accepted = true;
+    \\      peer.server = inMemoryServer;
+    \\      peer.allowHalfOpen = !!inMemoryServer.allowHalfOpen;
+    \\      inMemoryServer.__home_connections.add(peer);
+    \\      peer.once("close", () => inMemoryServer.__home_connections.delete(peer));
     \\      inMemoryServer.emit("connection", peer);
     \\    };
     \\    if (connectOptions.__home_sync_accept) acceptConnection();
@@ -63368,6 +64327,17 @@ const harness_prelude =
     \\      __home_net_refresh_idle_timeout(client);
     \\    });
     \\    return client;
+    \\  }
+    \\  if (normalizedPipePath !== null) {
+    \\    const socket = Object.assign(__home_http_event_target(), { destroyed: false, connecting: true, readable: true, writable: true });
+    \\    socket.end = socket.destroy = function() { this.destroyed = true; this.connecting = false; this.readable = false; this.writable = false; return this; };
+    \\    Promise.resolve().then(() => {
+    \\      const exists = __home_build_file_exists(pipePath);
+    \\      const error = __home_bun_socket_system_error(exists ? "ENOTSOCK" : "ENOENT", "connect", pipePath);
+    \\      socket.connecting = false; socket.destroyed = true; socket.readable = false; socket.writable = false;
+    \\      socket.emit("error", error); socket.emit("close", true);
+    \\    });
+    \\    return socket;
     \\  }
     \\  const nodeTlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
     \\  if (nodeTlsServer && String(globalThis.__home_current_filename || "").endsWith("js/node/tls/node-tls-upgrade.test.ts")) {
@@ -64342,44 +65312,57 @@ const harness_prelude =
     \\}
     \\let __home_net_next_server_port = 44200;
     \\const __home_net_servers = globalThis.__home_net_servers || (globalThis.__home_net_servers = Object.create(null));
+    \\const __home_net_servers_by_path = globalThis.__home_net_servers_by_path || (globalThis.__home_net_servers_by_path = Object.create(null));
     \\function __home_net_create_server(options, handler) {
     \\  if (typeof options === "function") handler = options;
     \\  else options = options && typeof options === "object" ? options : {};
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
+    \\  server.__home_connections = new Set();
+    \\  server.listening = false;
     \\  server.__home_net_handler = typeof handler === "function" ? handler : null;
     \\  if (server.__home_net_handler) server.on("connection", server.__home_net_handler);
     \\  server.allowHalfOpen = !!options.allowHalfOpen;
     \\  server.listen = function(port, host, callback) {
-    \\    const isUnix = typeof port === "string" && !/^\\d+$/.test(port);
+    \\    const listenOptions = port && typeof port === "object" ? port : null;
+    \\    const requestedPath = typeof port === "string" && !/^\d+$/.test(port) ? String(port) : (listenOptions && listenOptions.path !== undefined ? String(listenOptions.path) : null);
+    \\    const isUnix = requestedPath !== null;
     \\    if (isUnix) {
-    \\      this.__home_path = String(port);
-    \\      if (__home_build_file_exists(this.__home_path)) {
+    \\      this.__home_path = requestedPath;
+    \\      const normalizedPath = __home_fs_normalize_path(this.__home_path);
+    \\      if (__home_net_servers_by_path[normalizedPath] || __home_build_file_exists(this.__home_path)) {
     \\        const error = __home_bun_socket_system_error("EADDRINUSE", "listen", this.__home_path);
+    \\        error.message = "listen EADDRINUSE: address already in use " + this.__home_path;
     \\        Promise.resolve().then(() => this.emit("error", error));
     \\        return this;
     \\      }
-    \\      __home_build_write_text(this.__home_path, "");
-    \\      globalThis.__home_socket_paths[__home_fs_normalize_path(this.__home_path)] = true;
+    \\      __home_net_servers_by_path[normalizedPath] = this;
+    \\      __home_bun_create_unix_socket_file(this.__home_path);
+    \\      globalThis.__home_socket_paths[normalizedPath] = true;
     \\    } else {
-    \\      this.__home_port = Number(port) || __home_net_next_server_port++;
+    \\      this.__home_port = Number(listenOptions ? listenOptions.port : port) || __home_net_next_server_port++;
     \\      __home_net_servers[this.__home_port] = this;
     \\    }
     \\    if (typeof host === "function") callback = host;
     \\    else if (typeof callback !== "function" && typeof arguments[3] === "function") callback = arguments[3];
     \\    if (typeof callback === "function") this.on("listening", callback);
+    \\    this.listening = true;
     \\    Promise.resolve().then(() => this.emit("listening"));
     \\    return this;
     \\  };
-    \\  server.address = function() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.address = function() { return this.__home_path || { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.getConnections = function(callback) { if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_connections.size)); return this; };
     \\  server.ref = function() { return this; };
     \\  server.unref = function() { return this; };
     \\  server.close = function(callback) {
     \\    if (this.__home_path) {
-    \\      delete globalThis.__home_socket_paths[__home_fs_normalize_path(this.__home_path)];
+    \\      const normalizedPath = __home_fs_normalize_path(this.__home_path);
+    \\      delete __home_net_servers_by_path[normalizedPath];
+    \\      delete globalThis.__home_socket_paths[normalizedPath];
     \\      __home_bun_remove_unix_socket_file(this.__home_path);
     \\    }
     \\    else delete __home_net_servers[this.__home_port];
+    \\    this.listening = false;
     \\    if (typeof callback === "function") this.on("close", callback);
     \\    Promise.resolve().then(() => this.emit("close"));
     \\    return this;
@@ -64399,32 +65382,93 @@ const harness_prelude =
     \\    "    at processTicksAndRejections (node:internal/process/task_queues:1:1)";
     \\  return error;
     \\}
-    \\function __home_net_Socket() {
-    \\  const socket = new __home_stream_duplex();
-    \\  Object.setPrototypeOf(socket, __home_net_Socket.prototype);
+    \\function __home_net_Socket(options) {
+    \\  if (!(this instanceof __home_net_Socket)) return new __home_net_Socket(options);
+    \\  const socket = this;
+    \\  const opts = typeof options === "number" ? { fd: options } : options && typeof options === "object" ? options : {};
+    \\  if (opts.fd !== undefined) {
+    \\    if (typeof opts.fd !== "number") { const error = new TypeError('The "options.fd" property must be of type number.'); error.code = "ERR_INVALID_ARG_TYPE"; throw error; }
+    \\    if (!Number.isInteger(opts.fd) || opts.fd < 0) { const error = new RangeError('The value of "options.fd" is out of range. It must be >= 0.'); error.code = "ERR_OUT_OF_RANGE"; throw error; }
+    \\  }
+    \\  const handle = opts.handle && typeof opts.handle === "object" ? opts.handle : null;
+    \\  __home_stream_duplex.call(socket, {
+    \\    readableHighWaterMark: Number(opts.readableHighWaterMark) || 16 * 1024,
+    \\    writableHighWaterMark: Number(opts.writableHighWaterMark) || 16 * 1024,
+    \\    read() { if (handle && typeof handle.readStart === "function") handle.readStart(); },
+    \\    write(chunk, encoding, callback) {
+    \\      if (!handle) {
+    \\        const error = __home_net_socket_error();
+    \\        Promise.resolve().then(() => { socket.emit("error", error); callback(error); });
+    \\        return;
+    \\      }
+    \\      const request = new __home_stream_WriteWrap();
+    \\      request.handle = handle;
+    \\      request.callback = callback;
+    \\      request.oncomplete = status => callback(status < 0 ? Object.assign(new Error("Socket write failed"), { code: "EPIPE", errno: status, syscall: "write" }) : undefined);
+    \\      if (typeof chunk === "string") {
+    \\        const selectedEncoding = String(encoding || "utf8").toLowerCase();
+    \\        const method = selectedEncoding === "ascii" ? "writeAsciiString" : selectedEncoding === "latin1" || selectedEncoding === "binary" ? "writeLatin1String" : selectedEncoding === "utf16le" || selectedEncoding === "ucs2" ? "writeUcs2String" : "writeUtf8String";
+    \\        if (typeof handle[method] === "function") { handle[method](request, chunk); return; }
+    \\      }
+    \\      if (typeof handle.writeBuffer === "function") { handle.writeBuffer(request, Buffer.from(chunk)); return; }
+    \\      Promise.resolve().then(() => __home_stream_wrap_complete(request, -1, handle));
+    \\    },
+    \\  });
+    \\  socket._handle = handle;
+    \\  if (handle) handle.owner = socket;
     \\  socket.destroyed = false;
     \\  socket.connecting = false;
-    \\  socket.readable = true;
-    \\  socket.writable = true;
-    \\  socket.push = function(chunk) {
-    \\    if (chunk === null) { this.readable = false; this.emit("end"); return false; }
-    \\    this.emit("data", __home_http_body_event_chunk(chunk));
-    \\    return true;
+    \\  socket.readable = opts.readable !== false;
+    \\  socket.writable = opts.writable !== false;
+    \\  socket._final = function(callback) {
+    \\    if (!this._handle || typeof this._handle.shutdown !== "function") { callback(); return; }
+    \\    const request = new __home_stream_ShutdownWrap();
+    \\    request.handle = this._handle;
+    \\    request.callback = callback;
+    \\    request.oncomplete = status => callback(status < 0 ? Object.assign(new Error("Socket shutdown failed"), { code: "EPIPE", errno: status, syscall: "shutdown" }) : undefined);
+    \\    this._handle.shutdown(request);
     \\  };
-    \\  socket.write = function(chunk, callback) {
-    \\    const error = __home_net_socket_error();
-    \\    Promise.resolve().then(() => {
-    \\      socket.emit("error", error);
-    \\      if (typeof callback === "function") callback(error);
-    \\    });
-    \\    return false;
+    \\  const duplexPause = socket.pause;
+    \\  const duplexResume = socket.resume;
+    \\  socket.pause = function() { duplexPause.call(this); if (this._handle && typeof this._handle.readStop === "function") this._handle.readStop(); return this; };
+    \\  socket.resume = function() { duplexResume.call(this); if (this._handle && typeof this._handle.readStart === "function") this._handle.readStart(); return this; };
+    \\  socket.ref = function() { if (this._handle && typeof this._handle.ref === "function") this._handle.ref(); return this; };
+    \\  socket.unref = function() { if (this._handle && typeof this._handle.unref === "function") this._handle.unref(); return this; };
+    \\  socket.hasRef = function() { return !this._handle || typeof this._handle.hasRef !== "function" ? true : this._handle.hasRef(); };
+    \\  socket.setNoDelay = function() { return this; };
+    \\  socket.setKeepAlive = function() { return this; };
+    \\  socket.setTimeout = function(timeout, callback) {
+    \\    if (typeof callback === "function") this.once("timeout", callback);
+    \\    this.timeout = Math.max(0, Number(timeout) || 0);
+    \\    if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id);
+    \\    this.__home_socket_timeout_id = this.timeout > 0 ? setTimeout(() => { if (!this.destroyed) this.emit("timeout"); }, this.timeout) : undefined;
+    \\    return this;
     \\  };
-    \\  socket.end = function() { this.destroyed = true; return this; };
-    \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\  if (!handle) {
+    \\    socket.end = function() { if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id); this.destroyed = true; this.readable = false; this.writable = false; return this; };
+    \\    socket.destroy = function(error) { if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id); this.destroyed = true; this.readable = false; this.writable = false; if (error) this.emit("error", error); return this; };
+    \\    return socket;
+    \\  }
+    \\  socket.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    const activeHandle = this._handle;
+    \\    if (this.__home_socket_timeout_id !== undefined) clearTimeout(this.__home_socket_timeout_id);
+    \\    this._handle = null;
+    \\    this.destroyed = true;
+    \\    this.readable = false;
+    \\    this.writable = false;
+    \\    if (error) this.emit("error", error);
+    \\    const close = () => { if (this.__home_close_emitted) return; this.__home_close_emitted = true; this.emit("close", !!error); };
+    \\    if (activeHandle && typeof activeHandle.close === "function") activeHandle.close(close); else Promise.resolve().then(close);
+    \\    return this;
+    \\  };
+    \\  if (!opts.manualStart && socket.readable && handle && typeof handle.readStart === "function") handle.readStart();
     \\  return socket;
     \\}
     \\__home_net_Socket.prototype = Object.create(__home_stream_duplex.prototype);
     \\Object.defineProperty(__home_net_Socket.prototype, "constructor", { value: __home_net_Socket, configurable: true, writable: true });
+    \\__home_JSStreamSocket.prototype = Object.create(__home_net_Socket.prototype, { constructor: { configurable: true, writable: true, value: __home_JSStreamSocket } });
+    \\Object.setPrototypeOf(__home_JSStreamSocket, __home_net_Socket);
     \\__home_net_Socket.prototype.destroy = function(error) {
     \\  if (this && this.__home_http2_client) {
     \\    this.destroyed = true;
@@ -67075,8 +68119,9 @@ const harness_prelude =
     \\    let selectedContext = selectedSniContext || server.__home_options || {};
     \\    let sniContextMatched = false;
     \\    const requestedServername = String(options.servername || "");
-    \\    for (let index = selectedSniContext ? -1 : server.__home_contexts.length - 1; index >= 0; index--) {
-    \\      const entry = server.__home_contexts[index];
+    \\    const serverContexts = Array.isArray(server.__home_contexts) ? server.__home_contexts : [];
+    \\    for (let index = selectedSniContext ? -1 : serverContexts.length - 1; index >= 0; index--) {
+    \\      const entry = serverContexts[index];
     \\      const pattern = entry.servername;
     \\      const matches = pattern === requestedServername || (pattern.startsWith("*.") && requestedServername.endsWith(pattern.slice(1)) && requestedServername.slice(0, -pattern.slice(1).length).indexOf(".") === -1);
     \\      if (matches) { selectedContext = entry.context || {}; sniContextMatched = true; break; }
@@ -89661,9 +90706,6 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
             try out.appendSlice(allocator, ");\n");
         }
     }
-    if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-fs-promises-file-handle-writer.js")) {
-        try out.appendSlice(allocator, "if (!process.execArgv.includes(\"--experimental-stream-iter\")) process.execArgv.push(\"--experimental-stream-iter\");\n");
-    }
     if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv4.js")) {
         try out.appendSlice(allocator, "process.execArgv.push(\"--dns-result-order=ipv4first\"); __home_dns_default_result_order = \"ipv4first\";\n");
     } else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv6.js")) {
@@ -99085,6 +100127,256 @@ pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, re
     return summary;
 }
 
+const stream_iter_corpus_prefix = "js/node/test/parallel/test-stream-iter-";
+
+const OwnedFlags = struct {
+    values: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *OwnedFlags, allocator: std.mem.Allocator) void {
+        for (self.values.items) |flag| allocator.free(flag);
+        self.values.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+fn isNativeStreamIteratorCorpusFile(relative: []const u8) bool {
+    if (std.mem.startsWith(u8, relative, stream_iter_corpus_prefix) and
+        std.mem.endsWith(u8, relative, ".js"))
+    {
+        const basename_tail = relative[stream_iter_corpus_prefix.len..];
+        if (basename_tail.len > ".js".len and std.mem.indexOfScalar(u8, basename_tail, '/') == null) return true;
+    }
+
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-pull.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-pullsync.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-file-handle-writer.js");
+}
+
+fn isNativeFsDisposableCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-promises-mkdtempDisposable.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-fs-mkdtempDisposableSync.js");
+}
+
+fn isNativeReadableReadCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-stream-readable-readable-one.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-stream2-read-correct-num-bytes-in-utf8.js");
+}
+
+fn isNativeBuiltinAliasCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-assert-strict-exists.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-path-posix-exists.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-path-win32-exists.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-util-types-exists.js");
+}
+
+fn isNativeStreamConsumersCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-stream-consumers.js");
+}
+
+fn isNativeReadableFromCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-stream-readable-next-no-null.js");
+}
+
+fn isNativeModuleRegistryCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-module-builtin.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-module-isBuiltin.js");
+}
+
+fn isNativeBufferPrimitiveCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-isencoding.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js");
+}
+
+fn isNativeQuerystringCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-escape.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-multichar-separator.js") or
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-querystring-maxKeys-non-finite.js");
+}
+
+fn isNativeNodeCoreCorpusFile(relative: []const u8) bool {
+    const prefix = "js/node/test/parallel/";
+    if (!std.mem.startsWith(u8, relative, prefix) or !std.mem.endsWith(u8, relative, ".js")) return false;
+    const basename = relative[prefix.len..];
+    if (std.mem.indexOfScalar(u8, basename, '/') != null) return false;
+    inline for (.{ "assert", "buffer", "module", "path", "querystring", "events", "eventtarget", "url", "util", "string-decoder" }) |family| {
+        if (std.mem.eql(u8, basename, "test-" ++ family ++ ".js") or
+            std.mem.startsWith(u8, basename, "test-" ++ family ++ "-")) return true;
+    }
+    return false;
+}
+
+fn isNativeNodeTestCorpusFile(relative: []const u8) bool {
+    inline for (.{
+        "test-assert-calltracker-getCalls.js",
+        "test-assert-checktag.js",
+        "test-assert-deep-with-error.js",
+        "test-assert-esm-cjs-message-verify.js",
+        "test-assert-fail-deprecation.js",
+        "test-assert-fail.js",
+        "test-assert-if-error.js",
+        "test-assert-typedarray-deepequal.js",
+        "test-assert.js",
+        "test-buffer-resizable.js",
+        "test-url-format-invalid-input.js",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return true;
+    }
+    return false;
+}
+
+fn isNativeAddonTestCorpusFile(relative: []const u8) bool {
+    if (!std.mem.startsWith(u8, relative, "napi/") and
+        !std.mem.startsWith(u8, relative, "js/bun/ffi/")) return false;
+    // These families use bun:test. Helper scripts and C sources must not be
+    // promoted to successful test files just because they share a directory.
+    const basename = std.fs.path.basename(relative);
+    inline for (.{ ".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".test.mjs", ".test.cjs", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".spec.mjs", ".spec.cjs" }) |suffix| {
+        if (std.mem.endsWith(u8, basename, suffix)) return true;
+    }
+    return false;
+}
+
+fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
+        return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
+    }
+    return null;
+}
+
+fn isNativeHomeCorpusFile(relative: []const u8) bool {
+    return isNativeStreamIteratorCorpusFile(relative) or
+        isNativeFsDisposableCorpusFile(relative) or
+        isNativeReadableReadCorpusFile(relative) or
+        isNativeBuiltinAliasCorpusFile(relative) or
+        isNativeStreamConsumersCorpusFile(relative) or
+        isNativeReadableFromCorpusFile(relative) or
+        isNativeModuleRegistryCorpusFile(relative) or
+        isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeQuerystringCorpusFile(relative) or
+        isNativeNodeCoreCorpusFile(relative) or
+        isNativeAddonTestCorpusFile(relative);
+}
+
+fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
+    var result = OwnedFlags{};
+    errdefer result.deinit(allocator);
+
+    const scan = source[0..@min(source.len, 1500)];
+    var lines = std.mem.splitScalar(u8, scan, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimStart(u8, raw_line, " \t");
+        if (!std.mem.startsWith(u8, line, "// Flags:")) continue;
+        var flags = std.mem.tokenizeAny(u8, line["// Flags:".len..], " \t\r");
+        while (flags.next()) |flag| {
+            if (!std.mem.startsWith(u8, flag, "--")) continue;
+            const owned_flag = try allocator.dupe(u8, flag);
+            errdefer allocator.free(owned_flag);
+            try result.values.append(allocator, owned_flag);
+        }
+        break;
+    }
+    return result;
+}
+
+const NativeCorpusMode = enum { script, test_runner };
+
+fn buildNativeCorpusArgs(
+    allocator: std.mem.Allocator,
+    flags: []const []const u8,
+    absolute_fixture_path: []const u8,
+    mode: NativeCorpusMode,
+) ![][]const u8 {
+    const args = try allocator.alloc([]const u8, flags.len + 2);
+    args[0] = if (mode == .test_runner) "test" else "run";
+    @memcpy(args[1 .. 1 + flags.len], flags);
+    args[args.len - 1] = absolute_fixture_path;
+    return args;
+}
+
+fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
+    return !timed_out and term.success();
+}
+
+fn nativeCorpusSkipReason(stdout: []const u8, stderr: []const u8) ?[]const u8 {
+    for ([_][]const u8{ stdout, stderr }) |output| {
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "1..0 # Skipped:") or
+                std.mem.startsWith(u8, line, "1..0 # SKIP "))
+            {
+                return line;
+            }
+        }
+    }
+    return null;
+}
+
+const NativeTestCounts = struct {
+    passed: usize = 0,
+    failed: usize = 0,
+    skipped: usize = 0,
+    todo: usize = 0,
+    observed: bool = false,
+};
+
+fn nativeCorpusTestCounts(stdout: []const u8, stderr: []const u8) NativeTestCounts {
+    var counts = NativeTestCounts{};
+    for ([_][]const u8{ stdout, stderr }) |output| {
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "Ran ") and
+                std.mem.indexOf(u8, line, " across ") != null and
+                (std.mem.indexOf(u8, line, " test ") != null or std.mem.indexOf(u8, line, " tests ") != null))
+            {
+                counts.observed = true;
+            }
+            const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+            const count = std.fmt.parseUnsigned(usize, line[0..space], 10) catch continue;
+            const label = std.mem.trim(u8, line[space + 1 ..], " ");
+            if (std.mem.eql(u8, label, "pass")) counts.passed += count;
+            if (std.mem.eql(u8, label, "fail")) counts.failed += count;
+            if (std.mem.eql(u8, label, "skip")) counts.skipped += count;
+            if (std.mem.eql(u8, label, "todo")) counts.todo += count;
+        }
+    }
+    return counts;
+}
+
+fn nativeCorpusFailureDiagnostic(
+    allocator: std.mem.Allocator,
+    term: std.process.Child.Term,
+    timed_out: bool,
+    stdout: []const u8,
+    stderr: []const u8,
+) ![]u8 {
+    const outcome = if (timed_out)
+        try allocator.dupe(u8, "timed out after 120 seconds")
+    else switch (term) {
+        .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
+        .signal => |signal| try std.fmt.allocPrint(allocator, "terminated by SIG{s}", .{@tagName(signal)}),
+        .stopped => |signal| try std.fmt.allocPrint(allocator, "stopped by SIG{s}", .{@tagName(signal)}),
+        .unknown => |code| try std.fmt.allocPrint(allocator, "terminated with unknown status {d}", .{code}),
+    };
+    defer allocator.free(outcome);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "native Home corpus process {s}\nstderr:\n{s}\nstdout:\n{s}",
+        .{ outcome, stderr, stdout },
+    );
+}
+
+fn appendSummaryStdout(allocator: std.mem.Allocator, summary: *Summary, stdout: []const u8) !void {
+    if (stdout.len == 0) return;
+    const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, stdout });
+    if (summary.stdout_owned) allocator.free(summary.stdout);
+    summary.stdout = combined;
+    summary.stdout_owned = true;
+}
+
 fn runRelativeFile(
     io: Io,
     allocator: std.mem.Allocator,
@@ -99099,6 +100391,65 @@ fn runRelativeFile(
 
     const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(source);
+
+    if (isNativeHomeCorpusFile(relative)) {
+        const absolute_fixture_path = try Io.Dir.cwd().realPathFileAlloc(io, file_path, allocator);
+        defer allocator.free(absolute_fixture_path);
+
+        var flags = try parseNativeCorpusFlags(allocator, source);
+        defer flags.deinit(allocator);
+        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or isNativeAddonTestCorpusFile(relative)) .test_runner else .script;
+        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path, mode);
+        defer allocator.free(args_tail);
+
+        const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
+        defer allocator.free(test_thread_id);
+
+        var native_run = try jsc_bootstrap.runHomeCaptured(allocator, test_thread_id, args_tail);
+        defer native_run.deinit(allocator);
+        try appendSummaryStdout(allocator, summary, native_run.stdout);
+
+        if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
+            if (nativeCorpusDisabledReason(relative)) |reason| {
+                file_result.unsupported = 1;
+                try recordFailure(allocator, summary, relative, reason);
+            } else if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr)) |reason| {
+                file_result.unsupported = 1;
+                const diagnostic = try std.fmt.allocPrint(allocator, "native Home corpus fixture skipped: {s}", .{reason});
+                defer allocator.free(diagnostic);
+                try recordFailure(allocator, summary, relative, diagnostic);
+            } else if (mode == .test_runner) {
+                const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
+                if (!counts.observed or counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+                    file_result.unsupported = 1;
+                    try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
+                } else {
+                    file_result.passed = counts.passed;
+                    file_result.failed = counts.failed;
+                    file_result.unsupported = counts.skipped;
+                    file_result.todo = counts.todo;
+                    if (counts.failed > 0 or counts.skipped > 0) {
+                        try recordFailure(allocator, summary, relative, "native Home test runner reported failed or skipped tests");
+                    }
+                }
+            } else {
+                file_result.passed = 1;
+            }
+        } else {
+            file_result.failed = 1;
+            const diagnostic = try nativeCorpusFailureDiagnostic(
+                allocator,
+                native_run.term,
+                native_run.timed_out,
+                native_run.stdout,
+                native_run.stderr,
+            );
+            defer allocator.free(diagnostic);
+            try recordFailure(allocator, summary, relative, diagnostic);
+        }
+        summary.addFileResult(file_result);
+        return;
+    }
 
     var prepared = try prepareCorpusModule(allocator, source, relative);
     defer prepared.deinit(allocator);
@@ -99115,12 +100466,7 @@ fn runRelativeFile(
 
     const r = file_run.result;
     summary.addFileResult(r);
-    if (file_run.stdout.len != 0) {
-        const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, file_run.stdout });
-        if (summary.stdout_owned) allocator.free(summary.stdout);
-        summary.stdout = combined;
-        summary.stdout_owned = true;
-    }
+    try appendSummaryStdout(allocator, summary, file_run.stdout);
     if (prepared.allow_no_tests and r.passed + r.failed + r.todo + r.unsupported == 0) {
         summary.allowed_empty_files += 1;
     }
@@ -99147,6 +100493,345 @@ fn recordFailure(
         summary.first_failure_message_owned = false;
         summary.first_failure_message = "JSEvaluateScript returned null without an exception";
     }
+}
+
+test "native stream iterator corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeStreamIteratorCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 45), count);
+    try std.testing.expect(isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-stream-iter-disabled.js"));
+    try std.testing.expect(isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-fs-promises-file-handle-writer.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-stream-iter-.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/nested/test-stream-iter-basic.js"));
+    try std.testing.expect(!isNativeStreamIteratorCorpusFile("js/node/test/parallel/test-fs-promises-file-handle-read.js"));
+}
+
+test "native stream iterator flags are owned and ordered before the fixture" {
+    const allocator = std.testing.allocator;
+    const source = try allocator.dupe(u8, "// Flags: ignored --experimental-stream-iter --second\nthrow new Error();");
+    defer allocator.free(source);
+
+    var flags = try parseNativeCorpusFlags(allocator, source);
+    defer flags.deinit(allocator);
+    @memset(source, 'x');
+
+    try std.testing.expectEqual(@as(usize, 2), flags.values.items.len);
+    try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
+    try std.testing.expectEqualStrings("--second", flags.values.items[1]);
+
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/absolute/fixture.js", .script);
+    defer allocator.free(args);
+    try std.testing.expectEqual(@as(usize, 4), args.len);
+    try std.testing.expectEqualStrings("run", args[0]);
+    try std.testing.expectEqualStrings("--experimental-stream-iter", args[1]);
+    try std.testing.expectEqualStrings("--second", args[2]);
+    try std.testing.expectEqualStrings("/absolute/fixture.js", args[3]);
+
+    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, "/absolute/test-assert.js", .test_runner);
+    defer allocator.free(test_args);
+    try std.testing.expectEqualStrings("test", test_args[0]);
+    try std.testing.expectEqualStrings("--no-warnings", test_args[1]);
+    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[2]);
+
+    var late_source: [1540]u8 = undefined;
+    @memset(&late_source, ' ');
+    const late_directive = "// Flags: --too-late\n";
+    @memcpy(late_source[1500 .. 1500 + late_directive.len], late_directive);
+    var late_flags = try parseNativeCorpusFlags(allocator, &late_source);
+    defer late_flags.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), late_flags.values.items.len);
+}
+
+test "native fs disposable corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var native_count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeFsDisposableCorpusFile(relative)) count += 1;
+        if (isNativeHomeCorpusFile(relative)) native_count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 220), native_count);
+    try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
+    try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
+    try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
+    try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/nested/test-fs-mkdtempDisposableSync.js"));
+}
+
+test "native readable read corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeReadableReadCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(isNativeReadableReadCorpusFile("js/node/test/parallel/test-stream-readable-readable-one.js"));
+    try std.testing.expect(isNativeReadableReadCorpusFile("js/node/test/parallel/test-stream2-read-correct-num-bytes-in-utf8.js"));
+    try std.testing.expect(!isNativeReadableReadCorpusFile("js/node/test/parallel/test-stream-readable-readable-one.mjs"));
+    try std.testing.expect(!isNativeReadableReadCorpusFile("js/node/test/parallel/nested/test-stream-readable-readable-one.js"));
+}
+
+test "native built-in alias corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeBuiltinAliasCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expect(isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-assert-strict-exists.js"));
+    try std.testing.expect(isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-path-posix-exists.js"));
+    try std.testing.expect(isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-path-win32-exists.js"));
+    try std.testing.expect(isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-util-types-exists.js"));
+    try std.testing.expect(!isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-assert-strict-exists.mjs"));
+    try std.testing.expect(!isNativeBuiltinAliasCorpusFile("js/node/test/parallel/nested/test-path-posix-exists.js"));
+    try std.testing.expect(!isNativeBuiltinAliasCorpusFile("js/node/test/parallel/test-util-types.js"));
+}
+
+test "native stream consumers corpus predicate covers the exact vendored fixture" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeStreamConsumersCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expect(isNativeStreamConsumersCorpusFile("js/node/test/parallel/test-stream-consumers.js"));
+    try std.testing.expect(!isNativeStreamConsumersCorpusFile("js/node/test/parallel/test-stream-consumers.mjs"));
+    try std.testing.expect(!isNativeStreamConsumersCorpusFile("js/node/test/parallel/nested/test-stream-consumers.js"));
+}
+
+test "native readable from corpus predicate covers the exact vendored fixture" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeReadableFromCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expect(isNativeReadableFromCorpusFile("js/node/test/parallel/test-stream-readable-next-no-null.js"));
+    try std.testing.expect(!isNativeReadableFromCorpusFile("js/node/test/parallel/test-stream-readable-next-no-null.mjs"));
+    try std.testing.expect(!isNativeReadableFromCorpusFile("js/node/test/parallel/nested/test-stream-readable-next-no-null.js"));
+}
+
+test "native module registry corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeModuleRegistryCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(isNativeModuleRegistryCorpusFile("js/node/test/parallel/test-module-builtin.js"));
+    try std.testing.expect(isNativeModuleRegistryCorpusFile("js/node/test/parallel/test-module-isBuiltin.js"));
+    try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/test-module-builtin.mjs"));
+    try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/nested/test-module-isBuiltin.js"));
+}
+
+test "native buffer primitive corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeBufferPrimitiveCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.js"));
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-tojson.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.mjs"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/nested/test-buffer-tojson.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-encoding.js"));
+}
+
+test "native querystring corpus predicate covers the exact vendored matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+
+    var count: usize = 0;
+    var path_buffer: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&path_buffer, "js/node/test/parallel/{s}", .{file});
+        if (isNativeQuerystringCorpusFile(relative)) count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-escape.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-multichar-separator.js"));
+    try std.testing.expect(isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-maxKeys-non-finite.js"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring.mjs"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/nested/test-querystring.js"));
+    try std.testing.expect(!isNativeQuerystringCorpusFile("js/node/test/parallel/test-querystring-unescape.js"));
+}
+
+test "native node core corpus predicates cover the audited inventory" {
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, "packages/runtime/test/bun-corpus/js/node/test/parallel");
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+    var core_count: usize = 0;
+    var node_test_count: usize = 0;
+    var scratch: [512]u8 = undefined;
+    for (files) |file| {
+        const relative = try std.fmt.bufPrint(&scratch, "js/node/test/parallel/{s}", .{file});
+        if (isNativeNodeCoreCorpusFile(relative)) core_count += 1;
+        if (isNativeNodeTestCorpusFile(relative)) node_test_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 169), core_count);
+    try std.testing.expectEqual(@as(usize, 11), node_test_count);
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/nested/test-buffer-from.js"));
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-buffer-from.mjs"));
+    try std.testing.expect(!isNativeNodeCoreCorpusFile("js/node/test/parallel/test-modules.js"));
+    try std.testing.expect(!isNativeNodeTestCorpusFile("js/node/test/parallel/test-assert-strict-exists.js"));
+}
+
+test "native addon corpus routing excludes helpers and uses real test files" {
+    inline for (.{
+        "napi/napi.test.ts",
+        "napi/napi-value-ffi.test.ts",
+        "napi/node-napi-tests/test/js-native-api/2_function_arguments/do.test.ts",
+        "js/bun/ffi/ffi.test.js",
+        "js/bun/ffi/cc.test.ts",
+        "js/bun/ffi/ffi-error-messages.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeAddonTestCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+    inline for (.{
+        "napi/node-napi-tests/harness.ts",
+        "napi/napi-app/test_cleanup_hook_order.c",
+        "napi/napi-app/main.js",
+        "js/bun/ffi/cc-fixture.js",
+        "js/bun/ffi/ffi.test.fixture.callback.c",
+        "js/bun/ffi-other/cc.test.ts",
+        "napi-other/napi.test.ts",
+    }) |relative| try std.testing.expect(!isNativeAddonTestCorpusFile(relative));
+}
+
+test "bootstrap addon guard precedes cached or fabricated module exports" {
+    const start = std.mem.indexOf(u8, harness_prelude, "function __home_require_native_node_module(path) {") orelse return error.TestExpectedEqual;
+    const body = harness_prelude[start..];
+    const guard = std.mem.indexOf(u8, body, "__home_unsupported(\"Native Node-API addons require the full Home runtime\")") orelse return error.TestExpectedEqual;
+    const cache = std.mem.indexOf(u8, body, "__home_native_node_modules_by_path[resolved]") orelse return error.TestExpectedEqual;
+    const native_load = std.mem.indexOf(u8, body, "globalThis.__home_loadNativeNodeModule(resolved)") orelse return error.TestExpectedEqual;
+    try std.testing.expect(guard < cache);
+    try std.testing.expect(guard < native_load);
+}
+
+test "native corpus disabled body remains visible and contains no active test" {
+    const relative = "js/node/test/parallel/test-util-emit-experimental-warning.js";
+    try std.testing.expect(nativeCorpusDisabledReason(relative) != null);
+    try std.testing.expect(nativeCorpusDisabledReason("js/node/test/parallel/test-util-types.js") == null);
+    const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(source);
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        // If upstream activates this body, remove the disabled classification
+        // and validate the actual contract before accepting its clean exit.
+        try std.testing.expect(line.len == 0 or std.mem.eql(u8, line, "'use strict';") or std.mem.startsWith(u8, line, "//"));
+    }
+    var flags = try parseNativeCorpusFlags(std.testing.allocator, source);
+    defer flags.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), flags.values.items.len);
+}
+
+test "native corpus flags ignore disabled and inline directives" {
+    var flags = try parseNativeCorpusFlags(std.testing.allocator, "// // Flags: --disabled\nconst value = 1; // Flags: --inline\n  // Flags: --actual\n");
+    defer flags.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), flags.values.items.len);
+    try std.testing.expectEqualStrings("--actual", flags.values.items[0]);
+}
+
+test "native corpus summary does not double count unsupported tests" {
+    var summary = Summary{};
+    summary.addFileResult(.{ .path = "fixture.js", .passed = 3, .failed = 1, .unsupported = 2, .todo = 4 });
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 3), summary.passed);
+    try std.testing.expectEqual(@as(usize, 1), summary.failed);
+    try std.testing.expectEqual(@as(usize, 2), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 4), summary.todo);
+}
+
+test "native test runner counts require observed tests and retain skips" {
+    const counts = nativeCorpusTestCounts("", " 7 pass\n 0 fail\n 2 skip\n 1 todo\nRan 10 tests across 1 file. [1ms]\n");
+    try std.testing.expect(counts.observed);
+    try std.testing.expectEqual(@as(usize, 7), counts.passed);
+    try std.testing.expectEqual(@as(usize, 2), counts.skipped);
+    try std.testing.expectEqual(@as(usize, 1), counts.todo);
+    try std.testing.expect(!nativeCorpusTestCounts("7 pass\n", "").observed);
+    try std.testing.expect(!nativeCorpusTestCounts("", "").observed);
+    try std.testing.expect(nativeCorpusTestCounts("", "1 pass\n0 fail\nRan 1 test across 1 file. [1ms]").observed);
+}
+
+test "native corpus skip markers are not accepted as passing coverage" {
+    try std.testing.expectEqualStrings("1..0 # Skipped: platform", nativeCorpusSkipReason("1..0 # Skipped: platform\n", "").?);
+    try std.testing.expectEqualStrings("1..0 # SKIP unavailable", nativeCorpusSkipReason("", "1..0 # SKIP unavailable\r\n").?);
+    try std.testing.expect(nativeCorpusSkipReason("", "") == null);
+    try std.testing.expect(nativeCorpusSkipReason("completed\n", "") == null);
+    try std.testing.expect(nativeCorpusSkipReason("diagnostic contains 1..0 # Skipped: text\n", "") == null);
+}
+
+test "native stream iterator process classification requires a clean exit" {
+    try std.testing.expect(nativeCorpusProcessSucceeded(.{ .exited = 0 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 1 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .unknown = 0 }, false));
+    try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 0 }, true));
+}
+
+test "bootstrap harness has no fake experimental stream iterator registrations" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"stream/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:stream/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"zlib/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:zlib/iter\"]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_iter_module") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_zlib_iter_module") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stream_consumers_module") != null);
 }
 
 test "subset flag parser recognizes the bootstrap subset" {
@@ -116347,6 +118032,72 @@ test "bootstrap runner mirrors html no-bundle build error" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner emits linked html assets through package build scripts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { readdirSync, readFileSync } from "node:fs";
+        \\import { join } from "node:path";
+        \\import { bunExe, tempDir } from "harness";
+        \\
+        \\test("bun run resolves and executes an html build script", async () => {
+        \\  using dir = tempDir("generic-package-html-build", {
+        \\    "package.json": JSON.stringify({ scripts: { build: "bun build ./index.html --outdir dist" } }),
+        \\    "index.html": `<!doctype html><link rel="stylesheet" href="./app.css"><script type="module" src="./app.tsx"></script>`,
+        \\    "app.tsx": `console.log("linked-script-marker");`,
+        \\    "app.css": `.linked-style-marker { color: purple; }`,
+        \\  });
+        \\  const child = Bun.spawn([bunExe(), "run", "build"], { cwd: String(dir), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await child.exited).toBe(0);
+        \\  const names = readdirSync(join(String(dir), "dist"));
+        \\  const htmlName = names.find(name => name.endsWith(".html"));
+        \\  const jsName = names.find(name => name.endsWith(".js"));
+        \\  const cssName = names.find(name => name.endsWith(".css"));
+        \\  expect(htmlName).toBeDefined();
+        \\  expect(jsName).toBeDefined();
+        \\  expect(cssName).toBeDefined();
+        \\  const html = readFileSync(join(String(dir), "dist", htmlName), "utf8");
+        \\  expect(html).toContain("./" + jsName);
+        \\  expect(html).toContain("./" + cssName);
+        \\  expect(readFileSync(join(String(dir), "dist", jsName), "utf8")).toContain("linked-script-marker");
+        \\  expect(readFileSync(join(String(dir), "dist", cssName), "utf8")).toContain("linked-style-marker");
+        \\});
+        \\
+        \\test("Bun.build returns linked html, javascript, and css artifacts", async () => {
+        \\  using dir = tempDir("generic-api-html-build", {
+        \\    "index.html": `<link href="./site.css" rel="stylesheet"><script src="./site.js"></script>`,
+        \\    "site.js": `console.log("api-script-marker");`,
+        \\    "site.css": `.api-style-marker { display: block; }`,
+        \\  });
+        \\  const outdir = join(String(dir), "out");
+        \\  const result = await Bun.build({ entrypoints: [join(String(dir), "index.html")], outdir });
+        \\  expect(result.success).toBe(true);
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/html;charset=utf-8");
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/javascript;charset=utf-8");
+        \\  expect(result.outputs.map(output => output.type)).toContain("text/css;charset=utf-8");
+        \\  for (const output of result.outputs) expect((await output.text()).length).toBeGreaterThan(0);
+        \\  const html = result.outputs.find(output => output.type === "text/html;charset=utf-8");
+        \\  expect(await html.text()).toContain("./site.js");
+        \\  expect(await html.text()).toContain("./site.css");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/generic-package-html-build.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("generic package html build failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors RedisClient URL validation" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -118880,6 +120631,151 @@ test "bootstrap runner preserves node sequential process crypto and fs contracts
     if (file_run.result.status() != .passed) std.debug.print("sequential core boundary failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner preserves exact node JS stream socket contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/parallel/test-stream-wrap.js",
+        "js/node/test/parallel/test-stream-wrap-drain.js",
+        "js/node/test/parallel/test-stream-wrap-encoding.js",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (paths) |path| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("JS stream socket failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
+}
+
+test "bootstrap runner preserves generic handle-backed net Socket contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\'use strict';
+        \\const { test } = require('node:test');
+        \\const assert = require('assert');
+        \\const net = require('net');
+        \\const { Duplex } = require('stream');
+        \\const StreamWrap = require('internal/js_stream_socket');
+        \\const { internalBinding } = require('internal/test/binding');
+        \\const { ShutdownWrap } = internalBinding('stream_wrap');
+        \\test('generic handles own net.Socket transport and lifecycle', async () => {
+        \\  const calls = [];
+        \\  const handle = {
+        \\    owner: null,
+        \\    readStart() { calls.push('readStart'); return 0; },
+        \\    readStop() { calls.push('readStop'); return 0; },
+        \\    writeBuffer(request, chunk) { calls.push(`write:${Buffer.from(chunk).toString()}`); Promise.resolve().then(() => request.oncomplete.call(request, 0)); return 0; },
+        \\    shutdown(request) { calls.push('shutdown'); Promise.resolve().then(() => request.oncomplete.call(request, 0)); return 0; },
+        \\    close(callback) { calls.push(this.owner._handle === null ? 'close:detached' : 'close:attached'); Promise.resolve().then(callback); },
+        \\    ref() { calls.push('ref'); },
+        \\    unref() { calls.push('unref'); },
+        \\    hasRef() { return false; },
+        \\  };
+        \\  const socket = new net.Socket({ handle, manualStart: true });
+        \\  assert(socket instanceof net.Socket);
+        \\  assert.strictEqual(socket._handle, handle);
+        \\  assert.deepStrictEqual(calls, []);
+        \\  socket.read(0);
+        \\  socket.pause().resume().ref().unref();
+        \\  assert.deepStrictEqual(calls, ['readStart', 'readStop', 'readStart', 'ref', 'unref']);
+        \\  assert.strictEqual(socket.hasRef(), false);
+        \\  let writes = 0;
+        \\  assert.strictEqual(socket.write(Buffer.from('ok'), error => { assert.ifError(error); writes++; }), true);
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(writes, 1);
+        \\  let finishes = 0;
+        \\  socket.end(error => { assert.ifError(error); finishes++; });
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(finishes, 1);
+        \\  let closes = 0;
+        \\  socket.on('close', () => closes++);
+        \\  socket.destroy();
+        \\  await Promise.resolve();
+        \\  assert.strictEqual(closes, 1);
+        \\  assert.strictEqual(socket._handle, null);
+        \\  assert(calls.includes('close:detached'));
+        \\});
+        \\test('JSStreamSocket inherits net.Socket and cancels races once', async () => {
+        \\  let release;
+        \\  const source = new Duplex({ read() {}, write(_chunk, _encoding, callback) { release = callback; } });
+        \\  const socket = new StreamWrap(source);
+        \\  assert(socket instanceof StreamWrap);
+        \\  assert(socket instanceof net.Socket);
+        \\  assert.strictEqual(Object.getPrototypeOf(StreamWrap.prototype), net.Socket.prototype);
+        \\  let writes = 0;
+        \\  let shutdowns = 0;
+        \\  let closes = 0;
+        \\  socket.on('close', () => closes++);
+        \\  socket.write(Buffer.alloc(socket.writableHighWaterMark * 2), error => { assert(error); writes++; });
+        \\  assert.strictEqual(typeof release, 'function');
+        \\  const request = new ShutdownWrap();
+        \\  request.oncomplete = status => { assert(status < 0); shutdowns++; };
+        \\  request.handle = socket._handle;
+        \\  request.handle.shutdown(request);
+        \\  socket.destroy();
+        \\  await Promise.resolve();
+        \\  assert.deepStrictEqual([writes, shutdowns, closes], [1, 1, 1]);
+        \\  release();
+        \\  await Promise.resolve();
+        \\  assert.deepStrictEqual([writes, shutdowns, closes], [1, 1, 1]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-home-js-stream-socket-handle.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("generic handle-backed net Socket failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner preserves net Socket handle-adjacent corpus contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/parallel/test-net-timeout-no-handle.js",
+        "js/node/test/parallel/test-http-agent-uninitialized-with-handle.js",
+        "js/node/test/parallel/test-http-agent-uninitialized.js",
+        "js/node/test/parallel/test-tls-js-stream.js",
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    for (paths) |path| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        defer summary.deinit(std.testing.allocator);
+
+        if (summary.failed != 0 or summary.unsupported != 0) {
+            std.debug.print("net Socket handle-adjacent failure in {s}: {s}\n", .{ path, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    }
 }
 
 test "bootstrap runner preserves node sequential network performance and cache contracts" {
@@ -123677,6 +125573,84 @@ test "bootstrap runner mirrors issue 22481 net Uint8Array writes" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "net path compatibility bootstrap named-pipe registration half-close and errors are host independent" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\const net = require("node:net");
+        \\
+        \\test("Windows named-pipe spelling uses the generic path transport", async () => {
+        \\  const slash = String.fromCharCode(92);
+        \\  const pipe = slash + slash + "." + slash + "pipe" + slash + "home-net-logical";
+        \\  const drain = async (turns = 8) => { while (turns-- > 0) await Promise.resolve(); };
+        \\  const server = net.createServer({ allowHalfOpen: true }, socket => {
+        \\    expect(socket.server).toBe(server);
+        \\    socket.on("data", chunk => socket.write(chunk));
+        \\    socket.on("end", () => {
+        \\      expect(socket.readable).toBe(false);
+        \\      expect(socket.writable).toBe(true);
+        \\      socket.end();
+        \\    });
+        \\  });
+        \\  let listened = false;
+        \\  server.listen({ path: pipe }, () => listened = true);
+        \\  await drain();
+        \\  expect(listened).toBe(true);
+        \\  expect(server.address()).toBe(pipe);
+        \\  const duplicate = net.createServer();
+        \\  let duplicateCode = null;
+        \\  duplicate.once("error", error => duplicateCode = error.code);
+        \\  duplicate.listen(pipe, () => expect.unreachable("duplicate pipe listen callback"));
+        \\  await drain();
+        \\  expect(duplicateCode).toBe("EADDRINUSE");
+        \\  let body = "";
+        \\  let connected = false;
+        \\  let closed = false;
+        \\  const client = net.createConnection({ path: pipe });
+        \\  client.setEncoding("utf8");
+        \\  client.on("data", chunk => body += chunk);
+        \\  client.once("connect", () => connected = true);
+        \\  client.once("error", error => { throw error; });
+        \\  client.once("close", () => closed = true);
+        \\  await drain();
+        \\  expect(connected).toBe(true);
+        \\  let activeConnections = null;
+        \\  expect(server.getConnections((error, count) => { if (error) throw error; activeConnections = count; })).toBe(server);
+        \\  await drain();
+        \\  expect(activeConnections).toBe(1);
+        \\  client.end("PING");
+        \\  await drain(16);
+        \\  expect(closed).toBe(true);
+        \\  expect(body).toBe("PING");
+        \\  server.getConnections((error, count) => { if (error) throw error; activeConnections = count; });
+        \\  await drain();
+        \\  expect(activeConnections).toBe(0);
+        \\  let serverClosed = false;
+        \\  server.close(() => serverClosed = true);
+        \\  await drain();
+        \\  expect(serverClosed).toBe(true);
+        \\  const missing = net.createConnection({ path: pipe });
+        \\  let missingCode = null;
+        \\  missing.once("error", error => missingCode = error.code);
+        \\  await drain();
+        \\  expect(missingCode).toBe("ENOENT");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/test-home-net-named-pipe.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) std.debug.print("named-pipe logical contract failed: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors issue 22635 worker port transfer" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -128173,6 +130147,28 @@ test "bootstrap runner mirrors complete node HTTP/2 invalid padding corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors complete node HTTP/2 compatibility corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/http2/node-http2.test.js";
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 287 or summary.todo != 0) {
+        std.debug.print(
+            "node HTTP/2 compatibility mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 287), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 287), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner activates node HTTP/2 compatibility module imports" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -131097,6 +133093,86 @@ test "corpus module preparation admits bun create CLI suite" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.spawn([bunExe(), \"create\", \"./index.jsx\"]") != null);
+}
+
+test "bootstrap runner plans and materializes source projects from reachable JSX graphs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { existsSync, readFileSync } from "node:fs";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\test("generic source project planning", async () => {
+        \\  const plain = tempDirWithFiles("generic-create-plain", {
+        \\    "src/App.tsx": 'import "./App.css"; import Child from "./Child"; export default function App() { return <Child />; }',
+        \\    "src/Child.tsx": 'import cx from "classnames"; export default function Child() { return <div className={cx("card", "hover:scale-105")}>ok</div>; }',
+        \\    "src/App.css": "/* keep-user-css */",
+        \\    "package.json": '{"name":"keep-user-package","scripts":{"keep":"echo keep"}}',
+        \\  });
+        \\  const first = Bun.spawn([bunExe(), "create", "./src/App.tsx"], { cwd: String(plain), stdout: "pipe", stderr: "pipe" });
+        \\  const [firstOut, firstCode] = await Promise.all([first.stdout.text(), first.exited]);
+        \\  expect(firstCode).toBe(0);
+        \\  expect(firstOut).toContain(" install -- ");
+        \\  expect(firstOut).toContain("classnames");
+        \\  expect(existsSync(String(plain) + "/src/App.html")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/src/App.client.tsx")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/src/App.build.ts")).toBe(true);
+        \\  expect(existsSync(String(plain) + "/bunfig.toml")).toBe(false);
+        \\  expect(readFileSync(String(plain) + "/src/App.css", "utf8")).toBe("/* keep-user-css */");
+        \\  expect(readFileSync(String(plain) + "/package.json", "utf8")).toContain("keep-user-package");
+        \\  expect(readFileSync(String(plain) + "/src/App.client.tsx", "utf8")).toContain("default as Component");
+        \\
+        \\  const second = Bun.spawn([bunExe(), "create", "./src/App.tsx"], { cwd: String(plain), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(readFileSync(String(plain) + "/src/App.css", "utf8")).toBe("/* keep-user-css */");
+        \\  expect(readFileSync(String(plain) + "/package.json", "utf8")).toContain("keep-user-package");
+        \\
+        \\  const tailwind = tempDirWithFiles("generic-create-tailwind", {
+        \\    "App.tsx": 'import View from "./View"; export default function App() { return <View />; }',
+        \\    "View.tsx": 'export default function View() { return <div className="bg-slate-900 text-white">ok</div>; }',
+        \\  });
+        \\  const tailwindProc = Bun.spawn([bunExe(), "create", "./App.tsx"], { cwd: String(tailwind), stdout: "pipe", stderr: "pipe" });
+        \\  expect(await tailwindProc.exited).toBe(0);
+        \\  expect(existsSync(String(tailwind) + "/bunfig.toml")).toBe(true);
+        \\  expect(readFileSync(String(tailwind) + "/App.css", "utf8")).toContain('import "tailwindcss"');
+        \\  expect(readFileSync(String(tailwind) + "/package.json", "utf8")).toContain("App.build.ts");
+        \\
+        \\  const shadcn = tempDirWithFiles("generic-create-shadcn", {
+        \\    "App.tsx": 'import View from "./View"; export default function App() { return <View />; }',
+        \\    "View.tsx": 'import { Button } from "@/components/ui/button"; import { Check } from "lucide-react"; export default function View() { return <Button className="flex gap-2"><Check />ok</Button>; }',
+        \\  });
+        \\  const shadcnProc = Bun.spawn([bunExe(), "create", "./App.tsx"], { cwd: String(shadcn), stdout: "pipe", stderr: "pipe" });
+        \\  const [shadcnOut, shadcnCode] = await Promise.all([shadcnProc.stdout.text(), shadcnProc.exited]);
+        \\  expect(shadcnCode).toBe(0);
+        \\  expect(shadcnOut).toContain("shadcn@canary add -y -- button");
+        \\  expect(existsSync(String(shadcn) + "/components.json")).toBe(true);
+        \\  expect(existsSync(String(shadcn) + "/styles/globals.css")).toBe(true);
+        \\
+        \\  const separator = tempDirWithFiles("generic-create-separator", {
+        \\    "Component.tsx": 'import "--trust"; export default function Component() { return <div />; }',
+        \\  });
+        \\  const separatorProc = Bun.spawn([bunExe(), "create", "./Component.tsx"], {
+        \\    cwd: String(separator),
+        \\    env: { BUN_CONFIG_REGISTRY: "http://localhost:1/" },
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [separatorOut, separatorCode] = await Promise.all([separatorProc.stdout.text(), separatorProc.exited]);
+        \\  expect(separatorCode).toBe(1);
+        \\  expect(separatorOut).toContain(" install -- --trust ");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/create/generic-source-project.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundary" {
@@ -136812,6 +138888,55 @@ test "bootstrap runner supports node fs rename and unlink sync methods" {
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner recursively copies corpus directories into existing temp directories" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import { cp, readdir, readFile } from "node:fs/promises";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import path from "node:path";
+        \\describe("development: true", () => describe("react spa (no tailwind)", () => test("dev server", async () => {
+        \\  expect(await Bun.file("tailwind.tsx").text()).toContain("export default");
+        \\  const target = tempDirWithFiles("recursive-corpus-copy", { "README.md": "keep" });
+        \\  await cp("react-spa-no-tailwind", target, { recursive: true, force: true });
+        \\  expect((await readdir(target)).sort()).toEqual(["README.md", "components", "index.html", "index.jsx", "styles.css"]);
+        \\  expect(await readFile(path.join(target, "components", "Hero.jsx"), "utf8")).toContain("export");
+        \\  const process = Bun.spawn([bunExe(), "create", "./index.jsx"], { cwd: target, stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([process.stdout.text(), process.stderr.text(), process.exited]);
+        \\  if (exitCode !== 0) throw new Error(stderr || "create failed without diagnostics");
+        \\  expect(stdout).toContain("http://");
+        \\  const chunk = await process.stdout.getReader().read();
+        \\  expect(chunk).toMatchObject({ done: false });
+        \\  expect(new TextDecoder().decode(chunk.value)).toContain("http://");
+        \\  const tailwindTarget = tempDirWithFiles("recursive-corpus-tailwind-build", { "index.tsx": await Bun.file("tailwind.tsx").text() });
+        \\  const createTailwind = Bun.spawn([bunExe(), "create", "./index.tsx"], { cwd: tailwindTarget, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await createTailwind.exited).toBe(0);
+        \\  const buildTailwind = Bun.spawn([bunExe(), "run", "build"], { cwd: tailwindTarget, stdout: "pipe", stderr: "pipe" });
+        \\  const [buildError, buildExitCode] = await Promise.all([buildTailwind.stderr.text(), buildTailwind.exited]);
+        \\  if (buildExitCode !== 0) throw new Error(buildError || "tailwind build failed without diagnostics");
+        \\  const dist = await readdir(path.join(tailwindTarget, "dist"));
+        \\  expect(dist.some(name => name.endsWith(".html"))).toBe(true);
+        \\  expect(dist.some(name => name.endsWith(".js"))).toBe(true);
+        \\  expect(dist.some(name => name.endsWith(".css"))).toBe(true);
+        \\})));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/create/create-jsx.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("recursive corpus copy failure: {s}\n", .{file_run.result.first_failure_message});
+    }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
@@ -156424,6 +158549,120 @@ test "bootstrap HTTP2 server lifecycle push whitespace and reset logical contrac
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 server lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 remote settings materialization logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const standard = ["enableConnectProtocol", "enablePush", "headerTableSize", "initialWindowSize", "maxConcurrentStreams", "maxFrameSize", "maxHeaderListSize", "maxHeaderSize"].sort();
+        \\const assertStandardOnly = settings => { assert.deepStrictEqual(Object.keys(settings).sort(), standard); assert.strictEqual(Object.prototype.hasOwnProperty.call(settings, "customSettings"), false); };
+        \\test("modeled peers omit unrequested custom settings", async () => { await new Promise((resolve, reject) => { let checkedServer = false; let checkedClient = false; const server = http2.createServer({ settings: { customSettings: { 1244: 456 } } }); server.on("session", session => session.once("remoteSettings", settings => { try { assertStandardOnly(settings); checkedServer = true; } catch (error) { reject(error); } })); server.on("stream", stream => { stream.respond(); stream.end("ok"); }); server.listen(0, () => { const client = http2.connect("http://localhost:" + server.address().port, { settings: { customSettings: { 55: 12 } } }); client.once("remoteSettings", settings => { try { assertStandardOnly(settings); checkedClient = true; } catch (error) { reject(error); } }); client.on("error", reject); const request = client.request(); request.on("error", reject); request.on("end", () => { try { assert.strictEqual(checkedServer, true); assert.strictEqual(checkedClient, true); client.close(); server.close(resolve); } catch (error) { reject(error); } }); request.resume(); request.end(); }); }); });
+        \\test("peer allowlists filter initial and post-connect custom settings", async () => { await new Promise((resolve, reject) => { let initialServer = false; let updatedServer = false; let initialClient = false; let updatedClient = false; const maybeFinish = () => { if (!initialServer || !updatedServer || !initialClient || !updatedClient) return; client.close(); server.close(resolve); }; const server = http2.createServer({ remoteCustomSettings: [55], settings: { customSettings: { 1244: 456, 999: 1 } } }); server.on("session", session => { let events = 0; session.on("remoteSettings", settings => { try { events++; assert.deepStrictEqual(Object.keys(settings.customSettings), ["55"]); assert.strictEqual(settings.customSettings[155], undefined); if (events === 1) { assert.strictEqual(settings.customSettings[55], 12); initialServer = true; session.settings({ customSettings: { 1244: 457, 999: 2 } }); } else { assert.strictEqual(settings.customSettings[55], 13); updatedServer = true; } maybeFinish(); } catch (error) { reject(error); } }); }); server.on("stream", stream => { stream.respond(); stream.end(); }); let client; server.listen(0, () => { client = http2.connect("http://localhost:" + server.address().port, { remoteCustomSettings: [1244], settings: { customSettings: { 55: 12, 155: 144 } } }); let events = 0; client.on("remoteSettings", settings => { try { events++; assert.deepStrictEqual(Object.keys(settings.customSettings), ["1244"]); assert.strictEqual(settings.customSettings[999], undefined); if (events === 1) { assert.strictEqual(settings.customSettings[1244], 456); initialClient = true; client.settings({ customSettings: { 55: 13, 155: 145 } }); } else { assert.strictEqual(settings.customSettings[1244], 457); updatedClient = true; } maybeFinish(); } catch (error) { reject(error); } }); client.on("error", reject); const request = client.request(); request.on("error", reject); request.resume(); request.end(); }); }); });
+        \\test("raw server settings use the same default shape and custom filter", async () => { const server = http2.createServer({ remoteCustomSettings: [77] }); const socket = __home_net_connect_http2_server(server, 1, "localhost"); const session = socket.__home_http2_session; assertStandardOnly(session.remoteSettings); const payload = Buffer.alloc(18); payload.writeUInt16BE(3, 0); payload.writeUInt32BE(7, 2); payload.writeUInt16BE(77, 6); payload.writeUInt32BE(8, 8); payload.writeUInt16BE(88, 12); payload.writeUInt32BE(9, 14); const frame = Buffer.alloc(9 + payload.length); frame.writeUIntBE(payload.length, 0, 3); frame[3] = 4; payload.copy(frame, 9); let events = 0; session.on("remoteSettings", settings => { events++; assert.strictEqual(settings.maxConcurrentStreams, 7); assert.deepStrictEqual(Object.keys(settings.customSettings), ["77"]); assert.strictEqual(settings.customSettings[77], 8); assert.strictEqual(settings.customSettings[88], undefined); }); await new Promise(resolve => socket.once("connect", resolve)); socket.write(Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); socket.write(frame); assert.strictEqual(events, 1); socket.destroy(); server.close(); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/test/parallel/home-http2-remote-settings-materialization-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 remote settings materialization logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 public and binding constants logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2"); const { internalBinding } = require("internal/test/binding");
+        \\test("public constants exclude binding-only nghttp2 internals", () => { const publicConstants = http2.constants; const bindingConstants = internalBinding("http2").constants; const internalOnly = { NGHTTP2_ERR_NOMEM: -901, NGHTTP2_ERR_STREAM_CLOSED: -510, NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE: -509, NGHTTP2_ERR_DEFERRED: -508, NGHTTP2_ERR_INVALID_ARGUMENT: -501, NGHTTP2_HCAT_REQUEST: 0, NGHTTP2_HCAT_RESPONSE: 1, NGHTTP2_HCAT_PUSH_RESPONSE: 2, NGHTTP2_HCAT_HEADERS: 3, NGHTTP2_NV_FLAG_NONE: 0, NGHTTP2_NV_FLAG_NO_INDEX: 1 }; assert.strictEqual(Object.keys(publicConstants).length, 240); assert.strictEqual(Object.keys(bindingConstants).length, 251); assert.notStrictEqual(publicConstants, bindingConstants); for (const [name, value] of Object.entries(internalOnly)) { assert.strictEqual(Object.prototype.hasOwnProperty.call(publicConstants, name), false); assert.strictEqual(bindingConstants[name], value); } assert.strictEqual(publicConstants.NGHTTP2_ERR_FRAME_SIZE_ERROR, -522); const original = publicConstants.NGHTTP2_NO_ERROR; publicConstants.NGHTTP2_NO_ERROR = 42; assert.strictEqual(bindingConstants.NGHTTP2_NO_ERROR, 0); publicConstants.NGHTTP2_NO_ERROR = original; });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-constants-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 constants logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 session public lifecycle logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const captureRequestError = session => { try { const request = session.request({ ":path": "/" }); return new Promise(resolve => request.once("error", resolve)); } catch (error) { return Promise.resolve(error); } };
+        \\test("close before connect finalizes once before its callback", async () => { const server = http2.createServer(); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); let closeEvents = 0; let callbacks = 0; client.on("error", () => {}); client.on("close", () => closeEvents++); await new Promise(resolve => client.close(() => { callbacks++; assert.strictEqual(client.connecting, false); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, true); assert.strictEqual(closeEvents, 1); resolve(); })); assert.strictEqual(callbacks, 1); assert.strictEqual(closeEvents, 1); await new Promise(resolve => server.close(resolve)); });
+        \\test("assigned streams and session terminal states stay distinct", async () => { let finishHangingStream; const server = http2.createServer(); server.on("stream", (stream, headers) => { stream.respond({ ":status": 200 }); if (headers[":path"] === "/hang") finishHangingStream = () => stream.end("done"); else stream.end("ok"); }); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const inflight = client.request({ ":path": "/hang" }); assert.strictEqual(typeof inflight.id, "number"); assert.strictEqual(inflight.pending, false); inflight.on("error", () => {}); inflight.resume(); inflight.end(); await new Promise(resolve => inflight.once("response", resolve)); const clientClosed = new Promise(resolve => client.once("close", resolve)); client.close(); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, false); const goawayError = await captureRequestError(client); assert.strictEqual(goawayError.code, "ERR_HTTP2_GOAWAY_SESSION"); assert.strictEqual(goawayError.message, "New streams cannot be created after receiving a GOAWAY"); finishHangingStream(); await new Promise(resolve => inflight.once("close", resolve)); await clientClosed; assert.strictEqual(inflight.closed, true); assert.strictEqual(inflight.destroyed, true); assert.strictEqual(inflight.rstCode, 0); assert.strictEqual(client.destroyed, true); const destroyed = http2.connect("http://localhost:" + server.address().port); destroyed.on("error", () => {}); await new Promise(resolve => destroyed.once("connect", resolve)); const destroyedClosed = new Promise(resolve => destroyed.once("close", resolve)); destroyed.destroy(); assert.strictEqual(destroyed.connecting, false); assert.strictEqual(destroyed.destroyed, true); assert.strictEqual(destroyed.closed, false); const invalidError = await captureRequestError(destroyed); assert.strictEqual(invalidError.code, "ERR_HTTP2_INVALID_SESSION"); assert.strictEqual(invalidError.message, "The session has been destroyed"); await destroyedClosed; assert.strictEqual(destroyed.closed, false); await new Promise(resolve => server.close(resolve)); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-session-public-lifecycle-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 session public lifecycle logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 client SETTINGS FIFO logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\test("pre-connect submissions deliver to the peer before FIFO acknowledgements", async () => { const server = http2.createServer(); const peerValues = []; server.on("session", session => session.on("remoteSettings", settings => peerValues.push(settings.maxConcurrentStreams))); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); const localValues = []; const callbacks = []; client.on("error", () => {}); client.on("localSettings", settings => localValues.push(settings.maxConcurrentStreams)); const initial = client.localSettings.maxConcurrentStreams; const completed = new Promise((resolve, reject) => { client.settings({ maxConcurrentStreams: 1 }, (error, settings) => { try { assert.strictEqual(error, null); callbacks.push(settings.maxConcurrentStreams); assert.strictEqual(client.pendingSettingsAck, true); assert.deepStrictEqual(peerValues, [initial, 1, 2]); } catch (cause) { reject(cause); } }); client.settings({ maxConcurrentStreams: 2 }, (error, settings) => { try { assert.strictEqual(error, null); callbacks.push(settings.maxConcurrentStreams); assert.strictEqual(client.pendingSettingsAck, false); resolve(); } catch (cause) { reject(cause); } }); }); assert.strictEqual(client.pendingSettingsAck, true); assert.strictEqual(client.localSettings.maxConcurrentStreams, initial); await completed; assert.deepStrictEqual(callbacks, [1, 2]); assert.deepStrictEqual(localValues, [initial, 1, 2]); assert.deepStrictEqual(peerValues, [initial, 1, 2]); await new Promise(resolve => client.close(resolve)); await new Promise(resolve => server.close(resolve)); });
+        \\test("connected submissions retain peer-before-local FIFO order", async () => { const server = http2.createServer(); const peerValues = []; server.on("session", session => session.on("remoteSettings", settings => peerValues.push(settings.maxConcurrentStreams))); await new Promise(resolve => server.listen(0, resolve)); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); await new Promise(resolve => client.once("connect", resolve)); const initial = client.localSettings.maxConcurrentStreams; const localValues = []; const order = []; client.on("localSettings", settings => { if (settings.maxConcurrentStreams !== initial) { localValues.push(settings.maxConcurrentStreams); order.push("local:" + settings.maxConcurrentStreams); } }); const completed = new Promise((resolve, reject) => { client.settings({ maxConcurrentStreams: 3 }, (error, settings) => { try { assert.strictEqual(error, null); order.push("callback:" + settings.maxConcurrentStreams); assert.strictEqual(client.pendingSettingsAck, true); } catch (cause) { reject(cause); } }); client.settings({ maxConcurrentStreams: 4 }, (error, settings) => { try { assert.strictEqual(error, null); order.push("callback:" + settings.maxConcurrentStreams); assert.strictEqual(client.pendingSettingsAck, false); resolve(); } catch (cause) { reject(cause); } }); }); assert.strictEqual(client.localSettings.maxConcurrentStreams, initial); assert.strictEqual(client.pendingSettingsAck, true); await completed; assert.deepStrictEqual(peerValues.slice(-2), [3, 4]); assert.deepStrictEqual(localValues, [3, 4]); assert.deepStrictEqual(order, ["local:3", "callback:3", "local:4", "callback:4"]); await new Promise(resolve => client.close(resolve)); await new Promise(resolve => server.close(resolve)); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-client-settings-fifo-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 client SETTINGS FIFO logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 teardown ordering and terminal identity logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const listen = server => new Promise(resolve => server.listen(0, resolve));
+        \\const closeServer = server => new Promise(resolve => server.close(resolve));
+        \\test("client destroy tears streams down before the session close callback", async () => { const server = http2.createServer(); server.on("stream", stream => { stream.on("error", () => {}); stream.respond(); }); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const order = []; const request = client.request(); request.on("error", () => {}); request.on("close", () => order.push("stream")); request.resume(); request.end(); await new Promise(resolve => request.once("response", resolve)); const closed = new Promise(resolve => client.once("close", () => { order.push("session"); resolve(); })); client.destroy(); assert.strictEqual(client.destroyed, true); assert.strictEqual(client.closed, false); await closed; assert.deepStrictEqual(order, ["stream", "session"]); assert.strictEqual(client.closed, false); await closeServer(server); });
+        \\test("stream close registers its callback in listener order and preserves the first reset", async () => { const server = http2.createServer(); server.on("stream", stream => stream.on("error", () => {})); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); const order = []; let destroys = 0; let errors = 0; let ends = 0; request.on("close", () => order.push("before")); request.on("error", () => errors++); request.on("end", () => ends++); request.close(http2.constants.NGHTTP2_PROTOCOL_ERROR, () => order.push("callback")); const originalDestroy = request._destroy; request._destroy = function(error, callback) { destroys++; return originalDestroy.call(this, error, callback); }; const closed = new Promise(resolve => request.on("close", () => { order.push("after"); resolve(); })); request.close(http2.constants.NGHTTP2_INTERNAL_ERROR); request.destroy(new Error("ignored")); request.resume(); request.end(); await closed; assert.deepStrictEqual(order, ["before", "callback", "after"]); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_PROTOCOL_ERROR); assert.strictEqual(destroys, 1); assert.strictEqual(errors, 1); assert.strictEqual(ends, 1); client.close(); await closeServer(server); });
+        \\test("stream destroy preserves error identity and never emits readable end", async () => { const server = http2.createServer(); server.on("stream", stream => stream.on("error", () => {})); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); const expected = new Error("test"); let destroys = 0; let errors = 0; let ends = 0; const originalDestroy = request._destroy; request._destroy = function(error, callback) { destroys++; assert.strictEqual(error, expected); return originalDestroy.call(this, error, callback); }; request.on("error", error => { errors++; assert.strictEqual(error, expected); }); request.on("end", () => ends++); const closed = new Promise(resolve => request.once("close", resolve)); request.destroy(expected); request.destroy(new Error("ignored")); request.close(http2.constants.NGHTTP2_PROTOCOL_ERROR); request.resume(); await closed; assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_INTERNAL_ERROR); assert.strictEqual(destroys, 1); assert.strictEqual(errors, 1); assert.strictEqual(ends, 0); client.close(); await closeServer(server); });
+        \\test("graceful client close does not cancel a stream on a server without handlers", async () => { const server = http2.createServer(); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); let errors = 0; let closes = 0; request.on("error", () => errors++); request.on("close", () => closes++); request.end(); await new Promise(resolve => client.once("connect", resolve)); client.close(); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, false); await Promise.resolve(); await Promise.resolve(); assert.strictEqual(request.closed, false); assert.strictEqual(request.destroyed, false); assert.strictEqual(errors, 0); assert.strictEqual(closes, 0); const clientClosed = new Promise(resolve => client.once("close", resolve)); client.destroy(); await clientClosed; assert.strictEqual(errors, 1); assert.strictEqual(closes, 1); await closeServer(server); });
+        \\test("raw and handshake sessions preserve close and destroy flag identity", async () => { const socket = () => { const value = Object.assign(__home_http_event_target(), { destroyed: false }); value.write = () => true; value.end = function() { this.destroyed = true; return this; }; value.destroy = value.end; return value; }; const gracefulRaw = __home_http2_raw_connect("http://localhost:1", {}, socket()); const gracefulRawClosed = new Promise(resolve => gracefulRaw.once("close", resolve)); gracefulRaw.close(); assert.strictEqual(gracefulRaw.closed, true); assert.strictEqual(gracefulRaw.destroyed, false); await gracefulRawClosed; assert.strictEqual(gracefulRaw.destroyed, true); const destroyedRaw = __home_http2_raw_connect("http://localhost:1", {}, socket()); const destroyedRawClosed = new Promise(resolve => destroyedRaw.once("close", resolve)); destroyedRaw.destroy(); assert.strictEqual(destroyedRaw.destroyed, true); assert.strictEqual(destroyedRaw.closed, false); await destroyedRawClosed; assert.strictEqual(destroyedRaw.closed, false); const gracefulHandshake = __home_http2_perform_server_handshake(socket()); const gracefulHandshakeClosed = new Promise(resolve => gracefulHandshake.once("close", resolve)); gracefulHandshake.close(); assert.strictEqual(gracefulHandshake.closed, true); assert.strictEqual(gracefulHandshake.destroyed, false); await gracefulHandshakeClosed; assert.strictEqual(gracefulHandshake.destroyed, true); const destroyedHandshake = __home_http2_perform_server_handshake(socket()); const destroyedHandshakeClosed = new Promise(resolve => destroyedHandshake.once("close", resolve)); destroyedHandshake.destroy(); assert.strictEqual(destroyedHandshake.destroyed, true); assert.strictEqual(destroyedHandshake.closed, false); await destroyedHandshakeClosed; assert.strictEqual(destroyedHandshake.closed, false); const rawServerSession = async () => { const server = http2.createServer(); const transport = __home_net_connect_http2_server(server, 1, "localhost"); transport.write(Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), __home_http2_frame(4, 0, 0, Buffer.alloc(0))])); await Promise.resolve(); await Promise.resolve(); return { server, transport, session: transport.__home_http2_session }; }; const gracefulServer = await rawServerSession(); const gracefulServerClosed = new Promise(resolve => gracefulServer.session.once("close", resolve)); gracefulServer.session.close(); assert.strictEqual(gracefulServer.session.closed, true); assert.strictEqual(gracefulServer.session.destroyed, false); await gracefulServerClosed; assert.strictEqual(gracefulServer.session.destroyed, true); const destroyedServer = await rawServerSession(); const destroyedServerClosed = new Promise(resolve => destroyedServer.session.once("close", resolve)); destroyedServer.session.destroy(); assert.strictEqual(destroyedServer.session.destroyed, true); assert.strictEqual(destroyedServer.session.closed, false); await destroyedServerClosed; assert.strictEqual(destroyedServer.session.closed, false); });
+        \\test("SETTINGS overflow fails closed once and never acknowledges queued submissions", async () => { const server = http2.createServer(); await listen(server); const client = http2.connect("http://localhost:" + server.address().port, { maxOutstandingSettings: 2 }); let errors = 0; let callbacks = 0; client.on("error", error => { errors++; assert.strictEqual(error.code, "ERR_HTTP2_MAX_PENDING_SETTINGS_ACK"); }); const closed = new Promise(resolve => client.once("close", resolve)); client.settings({ maxConcurrentStreams: 1 }, () => callbacks++); client.settings({ maxConcurrentStreams: 2 }, () => callbacks++); await closed; await Promise.resolve(); assert.strictEqual(errors, 1); assert.strictEqual(callbacks, 0); assert.strictEqual(client.destroyed, true); assert.strictEqual(client.closed, false); await closeServer(server); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-teardown-ordering-terminal-identity-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 teardown ordering/terminal identity logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }

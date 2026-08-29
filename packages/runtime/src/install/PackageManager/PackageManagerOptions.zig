@@ -418,7 +418,11 @@ pub fn load(
                         const prev_scope = this.scope;
                         var api_registry = std.mem.zeroes(Api.NpmRegistry);
                         api_registry.url = registry_;
-                        api_registry.token = prev_scope.token;
+                        // Registry overrides must not forward saved credentials to
+                        // another host or downgrade them from HTTPS to HTTP.
+                        if (canReuseRegistryToken(prev_scope.url, URL.parse(registry_))) {
+                            api_registry.token = prev_scope.token;
+                        }
                         this.scope = try Npm.Registry.Scope.fromAPI("", api_registry, allocator, env);
                         did_set = true;
                     }
@@ -690,6 +694,22 @@ pub fn load(
         this.do.save_lockfile = false;
         this.enable.force_save_lockfile = false;
     }
+}
+
+fn canReuseRegistryToken(previous: URL, next: URL) bool {
+    return strings.eql(strings.withoutTrailingSlash(next.host), strings.withoutTrailingSlash(previous.host)) and
+        (next.isHTTPS() or !previous.isHTTPS());
+}
+
+test "home_rt.install registry override preserves token origin and transport" {
+    const parse = URL.parse;
+    const expect = std.testing.expect;
+    try expect(canReuseRegistryToken(parse("https://registry.example/"), parse("https://registry.example/packages/")));
+    try expect(canReuseRegistryToken(parse("http://registry.example/"), parse("https://registry.example/")));
+    try expect(canReuseRegistryToken(parse("http://localhost:8080/"), parse("http://localhost:8080/")));
+    try expect(!canReuseRegistryToken(parse("https://registry.example/"), parse("http://registry.example/")));
+    try expect(!canReuseRegistryToken(parse("https://registry.example/"), parse("https://elsewhere.example/")));
+    try expect(!canReuseRegistryToken(parse("http://localhost:8080/"), parse("http://localhost:8081/")));
 }
 
 pub const Do = packed struct(u16) {

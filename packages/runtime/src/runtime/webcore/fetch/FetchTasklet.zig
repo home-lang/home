@@ -340,19 +340,22 @@ pub const FetchTasklet = struct {
                     );
                 }
             }
-            if (this.sink) |sink| {
-                if (js_err == .zero) {
-                    js_err = err.toJS(globalThis);
-                    js_err.ensureStillAlive();
-                }
-                sink.cancel(js_err);
-                return;
+            // Failure is terminal for both directions. An active upload must
+            // not leave a buffered response-body promise pending forever.
+            if (this.sink != null and js_err == .zero) {
+                js_err = err.toJS(globalThis);
+                js_err.ensureStillAlive();
             }
             // if we are buffering resolve the promise
             if (this.getCurrentResponse()) |response| {
                 need_deinit = false; // body value now owns the error
                 const body = response.getBodyValue();
                 try body.toErrorInstance(err, globalThis);
+            }
+            // Cancel last and re-read the sink: its synchronous JavaScript
+            // cancellation callback may re-enter the tasklet.
+            if (js_err != .zero) {
+                if (this.sink) |sink| sink.cancel(js_err);
             }
             return;
         }
@@ -1194,6 +1197,7 @@ pub const FetchTasklet = struct {
                 .disable_timeout = fetch_options.disable_timeout,
                 .disable_keepalive = fetch_options.disable_keepalive,
                 .disable_decompression = fetch_options.disable_decompression,
+                .compress = fetch_options.compress,
                 .reject_unauthorized = fetch_options.reject_unauthorized,
                 .verbose = fetch_options.verbose,
                 .tls_props = fetch_options.ssl_config,
@@ -1394,6 +1398,7 @@ pub const FetchTasklet = struct {
         disable_timeout: bool,
         disable_keepalive: bool,
         disable_decompression: bool,
+        compress: ?http.compress_body.CompressOption = null,
         reject_unauthorized: bool,
         url: ZigURL,
         verbose: http.HTTPVerboseLevel = .none,

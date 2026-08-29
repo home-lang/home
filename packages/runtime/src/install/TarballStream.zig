@@ -393,16 +393,20 @@ fn openArchive(this: *TarballStream) !void {
     // bidding would try to read-ahead before any bytes have arrived.
     // ARCHIVE_FILTER_GZIP = 1, ARCHIVE_FORMAT_TAR = 0x30000.
     if (lib.archive_read_append_filter(@ptrCast(archive), 1) != 0) return error.Fail;
-    if (lib.archive_read_set_format(@ptrCast(archive), 0x30000) != 0) return error.Fail;
+    if (archive.readSupportFormatTar() != .ok) return error.Fail;
     _ = archive.readSetOptions("read_concatenated_archives");
+    // Setting format options clears libarchive's selected format. Select tar
+    // afterwards so opening a fragmented stream never invokes the format
+    // bidder, which cannot resume when the first header needs more input.
+    if (lib.archive_read_set_format(@ptrCast(archive), 0x30000) != 0) return error.Fail;
 
-    switch (@as(lib.Archive.Result, @enumFromInt(lib.archive_read_open(
+    switch (@as(lib.Archive.Result, @fromBackingInt(@intCast(lib.archive_read_open(
         @ptrCast(archive),
         this,
         null,
         archiveReadCallback,
         null,
-    )))) {
+    ))))) {
         .ok, .warn => {},
         .retry => {
             // open() runs the filter bidder which we bypassed, but the
@@ -495,7 +499,7 @@ fn archiveReadCallback(
     // in vendor/libarchive make every layer (filter_ahead → gzip → tar)
     // preserve its state and propagate ARCHIVE_RETRY to our `step()`
     // loop, which then returns so this worker can be reused.
-    return @intFromEnum(lib.Archive.Result.retry);
+    return @backingInt(lib.Archive.Result.retry);
 }
 
 /// Process one entry header returned by `readNextHeader`. Opens the
@@ -653,7 +657,7 @@ fn openOutputFile(
         return switch (bun.sys.openatWindows(dest_fd, path, flags, 0)) {
             .result => |fd| fd,
             .err => |e| switch (e.errno) {
-                @intFromEnum(bun.sys.E.PERM), @intFromEnum(bun.sys.E.NOENT) => brk: {
+                @backingInt(bun.sys.E.PERM), @backingInt(bun.sys.E.NOENT) => brk: {
                     dest_fd.makePath(u16, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                     break :brk try bun.sys.openatWindows(dest_fd, path, flags, 0).unwrap();
                 },

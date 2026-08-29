@@ -2289,7 +2289,7 @@ pub fn sigaction(sig: u8, noalias act: ?*const Sigaction, noalias oact: ?*Sigact
         *const fn (c_int, noalias ?*const Sigaction, noalias ?*Sigaction) callconv(.c) c_int,
         .{ .name = "sigaction" },
     ) else std.c.sigaction;
-    _ = libc_sigaction(sig, act, oact);
+    _ = libc_sigaction(if (comptime Environment.isAndroid) @as(c_int, sig) else @enumFromInt(sig), act, oact);
 }
 
 pub fn ppoll(fds: []std.posix.pollfd, timeout: ?*std.posix.timespec, sigmask: ?*const std.posix.sigset_t) Maybe(usize) {

@@ -400,6 +400,7 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
     }
 
     if (manager.options.do.write_package_json) {
+        const io = std.Io.Threaded.global_single_threaded.io();
         const source, const path = if (manager.options.patch_features == .commit) source_and_path: {
             const root_package_json_entry = manager.workspace_package_json_cache.getWithPath(
                 manager.allocator,
@@ -423,9 +424,9 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
             0,
         ).unwrap()).handle.stdFile();
 
-        try workspace_package_json_file.pwriteAll(source, 0);
-        std.posix.ftruncate(workspace_package_json_file.handle, source.len) catch {};
-        workspace_package_json_file.close();
+        defer workspace_package_json_file.close(io);
+        try workspace_package_json_file.writePositionalAll(io, source, 0);
+        workspace_package_json_file.setLength(io, source.len) catch {};
 
         if (subcommand == .remove) {
             if (!any_changes) {
@@ -433,7 +434,7 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                 return;
             }
 
-            var cwd = std.fs.cwd();
+            const cwd = std.Io.Dir.cwd();
             // This is not exactly correct
             var node_modules_buf: bun.PathBuffer = undefined;
             bun.copy(u8, &node_modules_buf, "node_modules" ++ std.fs.path.sep_str);
@@ -446,19 +447,19 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                 // This is a quick & dirty cleanup intended for when deleting top-level dependencies
                 if (std.mem.indexOfScalar(PackageNameHash, name_hashes, String.Builder.stringHash(request.name)) == null) {
                     bun.copy(u8, offset_buf, request.name);
-                    cwd.deleteTree(node_modules_buf[0 .. "node_modules/".len + request.name.len]) catch {};
+                    cwd.deleteTree(io, node_modules_buf[0 .. "node_modules/".len + request.name.len]) catch {};
                 }
             }
 
             // This is where we clean dangling symlinks
             // This could be slow if there are a lot of symlinks
             if (bun.openDir(cwd, manager.options.bin_path)) |node_modules_bin_handle| {
-                var node_modules_bin: std.Io.Dir = node_modules_bin_handle;
-                defer node_modules_bin.close();
+                const node_modules_bin: std.Io.Dir = node_modules_bin_handle;
+                defer node_modules_bin.close(io);
                 var iter: std.Io.Dir.Iterator = node_modules_bin.iterate();
-                iterator: while (iter.next() catch null) |entry| {
+                iterator: while (iter.next(io) catch null) |entry| {
                     switch (entry.kind) {
-                        std.Io.Dir.Entry.Kind.sym_link => {
+                        .sym_link => {
 
                             // any symlinks which we are unable to open are assumed to be dangling
                             // note that using access won't work here, because access doesn't resolve symlinks
@@ -466,12 +467,12 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
                             node_modules_buf[entry.name.len] = 0;
                             const buf: [:0]u8 = node_modules_buf[0..entry.name.len :0];
 
-                            var file = node_modules_bin.openFileZ(buf, .{ .mode = .read_only }) catch {
-                                node_modules_bin.deleteFileZ(buf) catch {};
+                            const file = node_modules_bin.openFile(io, buf, .{ .mode = .read_only }) catch {
+                                node_modules_bin.deleteFile(io, buf) catch {};
                                 continue :iterator;
                             };
 
-                            file.close();
+                            file.close(io);
                         },
                         else => {},
                     }
@@ -722,7 +723,7 @@ pub fn updatePackageJSONAndInstall(
         };
 
         // This runs the bundler.
-        try bun.cli.BuildCommand.exec(bun.cli.Command.get(), &fetcher);
+        try bun.cli.BuildCommand.analyze(bun.cli.Command.get(), &fetcher);
         return;
     }
 

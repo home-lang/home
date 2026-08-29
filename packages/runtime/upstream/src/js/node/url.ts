@@ -28,7 +28,7 @@
 const { URL, URLSearchParams } = globalThis;
 const [domainToASCII, domainToUnicode] = $cpp("NodeURL.cpp", "Bun::createNodeURLBinding");
 const { urlToHttpOptions } = require("internal/url");
-const { validateString } = require("internal/validators");
+const { validateObject, validateString } = require("internal/validators");
 
 function Url() {
   this.protocol = null;
@@ -91,11 +91,15 @@ var protocolPattern = /^([a-z0-9.+-]+:)/i,
     ftp: true,
     gopher: true,
     file: true,
+    ws: true,
+    wss: true,
     "http:": true,
     "https:": true,
     "ftp:": true,
     "gopher:": true,
     "file:": true,
+    "ws:": true,
+    "wss:": true,
   };
 
 function urlParse(
@@ -229,13 +233,13 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
   let slashes;
   if (slashesDenoteHost || proto || rest.match(/^\/\/[^@/]+@[^@/]+/)) {
     slashes = rest.substring(0, 2) === "//";
-    if (slashes && !(proto && hostlessProtocol[proto])) {
+    if (slashes && !(proto && hostlessProtocol[lowerProto])) {
       rest = rest.substring(2);
       this.slashes = true;
     }
   }
 
-  if (!hostlessProtocol[proto] && (slashes || (proto && !slashedProtocol[proto]))) {
+  if (!hostlessProtocol[lowerProto] && (slashes || (proto && !slashedProtocol[lowerProto]))) {
     /*
      * there's a hostname.
      * the first instance of /, ?, ;, or # ends the host.
@@ -256,6 +260,12 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
      */
 
     // find the first instance of any hostEndingChars
+    // Ignore TAB/LF/CR only in the authority. The path and query retain their
+    // control characters, which the legacy serializer percent-escapes below.
+    const authorityEnd = rest.search(/[/?#]/);
+    const authorityLength = authorityEnd === -1 ? rest.length : authorityEnd;
+    rest = rest.slice(0, authorityLength).replace(/[\t\n\r]/g, "") + rest.slice(authorityLength);
+
     var hostEnd = -1;
     for (var i = 0; i < hostEndingChars.length; i++) {
       var hec = rest.indexOf(hostEndingChars[i]);
@@ -343,7 +353,16 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
      * you call it with a domain that already is ASCII-only.
      */
     if (this.hostname) {
-      this.hostname = new URL("http://" + this.hostname).hostname;
+      if (ipv6Hostname) {
+        // Legacy IPv6 addresses retain their spelling (including embedded
+        // IPv4), but must still reject characters that can spoof the host.
+        if (/[\0\t\n\r #%/<>?@\\^|]/.test(this.hostname)) throw $ERR_INVALID_URL(url);
+      } else {
+        // IDNA conversion must not apply WHATWG IPv4 canonicalization to a
+        // legacy host, such as 127.1 or a non-special protocol's 0.0,1.1.
+        this.hostname = domainToASCII(this.hostname);
+        if (!this.hostname || /[\0\t\n\r #%/:<>?@[\\\]^|]/.test(this.hostname)) throw $ERR_INVALID_URL(url);
+      }
     }
 
     var p = this.port ? ":" + this.port : "";
@@ -461,8 +480,8 @@ function getHostname(self, rest, hostname: string, url) {
 }
 
 // format a parsed object into a url string
-declare function urlFormat(urlObject: string | URL | Url): string;
-function urlFormat(urlObject: unknown) {
+declare function urlFormat(urlObject: string | URL | Url, options?: object): string;
+function urlFormat(urlObject: unknown, options?: any) {
   /*
    * ensure it's an object, and not a string url.
    * If it's an obj, this is a no-op.
@@ -474,6 +493,47 @@ function urlFormat(urlObject: unknown) {
     // NOTE: $isObject returns true for functions
   } else if (typeof urlObject !== "object" || urlObject === null) {
     throw $ERR_INVALID_ARG_TYPE("urlObject", ["Object", "string"], urlObject);
+  } else if (urlObject instanceof URL) {
+    let fragment = true;
+    let unicode = false;
+    let search = true;
+    let auth = true;
+    if (options) {
+      validateObject(options, "options");
+      if (options.fragment != null) fragment = Boolean(options.fragment);
+      if (options.unicode != null) unicode = Boolean(options.unicode);
+      if (options.search != null) search = Boolean(options.search);
+      if (options.auth != null) auth = Boolean(options.auth);
+    }
+
+    // Work on the serialized URL rather than its component getters: search
+    // and hash getters cannot distinguish absent components from empty ?/#.
+    // Parsing href also keeps own properties on a URL from spoofing components.
+    const url = new URL(urlObject.href);
+    let href = url.href;
+    const hashIndex = href.indexOf("#");
+    if (!fragment && hashIndex !== -1) href = href.slice(0, hashIndex);
+    const searchIndex = href.indexOf("?");
+    if (!search && searchIndex !== -1 && (hashIndex === -1 || searchIndex < hashIndex)) {
+      href = href.slice(0, searchIndex) + (fragment && hashIndex !== -1 ? href.slice(hashIndex) : "");
+    }
+
+    if (url.host) {
+      const authorityStart = url.protocol.length + 2;
+      let hostnameStart = authorityStart;
+      if (url.username || url.password) {
+        hostnameStart = href.indexOf("@", authorityStart) + 1;
+        if (!auth) {
+          href = href.slice(0, authorityStart) + href.slice(hostnameStart);
+          hostnameStart = authorityStart;
+        }
+      }
+      if (unicode && !isIpv6Hostname(url.hostname)) {
+        const hostname = domainToUnicode(url.hostname);
+        href = href.slice(0, hostnameStart) + hostname + href.slice(hostnameStart + url.hostname.length);
+      }
+    }
+    return href;
   }
 
   if (!(urlObject instanceof Url)) {
@@ -486,7 +546,7 @@ Url.prototype.format = function format() {
   var auth: string = this.auth || "";
   if (auth) {
     auth = encodeURIComponent(auth);
-    auth = auth.replace(/%3A/i, ":");
+    auth = auth.replace(/%3A/gi, ":");
     auth += "@";
   }
 
@@ -499,14 +559,16 @@ Url.prototype.format = function format() {
   if (this.host) {
     host = auth + this.host;
   } else if (this.hostname) {
-    host = auth + (this.hostname.indexOf(":") === -1 ? this.hostname : "[" + this.hostname + "]");
+    host =
+      auth +
+      (this.hostname.indexOf(":") === -1 || isIpv6Hostname(this.hostname) ? this.hostname : "[" + this.hostname + "]");
     if (this.port) {
       host += ":" + this.port;
     }
   }
 
   if (this.query && typeof this.query === "object" && Object.keys(this.query).length) {
-    query = new URLSearchParams(this.query).toString();
+    query = require("node:querystring").stringify(this.query);
   }
 
   var search = this.search || (query && "?" + query) || "";
@@ -524,6 +586,8 @@ Url.prototype.format = function format() {
     if (pathname && pathname.charAt(0) !== "/") {
       pathname = "/" + pathname;
     }
+  } else if (protocol === "file:") {
+    host = "//";
   } else if (!host) {
     host = "";
   }
@@ -538,7 +602,7 @@ Url.prototype.format = function format() {
   pathname = pathname.replace(/[?#]/g, function (match) {
     return encodeURIComponent(match);
   });
-  search = search.replace("#", "%23");
+  search = search.replace(/#/g, "%23");
 
   return protocol + host + pathname + search + hash;
 };

@@ -119,7 +119,7 @@ pub const PatchFile = struct {
                         if (nodefs.mkdirRecursive(.{
                             .path = .{ .string = bun.PathString.init(filedir) },
                             .recursive = true,
-                            .mode = @intCast(@intFromEnum(mode)),
+                            .mode = @intCast(@backingInt(mode)),
                         }).asErr()) |e| return e.withoutPath();
                     }
 
@@ -485,7 +485,7 @@ pub const FileMode = enum(u32) {
     executable = 0o755,
 
     pub fn toBunMode(this: FileMode) bun.Mode {
-        return @intCast(@intFromEnum(this));
+        return @intCast(@backingInt(this));
     }
 
     pub fn fromU32(mode: u32) ?FileMode {
@@ -887,14 +887,14 @@ const PatchLinesParser = struct {
                             if (this.current_hunk == null) {
                                 return ParseErr.hunk_lines_encountered_before_hunk_header;
                             }
-                            if (this.current_hunk_mutation_part != null and @intFromEnum(this.current_hunk_mutation_part.?.type) != @intFromEnum(hunk_line_type)) {
+                            if (this.current_hunk_mutation_part != null and @backingInt(this.current_hunk_mutation_part.?.type) != @backingInt(hunk_line_type)) {
                                 this.current_hunk.?.parts.append(bun.default_allocator, this.current_hunk_mutation_part.?) catch unreachable;
                                 this.current_hunk_mutation_part = null;
                             }
 
                             if (this.current_hunk_mutation_part == null) {
                                 this.current_hunk_mutation_part = .{
-                                    .type = @enumFromInt(@intFromEnum(hunk_line_type)),
+                                    .type = @fromBackingInt(@intCast(@backingInt(hunk_line_type))),
                                 };
                             }
 
@@ -1116,13 +1116,13 @@ const PatchLinesParser = struct {
 };
 
 pub const TestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
+const native_spawn_sync = @import("../spawn_sync.zig");
 pub fn spawnOpts(
     old_folder: []const u8,
     new_folder: []const u8,
     cwd: [:0]const u8,
     git: [:0]const u8,
-    loop: *jsc.AnyEventLoop,
-) bun.spawn.sync.Options {
+) native_spawn_sync.Options {
     const argv: []const []const u8 = brk: {
         const ARGV = &[_][:0]const u8{
             "git",
@@ -1164,20 +1164,16 @@ pub fn spawnOpts(
         break :brk envp_buf;
     };
 
-    return bun.spawn.sync.Options{
+    return native_spawn_sync.Options{
         .stdout = .buffer,
         .stderr = .buffer,
         .cwd = cwd,
         .envp = envp,
         .argv = argv,
-        .windows = if (bun.Environment.isWindows) .{ .loop = switch (loop.*) {
-            .js => |x| .{ .js = x },
-            .mini => |*x| .{ .mini = x },
-        } },
     };
 }
 
-pub fn diffPostProcess(result: *bun.spawn.sync.Result, old_folder: []const u8, new_folder: []const u8) !bun.jsc.Node.Maybe(std.array_list.Managed(u8), std.array_list.Managed(u8)) {
+pub fn diffPostProcess(result: *native_spawn_sync.Result, old_folder: []const u8, new_folder: []const u8) !bun.jsc.Node.Maybe(std.array_list.Managed(u8), std.array_list.Managed(u8)) {
     var stdout = std.array_list.Managed(u8).init(bun.default_allocator);
     var stderr = std.array_list.Managed(u8).init(bun.default_allocator);
 

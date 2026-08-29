@@ -57,6 +57,53 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+## Linux ARM64 container checkpoint
+
+Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm
+container on a native Linux ARM64 ext4 volume. The host was an Ubuntu 26.04
+ARM64 Lima/VZ VM with 4 vCPUs and 8 GB RAM; the measured container reported
+Linux 7.0.0-28-generic, aarch64, and glibc 2.36. The container image is
+`node:24.18.0-bookworm-slim` at digest
+`sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d`,
+with Node 24.18.0, Hyperfine 1.20.0, and Python 3.11.2. The complete raw-result
+identifier is `20260829T035150Z`.
+
+The same admission rules, generated corpus, and 30-round interleaved schedule
+were used with TS **6.0.3**, native TS **7.0.2**, and Home. All **600 round
+files / 1,800 successful finite samples** are retained without filtering.
+Compiler and tool provenance was hashed before admission and again after
+measurement. The Home ARM64 ReleaseFast binary has SHA-256
+`9512c02505248c031beb75ab304e65bde9e018bf93d340adf56bd164a5eb31bb`.
+
+| Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 241.3 ± 9.7 ms | 38.0 ± 1.4 ms | **37.3 ± 0.9 ms** | **1.02× faster; narrow** |
+| `class_hierarchy` | 208.0 ± 2.7 ms | 35.5 ± 1.1 ms | **28.1 ± 0.3 ms** | **1.27× faster** |
+| `commonjs_graph` | 162.9 ± 2.9 ms | 29.1 ± 1.4 ms | **27.7 ± 0.6 ms** | **1.05× faster** |
+| `control_flow` | 221.3 ± 6.1 ms | 42.8 ± 1.5 ms | **36.3 ± 4.1 ms** | **1.18× faster** |
+| `deep_types` | 137.4 ± 2.6 ms | 34.3 ± 1.0 ms | **25.0 ± 0.3 ms** | **1.37× faster** |
+| `destructuring` | 155.3 ± 2.6 ms | 30.4 ± 1.3 ms | **19.5 ± 0.3 ms** | **1.56× faster** |
+| `generic_calls` | 202.2 ± 2.7 ms | 38.0 ± 0.9 ms | **21.9 ± 0.5 ms** | **1.74× faster** |
+| `import_graph` | 149.1 ± 47.3 ms | 28.7 ± 5.3 ms | **20.9 ± 1.3 ms** | **1.37× faster** |
+| `interface_composition` | 235.6 ± 23.6 ms | 47.5 ± 1.6 ms | **44.6 ± 0.9 ms** | **1.07× faster** |
+| `many_files` | 230.1 ± 29.7 ms | 35.5 ± 3.2 ms | **22.4 ± 0.7 ms** | **1.58× faster** |
+| `null_safe_access` | 223.8 ± 8.9 ms | 42.0 ± 1.0 ms | **40.7 ± 0.8 ms** | **1.03× faster; narrow** |
+| `overload_resolution` | 233.6 ± 3.3 ms | 49.1 ± 2.4 ms | **29.7 ± 0.8 ms** | **1.65× faster** |
+| `recursive_generics` | 159.6 ± 2.9 ms | 54.5 ± 1.0 ms | **27.5 ± 0.2 ms** | **1.98× faster** |
+| `reexport_graph` | 97.7 ± 3.0 ms | 22.2 ± 1.1 ms | **11.8 ± 0.6 ms** | **1.88× faster** |
+| `startup` | 52.9 ± 1.1 ms | 17.9 ± 0.8 ms | **0.8 ± 0.1 ms** | **21.67× faster** |
+| `structural_objects` | 212.2 ± 3.6 ms | 42.1 ± 1.4 ms | **29.3 ± 0.5 ms** | **1.44× faster** |
+| `tsx_components` | 180.5 ± 2.9 ms | 29.6 ± 0.9 ms | **21.7 ± 0.4 ms** | **1.37× faster** |
+| `type_predicates` | 283.4 ± 3.8 ms | 57.0 ± 0.9 ms | **44.3 ± 0.5 ms** | **1.29× faster** |
+| `type_predicates_large` | 1181.5 ± 27.8 ms | 388.4 ± 13.8 ms | **355.5 ± 12.2 ms** | **1.09× faster** |
+| `variadic_tuples` | 316.4 ± 68.2 ms | 67.0 ± 7.5 ms | **47.2 ± 7.5 ms** | **1.42× faster** |
+
+Home records lower means on **20/20 admitted workloads** in this Linux
+checkpoint. The narrow CheckJS row has 19/30 paired wins and medians of 37.0
+ms for Home versus 37.6 ms for the fastest competitor; it is documented as a
+narrow result, not a universal claim. Null-safe access has 25/30 paired wins
+and CommonJS has 27/30. All other rows have at least 29/30 paired wins.
+
 ## Fairness and measurement
 
 - Compiler versions are pinned in `bench/vs_tsgo/corpus.toml`. The runner rejects
@@ -94,11 +141,14 @@ the same speedup.
 - Hyperfine supplies the process timer. Reported uncertainty is the sample
   standard deviation, not a confidence interval.
 
-These snapshots use the direct macOS runner, not the legacy benchmark
-Dockerfile. That container recipe still has stale tool installation and build
-assumptions; aligning and validating it is tracked in
-[issue #464](https://github.com/home-lang/home/issues/464). No Linux/container
-performance result is claimed here.
+The Linux checkpoint uses the repository Dockerfile from the repository root.
+The root `.dockerignore` limits the build context to the entrypoint, while the
+repository and a native Linux ReleaseFast `home-tsc` are mounted at runtime.
+The benchmark workspace must live on a native Linux filesystem; macOS-shared
+VirtioFS measurements are diagnostic only because their file-access behavior
+is not representative. The entrypoint installs the exact manifest pins,
+regenerates the corpus, runs admission, and then measures. This container path
+is tracked in [issue #464](https://github.com/home-lang/home/issues/464).
 
 ## Workloads
 
@@ -168,6 +218,8 @@ workload-specific shortcuts:
 - visible type declarations are indexed per lexical scope while retaining the
   original resolver as an allocation-failure fallback;
 - source loading reuses one I/O runtime per compilation;
+- module resolution reuses one filesystem runtime, preserves extension order
+  while snapshotting directories, and caches repeated package-boundary queries;
 - optimized builds compile sufficiently large programs with a bounded worker
   pool, while small programs remain serial to avoid thread startup overhead;
 - cross-file export queries reuse bind-only module analyses and immutable
@@ -223,6 +275,12 @@ workload-specific shortcuts:
   assignments, annotated values, and owning functions; reuses immutable
   typedef and callback types; and skips prototype, import, expando, and
   accessibility searches only when exact source facts prove they cannot apply;
+- JSDoc parser diagnostics discover tags once per comment and run only the
+  semantically applicable validation passes, preserving every individual
+  diagnostic scanner for comments that contain its triggering tag; and
+- object-rest inference avoids source-annotation recovery only when the source
+  binding is already semantically proven non-nullish, retaining the complete
+  recovery path for nullable and ambiguous declarations;
 - type aliases and parameter annotations use exact-name indexes, root variable
   recovery reuses binder declarations, and direct named object types reuse
   their reverse display-name mapping and successful structural-name matches;

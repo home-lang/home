@@ -20,6 +20,8 @@ comptime {
     _ = us_dispatch_connect_error;
     _ = us_dispatch_connecting_error;
     _ = us_dispatch_handshake;
+    _ = us_dispatch_session;
+    _ = us_dispatch_keylog;
     _ = us_dispatch_ssl_raw_tap;
 }
 
@@ -115,6 +117,23 @@ export fn us_dispatch_connecting_error(c: *ConnectingSocket, code: c_int) ?*Conn
 }
 export fn us_dispatch_handshake(s: *us_socket_t, ok: c_int, err: uws.us_bun_verify_error_t) void {
     if (vt(s).on_handshake) |f| f(s, ok, err, null);
+}
+
+/// A new resumable TLS session. The C layer parks and owns `data` until this
+/// call returns, after the BoringSSL stack has unwound.
+export fn us_dispatch_session(s: *us_socket_t, data: [*c]const u8, len: c_int) void {
+    if (s.kind() != .bun_socket_tls or len <= 0) return;
+    const TLSSocket = bun.jsc.API.NewSocket(true);
+    const tls = s.ext(?*TLSSocket).* orelse return;
+    tls.onSession(data[0..@intCast(len)]) catch {};
+}
+
+/// One parked NSS key-log line, including its trailing newline.
+export fn us_dispatch_keylog(s: *us_socket_t, data: [*c]const u8, len: c_int) void {
+    if (s.kind() != .bun_socket_tls or len <= 0) return;
+    const TLSSocket = bun.jsc.API.NewSocket(true);
+    const tls = s.ext(?*TLSSocket).* orelse return;
+    tls.onKeylog(data[0..@intCast(len)]) catch {};
 }
 
 /// Ciphertext tap for `socket.upgradeTLS()` — fires on the `[raw, _]` half of

@@ -33,6 +33,28 @@ const napi_status = c_uint;
 const napi_callback = ?*const fn (napi_env, napi_callback_info) callconv(.c) napi_value;
 const napi_finalize = ?*const fn (napi_env, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 
+// A plain JSContext's adapter environment is not a native NapiEnv. Keep the
+// pointer identities separate and dispatch native calls before reading any
+// adapter fields. Other threads (including native workers) have no such envs.
+threadlocal var bootstrap_napi_envs: std.AutoHashMapUnmanaged(usize, *NativeNapiEnv) = .empty;
+threadlocal var registering_bootstrap_napi_module = false;
+
+fn isBootstrapNapiEnv(env: napi_env) bool {
+    return if (env) |value| bootstrap_napi_envs.contains(@intFromPtr(value)) else false;
+}
+
+const NativeNapi = struct {
+    extern fn HomeNative_napi_module_register(module: ?*NativeNapiModule) void;
+    extern fn HomeNative_napi_create_function(env: napi_env, name: ?[*:0]const u8, length: usize, callback: napi_callback, data: ?*anyopaque, result: ?*napi_value) napi_status;
+    extern fn HomeNative_napi_get_cb_info(env: napi_env, info: napi_callback_info, argc: ?*usize, argv: [*c]napi_value, this_arg: ?*napi_value, data: ?*?*anyopaque) napi_status;
+    extern fn HomeNative_napi_set_named_property(env: napi_env, object: napi_value, name: ?[*:0]const u8, value: napi_value) napi_status;
+    extern fn HomeNative_napi_create_external(env: napi_env, data: ?*anyopaque, callback: napi_finalize, hint: ?*anyopaque, result: ?*napi_value) napi_status;
+    extern fn HomeNative_napi_get_value_external(env: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status;
+    extern fn HomeNative_napi_get_value_bool(env: napi_env, value: napi_value, result: ?*bool) napi_status;
+    extern fn HomeNative_napi_throw_error(env: napi_env, code: ?[*:0]const u8, message: ?[*:0]const u8) napi_status;
+    extern fn HomeNative_napi_create_object(env: napi_env, result: ?*napi_value) napi_status;
+};
+
 const NativeNapiEnv = struct {
     ctx: *JSContextRef,
     exception: extern_fns.ExceptionRef,
@@ -3628,109 +3650,33 @@ fn loadNativeNodeModule(
 ) callconv(.c) ?*JSValue {
     _ = function;
     _ = this;
+    _ = argument_count;
+    _ = arguments;
     const actual_ctx = ctx.?;
-    const allocator = std.heap.smp_allocator;
-    const NapiRegisterFn = *const fn (napi_env, napi_value) callconv(.c) napi_value;
-
-    if (argument_count < 1 or arguments[0] == null) {
-        setException(actual_ctx, exception, "require(.node) requires a native module path");
-        return null;
-    }
-
-    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) path failed: {s}", .{@errorName(err)});
+    // A plain JSContext has neither a native NapiEnv nor native napi_value
+    // handles. Reject before dlopen: legacy constructors may register callbacks
+    // while the library is opening, before its entry point can be inspected.
+    const ErrorConstructor = struct {
+        extern "c" fn JSObjectMakeError(context: ?*JSContextRef, count: usize, values: [*c]const ?*JSValue, error_out: extern_fns.ExceptionRef) ?*JSObject;
+    };
+    const message = "__home_unsupported__:Native Node-API addons require the full Home runtime";
+    const message_string = makeJSString(message) catch {
+        setException(actual_ctx, exception, message);
         return null;
     };
-    defer allocator.free(path);
-
-    const pending_start = pending_napi_modules.items.len;
-    var lib = std.DynLib.open(path) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "ERR_DLOPEN_FAILED: {s}", .{@errorName(err)});
+    defer extern_fns.JSStringRelease(message_string);
+    const error_arguments = [_]?*JSValue{extern_fns.JSValueMakeString(actual_ctx, message_string)};
+    var construction_exception: ?*JSValue = null;
+    // A real Error preserves name/message when the outer evaluator serializes
+    // an uncaught exception; an object literal only becomes [object Object].
+    const error_object = ErrorConstructor.JSObjectMakeError(actual_ctx, error_arguments.len, &error_arguments, &construction_exception) orelse {
+        setException(actual_ctx, exception, "__home_unsupported__:Native Node-API addons require the full Home runtime");
         return null;
     };
-    errdefer lib.close();
-
-    const has_napi_register = lib.lookup(*const anyopaque, "napi_register_module_v1") != null;
-    const has_node_api_version = lib.lookup(*const anyopaque, "node_api_module_get_api_version_v1") != null;
-    const has_plugin_impl = lib.lookup(*const anyopaque, "plugin_impl") != null;
-    const has_plugin_impl_bar = lib.lookup(*const anyopaque, "plugin_impl_bar") != null;
-    const has_plugin_impl_baz = lib.lookup(*const anyopaque, "plugin_impl_baz") != null;
-    const has_incompatible_version = lib.lookup(*const anyopaque, "incompatible_version_plugin_impl") != null;
-    const has_bad_free_pointer = lib.lookup(*const anyopaque, "plugin_impl_bad_free_function_pointer") != null;
-    const plugin_name = readNativePluginName(&lib);
-    const napi_register = lib.lookup(NapiRegisterFn, "napi_register_module_v1");
-    const registered_module = if (pending_napi_modules.items.len > pending_start)
-        pending_napi_modules.items[pending_start]
-    else
-        null;
-
-    if (napi_register == null and registered_module == null) {
-        lib.close();
-        setException(actual_ctx, exception, "symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
-        return null;
-    }
-
-    const exports_object = extern_fns.JSObjectMake(actual_ctx, null, null) orelse {
-        setException(actual_ctx, exception, "require(.node) failed to create exports object");
-        return null;
-    };
-    const env = allocator.create(NativeNapiEnv) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) env allocation failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    env.* = .{ .ctx = actual_ctx, .exception = exception };
-
-    const registration_result = if (registered_module) |module|
-        module.nm_register_func(env, @ptrCast(exports_object))
-    else
-        napi_register.?(env, @ptrCast(exports_object));
-    if (exception.* != null or env.last_error == .pending_exception) return null;
-    const module_value = registration_result orelse @as(*JSValue, @ptrCast(exports_object));
-    if (!extern_fns.JSValueIsObject(actual_ctx, module_value)) {
-        setException(actual_ctx, exception, "Expected Node-API module to return an exports object");
-        return null;
-    }
-    const module_object = extern_fns.JSValueToObject(actual_ctx, module_value, exception) orelse return null;
-
-    loaded_native_node_modules.append(allocator, lib) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) handle retention failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    errdefer _ = loaded_native_node_modules.pop();
-    const lib_index = loaded_native_node_modules.items.len - 1;
-
-    setBoolProperty(actual_ctx, module_object, "__home_napi_module", true);
-    setStringProperty(actual_ctx, module_object, "__home_native_path", path) catch {};
-    setStringProperty(actual_ctx, module_object, "__home_native_plugin_name", plugin_name orelse "") catch {};
-    setBoolProperty(actual_ctx, module_object, "__home_has_napi_register", has_napi_register);
-    setBoolProperty(actual_ctx, module_object, "__home_has_node_api_version", has_node_api_version);
-    const symbols = makeNativeSymbolObject(actual_ctx, .{
-        .plugin_impl = has_plugin_impl,
-        .plugin_impl_bar = has_plugin_impl_bar,
-        .plugin_impl_baz = has_plugin_impl_baz,
-        .incompatible_version_plugin_impl = has_incompatible_version,
-        .plugin_impl_bad_free_function_pointer = has_bad_free_pointer,
-    }) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) metadata failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    setProperty(actual_ctx, module_object, "__home_native_symbols", @ptrCast(symbols));
-
-    native_module_meta.put(allocator, @intFromPtr(module_object), .{
-        .lib_index = lib_index,
-        .plugin_name = plugin_name orelse "",
-    }) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) private metadata failed: {s}", .{@errorName(err)});
-        return null;
-    };
-
-    if (plugin_name) |name| {
-        if (std.mem.eql(u8, name, "native_plugin_test")) {
-            installNativePluginFixtureShims(actual_ctx, module_object);
-        }
-    }
-
-    return @ptrCast(module_object);
+    setStringProperty(actual_ctx, error_object, "name", "HomeUnsupportedError") catch {};
+    setBoolProperty(actual_ctx, error_object, "__home_unsupported", true);
+    exception.* = @ptrCast(error_object);
+    return null;
 }
 
 fn readNativePluginName(lib: *std.DynLib) ?[]const u8 {
@@ -4263,6 +4209,7 @@ fn nativePluginFixtureNativeCounter(data: ?*anyopaque, property: []const u8) ?us
 }
 
 pub export fn napi_module_register(module: ?*NativeNapiModule) void {
+    if (!registering_bootstrap_napi_module) return NativeNapi.HomeNative_napi_module_register(module);
     const actual = module orelse return;
     pending_napi_modules.append(std.heap.smp_allocator, actual.*) catch {};
 }
@@ -4275,6 +4222,7 @@ pub export fn napi_create_function(
     data: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_function(env_, utf8name, length, cb, data, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const callback = cb orelse return setNapiLastError(env, .invalid_arg);
@@ -4303,6 +4251,7 @@ pub export fn napi_get_cb_info(
     this_arg: ?*napi_value,
     data: ?*?*anyopaque,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_cb_info(env_, info, argc, argv, this_arg, data);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const frame = info orelse return setNapiLastError(env, .invalid_arg);
     if (argc) |argc_ptr| {
@@ -4318,6 +4267,7 @@ pub export fn napi_get_cb_info(
 }
 
 pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8name: ?[*:0]const u8, value: napi_value) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_set_named_property(env_, object, utf8name, value);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const name = utf8name orelse return setNapiLastError(env, .invalid_arg);
     const object_value = object orelse return setNapiLastError(env, .invalid_arg);
@@ -4334,6 +4284,7 @@ pub export fn napi_create_external(
     finalize_hint: ?*anyopaque,
     result: ?*napi_value,
 ) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_external(env_, data, finalize_cb, finalize_hint, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object = extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure);
@@ -4353,6 +4304,7 @@ pub export fn napi_create_external(
 }
 
 pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_value_external(env_, value, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object_value = value orelse return setNapiLastError(env, .invalid_arg);
@@ -4379,6 +4331,7 @@ fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, res
 }
 
 pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*bool) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_get_value_bool(env_, value, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const js_value = value orelse return setNapiLastError(env, .invalid_arg);
@@ -4386,13 +4339,15 @@ pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*b
     return setNapiLastError(env, .ok);
 }
 
-pub export fn napi_throw_error(env_: napi_env, _: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
+pub export fn napi_throw_error(env_: napi_env, code: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_throw_error(env_, code, message);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     setException(env.ctx, env.exception, if (message) |ptr| std.mem.span(ptr) else "napi error");
     return setNapiLastError(env, .pending_exception);
 }
 
 pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) napi_status {
+    if (!isBootstrapNapiEnv(env_)) return NativeNapi.HomeNative_napi_create_object(env_, result);
     const env = env_ orelse return @backingInt(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     out.* = @ptrCast(extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure));
@@ -4421,6 +4376,10 @@ fn cleanupNativeBridge() void {
     loaded_native_node_modules = .empty;
     pending_napi_modules.deinit(allocator);
     pending_napi_modules = .empty;
+    var envs = bootstrap_napi_envs.valueIterator();
+    while (envs.next()) |env| allocator.destroy(env.*);
+    bootstrap_napi_envs.deinit(allocator);
+    bootstrap_napi_envs = .empty;
 }
 
 /// Keep corpus label canonicalization on Home's production WHATWG alias map.
@@ -5574,6 +5533,7 @@ const SpawnSyncCapturedOptions = struct {
     cwd: std.process.Child.Cwd,
     environ_map: ?*const std.process.Environ.Map,
     timeout_ms: ?i64,
+    kill_process_group: bool = false,
 };
 
 const SpawnSyncCapturedResult = struct {
@@ -5583,11 +5543,137 @@ const SpawnSyncCapturedResult = struct {
     timed_out: bool,
 };
 
+pub const HomeCapturedResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+    timed_out: bool,
+
+    pub fn deinit(self: *HomeCapturedResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+        self.* = undefined;
+    }
+};
+
+const home_corpus_child_timeout_ms: i64 = 120_000;
+const spawn_sync_termination_grace_ms: i64 = 1_000;
+
+const HomeCapturedInvocation = struct {
+    executable: []u8,
+    argv: [][]const u8,
+    environ_map: std.process.Environ.Map,
+
+    fn deinit(self: *HomeCapturedInvocation, allocator: std.mem.Allocator) void {
+        self.environ_map.deinit();
+        allocator.free(self.argv);
+        allocator.free(self.executable);
+        self.* = undefined;
+    }
+};
+
+/// Run one prepared corpus fixture through the native Home executable.
+///
+/// `args_tail` is appended verbatim after the executable and must already be
+/// ordered as `run` or `test`, flags..., absolute fixture path. The returned output is
+/// owned by `allocator` and must be released with `HomeCapturedResult.deinit`.
+pub fn runHomeCaptured(
+    allocator: std.mem.Allocator,
+    test_thread_id: []const u8,
+    args_tail: []const []const u8,
+) !HomeCapturedResult {
+    var inherited_env = try inheritedEnvironmentMap(allocator);
+    defer inherited_env.deinit();
+
+    var invocation = try prepareHomeCapturedInvocation(
+        allocator,
+        &inherited_env,
+        test_thread_id,
+        args_tail,
+    );
+    defer invocation.deinit(allocator);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const captured = try runSpawnSyncCaptured(allocator, threaded.io(), .{
+        .argv = invocation.argv,
+        .cwd = .inherit,
+        .environ_map = &invocation.environ_map,
+        .timeout_ms = home_corpus_child_timeout_ms,
+        .kill_process_group = true,
+    });
+    return .{
+        .term = captured.term,
+        .stdout = captured.stdout,
+        .stderr = captured.stderr,
+        .timed_out = captured.timed_out,
+    };
+}
+
+fn inheritedEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    if (comptime @import("builtin").os.tag == .windows) {
+        return std.process.Environ.createMap(.{ .block = .global }, allocator);
+    }
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    errdefer env_map.deinit();
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry| : (index += 1) {
+        const pair = std.mem.span(entry);
+        const equals = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (equals == 0) continue;
+        try env_map.put(pair[0..equals], pair[equals + 1 ..]);
+    }
+    return env_map;
+}
+
+fn prepareHomeCapturedInvocation(
+    allocator: std.mem.Allocator,
+    inherited_env: *const std.process.Environ.Map,
+    test_thread_id: []const u8,
+    args_tail: []const []const u8,
+) !HomeCapturedInvocation {
+    var environ_map = try inherited_env.clone(allocator);
+    errdefer environ_map.deinit();
+    try environ_map.put("HOME_NATIVE_VM", "1");
+    if (args_tail.len > 0 and std.mem.eql(u8, args_tail[0], "test")) {
+        // Native node:test fixtures must reach TestCommand.exec, not recurse
+        // through the corpus adapter that launched this child.
+        try environ_map.put("HOME_CORPUS_FULL_VM", "1");
+    }
+    try environ_map.put("NO_COLOR", "1");
+    try environ_map.put("TEST_THREAD_ID", test_thread_id);
+
+    const executable = if (inherited_env.get("HOME_BUN_TEST_EXECUTABLE")) |override|
+        if (override.len > 0)
+            try allocator.dupe(u8, override)
+        else
+            try preferredHomeExecutablePathAlloc(allocator)
+    else
+        try preferredHomeExecutablePathAlloc(allocator);
+    errdefer allocator.free(executable);
+
+    const argv = try allocator.alloc([]const u8, args_tail.len + 1);
+    errdefer allocator.free(argv);
+    argv[0] = executable;
+    @memcpy(argv[1..], args_tail);
+
+    return .{
+        .executable = executable,
+        .argv = argv,
+        .environ_map = environ_map,
+    };
+}
+
 fn runSpawnSyncCaptured(
     allocator: std.mem.Allocator,
     io: Io,
     options: SpawnSyncCapturedOptions,
 ) !SpawnSyncCapturedResult {
+    const use_process_group = if (comptime @import("builtin").os.tag == .windows)
+        false
+    else
+        options.kill_process_group;
     var child = try std.process.spawn(io, .{
         .argv = options.argv,
         .cwd = options.cwd,
@@ -5595,8 +5681,14 @@ fn runSpawnSyncCaptured(
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
+        // A separate POSIX process group lets timeout cleanup reach fixture
+        // grandchildren that inherited the captured stdout/stderr pipes.
+        .pgid = if (comptime @import("builtin").os.tag == .windows) null else if (use_process_group) 0 else null,
     });
-    defer child.kill(io);
+    defer if (child.id != null) {
+        forceTerminateSpawnSyncChild(&child, use_process_group);
+        child.kill(io);
+    };
 
     var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: Io.File.MultiReader = undefined;
@@ -5608,21 +5700,35 @@ fn runSpawnSyncCaptured(
     else
         .none;
     var timed_out = false;
+    var pipes_fully_drained = true;
 
     while (multi_reader.fill(64, timeout)) |_| {} else |err| switch (err) {
         error.EndOfStream => {},
         error.Timeout => {
             timed_out = true;
-            terminateSpawnSyncChild(&child, io);
-            while (multi_reader.fill(64, .none)) |_| {} else |drain_err| switch (drain_err) {
-                error.EndOfStream => {},
-                else => |e| return e,
-            }
+            terminateSpawnSyncChild(&child, use_process_group);
+            _ = drainSpawnSyncPipesFor(&multi_reader, io, spawn_sync_termination_grace_ms) catch |drain_err| {
+                forceTerminateSpawnSyncChild(&child, use_process_group);
+                return drain_err;
+            };
+            forceTerminateSpawnSyncChild(&child, use_process_group);
+            // A grandchild can retain copies of the pipe handles even after
+            // the direct child has been killed. Never wait indefinitely for
+            // EOF in that case; retain whatever output arrives in this final
+            // bounded drain and then reap the direct child below.
+            pipes_fully_drained = try drainSpawnSyncPipesFor(&multi_reader, io, spawn_sync_termination_grace_ms);
         },
         else => |e| return e,
     }
 
-    try multi_reader.checkAnyError();
+    if (pipes_fully_drained) {
+        try multi_reader.checkAnyError();
+    } else {
+        // The final deadline expired because a descendant retained a pipe.
+        // Cancel pending reads before `child.wait` closes the direct child's
+        // handles; this also makes `toOwnedSlice` safe below.
+        multi_reader.batch.cancel(io);
+    }
     const term = try child.wait(io);
     const stdout = try multi_reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
@@ -5637,13 +5743,44 @@ fn runSpawnSyncCaptured(
     };
 }
 
-fn terminateSpawnSyncChild(child: *std.process.Child, io: Io) void {
+fn drainSpawnSyncPipesFor(multi_reader: *Io.File.MultiReader, io: Io, milliseconds: i64) !bool {
+    const deadline = (Io.Timeout{
+        .duration = .{ .raw = .fromMilliseconds(milliseconds), .clock = .awake },
+    }).toDeadline(io);
+    while (multi_reader.fill(64, deadline)) |_| {} else |err| switch (err) {
+        error.EndOfStream => return true,
+        error.Timeout => return false,
+        else => |e| return e,
+    }
+}
+
+fn terminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
     if (comptime @import("builtin").os.tag == .windows) {
-        child.kill(io);
+        forceTerminateSpawnSyncChild(child, process_group);
         return;
     }
     const pid = child.id orelse return;
-    std.posix.kill(pid, .TERM) catch child.kill(io);
+    if (process_group) {
+        std.posix.kill(-pid, .TERM) catch std.posix.kill(pid, .TERM) catch {};
+    } else {
+        std.posix.kill(pid, .TERM) catch {};
+    }
+}
+
+fn forceTerminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
+    const id = child.id orelse return;
+    if (comptime @import("builtin").os.tag == .windows) {
+        _ = std.os.windows.ntdll.NtTerminateProcess(
+            id,
+            @fromBackingInt(@intCast(@as(u32, 1))),
+        );
+        return;
+    }
+    if (process_group) {
+        std.posix.kill(-id, .KILL) catch std.posix.kill(id, .KILL) catch {};
+    } else {
+        std.posix.kill(id, .KILL) catch {};
+    }
 }
 
 const StdioConfig = struct {
@@ -6309,6 +6446,69 @@ fn unsupportedExceptionReason(message: ?[]const u8) ?[]const u8 {
 
 test "adapter label is stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "captured spawn process-group cleanup is opt-in and bounded" {
+    const generic_options = SpawnSyncCapturedOptions{
+        .argv = &.{},
+        .cwd = .inherit,
+        .environ_map = null,
+        .timeout_ms = 1,
+    };
+    try std.testing.expect(!generic_options.kill_process_group);
+    try std.testing.expect(spawn_sync_termination_grace_ms > 0);
+    try std.testing.expect(spawn_sync_termination_grace_ms <= 1_000);
+}
+
+test "native Home corpus invocation preserves argv and inherits required environment" {
+    const allocator = std.testing.allocator;
+    var inherited_env = std.process.Environ.Map.init(allocator);
+    defer inherited_env.deinit();
+    try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
+    try inherited_env.put("PATH", "/opt/tools/bin");
+    try inherited_env.put("NO_COLOR", "0");
+
+    const args_tail = [_][]const u8{
+        "run",
+        "--experimental-stream-iter",
+        "/absolute/test-stream-iter.js",
+    };
+    var invocation = try prepareHomeCapturedInvocation(
+        allocator,
+        &inherited_env,
+        "worker-7",
+        &args_tail,
+    );
+    defer invocation.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, args_tail.len + 1), invocation.argv.len);
+    try std.testing.expectEqualStrings("/opt/home-test/bin/home", invocation.executable);
+    try std.testing.expectEqualStrings(invocation.executable, invocation.argv[0]);
+    for (args_tail, invocation.argv[1..]) |expected, actual| {
+        try std.testing.expectEqualStrings(expected, actual);
+    }
+    try std.testing.expectEqualStrings("/opt/tools/bin", invocation.environ_map.get("PATH").?);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("HOME_NATIVE_VM").?);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("NO_COLOR").?);
+    try std.testing.expectEqualStrings("worker-7", invocation.environ_map.get("TEST_THREAD_ID").?);
+
+    // Construction must not mutate the caller's inherited environment map.
+    try std.testing.expectEqualStrings("0", inherited_env.get("NO_COLOR").?);
+    try std.testing.expect(inherited_env.get("HOME_NATIVE_VM") == null);
+    try std.testing.expect(inherited_env.get("TEST_THREAD_ID") == null);
+}
+
+test "native Home node:test invocation selects the full VM runner" {
+    const allocator = std.testing.allocator;
+    var inherited_env = std.process.Environ.Map.init(allocator);
+    defer inherited_env.deinit();
+    try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
+    try inherited_env.put("HOME_CORPUS_FULL_VM", "0");
+    var invocation = try prepareHomeCapturedInvocation(allocator, &inherited_env, "node-test", &.{ "test", "/absolute/test-assert.js" });
+    defer invocation.deinit(allocator);
+    try std.testing.expectEqualStrings("test", invocation.argv[1]);
+    try std.testing.expectEqualStrings("1", invocation.environ_map.get("HOME_CORPUS_FULL_VM").?);
+    try std.testing.expectEqualStrings("0", inherited_env.get("HOME_CORPUS_FULL_VM").?);
 }
 
 test "absoluteCorpusPathAlloc joins corpus-relative stat paths under the corpus root" {

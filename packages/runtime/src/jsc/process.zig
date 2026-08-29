@@ -52,6 +52,16 @@ const node_version = "24.0.0";
 const stdout_fd: c_int = 1;
 const stderr_fd: c_int = 2;
 
+pub const NaturalExitResult = struct {
+    exit_code: u8,
+    exception_message: ?[]u8 = null,
+
+    pub fn deinit(self: *NaturalExitResult, allocator: std.mem.Allocator) void {
+        if (self.exception_message) |message| allocator.free(message);
+        self.* = undefined;
+    }
+};
+
 fn writeAll(fd: c_int, bytes: []const u8) void {
     var offset: usize = 0;
     while (offset < bytes.len) {
@@ -366,8 +376,14 @@ const install_glue =
     \\    arch: info.arch,
     \\    version: info.version,
     \\    versions: { node: info.node },
+    \\    config: {
+    \\      variables: { v8_enable_i18n_support: 1, asan: 0 },
+    \\      target_defaults: { default_configuration: "Release" },
+    \\    },
+    \\    features: { debug: false },
     \\    pid: info.pid,
     \\    execPath: info.execPath,
+    \\    execArgv: [],
     \\    exitCode: undefined,
     \\    cwd: function() { return cwdFn(); },
     \\    exit: function(code) { return exitFn(code); },
@@ -403,6 +419,14 @@ const install_glue =
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
     \\    },
+    \\    umask: (function() {
+    \\      var current = 0o022;
+    \\      return function(mask) {
+    \\        var previous = current;
+    \\        if (mask !== undefined) current = Number(mask) & 0o777;
+    \\        return previous;
+    \\      };
+    \\    })(),
     \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false, fd: 1 },
     \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false, fd: 2 },
     \\  };
@@ -420,7 +444,7 @@ const install_glue =
     \\    p.off = function(t, fn) { var l = events[t]; if (l) events[t] = l.filter(function(e) { return e.fn !== fn; }); return p; };
     \\    p.removeListener = p.off;
     \\    p.removeAllListeners = function(t) { if (t === undefined) events = Object.create(null); else delete events[t]; return p; };
-    \\    p.emit = function(t) { var l = events[t]; if (!l || !l.length) return false; var args = Array.prototype.slice.call(arguments, 1); var snap = l.slice(); for (var i = 0; i < snap.length; i++) { var e = snap[i]; if (e.once) p.off(t, e.fn); try { e.fn.apply(p, args); } catch (err) { void err; } } return true; };
+    \\    p.emit = function(t) { var l = events[t]; if (!l || !l.length) return false; var args = Array.prototype.slice.call(arguments, 1); var snap = l.slice(); for (var i = 0; i < snap.length; i++) { var e = snap[i]; if (e.once) p.off(t, e.fn); try { e.fn.apply(p, args); } catch (err) { if (t === "exit") throw err; } } return true; };
     \\    p.listeners = function(t) { return (events[t] || []).map(function(e) { return e.fn; }); };
     \\    p.rawListeners = p.listeners;
     \\    p.listenerCount = function(t) { return (events[t] || []).length; };
@@ -475,10 +499,114 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     result.deinit(allocator);
 }
 
+/// Emit the natural process `exit` event exactly once and return the effective
+/// exit code. An exit listener may update `process.exitCode`; a thrown listener
+/// is returned as an owned diagnostic instead of being silently discarded.
+/// Explicit `process.exit()` remains the native noreturn callback above.
+pub fn emitNaturalExit(allocator: std.mem.Allocator, ctx: *JSContextRef) !NaturalExitResult {
+    if (comptime !build_options.enable_jsc) return error.JSCDisabled;
+
+    var evaluation = try evaluate.evaluateUtf8Detailed(
+        allocator,
+        ctx,
+        \\(function() {
+        \\  var p = globalThis.process;
+        \\  function exitCode(value, fallback) {
+        \\    if (value === undefined || value === null) return fallback;
+        \\    var number = Number(value);
+        \\    if (!Number.isFinite(number)) return fallback;
+        \\    return Math.max(0, Math.min(255, Math.trunc(number)));
+        \\  }
+        \\  var code = exitCode(p.exitCode, 0);
+        \\  if (p._exiting) return code;
+        \\  p._exiting = true;
+        \\  p.emit("exit", code);
+        \\  return exitCode(p.exitCode, code);
+        \\})()
+    ,
+        "home:process-natural-exit",
+        1,
+    );
+
+    if (evaluation.exception != null) {
+        const message = evaluation.exception_message;
+        evaluation.exception_message = null;
+        evaluation.deinit(allocator);
+        return .{ .exit_code = 1, .exception_message = message };
+    }
+    defer evaluation.deinit(allocator);
+
+    const value = evaluation.value orelse return error.JSEvaluateReturnedNull;
+    const number = extern_fns.JSValueToNumber(ctx, value, null);
+    const exit_code: u8 = if (std.math.isNan(number) or number <= 0)
+        0
+    else if (number >= 255)
+        255
+    else
+        @intFromFloat(number);
+    return .{ .exit_code = exit_code };
+}
+
 fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
     const value = (try evaluate.evaluateUtf8(allocator, ctx, source, "home:process-probe", 1, null)) orelse
         return error.JSEvaluateReturnedNull;
     return extern_fns.JSValueToBoolean(ctx, value);
+}
+
+test "natural process exit emits once and honors listener exitCode" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{ "home", "fixture.js" };
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    _ = try evaluate.evaluateUtf8(
+        std.testing.allocator,
+        ctx,
+        "globalThis.__exitCalls = []; process.exitCode = 3; process.on('exit', function(code) { __exitCalls.push(code); process.exitCode = 7; });",
+        "home:process-natural-exit-setup",
+        1,
+        null,
+    );
+
+    var first = try emitNaturalExit(std.testing.allocator, ctx);
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 7), first.exit_code);
+    try std.testing.expect(first.exception_message == null);
+
+    var second = try emitNaturalExit(std.testing.allocator, ctx);
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 7), second.exit_code);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "process._exiting === true && __exitCalls.length === 1 && __exitCalls[0] === 3"));
+}
+
+test "natural process exit surfaces listener exceptions" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{ "home", "fixture.js" };
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    _ = try evaluate.evaluateUtf8(
+        std.testing.allocator,
+        ctx,
+        "process.on('exit', function() { throw new Error('exit listener boom'); });",
+        "home:process-natural-exit-throw-setup",
+        1,
+        null,
+    );
+
+    var result = try emitNaturalExit(std.testing.allocator, ctx);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 1), result.exit_code);
+    try std.testing.expect(result.exception_message != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.exception_message.?, "exit listener boom") != null);
 }
 
 test "process install exposes the core surface" {
