@@ -2731,9 +2731,10 @@ pub const Program = struct {
     /// Walk every compiled file's import declarations and resolve
     /// each to a FileId, populating the adjacency list.
     fn resolveImports(self: *Program) ProgramError!void {
-        const hir_mod = @import("hir");
         var targets: std.AutoHashMapUnmanaged(FileId, void) = .empty;
         defer targets.deinit(self.gpa);
+        var specifiers: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
+        defer specifiers.deinit(self.gpa);
         for (self.files.items) |f| {
             // Resolution is a snapshot, not an append-only history. Closure
             // discovery and incremental checking can visit a file repeatedly.
@@ -2746,9 +2747,10 @@ pub const Program = struct {
             // bail mid-parse). blockStmts asserts kind == .block_stmt,
             // so skip resolution for malformed roots.
             if (c.hir.kindOf(root) != .block_stmt) continue;
-            const stmts = hir_mod.blockStmts(&c.hir, root);
-            for (stmts) |s| {
-                const module_name = staticModuleSpecifier(c, s) orelse continue;
+            specifiers.clearRetainingCapacity();
+            try appendStaticModuleReferences(self.gpa, c, &specifiers);
+            for (specifiers.items) |reference| {
+                const module_name = reference.specifier;
                 if (module_name.len == 0) continue;
                 // Resolve relative to the importing file.
                 const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
@@ -2782,7 +2784,7 @@ pub const Program = struct {
                             .specifier_text = quoted,
                             .package_id = package_id,
                             .project_reference_output = project_reference_output,
-                            .specifier_pos = findIncludeSpecifierPosition(f.source, quoted),
+                            .specifier_pos = reference.position orelse findIncludeSpecifierPosition(f.source, quoted),
                         };
                     }
                 }
@@ -2798,6 +2800,62 @@ pub const Program = struct {
         };
         const text = c.interner.get(name);
         return if (text.len == 0) null else text;
+    }
+
+    const StaticModuleReference = struct {
+        specifier: []const u8,
+        order: u32,
+        /// Opening quote position when represented by a real expression node.
+        position: ?u32 = null,
+    };
+
+    /// Collect the same static one-literal-argument `require` shape used by
+    /// the pinned TypeScript compilers. HIR traversal includes nested calls
+    /// without treating comments, strings, computed calls, or dynamic
+    /// specifiers as dependencies.
+    fn appendStaticModuleReferences(
+        gpa: std.mem.Allocator,
+        c: *const ts_driver.Compilation,
+        out: *std.ArrayListUnmanaged(StaticModuleReference),
+    ) !void {
+        if (c.hir.kindOf(c.root) != .block_stmt) return;
+        for (hir_mod_ns.blockStmts(&c.hir, c.root)) |statement| {
+            if (staticModuleSpecifier(c, statement)) |specifier| {
+                try out.append(gpa, .{ .specifier = specifier, .order = c.hir.spanOf(statement).start });
+            }
+        }
+        const require_name = c.interner.lookup("require") orelse return;
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < c.hir.nodeCount()) : (node += 1) {
+            if (c.hir.kindOf(node) != .call_expr) continue;
+            const call = hir_mod_ns.callOf(&c.hir, node);
+            if (call.callee == hir_mod_ns.none_node_id or
+                c.hir.kindOf(call.callee) != .identifier or
+                hir_mod_ns.identifierOf(&c.hir, call.callee).name != require_name) continue;
+            const arguments = hir_mod_ns.callArgs(&c.hir, node);
+            if (arguments.len != 1) continue;
+            const specifier = staticStringLiteralLike(c, arguments[0]) orelse continue;
+            if (specifier.len == 0) continue;
+            try out.append(gpa, .{
+                .specifier = specifier,
+                .order = c.hir.spanOf(arguments[0]).start,
+                .position = c.hir.spanOf(arguments[0]).start,
+            });
+        }
+        std.mem.sort(StaticModuleReference, out.items, {}, struct {
+            fn lessThan(_: void, left: StaticModuleReference, right: StaticModuleReference) bool {
+                return left.order < right.order;
+            }
+        }.lessThan);
+    }
+
+    fn staticStringLiteralLike(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
+        if (c.hir.kindOf(node) == .literal_string)
+            return c.interner.get(hir_mod_ns.literalStringOf(&c.hir, node).value);
+        if (c.hir.kindOf(node) != .template_literal or hir_mod_ns.templateLiteralExprs(&c.hir, node).len != 0) return null;
+        const texts = hir_mod_ns.templateLiteralTexts(&c.hir, node);
+        if (texts.len != 1 or c.hir.kindOf(texts[0]) != .literal_string) return null;
+        return c.interner.get(hir_mod_ns.literalStringOf(&c.hir, texts[0]).value);
     }
 
     /// Expand the program to the transitive closure of imports, reading
@@ -2835,7 +2893,6 @@ pub const Program = struct {
                 if (c.check_state == .checked) break true;
             }
         } else false;
-        const hir_mod = @import("hir");
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
         added += try self.loadCompilerInjectedImports(options);
@@ -2855,9 +2912,11 @@ pub const Program = struct {
                 const f = self.files.items[i];
                 const c = f.compilation orelse continue;
                 if (c.hir.kindOf(c.root) != .block_stmt) continue;
-                const stmts = hir_mod.blockStmts(&c.hir, c.root);
-                for (stmts) |s| {
-                    const module_name = staticModuleSpecifier(c, s) orelse continue;
+                var specifiers: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
+                defer specifiers.deinit(self.gpa);
+                try appendStaticModuleReferences(self.gpa, c, &specifiers);
+                for (specifiers.items) |reference| {
+                    const module_name = reference.specifier;
                     if (module_name.len == 0) continue;
                     const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -8274,6 +8333,86 @@ test "Program: static module closure includes re-export leaves and checks their 
         try T.expectEqualStrings("\"./leaf\"", reason.specifier_text);
         try T.expectEqualStrings("./leaf", p.files.items[middle].source[reason.specifier_pos + 1 ..][0..6]);
     }
+}
+
+test "Program: static require closure follows nested and transitive JavaScript dependencies" {
+    const entry_source = "function load() { return require('./middle'); }";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/entry.js", entry_source);
+    try vfs.addFile("/middle.js", "module.exports = require(`./leaf`);");
+    try vfs.addFile("/leaf.js", "/** @type {string} */ const bad = 1; module.exports = bad;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const entry = try p.add("/entry.js", entry_source);
+    try T.expectEqual(@as(usize, 2), try p.loadImportClosure(.{ .strict = true, .allow_js = true, .no_emit = true }));
+    const middle = p.lookupPath("/middle.js").?;
+    const leaf = p.lookupPath("/leaf.js").?;
+    try T.expectEqualSlices(FileId, &.{middle}, p.files.items[entry].imports.items);
+    try T.expectEqualSlices(FileId, &.{leaf}, p.files.items[middle].imports.items);
+    try T.expect(p.reaches(entry, leaf));
+    try expectCompilationHasDiagnosticCode(p.files.items[leaf].compilation.?, 2322);
+    try T.expectEqualStrings("\"./middle\"", p.files.items[middle].include_reason.?.specifier_text);
+    try T.expectEqual(@as(u32, 33), p.files.items[middle].include_reason.?.specifier_pos);
+    try T.expectEqualStrings("\"./leaf\"", p.files.items[leaf].include_reason.?.specifier_text);
+    try T.expectEqual(@as(u32, 25), p.files.items[leaf].include_reason.?.specifier_pos);
+}
+
+test "Program: non-static require lookalikes do not enter the dependency graph" {
+    const entry_source =
+        \\const text = "require('./leaf')";
+        \\// require('./leaf');
+        \\const name = './leaf';
+        \\require(name);
+        \\loader.require('./leaf');
+        \\require('./leaf', 1);
+        \\require(`./${name}`);
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/entry.js", entry_source);
+    try vfs.addFile("/leaf.js", "/** @type {string} */ const bad = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const entry = try p.add("/entry.js", entry_source);
+    try T.expectEqual(@as(usize, 0), try p.loadImportClosure(.{ .strict = true, .allow_js = true, .no_emit = true }));
+    try T.expectEqual(@as(usize, 1), p.files.items.len);
+    try T.expectEqual(@as(usize, 0), p.files.items[entry].imports.items.len);
+}
+
+test "Program: static require cycles keep unique current edges after updates" {
+    const entry_source = "require('./left'); require('./right'); require('./left');";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/entry.js", entry_source);
+    try vfs.addFile("/left.js", "require('./right'); require('./leaf');");
+    try vfs.addFile("/right.js", "require('./left'); require('./leaf');");
+    try vfs.addFile("/leaf.js", "module.exports = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const entry = try p.add("/entry.js", entry_source);
+    try T.expectEqual(@as(usize, 3), try p.loadImportClosure(.{ .bind_only = true, .allow_js = true }));
+    const left = p.lookupPath("/left.js").?;
+    const right = p.lookupPath("/right.js").?;
+    const leaf = p.lookupPath("/leaf.js").?;
+    for (0..3) |_| {
+        try p.compileAll(.{ .bind_only = true, .allow_js = true });
+        try T.expectEqualSlices(FileId, &.{ left, right }, p.files.items[entry].imports.items);
+        try T.expectEqualSlices(FileId, &.{ right, leaf }, p.files.items[left].imports.items);
+        try T.expectEqualSlices(FileId, &.{ left, leaf }, p.files.items[right].imports.items);
+        try T.expect(p.reaches(left, right) and p.reaches(right, left));
+    }
+    _ = try p.updateSource("/left.js", "module.exports = 1;");
+    try p.compileAll(.{ .bind_only = true, .allow_js = true });
+    try T.expectEqual(@as(usize, 0), p.files.items[left].imports.items.len);
+    try T.expect(!p.reaches(left, leaf));
+    try T.expect(p.reaches(entry, leaf));
 }
 
 test "Program: re-export cycles and diamonds retain unique current dependency edges" {
