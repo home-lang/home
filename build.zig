@@ -2085,6 +2085,22 @@ pub fn build(b: *std.Build) void {
         );
         bake_production_test_step.dependOn(&run_bake_production_test.step);
         dependOnTest(test_step, &run_bake_production_test.step, test_filter, "bake-production");
+
+        const run_bake_development_test = b.addSystemCommand(&.{"python3"});
+        run_bake_development_test.addFileArg(b.path("packages/runtime/test/bake-development/run.py"));
+        run_bake_development_test.addArtifactArg(debug_exe);
+
+        const bake_development_test_step = b.step(
+            "test-bake-development",
+            "Run the Bake development server and HMR integration test",
+        );
+        bake_development_test_step.dependOn(&run_bake_development_test.step);
+        // HTML development routes require the optional lol-html C API. Keep
+        // the explicit step available so missing native setup fails clearly,
+        // but only add it to the aggregate test gate when that library linked.
+        if (have_lolhtml) {
+            dependOnTest(test_step, &run_bake_development_test.step, test_filter, "bake-development");
+        }
     }
 
     // Release-safe build (optimized but with runtime safety)

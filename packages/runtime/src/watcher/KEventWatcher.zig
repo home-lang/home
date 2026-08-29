@@ -10,7 +10,9 @@ fd: bun.FD.Optional = .none,
 const changelist_count = 128;
 
 pub fn init(this: *KEventWatcher, _: []const u8) !void {
-    this.fd = .none;
+    const fd = std.c.kqueue();
+    if (fd <= 0) return error.KQueueError;
+    this.fd = .init(.fromNative(fd));
 }
 
 pub fn stop(this: *KEventWatcher) void {

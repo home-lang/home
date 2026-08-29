@@ -11,6 +11,7 @@ const std = @import("std");
 // emulates the RELEASE pin, and `isDebug = Bun.version.includes("debug")` in
 // Bun's harness must stay false so version-gated tests match the pin.
 pub const package_json_version = @import("environment.zig").version_string;
+pub const package_json_version_with_canary = package_json_version;
 pub const package_json_version_with_sha = @import("environment.zig").version_string ++ " (" ++ @import("environment.zig").git_sha_short ++ ")";
 pub const package_json_version_with_revision = @import("environment.zig").version_string ++ "+" ++ @import("environment.zig").git_sha_short;
 

@@ -10,11 +10,6 @@
 // line up. The `JSError` channel is mapped to a plain `error{JSError}` until
 // the global error-set re-attaches.
 //
-// Omitted (re-attach in Phase 12.2):
-//   - `originFromSlice` — needs `home_rt.strings.firstNonASCII`, which has
-//     not been ported yet. The extern (`URL__originLength`) stays declared
-//     in case a follow-up needs it.
-
 const std = @import("std");
 const home_rt = @import("home");
 
@@ -162,9 +157,16 @@ pub const URL = opaque {
         return URL__pathname(url);
     }
 
-    /// Declared (but not yet wrapped) — `originFromSlice` reaches into
-    /// `bun.strings.firstNonASCII`, which the runtime has not yet exposed.
     extern fn URL__originLength(latin1_slice: [*]const u8, len: usize) u32;
+
+    pub fn originFromSlice(slice: []const u8) ?[]const u8 {
+        // A valid URL cannot contain non-ASCII bytes in its origin. Restrict
+        // the native parser to the ASCII prefix, matching pinned Bun.
+        const first_non_ascii = home_rt.strings.firstNonASCII(slice) orelse slice.len;
+        const len = URL__originLength(slice[0..first_non_ascii].ptr, first_non_ascii);
+        if (len == 0) return null;
+        return slice[0..len];
+    }
 };
 
 test "URL is an opaque pointer-only type" {
@@ -178,6 +180,7 @@ test "URL exposes the expected entrypoints" {
     try std.testing.expect(@hasDecl(URL, "hrefFromJS"));
     try std.testing.expect(@hasDecl(URL, "hrefFromString"));
     try std.testing.expect(@hasDecl(URL, "join"));
+    try std.testing.expect(@hasDecl(URL, "originFromSlice"));
     try std.testing.expect(@hasDecl(URL, "fileURLFromString"));
     try std.testing.expect(@hasDecl(URL, "pathFromFileURL"));
     try std.testing.expect(@hasDecl(URL, "protocol"));

@@ -1300,177 +1300,10 @@ pub const bake = struct {
     pub const Graph = Config.Graph;
     pub const server_virtual_source = Config.server_virtual_source;
     pub const client_virtual_source = Config.client_virtual_source;
-    pub const DevServer = struct {
-        pub const asset_prefix = "/_bun";
-
-        // Compile-only DevServer surface the ported server.zig references
-        // throughout. config.bake is always null in Home (the HMR config branch
-        // throws "not implemented"), so this.dev_server is always null and none
-        // of these run — they only need to type-check. (Fields html_router /
-        // inspector_server_id live with the other fields below.)
-        pub const HtmlRouter = struct {
-            fallback: ?*anyopaque = null,
-            pub fn clear(_: *HtmlRouter) void {}
-            pub fn put(_: *HtmlRouter, _: std.mem.Allocator, _: anytype, _: anytype) error{OutOfMemory}!void {}
-        };
-
-        pub fn onPluginsResolved(_: *DevServer, _: anytype) error{OutOfMemory}!void {}
-        pub fn onPluginsRejected(_: *DevServer) error{OutOfMemory}!void {}
-        pub fn init(_: anytype) error{OutOfMemory}!*DevServer {
-            unreachable; // config.bake is always null in Home; DevServer is never constructed
-        }
-        pub fn deinit(_: *DevServer) void {}
-        pub fn memoryCost(_: *DevServer) usize {
-            return 0;
-        }
-        pub fn setRoutes(_: *DevServer, _: anytype) error{OutOfMemory}!bool {
-            return false;
-        }
-        pub fn respondForHTMLBundle(_: *DevServer, _: anytype, _: anytype, _: anytype) error{OutOfMemory}!void {}
-
-        pub const DirectoryWatchStore = @import("runtime/bake/DevServer/DirectoryWatchStore.zig");
-        // Faithful to upstream `bun.bake.DevServer.DevAllocator`
-        // (`src/runtime/bake/DevServer.zig:754-755`):
-        // `const AllocationScope = bun.allocators.AllocationScopeIn(bun.DefaultAllocator);`
-        // `pub const DevAllocator = AllocationScope.Borrowed;`. Used by PackedMap.
-        pub const DevAllocationScope = @import("bun_alloc/allocation_scope.zig").AllocationScopeIn(DefaultAllocator);
-        pub const DevAllocator = DevAllocationScope.Borrowed;
-        pub const HotReloadEvent = @import("runtime/bake/DevServer/HotReloadEvent.zig");
-        pub const IncrementalGraph = @import("runtime/bake/DevServer/IncrementalGraph.zig").IncrementalGraph;
-        pub const MessageId = @import("runtime/bake/DevServer.zig").MessageId;
-        pub const PackedMap = @import("runtime/bake/DevServer/PackedMap.zig");
-        pub const RouteBundle = @import("runtime/bake/DevServer/RouteBundle.zig").RouteBundle;
-        pub const SourceMapStore = @import("runtime/bake/DevServer/SourceMapStore.zig").SourceMapStore;
-        pub const EntryPointList = struct {
-            set: Set = .{},
-
-            pub const empty: EntryPointList = .{};
-
-            pub const Set = struct {
-                pub fn count(_: *const Set) usize {
-                    return 0;
-                }
-            };
-
-            pub fn appendCss(_: *EntryPointList, _: std.mem.Allocator, _: []const u8) OOM!void {}
-            pub fn appendJs(_: *EntryPointList, _: std.mem.Allocator, _: []const u8, _: Graph) OOM!void {}
-            pub fn deinit(_: *EntryPointList, _: std.mem.Allocator) void {}
-        };
-        pub const FileKind = enum { unknown, js, css, asset };
-        pub const debug = struct {
-            pub fn log(comptime _: []const u8, _: anytype) void {}
-        };
-        pub const BarrelNeededExports = StringArrayHashMapUnmanaged(StringArrayHashMapUnmanaged(void));
-        pub const Magic = enum {
-            invalid,
-            valid,
-        };
-        pub const CurrentBundle = struct {
-            start_data: bundle_v2.DevServerInput = .{ .css_entry_points = .{} },
-        };
-        pub const NextBundle = struct {
-            reload_event: ?*HotReloadEvent = null,
-        };
-        pub const ServerTranspiler = struct {
-            resolver: Resolver = .{},
-
-            pub const Resolver = struct {
-                pub const DirInfo = struct {
-                    pub fn getFileDescriptor(_: *const DirInfo) FD {
-                        return invalid_fd;
-                    }
-                };
-
-                pub fn readDirInfo(_: *Resolver, _: []const u8) anyerror!?DirInfo {
-                    return null;
-                }
-                pub fn bustDirCache(_: *Resolver, _: []const u8) bool {
-                    return false;
-                }
-                pub fn resolve(_: *Resolver, _: anytype, _: anytype, _: anytype) anyerror!?void {
-                    return null;
-                }
-            };
-        };
-        pub const WatcherAtomics = struct {
-            pub fn recycleEventFromDevServer(_: *WatcherAtomics, _: *HotReloadEvent) ?*HotReloadEvent {
-                return null;
-            }
-        };
-        pub const TestingBatchEvents = union(enum) {
-            disabled,
-            enabled: Enabled,
-            enable_after_bundle,
-
-            pub const Enabled = struct {
-                pub fn append(_: *Enabled, _: *DevServer, _: EntryPointList) OOM!void {}
-            };
-        };
-        pub const BunWatcher = struct {
-            pub fn addDirectory(_: *BunWatcher, _: FD, _: []const u8, _: u32, _: bool) sys.Maybe(u16) {
-                return .{ .result = 0 };
-            }
-            pub fn removeAtIndex(_: *BunWatcher, _: u16, _: u32, _: []const u32, comptime _: anytype) void {}
-        };
-
-        allocator_: std.mem.Allocator = default_allocator,
-        html_router: HtmlRouter = .{},
-        inspector_server_id: @import("jsc/Debugger.zig").DebuggerId = .init(0),
-        root: [:0]const u8 = "",
-        dev_allocator_scope: DevAllocationScope = DevAllocationScope.init(.{}),
-        magic: Magic = .valid,
-        directory_watchers: DirectoryWatchStore = DirectoryWatchStore.empty,
-        graph_safety_lock: Mutex = .{},
-        client_graph: IncrementalGraph(.client) = IncrementalGraph(.client).empty,
-        server_graph: IncrementalGraph(.server) = IncrementalGraph(.server).empty,
-        server_transpiler: ServerTranspiler = .{},
-        barrel_needed_exports: BarrelNeededExports = .{},
-        barrel_files_with_deferrals: StringArrayHashMapUnmanaged(void) = .{},
-        current_bundle: ?CurrentBundle = null,
-        next_bundle: NextBundle = .{},
-        watcher_atomics: WatcherAtomics = .{},
-        testing_batch_events: TestingBatchEvents = .disabled,
-        has_tailwind_plugin_hack: ?StringArrayHashMapUnmanaged(void) = null,
-        bun_watcher: BunWatcher = .{},
-        resolution_log: logger.Log = logger.Log.initComptime(default_allocator),
-        assets: Assets = .{},
-
-        pub const Assets = struct {
-            pub fn getHash(_: *const Assets, _: []const u8) ?u64 {
-                return null;
-            }
-        };
-
-        pub fn emitMemoryVisualizerMessageTimer(_: anytype, _: anytype) void {}
-
-        pub fn allocator(this: *DevServer) std.mem.Allocator {
-            return this.allocator_;
-        }
-
-        pub fn dev_allocator(this: *const DevServer) DevAllocator {
-            return @constCast(this).dev_allocator_scope.borrow();
-        }
-
-        pub fn getLogForResolutionFailures(this: *DevServer, _: []const u8, _: Graph) OOM!*logger.Log {
-            return &this.resolution_log;
-        }
-
-        pub fn handleParseTaskFailure(_: *DevServer, _: anytype, _: Graph, _: []const u8, _: *const logger.Log, _: *BundleV2) OOM!void {}
-
-        pub fn putOrOverwriteAsset(_: *DevServer, _: anytype, _: anytype, _: anytype) OOM!void {}
-
-        pub fn finalizeBundle(_: *DevServer, _: *BundleV2, _: anytype) OOM!void {}
-
-        pub fn isFileCached(_: *DevServer, _: []const u8, _: Graph) ?struct { kind: enum { asset, css } } {
-            return null;
-        }
-
-        pub fn publish(_: *DevServer, _: anytype, _: []const u8, _: anytype) void {}
-
-        pub fn startAsyncBundle(_: *DevServer, _: EntryPointList, _: bool, _: anytype) OOM!void {}
-    };
+    pub const DevServer = @import("runtime/bake/DevServer.zig");
 
     pub const getHmrRuntime = Config.getHmrRuntime;
+    pub const HmrRuntime = Config.HmrRuntime;
     pub const Side = Config.Side;
     pub const Mode = Config.Mode;
     pub const PatternBuffer = Config.PatternBuffer;
@@ -3845,6 +3678,18 @@ pub const crash_handler = struct {
     pub var verbose_error_trace = false;
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
+    // DevServer registers an optional diagnostic dump callback through Bun's
+    // crash-handler API. Home's full signal/crash dispatcher is not linked yet,
+    // so keep the registration surface inert without pulling in duplicate
+    // native crash exports.
+    pub fn appendPreCrashHandler(comptime T: type, context: *T, comptime handler: fn (*T) anyerror!void) !void {
+        _ = context;
+        _ = handler;
+    }
+
+    pub fn removePreCrashHandler(context: *anyopaque) void {
+        _ = context;
+    }
     // NOTE: crash_handler/crash_handler.zig has fork-`**`-spacing issues; its
     // suppressReporting re-export is deferred until that file is swept.
     // Wave-16 Tier-1 grinder (2026-05-18):
@@ -5134,7 +4979,7 @@ pub const allocators = struct {
     pub const MaybeOwned = @import("bun_alloc/maybe_owned.zig").MaybeOwned;
 
     pub fn isDefault(allocator: std.mem.Allocator) bool {
-        return allocator.vtable == @This().c_allocator.vtable;
+        return allocator.vtable == default_allocator.vtable;
     }
 
     pub fn asStd(allocator: anytype) std.mem.Allocator {
@@ -5184,12 +5029,23 @@ pub const allocators = struct {
     pub const Default = struct {
         pub fn allocator(self: Default) std.mem.Allocator {
             _ = self;
-            return allocators.c_allocator;
+            // `bun.DefaultAllocator` is the zero-sized type counterpart of
+            // `bun.default_allocator`. In JSC builds that allocator is
+            // mimalloc, while `allocators.c_allocator` intentionally remains
+            // libc for C interop. Returning libc here makes `Owned` and
+            // `Shared` free mimalloc-owned buffers through the wrong heap.
+            return default_allocator;
         }
 
         pub const deinit = void;
     };
 };
+
+test "DefaultAllocator wraps the runtime default allocator" {
+    try std.testing.expect((DefaultAllocator{}).allocator().vtable == default_allocator.vtable);
+    try std.testing.expect(allocators.isDefault(default_allocator));
+}
+
 pub const io_heap = @import("io/heap.zig");
 pub const perf = struct {
     // Zig 0.17 compat: perf/system_timer.zig depends on `std.time.Timer`,
@@ -5488,6 +5344,7 @@ pub const c = struct {
 // blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
 pub const sys = struct {
     const Sys = @This();
+    pub const selfProcessMemoryUsage = @import("sys/sys.zig").selfProcessMemoryUsage;
     pub const socketpair = @import("sys/sys.zig").socketpair;
     pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
     pub const setsockopt = @import("sys/sys.zig").setsockopt;

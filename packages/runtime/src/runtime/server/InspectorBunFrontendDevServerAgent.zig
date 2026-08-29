@@ -95,48 +95,48 @@ pub const FrontendDevServerAgent = struct {
         return this.handle != null;
     }
 
-    pub fn notifyClientConnected(this: *const FrontendDevServerAgent, devServerId: DebuggerId, connectionId: i32) void {
+    pub fn notifyClientConnected(this: *const FrontendDevServerAgent, devServerId: anytype, connectionId: i32) void {
         if (this.handle) |handle| {
             handle.notifyClientConnected(devServerId.get(), connectionId);
         }
     }
 
-    pub fn notifyClientDisconnected(this: *const FrontendDevServerAgent, devServerId: DebuggerId, connectionId: i32) void {
+    pub fn notifyClientDisconnected(this: *const FrontendDevServerAgent, devServerId: anytype, connectionId: i32) void {
         if (this.handle) |handle| {
             handle.notifyClientDisconnected(devServerId.get(), connectionId);
         }
     }
 
-    pub fn notifyBundleStart(this: *const FrontendDevServerAgent, devServerId: DebuggerId, triggerFiles: []BunString) void {
+    pub fn notifyBundleStart(this: *const FrontendDevServerAgent, devServerId: anytype, triggerFiles: anytype) void {
         if (this.handle) |handle| {
-            handle.notifyBundleStart(devServerId.get(), triggerFiles.ptr, triggerFiles.len);
+            handle.notifyBundleStart(devServerId.get(), @ptrCast(triggerFiles.ptr), triggerFiles.len);
         }
     }
 
-    pub fn notifyBundleComplete(this: *const FrontendDevServerAgent, devServerId: DebuggerId, durationMs: f64) void {
+    pub fn notifyBundleComplete(this: *const FrontendDevServerAgent, devServerId: anytype, durationMs: f64) void {
         if (this.handle) |handle| {
             handle.notifyBundleComplete(devServerId.get(), durationMs);
         }
     }
 
-    pub fn notifyBundleFailed(this: *const FrontendDevServerAgent, devServerId: DebuggerId, buildErrorsPayloadBase64: *BunString) void {
+    pub fn notifyBundleFailed(this: *const FrontendDevServerAgent, devServerId: anytype, buildErrorsPayloadBase64: anytype) void {
         if (this.handle) |handle| {
-            handle.notifyBundleFailed(devServerId.get(), buildErrorsPayloadBase64);
+            handle.notifyBundleFailed(devServerId.get(), @ptrCast(buildErrorsPayloadBase64));
         }
     }
 
     pub fn notifyClientNavigated(
         this: *const FrontendDevServerAgent,
-        devServerId: DebuggerId,
+        devServerId: anytype,
         connectionId: i32,
-        url: *BunString,
-        routeBundleId: ?RouteBundleIndex,
+        url: anytype,
+        routeBundleId: anytype,
     ) void {
         if (this.handle) |handle| {
             handle.notifyClientNavigated(
                 devServerId.get(),
                 connectionId,
-                url,
+                @ptrCast(url),
                 if (routeBundleId) |id| @intCast(id.get()) else -1,
             );
         }
@@ -144,23 +144,23 @@ pub const FrontendDevServerAgent = struct {
 
     pub fn notifyClientErrorReported(
         this: *const FrontendDevServerAgent,
-        devServerId: DebuggerId,
-        clientErrorPayloadBase64: *BunString,
+        devServerId: anytype,
+        clientErrorPayloadBase64: anytype,
     ) void {
         if (this.handle) |handle| {
-            handle.notifyClientErrorReported(devServerId.get(), clientErrorPayloadBase64);
+            handle.notifyClientErrorReported(devServerId.get(), @ptrCast(clientErrorPayloadBase64));
         }
     }
 
-    pub fn notifyGraphUpdate(this: *const FrontendDevServerAgent, devServerId: DebuggerId, visualizerPayloadBase64: *BunString) void {
+    pub fn notifyGraphUpdate(this: *const FrontendDevServerAgent, devServerId: anytype, visualizerPayloadBase64: anytype) void {
         if (this.handle) |handle| {
-            handle.notifyGraphUpdate(devServerId.get(), visualizerPayloadBase64);
+            handle.notifyGraphUpdate(devServerId.get(), @ptrCast(visualizerPayloadBase64));
         }
     }
 
-    pub fn notifyConsoleLog(this: FrontendDevServerAgent, devServerId: DebuggerId, kind: ConsoleLogKind, data: *BunString) void {
+    pub fn notifyConsoleLog(this: FrontendDevServerAgent, devServerId: anytype, kind: anytype, data: anytype) void {
         if (this.handle) |handle| {
-            handle.notifyConsoleLog(devServerId.get(), @intFromEnum(kind), data);
+            handle.notifyConsoleLog(devServerId.get(), @intFromEnum(kind), @ptrCast(data));
         }
     }
 

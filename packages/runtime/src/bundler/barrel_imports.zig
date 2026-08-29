@@ -110,8 +110,9 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
     // be re-deferred because only B's requests are in requested_exports.
     if (this.transpiler.options.dev_server) |dev| {
         if (dev.barrel_needed_exports.get(result.source.path.text)) |persisted| {
-            for (persisted.keys()) |alias| {
-                if (resolveBarrelExport(alias, named_exports, named_imports)) |resolution| {
+            var persisted_iter = persisted.iterator();
+            while (persisted_iter.next()) |entry| {
+                if (resolveBarrelExport(entry.key_ptr.*, named_exports, named_imports)) |resolution| {
                     try needed_records.put(needed_records_alloc, resolution.import_record_index, {});
                 }
             }

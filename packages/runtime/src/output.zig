@@ -11,6 +11,8 @@ pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
 pub const Scoped = @import("bun_core/output.zig").Scoped;
 pub const synchronized_start = @import("bun_core/output.zig").synchronized_start;
 pub const synchronized_end = @import("bun_core/output.zig").synchronized_end;
+pub const disableScopedDebugWriter = @import("bun_core/output.zig").disableScopedDebugWriter;
+pub const enableScopedDebugWriter = @import("bun_core/output.zig").enableScopedDebugWriter;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;

@@ -229,19 +229,39 @@ pub const AnyRoute = union(enum) {
             return html_route;
         }
 
-        // `path` is only consumed by the FrameworkRouter (`dir:`) branch, which
-        // is stubbed in Home; discard it to keep the signature upstream-shaped.
-        _ = path;
-
         if (argument.isObject()) {
             const FrameworkRouter = bun.bake.FrameworkRouter;
             if (try argument.getOptional(global, "dir", bun.String.Slice)) |dir| {
-                // Home port: FrameworkRouter (`dir:` directory routes) needs the
-                // bundler-backed framework router, which isn't ported. Basic serve
-                // doesn't use `dir:` routes; throw cleanly if one is provided.
-                _ = FrameworkRouter;
-                defer dir.deinit();
-                return global.throwInvalidArguments("Bun.serve() `dir` (FrameworkRouter) routes are not yet implemented in the native Home runtime", .{});
+                var alloc = init_ctx.js_string_allocations;
+                const relative_root = alloc.track(dir);
+
+                var style: FrameworkRouter.Style = if (try argument.get(global, "style")) |style|
+                    try FrameworkRouter.Style.fromJS(style, global)
+                else
+                    .nextjs_pages;
+                errdefer style.deinit();
+
+                if (!bun.strings.endsWith(path, "/*")) {
+                    return global.throwInvalidArguments("To mount a directory, make sure the path ends in `/*`", .{});
+                }
+
+                try init_ctx.framework_router_list.append(.{
+                    .root = relative_root,
+                    .style = style,
+                    .prefix = if (path.len == 2) "/" else path[0 .. path.len - 2],
+                    .entry_client = "bun-framework-react/client.tsx",
+                    .entry_server = "bun-framework-react/server.tsx",
+                    .ignore_underscores = true,
+                    .ignore_dirs = &.{ "node_modules", ".git" },
+                    .extensions = &.{ ".tsx", ".jsx" },
+                    .allow_layouts = true,
+                });
+
+                const limit = std.math.maxInt(@typeInfo(FrameworkRouter.Type.Index).@"enum".tag_type);
+                if (init_ctx.framework_router_list.items.len > limit) {
+                    return global.throwInvalidArguments("Too many framework routers. Maximum is {d}.", .{limit});
+                }
+                return .{ .framework_router = .init(@intCast(init_ctx.framework_router_list.items.len - 1)) };
             }
         }
 

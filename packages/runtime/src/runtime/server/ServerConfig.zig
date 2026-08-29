@@ -703,12 +703,42 @@ pub fn fromJS(
                 init_ctx.framework_router_list.items.len > 0))
             {
                 if (args.development.isHMREnabled()) {
-                    // Home port: the dev-server/bundler integration (bake.Framework.auto,
-                    // SplitBundlerOptions, the IncrementalGraph bundler) is not yet ported,
-                    // so HTML-route / FrameworkRouter serve with HMR throws cleanly. Basic
-                    // Bun.serve({fetch}) never reaches this branch (no HTML routes / no HMR).
-                    init_ctx.arena.deinit();
-                    return global.throwInvalidArguments("Bun.serve() with HTML routes or FrameworkRouter (HMR/dev-server) is not yet implemented in the native Home runtime", .{});
+                    const root = bun.fs.FileSystem.instance.top_level_dir;
+                    const framework = try bun.bake.Framework.auto(
+                        init_ctx.arena.allocator(),
+                        &global.bunVM().transpiler.resolver,
+                        init_ctx.framework_router_list.items,
+                    );
+                    args.bake = .{
+                        .arena = init_ctx.arena,
+                        .allocations = init_ctx.js_string_allocations,
+                        .root = root,
+                        .framework = framework,
+                        .bundler_options = bun.bake.SplitBundlerOptions.empty,
+                    };
+                    const bake = &args.bake.?;
+
+                    const o = vm.transpiler.options.transform_options;
+
+                    switch (o.serve_env_behavior) {
+                        .prefix => {
+                            bake.bundler_options.client.env_prefix = vm.transpiler.options.transform_options.serve_env_prefix;
+                            bake.bundler_options.client.env = .prefix;
+                        },
+                        .load_all => {
+                            bake.bundler_options.client.env = .load_all;
+                        },
+                        .disable => {
+                            bake.bundler_options.client.env = .disable;
+                        },
+                        else => {},
+                    }
+
+                    if (o.serve_define) |define| {
+                        bake.bundler_options.client.define = define;
+                        bake.bundler_options.server.define = define;
+                        bake.bundler_options.ssr.define = define;
+                    }
                 } else {
                     if (init_ctx.framework_router_list.items.len > 0) {
                         return global.throwInvalidArguments("FrameworkRouter is currently only supported when `development: true`", .{});

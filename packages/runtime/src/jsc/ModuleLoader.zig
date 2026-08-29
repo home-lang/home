@@ -776,10 +776,9 @@ pub fn transpileSourceCode(
             }
 
             const html_bundle = try jsc.API.HTMLBundle.init(globalObject.?, path.text);
-            _ = html_bundle;
             return ResolvedSource{
                 .allocator = &jsc_vm.allocator,
-                .jsvalue_for_export = .zero,
+                .jsvalue_for_export = html_bundle.toJS(globalObject.?),
                 .specifier = input_specifier.dupeRef(),
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .tag = .export_default_object,

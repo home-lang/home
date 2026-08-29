@@ -38,8 +38,7 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     var should_finalize_self = false;
     defer if (should_finalize_self) ctx.finalize();
 
-    var s = std.io.fixedBufferStream(body);
-    const reader = s.reader();
+    var reader = std.Io.Reader.fixed(body);
 
     var sfa_general = bun.stackFallback(65536, ctx.dev.allocator());
     var sfa_sourcemap = bun.stackFallback(65536, ctx.dev.allocator());
@@ -50,21 +49,21 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     defer source_map_arena.deinit();
 
     // Read payload, assemble ZigException
-    const name = try readString32(reader, temp_alloc);
+    const name = try readString32(&reader, temp_alloc);
     defer temp_alloc.free(name);
-    const message = try readString32(reader, temp_alloc);
+    const message = try readString32(&reader, temp_alloc);
     defer temp_alloc.free(message);
-    const browser_url = try readString32(reader, temp_alloc);
+    const browser_url = try readString32(&reader, temp_alloc);
     defer temp_alloc.free(browser_url);
     var frames: ArrayListUnmanaged(jsc.ZigStackFrame) = .empty;
     defer frames.deinit(temp_alloc);
-    const stack_count = @min(try reader.readInt(u32, .little), 255); // does not support more than 255
+    const stack_count = @min(try reader.takeInt(u32, .little), 255); // does not support more than 255
     try frames.ensureTotalCapacity(temp_alloc, stack_count);
     for (0..stack_count) |_| {
-        const line = try reader.readInt(i32, .little);
-        const column = try reader.readInt(i32, .little);
-        const function_name = try readString32(reader, temp_alloc);
-        const file_name = try readString32(reader, temp_alloc);
+        const line = try reader.takeInt(i32, .little);
+        const column = try reader.takeInt(i32, .little);
+        const function_name = try readString32(&reader, temp_alloc);
+        const file_name = try readString32(&reader, temp_alloc);
         frames.appendAssumeCapacity(.{
             .function_name = .init(function_name),
             .source_url = .init(file_name),
@@ -241,7 +240,7 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
 
     var out: std.array_list.Managed(u8) = .init(ctx.dev.allocator());
     errdefer out.deinit();
-    const w = out.writer();
+    const w = DevServer.managedArrayListWriter(&out);
 
     try w.writeInt(u32, exception.stack.frames_len, .little);
     for (exception.stack.frames()) |frame| {

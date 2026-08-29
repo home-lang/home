@@ -1747,7 +1747,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             var end_list = std.array_list.Managed(u8).initCapacity(end_sfa.get(), 65536) catch unreachable;
             defer end_list.deinit();
             const end = end: {
-                const w = end_list.writer();
+                const w = DevServer.managedArrayListWriter(&end_list);
                 switch (kind) {
                     .initial_response => {
                         if (comptime side == .server) @panic("unreachable");
