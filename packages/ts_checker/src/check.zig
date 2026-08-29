@@ -3752,6 +3752,7 @@ const SourceFacts = struct {
     react16_jsx_reference: ?bool = null,
     react18_jsx_reference: ?bool = null,
     may_have_jsdoc: ?bool = null,
+    reference_types_node: ?bool = null,
     target_es2016_or_later: ?bool = null,
     lib_directive_excludes_dom_element: ?bool = null,
 };
@@ -5134,6 +5135,8 @@ pub const Checker = struct {
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_same_name_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    source_var_declaration_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    source_var_declarations_indexed: bool = false,
     visible_namespace_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_namespace_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     containers_with_dotted_namespace_decls: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
@@ -5553,6 +5556,8 @@ pub const Checker = struct {
         self.source_function_spans.clearRetainingCapacity();
         self.source_function_spans_indexed = false;
         self.source_function_spans_valid = false;
+        self.source_var_declaration_names.clearRetainingCapacity();
+        self.source_var_declarations_indexed = false;
         var function_decls_it = self.function_decls_by_container.valueIterator();
         while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
         self.function_decls_by_container.clearRetainingCapacity();
@@ -6082,6 +6087,7 @@ pub const Checker = struct {
         self.indexed_named_type_containers.deinit(self.gpa);
         self.visible_same_name_value_decls.deinit(self.gpa);
         self.indexed_same_name_value_containers.deinit(self.gpa);
+        self.source_var_declaration_names.deinit(self.gpa);
         self.visible_namespace_decls.deinit(self.gpa);
         self.indexed_namespace_containers.deinit(self.gpa);
         self.containers_with_dotted_namespace_decls.deinit(self.gpa);
@@ -24702,6 +24708,10 @@ pub const Checker = struct {
     }
 
     fn sourceHasReferenceTypesDirective(self: *Checker, wanted: []const u8) bool {
+        const cache_node = std.ascii.eqlIgnoreCase(wanted, "node");
+        if (cache_node) {
+            if (self.source_facts.reference_types_node) |result| return result;
+        }
         const src = self.source orelse return false;
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |raw_line| {
@@ -24718,8 +24728,12 @@ pub const Checker = struct {
             const quote = tail[pos];
             const value_start = pos + 1;
             const value_end = std.mem.indexOfScalarPos(u8, tail, value_start, quote) orelse continue;
-            if (std.ascii.eqlIgnoreCase(tail[value_start..value_end], wanted)) return true;
+            if (std.ascii.eqlIgnoreCase(tail[value_start..value_end], wanted)) {
+                if (cache_node) self.source_facts.reference_types_node = true;
+                return true;
+            }
         }
+        if (cache_node) self.source_facts.reference_types_node = false;
         return false;
     }
 
@@ -62028,8 +62042,26 @@ pub const Checker = struct {
     }
 
     fn programCommonJsWholeExportType(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
+        if (self.program_commonjs_exports.len == 0) return null;
+        if (self.external_resolver) |resolver| {
+            const containing = if (self.importer_path.len > 0)
+                self.importer_path
+            else
+                self.virtualSectionFilenameForNode(node) orelse "/__root__.ts";
+            if (resolver.resolve(spec, containing)) |resolved| {
+                if (try self.programCommonJsWholeExportTypeForPath(resolved.path)) |whole_t| return whole_t;
+            }
+        }
+        if (self.importer_path.len == 0) return null;
+        const directory = std.fs.path.dirname(self.importer_path) orelse "";
+        const resolved = std.fs.path.resolve(self.gpa, &.{ directory, spec }) catch return null;
+        defer self.gpa.free(resolved);
+        return self.programCommonJsWholeExportTypeForPath(resolved);
+    }
+
+    fn programCommonJsWholeExportTypeForPath(self: *Checker, resolved_path: []const u8) CheckError!?TypeId {
         for (self.program_commonjs_exports) |exported| {
-            if (exported.name.len != 0 or !try self.programImportTargetsPath(node, spec, exported.module_path)) continue;
+            if (exported.name.len != 0 or !programModulePathMatches(resolved_path, exported.module_path)) continue;
             if (exported.whole_export_is_any) return types.Primitive.any;
             const owner_schema = exported.whole_export_schema orelse continue;
             if (!try self.programSchemaSupported(owner_schema)) continue;
@@ -168976,18 +169008,29 @@ pub const Checker = struct {
     }
 
     fn sourceHasVarDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
-        const src = self.source orelse return false;
-        const raw_name = self.string_interner.get(name);
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "var")) |var_pos| {
-            search_start = var_pos + "var".len;
-            if (var_pos > 0 and isJsDocIdentChar(src[var_pos - 1])) continue;
-            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
-            var p = search_start;
-            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) : (p += 1) {}
-            if (!std.mem.startsWith(u8, src[p..], raw_name)) continue;
-            if (p + raw_name.len < src.len and isJsDocIdentChar(src[p + raw_name.len])) continue;
-            return true;
+        if (!self.source_var_declarations_indexed) {
+            var node: NodeId = 1;
+            while (node < self.hir.nodeCount()) : (node += 1) {
+                if (self.hir.kindOf(node) != .var_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, node);
+                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+                const declared_name = hir_mod.identifierOf(self.hir, variable.name).name;
+                self.source_var_declaration_names.put(self.gpa, declared_name, {}) catch {
+                    return self.sourceHasVarDeclarationByHir(name);
+                };
+            }
+            self.source_var_declarations_indexed = true;
+        }
+        return self.source_var_declaration_names.contains(name);
+    }
+
+    fn sourceHasVarDeclarationByHir(self: *Checker, name: hir_mod.StringId) bool {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .var_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name == name) return true;
         }
         return false;
     }

@@ -556,10 +556,7 @@ pub const Program = struct {
         }
     }
 
-    /// Compile every file. Two passes:
-    ///   1. Prepare missing sources and check/emit bound sources in place.
-    ///   2. Walk imports and resolve specifiers — populating the
-    ///      `imports` adjacency list.
+    /// Compile every file after resolving the complete bound dependency graph.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         try self.prepareNameStore();
         self.deduplicate_packages = options.deduplicate_packages;
@@ -655,8 +652,6 @@ pub const Program = struct {
         try self.appendProgramGlobalDeclareVarDiagnostics();
         try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendMergedAmbientModuleExportDiagnostics();
-
-        try self.resolveImports();
     }
 
     fn dependencyOrder(self: *const Program) ProgramError![]const usize {
@@ -829,8 +824,6 @@ pub const Program = struct {
 
         try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendRootDirDiagnostics(options);
-
-        try self.resolveImports();
     }
 
     fn collectAmbientGlobalNamespaceRoots(self: *const Program) ProgramError![]const []const u8 {
@@ -1438,6 +1431,16 @@ pub const Program = struct {
         file: *File,
         exports: []ts_driver.ProgramCommonJsExport,
     ) ProgramError!void {
+        var target: ?*ts_driver.ProgramCommonJsExport = null;
+        for (exports) |*exported| {
+            if (exported.whole_export_schema == null and exported.name.len == 0 and
+                std.mem.eql(u8, exported.module_path, file.path))
+            {
+                target = exported;
+                break;
+            }
+        }
+        const exported = target orelse return;
         const compilation = file.compilation orelse return;
         if (!compilation.checked_types_ready or compilation.hir.kindOf(compilation.root) != .block_stmt) return;
         const whole_types = checked_schema.wholeExportTypes(self.gpa, compilation) catch return error.OutOfMemory;
@@ -1459,17 +1462,13 @@ pub const Program = struct {
             }
         }
         const export_position = position orelse return;
-        for (exports) |*exported| {
-            if (exported.whole_export_schema != null or exported.name.len != 0 or
-                !std.mem.eql(u8, exported.module_path, file.path)) continue;
-            exported.whole_export_schema = checked_schema.collect(
-                self.gpa,
-                file.path,
-                compilation,
-                whole_types,
-                export_position,
-            ) catch return error.OutOfMemory;
-        }
+        exported.whole_export_schema = checked_schema.collect(
+            self.gpa,
+            file.path,
+            compilation,
+            whole_types,
+            export_position,
+        ) catch return error.OutOfMemory;
     }
 
     fn collectProgramUmdGlobals(self: *const Program) ProgramError![]const ts_driver.ProgramUmdGlobal {
@@ -2688,14 +2687,11 @@ pub const Program = struct {
         shared_options.program_umd_globals = merged_program_umd_globals;
         shared_options.known_reference_paths = known_reference_paths;
         if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports)) {
-            const compilation_order = try self.dependencyOrder();
-            defer self.gpa.free(compilation_order);
-            for (compilation_order) |file_index| {
-                const file = self.files.items[file_index];
-                if (file.redirect_target != null or !needsCompilation(file, shared_options)) continue;
-                try self.compileFile(file, shared_options);
-                try self.populateProgramCommonJsExportSchemas(file, @constCast(program_commonjs_exports));
-            }
+            try self.compileFilesInDependencyBatches(
+                shared_options,
+                workers,
+                @constCast(program_commonjs_exports),
+            );
         } else {
             try self.compileFilesParallel(shared_options, workers);
         }
@@ -2706,21 +2702,77 @@ pub const Program = struct {
         try self.appendProgramGlobalDeclareVarDiagnostics();
         try self.appendProgramGlobalInterfaceMemberDiagnostics();
         try self.appendMergedAmbientModuleExportDiagnostics();
-        try self.resolveImports();
+    }
+
+    fn compileFilesInDependencyBatches(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+        workers: ?usize,
+        program_commonjs_exports: []ts_driver.ProgramCommonJsExport,
+    ) ProgramError!void {
+        const completed = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(completed);
+        var remaining: usize = 0;
+        for (self.files.items, completed) |file, *done| {
+            done.* = file.redirect_target != null or !needsCompilation(file, options);
+            if (!done.*) remaining += 1;
+        }
+
+        var ready: std.ArrayListUnmanaged(usize) = .empty;
+        defer ready.deinit(self.gpa);
+        while (remaining > 0) {
+            ready.clearRetainingCapacity();
+            for (self.files.items, 0..) |file, index| {
+                if (completed[index]) continue;
+                for (file.imports.items) |dependency| {
+                    if (dependency < completed.len and !completed[dependency]) break;
+                } else {
+                    try ready.append(self.gpa, index);
+                }
+            }
+            // Cyclic components have no dependency-free member. Preserve the
+            // existing best-effort behavior by breaking one cycle edge, then
+            // resume ordinary ready-set scheduling for the remaining files.
+            if (ready.items.len == 0) {
+                for (completed, 0..) |done, index| {
+                    if (!done) {
+                        try ready.append(self.gpa, index);
+                        break;
+                    }
+                }
+            }
+
+            try self.compileFileIndicesParallel(options, workers, ready.items);
+            for (ready.items) |index| {
+                completed[index] = true;
+                remaining -= 1;
+                try self.populateProgramCommonJsExportSchemas(
+                    self.files.items[index],
+                    program_commonjs_exports,
+                );
+            }
+        }
     }
 
     fn compileFilesParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
         try self.prepareNameStore();
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        const n = @max(1, workers orelse @min(cpu_count, 8));
-
-        // Files-to-compile slice (indices we still need to do).
         var pending: std.ArrayListUnmanaged(usize) = .empty;
         defer pending.deinit(self.gpa);
         for (self.files.items, 0..) |f, idx| {
             if (needsCompilation(f, options)) try pending.append(self.gpa, idx);
         }
-        if (pending.items.len == 0) return;
+        try self.compileFileIndicesParallel(options, workers, pending.items);
+    }
+
+    fn compileFileIndicesParallel(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+        workers: ?usize,
+        pending: []const usize,
+    ) ProgramError!void {
+        if (pending.len == 0) return;
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const n = @max(1, workers orelse @min(cpu_count, 8));
 
         // Atomic cursor that workers pop from.
         var cursor = std.atomic.Value(usize).init(0);
@@ -2741,15 +2793,15 @@ pub const Program = struct {
             }
         };
 
-        const worker_count = @min(n, pending.items.len);
+        const worker_count = @min(n, pending.len);
         var threads = self.gpa.alloc(std.Thread, worker_count) catch return error.OutOfMemory;
         defer self.gpa.free(threads);
         var spawned: usize = 0;
         for (threads, 0..) |*t, i| {
             _ = i;
-            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending.items, &cursor, &failures }) catch {
+            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending, &cursor, &failures }) catch {
                 // If we can't spawn more workers, do the rest serially.
-                Worker.run(self, options, pending.items, &cursor, &failures);
+                Worker.run(self, options, pending, &cursor, &failures);
                 break;
             };
             spawned += 1;
