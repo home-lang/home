@@ -1470,9 +1470,7 @@ pub const bake = struct {
         pub fn startAsyncBundle(_: *DevServer, _: EntryPointList, _: bool, _: anytype) OOM!void {}
     };
 
-    pub fn getHmrRuntime(_: Side) struct { code: []const u8 } {
-        return .{ .code = "" };
-    }
+    pub const getHmrRuntime = Config.getHmrRuntime;
     pub const Side = Config.Side;
     pub const Mode = Config.Mode;
     pub const PatternBuffer = Config.PatternBuffer;

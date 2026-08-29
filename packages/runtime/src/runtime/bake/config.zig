@@ -870,6 +870,19 @@ pub fn getHmrRuntime(side: Side) callconv(bun.callconv_inline) HmrRuntime {
         });
 }
 
+test "Bake HMR runtimes embed the generated client and server contracts" {
+    const client = getHmrRuntime(.client);
+    const server = getHmrRuntime(.server);
+
+    try std.testing.expect(client.code.len > 0);
+    try std.testing.expect(server.code.len > 0);
+    try std.testing.expect(client.line_count > 0);
+    try std.testing.expect(server.line_count > 0);
+    try std.testing.expect(std.mem.indexOf(u8, client.code, "WebSocket") != null);
+    try std.testing.expect(std.mem.indexOf(u8, server.code, "handleRequest") != null);
+    try std.testing.expect(std.mem.indexOf(u8, server.code, "registerUpdate") != null);
+}
+
 pub const Mode = enum {
     development,
     production_dynamic,
