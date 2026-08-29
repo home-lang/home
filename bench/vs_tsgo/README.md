@@ -93,6 +93,19 @@ Selection is recorded in metadata, and unknown or duplicate names are rejected
 before creating results. Validation and timing rules are unchanged. A targeted
 run supplements the full-suite report; retain and report both results.
 
+Static CommonJS dependency discovery has a separate **untimed** audit:
+
+```sh
+python3 bench/vs_tsgo/audit_commonjs_discovery.py
+```
+
+Its 44 cases distinguish six followed `require` graph shapes from comment,
+string, dynamic-specifier, property-call and multiple-argument decoys. Entry-only
+projects prove whether the dependency is discovered; all-file controls prove
+the same leaf diagnostic is observable. TS 6.0.3, native TS 7.0.2 and Home pass
+44/44 after [#545](https://github.com/home-lang/home/issues/545). This result is
+not timed and does not waive the separate CommonJS type-linkage failures below.
+
 Cross-file CommonJS instance consumption has an **untimed** audit:
 
 ```sh

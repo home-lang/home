@@ -132,6 +132,7 @@ failures visible:
 | Imported-owner controls | 20/20 | 20/20 | 12/20 |
 | [Exported generic-factory controls](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed) | 240/240 | 240/240 | 240/240 |
 | [Exported variable-list controls](./docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 96/96 | 96/96 | 80/96 |
+| [Static CommonJS discovery controls](./docs/docs/TS_PERFORMANCE.md#static-commonjs-dependency-discovery-untimed) | 44/44 | 44/44 | 44/44 |
 | [CommonJS instance controls](./docs/docs/TS_PERFORMANCE.md#prepared-commonjs-export-queries) | 66/66 | 66/66 | 22/66 |
 | [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |

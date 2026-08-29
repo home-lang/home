@@ -3210,6 +3210,48 @@ The first conformance command returned success but lost its console output
 during disk exhaustion; the complete successful retry is retained as
 `conformance-v1-retry.log`.
 
+### Static CommonJS dependency discovery (untimed)
+
+Commits `0ebdba7ef` and `eaf86ee56`, tracked by
+[#545](https://github.com/home-lang/home/issues/545), add an untimed graph audit
+and make Program closure discovery follow static JavaScript `require` calls.
+The implementation traverses parsed HIR, accepts exactly one string-literal-like
+argument (including a no-substitution template), and preserves lexical edge
+order. It does not scan source text. Comments, strings, computed specifiers,
+property calls, interpolated templates and multiple-argument calls remain
+excluded. Cycles and diamonds retain unique current edges after recompilation.
+
+The audit contains 44 projects and runs each through all three compilers, for
+132 exact diagnostic-code checks. Six followed families cover binding, nested,
+template, transitive, cyclic and diamond graphs. Five decoy families cover
+comments, strings, dynamic specifiers, property calls and multiple arguments.
+Every family has entry-only and all-file roots, plus a positive project and an
+otherwise identical negative that only appends TS2322 to the leaf. This makes
+dependency inclusion observable without treating an absent error as success.
+
+| Untimed static-`require` controls | TS 6.0.3 | Native TS 7.0.2 | Frozen Home before | Home after |
+|---|---:|---:|---:|---:|
+| Followed graph shapes | 24/24 | 24/24 | 18/24 | 24/24 |
+| Ignored lookalikes | 20/20 | 20/20 | 20/20 | 20/20 |
+| **Total** | **44/44** | **44/44** | **38/44** | **44/44** |
+
+The frozen before binary is the `1cfc33c1a` release used by the prepared-query
+checkpoint. The immutable after binary is
+`commonjs-discovery.JMl1yj/release-v1/bin/home-tsc`, SHA-256
+`31679b8aeb0a6279880dbdd140e25fd891a07e7967a36e92324f82b3776df5e7`.
+Program **143/143**, the 78-test Python harness, checker, driver, CLI and the
+conformance target pass. The conformance target reports smoke **16/16**, named
+categories **86/86** and baseline-aware categories **586/586**. Raw before,
+after, conformance and unchanged-gap logs are retained locally in
+`bench/vs_tsgo/results/commonjs-discovery.JMl1yj/`.
+
+This is a correctness result, not a timed workload or a performance claim. The
+separate CommonJS instance audit remains unchanged at TS 6 **66/66**, native
+TS 7 **66/66**, Home **22/66**: all 44 missing TS2322/TS2339 rejections remain
+open under [#541](https://github.com/home-lang/home/issues/541). Static graph
+discovery is the prerequisite for transferring a checked source owner's actual
+type; it is not a substitute for that transfer.
+
 ### Prepared-query checkpoint performance
 
 The same-correctness before/after diagnostic compares frozen `b7b9dd9ee` with
