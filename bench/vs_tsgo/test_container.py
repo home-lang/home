@@ -36,6 +36,18 @@ class ContainerHarnessTests(unittest.TestCase):
         self.assertIn("cold --runs 30 --warmup 3", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
 
+    def test_root_context_sends_only_the_container_entrypoint(self):
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            dockerignore,
+            [
+                "**",
+                "!bench/",
+                "!bench/vs_tsgo/",
+                "!bench/vs_tsgo/container-entrypoint.sh",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
