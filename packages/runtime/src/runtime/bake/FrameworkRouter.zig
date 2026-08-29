@@ -1360,7 +1360,7 @@ pub const JSFrameworkRouter = struct {
             return .null;
 
         var rendered = try std.array_list.Managed(u8).initCapacity(alloc, filepath.slice().len);
-        for (parsed.parts) |part| try part.toStringForInternalUse(rendered.writer());
+        for (parsed.parts) |part| try part.appendStringForInternalUse(&rendered);
 
         var out = bun.String.init(rendered.items);
         const obj = JSValue.createEmptyObject(global, 2);

@@ -138,7 +138,6 @@ comptime {
         // patch TestingAPIs stay noop'd: patch.zig's makeDiff uses Zig-0.16
         // std.process.Child.init (removed in 0.17) so the impl doesn't compile.
         "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff",
-        "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround",
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
         // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.
@@ -159,7 +158,6 @@ comptime {
         // jsc/js2native_workarounds.zig. The noops returned garbage —
         // `$.braces(...)` yielded globalThis; `Bun.gc()` yielded an
         // uninitialized heap-size (the out-param was never written).
-        "bindgen_DevServer_dispatchGetDeinitCountForTesting1",
         // bindgen_Fmt_jsc_dispatchFmtString1 + js2native_bindgen_fmt_jsc_fmtString
         // now have real exports in jsc/js2native_workarounds.zig (the noops made
         // highlightJavaScript throw "fmtBinding is not a function").
@@ -180,7 +178,6 @@ comptime {
         "bindgen_Node_os_dispatchUptime1",
         "bindgen_Node_os_dispatchUserInfo1",
         "bindgen_Node_os_dispatchVersion1",
-        "js2native_bindgen_DevServer_getDeinitCountForTesting",
     }) |name| {
         @export(&noop, .{ .name = name });
     }

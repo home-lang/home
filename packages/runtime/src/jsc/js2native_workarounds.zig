@@ -63,6 +63,8 @@ const hosted_git_info_jsc = @import("../install_jsc/hosted_git_info_jsc.zig");
 const npm_jsc = @import("../install_jsc/npm_jsc.zig");
 const PatchTestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
 const css_internals = @import("../css_jsc/css_internals.zig");
+const FrameworkRouter = @import("../runtime/bake/FrameworkRouter.zig");
+const DevServer = @import("../runtime/bake/DevServer.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -90,6 +92,16 @@ fn bindgen_BunObject_dispatchGc1_impl(
     out: *usize,
 ) callconv(.c) bool {
     out.* = BunObject.gc(global.bunVM(), arg_force.*);
+    return true;
+}
+
+/// Real Bake teardown counter used by the pinned dev-server harness. The C++
+/// bindgen wrapper passes an out pointer for the usize result.
+fn bindgen_DevServer_dispatchGetDeinitCountForTesting1_impl(
+    _: *JSGlobalObject,
+    out: *usize,
+) callconv(.c) bool {
+    out.* = DevServer.getDeinitCountForTesting();
     return true;
 }
 
@@ -166,6 +178,7 @@ fn bindgen_Fmt_jsc_dispatchFmtString1_impl(
 }
 
 const jsFmtString = @extern(*const host_fn.JSHostFn, .{ .name = "bindgen_Fmt_jsc_jsFmtString" });
+const jsGetDevServerDeinitCount = @extern(*const host_fn.JSHostFn, .{ .name = "bindgen_DevServer_jsGetDeinitCountForTesting" });
 
 /// Lazy binding for `$bindgenFn("fmt_jsc.bind.ts", "fmtString")` — returns the
 /// `fmtString` host function. native_stubs noop-stubbed this so the JS side got
@@ -173,6 +186,12 @@ const jsFmtString = @extern(*const host_fn.JSHostFn, .{ .name = "bindgen_Fmt_jsc
 /// `createFmtStringCallback`.
 fn js2native_bindgen_fmt_jsc_fmtString_impl(global: *JSGlobalObject) callconv(jsc.conv) JSValue {
     return host_fn.NewRuntimeFunction(global, jsc.ZigString.static("fmtString"), 3, jsFmtString, false, null);
+}
+
+/// Creates the JavaScript function for the DevServer teardown counter. This is
+/// the `$bindgenFn` factory layer above the dispatch thunk.
+fn js2native_bindgen_DevServer_getDeinitCountForTesting_impl(global: *JSGlobalObject) callconv(jsc.conv) JSValue {
+    return host_fn.NewRuntimeFunction(global, jsc.ZigString.static("getDeinitCountForTesting"), 0, jsGetDevServerDeinitCount, false, null);
 }
 
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
@@ -200,11 +219,13 @@ comptime {
     // ---- bindgen dispatches (real, replacing native_stubs no-ops) -------
     @export(&bindgen_BunObject_dispatchBraces1_impl, .{ .name = "bindgen_BunObject_dispatchBraces1" });
     @export(&bindgen_BunObject_dispatchGc1_impl, .{ .name = "bindgen_BunObject_dispatchGc1" });
+    @export(&bindgen_DevServer_dispatchGetDeinitCountForTesting1_impl, .{ .name = "bindgen_DevServer_dispatchGetDeinitCountForTesting1" });
     @export(&bindgen_NodeModuleModule_dispatch_stat1_impl, .{ .name = "bindgen_NodeModuleModule_dispatch_stat1" });
 
     // ---- fmt_jsc fmtString (bun:internal-for-testing highlightJavaScript) ----
     @export(&bindgen_Fmt_jsc_dispatchFmtString1_impl, .{ .name = "bindgen_Fmt_jsc_dispatchFmtString1" });
     @export(&js2native_bindgen_fmt_jsc_fmtString_impl, .{ .name = "js2native_bindgen_fmt_jsc_fmtString" });
+    @export(&js2native_bindgen_DevServer_getDeinitCountForTesting_impl, .{ .name = "js2native_bindgen_DevServer_getDeinitCountForTesting" });
 
     // ---- shell TestingAPIs (bun:internal-for-testing shellInternals) ----
     // Real exports for the shell lexer/parser test hooks. native_stubs had
@@ -286,6 +307,11 @@ comptime {
 
     // ---- Lazy bindings (`..._workaround`) -------------------------------
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
+    // Bake's internal test API. The generated bun:internal-for-testing module
+    // resolves this as a lazy binding; a no-op here made
+    // `frameworkRouterInternals` undefined even though the router binding is
+    // fully linked into Home.
+    @export(&lazyErr(FrameworkRouter.JSFrameworkRouter.getBindings), .{ .name = "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround" });
     @export(&lazy(node_fs_binding.createBinding), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createBinding_workaround" });
     @export(&lazy(node_assert_binding.generate), .{ .name = "JS2Zig___src_runtime_node_node_assert_binding_zig__generate_workaround" });
     @export(&lazy(node_net_binding.getDefaultAutoSelectFamily), .{ .name = "JS2Zig___src_runtime_node_node_net_binding_zig__getDefaultAutoSelectFamily_workaround" });
