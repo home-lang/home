@@ -3117,6 +3117,8 @@ pub const jsc = struct {
             reject_unauthorized: ?bool = null,
             request_cert: bool = false,
             secure_options: i32 = 0,
+            ssl_min_version: i32 = 0,
+            ssl_max_version: i32 = 0,
             ca: SSLConfigFile = .none,
             cert: SSLConfigFile = .none,
             key: SSLConfigFile = .none,
@@ -3164,6 +3166,16 @@ pub const jsc = struct {
                 }
                 if (try value.get(globalObject, "secureOptions")) |v| {
                     if (v.isNumber()) result.secure_options = v.toInt32();
+                }
+                inline for (.{ .{ "minVersion", "ssl_min_version" }, .{ "maxVersion", "ssl_max_version" } }) |field| {
+                    if (try value.get(globalObject, field[0])) |v| {
+                        if (!v.isUndefinedOrNull()) @field(result, field[1]) = try v.coerce(i32, globalObject);
+                    }
+                }
+                inline for (.{ .{ "clientRenegotiationLimit", "client_renegotiation_limit" }, .{ "clientRenegotiationWindow", "client_renegotiation_window" } }) |field| {
+                    if (try value.get(globalObject, field[0])) |v| {
+                        if (!v.isUndefinedOrNull()) @field(result, field[1]) = @bitCast(try v.coerce(i32, globalObject));
+                    }
                 }
                 // ALPNProtocols: node:tls converts the user's protocol list to a
                 // wire-format Buffer (length-prefixed) before it reaches native, so

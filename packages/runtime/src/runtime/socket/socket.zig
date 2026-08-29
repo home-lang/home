@@ -692,15 +692,31 @@ pub fn NewSocket(comptime ssl: bool) type {
 
         pub fn onHandshake(this: *This, s: Socket, success: i32, ssl_error: uws.us_bun_verify_error_t) bun.JSError!void {
             jsc.markBinding(@src());
+            if (this.handlers == null) return;
             this.flags.handshake_complete = true;
             this.socket = s;
             if (this.socket.isDetached()) return;
             const handlers = this.getHandlers();
             log("onHandshake {s} ({d})", .{ if (handlers.mode == .server) "S" else "C", success });
 
-            const authorized = if (success == 1) true else false;
-
+            var authorized = success == 1;
+            var hostname_mismatch = false;
+            if (ssl and authorized and !handlers.mode.isServer()) {
+                if (this.socket.ssl()) |ssl_ptr| {
+                    const hostname = this.server_name orelse host: {
+                        if (this.connection) |connection| {
+                            if (connection == .host) break :host connection.host.host;
+                        }
+                        break :host "";
+                    };
+                    if (hostname.len > 0 and !bun.BoringSSL.checkServerIdentity(ssl_ptr, hostname)) {
+                        authorized = false;
+                        hostname_mismatch = true;
+                    }
+                }
+            }
             this.flags.authorized = authorized;
+            this.flags.hostname_mismatch = hostname_mismatch;
 
             var callback = handlers.onHandshake;
             var is_open = false;
@@ -923,6 +939,13 @@ pub fn NewSocket(comptime ssl: bool) type {
             // is very usefull to have this feature depending on the user workflow
             const ssl_error = this.socket.getVerifyError();
             if (ssl_error.error_no == 0) {
+                if (this.flags.hostname_mismatch) {
+                    const mismatch = jsc.SystemError{
+                        .code = bun.String.cloneUTF8("HOSTNAME_MISMATCH"),
+                        .message = bun.String.cloneUTF8("Hostname mismatch"),
+                    };
+                    return mismatch.toErrorInstance(globalObject);
+                }
                 return JSValue.jsNull();
             }
 
@@ -1885,7 +1908,8 @@ const Flags = packed struct(u16) {
     /// must free), vs a borrowed pointer into the Listener's handlers. Defaults
     /// false so a missed set leaks rather than freeing a borrowed pointer (UAF).
     owns_handlers: bool = false,
-    _: u5 = 0,
+    hostname_mismatch: bool = false,
+    _: u4 = 0,
 };
 
 /// Unified socket mode replacing the old is_server bool + TLSMode pair.

@@ -15,6 +15,8 @@ cert: ?[][*:0]const u8 = null,
 ca: ?[][*:0]const u8 = null,
 
 secure_options: u32 = 0,
+ssl_min_version: i32 = 0,
+ssl_max_version: i32 = 0,
 request_cert: i32 = 0,
 reject_unauthorized: i32 = 0,
 ssl_ciphers: ?[*:0]const u8 = null,
@@ -107,6 +109,8 @@ pub fn asUSockets(this: *const SSLConfig) uws.SocketContext.BunSocketContextOpti
     }
     ctx_opts.request_cert = this.request_cert;
     ctx_opts.reject_unauthorized = this.reject_unauthorized;
+    ctx_opts.ssl_min_version = this.ssl_min_version;
+    ctx_opts.ssl_max_version = this.ssl_max_version;
 
     return ctx_opts;
 }
@@ -205,6 +209,8 @@ pub fn deinit(this: *SSLConfig) void {
         .cert = freeStrings(&this.cert),
         .ca = freeStrings(&this.ca),
         .secure_options = {},
+        .ssl_min_version = {},
+        .ssl_max_version = {},
         .request_cert = {},
         .reject_unauthorized = {},
         .ssl_ciphers = freeString(&this.ssl_ciphers),
@@ -243,6 +249,8 @@ pub fn clone(this: *const SSLConfig) SSLConfig {
         .cert = cloneStrings(this.cert),
         .ca = cloneStrings(this.ca),
         .secure_options = this.secure_options,
+        .ssl_min_version = this.ssl_min_version,
+        .ssl_max_version = this.ssl_max_version,
         .request_cert = this.request_cert,
         .reject_unauthorized = this.reject_unauthorized,
         .ssl_ciphers = cloneString(this.ssl_ciphers),
@@ -401,11 +409,15 @@ pub fn fromGenerated(
     );
     result.request_cert = @intFromBool(generated.request_cert);
     result.secure_options = @bitCast(generated.secure_options); // generated bindings type i32; field is u32 (bitmask)
+    result.ssl_min_version = generated.ssl_min_version;
+    result.ssl_max_version = generated.ssl_max_version;
     any = any or
         result.low_memory_mode or
         generated.reject_unauthorized != null or
         generated.request_cert or
-        result.secure_options != 0;
+        result.secure_options != 0 or
+        result.ssl_min_version != 0 or
+        result.ssl_max_version != 0;
 
     result.ca = try handleFileForField(global, "ca", &generated.ca);
     result.cert = try handleFileForField(global, "cert", &generated.cert);
@@ -569,3 +581,23 @@ const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const VirtualMachine = jsc.VirtualMachine;
+
+test "TLS version limits survive cloning, content identity and native projection" {
+    var config: SSLConfig = .{ .ssl_min_version = 0x303, .ssl_max_version = 0x304 };
+    defer config.deinit();
+    var copy = config.clone();
+    defer copy.deinit();
+    try std.testing.expect(config.isSame(&copy));
+    try std.testing.expectEqual(config.contentHash(), copy.contentHash());
+    const opts = copy.asUSockets();
+    try std.testing.expectEqual(@as(i32, 0x303), opts.ssl_min_version);
+    try std.testing.expectEqual(@as(i32, 0x304), opts.ssl_max_version);
+    inline for (.{ "ssl_min_version", "ssl_max_version" }) |field| {
+        var changed = config.clone();
+        defer changed.deinit();
+        @field(changed, field) = 0;
+        try std.testing.expect(!config.isSame(&changed));
+        try std.testing.expect(config.contentHash() != changed.contentHash());
+        try std.testing.expect(!std.mem.eql(u8, &opts.digest(), &changed.asUSockets().digest()));
+    }
+}

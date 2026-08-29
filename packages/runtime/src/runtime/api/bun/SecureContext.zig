@@ -44,6 +44,99 @@ pub fn constructor(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
     return try create(global, &config);
 }
 
+/// User-created contexts must own a distinct SSL_CTX: addCACert must never
+/// mutate another user's context or the internal per-digest cache.
+pub fn createPrivate(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const args = callframe.arguments();
+    var config = (try SSLConfig.fromJS(global.bunVM(), global, if (args.len > 0) args[0] else .js_undefined)) orelse SSLConfig.zero;
+    defer config.deinit();
+    const opts = config.asUSockets();
+    var err: uws.create_bun_socket_error_t = .none;
+    const ctx = opts.createSSLContext(&err) orelse {
+        if (err == .none or err == .invalid_ciphers) {
+            const code = BoringSSL.ERR_get_error();
+            if (code != 0) return global.throwValue(bun.BoringSSL.ERR_toJS(global, code));
+            if (err == .none) return global.throw("Failed to create SSL context", .{});
+        }
+        return global.throwValue(err.toJS(global));
+    };
+    return bun.new(SecureContext, .{
+        .ctx = ctx,
+        .digest = opts.digest(),
+        .extra_memory = opts.approxCertBytes() + ssl_ctx_base_cost,
+    }).toJS(global);
+}
+
+pub fn addCACert(this: *SecureContext, global: *jsc.JSGlobalObject, frame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const args = frame.arguments();
+    if (args.len == 0) return global.throwInvalidArguments("addCACert requires a certificate", .{});
+    const pem = try args[0].toSlice(global, bun.default_allocator);
+    defer pem.deinit();
+    if (pem.len == 0) return global.throwInvalidArguments("addCACert requires a certificate", .{});
+    const owned = try bun.dupeZ(bun.default_allocator, u8, pem.slice());
+    defer bun.default_allocator.free(owned);
+    if (native.us_ssl_ctx_add_ca_cert(this.ctx, owned) == 0) return global.throw("Invalid CA certificate", .{});
+    return .js_undefined;
+}
+
+/// Preserve binary DER and coerce the passphrase before borrowing the input:
+/// its toString() may detach an ArrayBuffer passed as the first argument.
+pub fn parsePkcs12(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const args = frame.arguments();
+    if (args.len == 0) return global.throw("PFX certificate argument is mandatory", .{});
+    var pass: ?[:0]u8 = null;
+    defer if (pass) |value| bun.freeSensitive(bun.default_allocator, value);
+    if (args.len > 1 and !args[1].isUndefinedOrNull()) {
+        const value = try args[1].toSlice(global, bun.default_allocator);
+        defer value.deinit();
+        pass = try bun.dupeZ(bun.default_allocator, u8, value.slice());
+    }
+    var text: ?jsc.ZigString.Slice = null;
+    defer if (text) |value| value.deinit();
+    const bytes = if (args[0].asArrayBuffer(global)) |ab| ab.byteSlice() else blk: {
+        text = try args[0].toSlice(global, bun.default_allocator);
+        break :blk text.?.slice();
+    };
+    if (bytes.len == 0) return global.throw("PFX certificate argument is mandatory", .{});
+    var key: ?[*]u8 = null;
+    var cert: ?[*]u8 = null;
+    var ca: ?[*]u8 = null;
+    var key_len: usize = 0;
+    var cert_len: usize = 0;
+    var ca_len: usize = 0;
+    var reason: ?[*:0]const u8 = null;
+    if (native.us_ssl_parse_pkcs12(bytes.ptr, bytes.len, if (pass) |value| value.ptr else null, &key, &key_len, &cert, &cert_len, &ca, &ca_len, &reason) == 0) {
+        const tag = if (reason) |value| std.mem.span(value) else "";
+        if (std.mem.eql(u8, tag, "key")) return global.throw("Unable to load private key from PFX data", .{});
+        if (std.mem.eql(u8, tag, "cert")) return global.throw("Unable to load certificate from PFX data", .{});
+        if (std.mem.eql(u8, tag, "mac")) return global.throw("PFX MAC verification failed - is the passphrase correct?", .{});
+        return global.throw("Unable to load PFX certificate", .{});
+    }
+    // The helper allocates with malloc; these are not bun allocator buffers.
+    defer native.free(@ptrCast(key));
+    defer native.free(@ptrCast(cert));
+    defer native.free(@ptrCast(ca));
+    const result = jsc.JSValue.createEmptyObject(global, 0);
+    result.put(global, "key", jsc.ZigString.init(key.?[0..key_len]).toJS(global));
+    result.put(global, "cert", jsc.ZigString.init(cert.?[0..cert_len]).toJS(global));
+    if (ca != null and ca_len > 0) result.put(global, "ca", jsc.ZigString.init(ca.?[0..ca_len]).toJS(global));
+    return result;
+}
+
+// The retained class generator predates these pinned native entry points.
+// Use the same checked host-function ABI without keeping no-op exports.
+comptime {
+    @export(&jsc.toJSHostFn(createPrivate), .{ .name = "SecureContextClass__create_private" });
+    @export(&jsc.toJSHostFn(parsePkcs12), .{ .name = "SecureContextClass__parse_pkcs12" });
+    @export(&jsc.host_fn.toJSHostFnWithContext(SecureContext, addCACert), .{ .name = "SecureContextPrototype__add_ca_cert" });
+}
+
+const native = struct {
+    extern fn us_ssl_ctx_add_ca_cert(*BoringSSL.SSL_CTX, [*:0]const u8) c_int;
+    extern fn us_ssl_parse_pkcs12([*]const u8, usize, ?[*:0]const u8, *?[*]u8, *usize, *?[*]u8, *usize, *?[*]u8, *usize, *?[*:0]const u8) c_int;
+    extern fn free(?*anyopaque) void;
+};
+
 /// Mode-neutral: Node lets one `SecureContext` back both `tls.connect()` and
 /// `tls.createServer({secureContext})`, so we cannot bake client-vs-server into
 /// the `SSL_CTX`. The per-socket attach overrides client SSLs to
@@ -73,10 +166,9 @@ fn createWithDigest(global: *jsc.JSGlobalObject, ctx_opts: uws.SocketContext.Bun
     });
 }
 
-/// `tls.createSecureContext(opts)` entry point. WeakGCMap-memoised by config
-/// digest so identical configs return the same `JSSecureContext` cell while
-/// alive; falls through to `create()` (which itself hits the native
-/// `SSLContextCache`) on miss.
+/// Internal contexts are WeakGCMap-memoised by config digest so identical
+/// configs share a live cell; misses use the native SSLContextCache.
+/// User-created `tls.createSecureContext(opts)` contexts use createPrivate.
 pub fn intern(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     const args = callframe.arguments();
     const opts = if (args.len > 0) args[0] else .js_undefined;
