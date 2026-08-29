@@ -37,7 +37,7 @@ const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
 const home_test = @import("home_test");
-const home_rt = @import("home_rt");
+const home_rt = if (build_options.enable_jsc) @import("home_rt") else @import("home_rt_no_jsc.zig");
 
 const Io = std.Io;
 var g_io: Io = undefined;
@@ -1699,6 +1699,15 @@ fn execPantryCommand(allocator: std.mem.Allocator, pantry_subcommand: []const u8
     try spawnInteractive(argv.items);
 }
 
+fn failJavaScriptCoreDisabled(command: []const u8) noreturn {
+    std.debug.print("{s}Error:{s} `home {s}` requires a JSC-enabled build (build with -Denable_jsc=true)\n", .{
+        Color.Red.code(),
+        Color.Reset.code(),
+        command,
+    });
+    std.process.exit(1);
+}
+
 /// Install the full native realm surface (console/process/web/crypto/timers/
 /// misc/url/webcore/fetch/Bun/require) into `ctx`'s global. Shared by
 /// `home eval` and the native `home run` path. `argv` becomes `process.argv`.
@@ -1983,9 +1992,14 @@ fn runInlineEvalModeViaVM(allocator: std.mem.Allocator, code: []const u8, extra_
 
 /// Package lookup may fall through to a module. Reuse its parsed context:
 /// parsing twice would apply a relative --cwd twice and lose loaded bunfig data.
-var g_native_runtime_context: ?home_rt.cli.Command.Context = null;
+const NativeRuntimeContext = if (build_options.enable_jsc) home_rt.cli.Command.Context else void;
+const NativeCommandTag = if (build_options.enable_jsc) home_rt.cli.Command.Tag else enum {
+    AutoCommand,
+    RunCommand,
+};
+var g_native_runtime_context: ?NativeRuntimeContext = null;
 
-fn nativeRuntimeContext(inline_eval: bool) !home_rt.cli.Command.Context {
+fn nativeRuntimeContext(inline_eval: bool) !NativeRuntimeContext {
     if (g_native_runtime_context) |ctx| return ctx;
     const allocator = home_rt.default_allocator;
     home_rt.ast.Expr.Data.Store.create();
@@ -2038,11 +2052,13 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args:
     return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false, null);
 }
 
-fn runStandaloneViaVM(graph: *home_rt.StandaloneModuleGraph, extra_args: []const [:0]const u8) !void {
+const NativeStandaloneModuleGraph = if (build_options.enable_jsc) home_rt.StandaloneModuleGraph else void;
+
+fn runStandaloneViaVM(graph: *NativeStandaloneModuleGraph, extra_args: []const [:0]const u8) !void {
     return runFileViaVMOpts(home_rt.default_allocator, graph.entryPoint().name, extra_args, false, null, false, graph);
 }
 
-fn standaloneRuntimeContext(graph: *const home_rt.StandaloneModuleGraph) !home_rt.cli.Command.Context {
+fn standaloneRuntimeContext(graph: *const NativeStandaloneModuleGraph) !NativeRuntimeContext {
     const allocator = home_rt.default_allocator;
     var parser_args = std.array_list.Managed([:0]const u8).init(allocator);
     try parser_args.append(home_rt.argv[0]);
@@ -2071,7 +2087,7 @@ fn runFileViaVMOpts(
     inject_node_globals: bool,
     eval_source_text: ?[]const u8,
     print_result: bool,
-    standalone_graph: ?*home_rt.StandaloneModuleGraph,
+    standalone_graph: ?*NativeStandaloneModuleGraph,
 ) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
@@ -2507,6 +2523,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
 }
 
 fn runShellFile(file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    if (comptime !build_options.enable_jsc) return error.JavaScriptCoreDisabled;
     const runtime_allocator = home_rt.default_allocator;
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -2574,7 +2591,7 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false, null);
 }
 
-fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: home_rt.cli.Command.Tag) !home_rt.cli.Command.Context {
+fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: NativeCommandTag) !NativeRuntimeContext {
     const allocator = home_rt.default_allocator;
     home_rt.ast.Expr.Data.Store.create();
     home_rt.ast.Stmt.Data.Store.create();
@@ -2614,7 +2631,7 @@ fn runNativeInstallCommand(args: []const [:0]const u8, force_add: bool) !void {
     }
 }
 
-fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: home_rt.cli.Command.Tag) !bool {
+fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: NativeCommandTag) !bool {
     if (comptime !build_options.enable_jsc) return false;
     if (!envFlagSet("HOME_NATIVE_VM")) return false;
     if (target.len > 0 and isHomeSourceFile(target)) return false;
@@ -2694,8 +2711,10 @@ fn runCliCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void
         return;
     }
 
-    if (experimental_stream_iter) {
-        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+    if (comptime build_options.enable_jsc) {
+        if (experimental_stream_iter) {
+            home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+        }
     }
     if (try tryNativePackageRun(args, args[ri], .RunCommand)) return;
     try runCommand(allocator, args[ri], args[ri + 1 ..]);
@@ -5863,43 +5882,70 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, command, "why")) {
-        const runtime_allocator = home_rt.default_allocator;
-        const log = try runtime_allocator.create(home_rt.logger.Log);
-        log.* = home_rt.logger.Log.init(runtime_allocator);
-        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
-        try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
+        if (comptime build_options.enable_jsc) {
+            const runtime_allocator = home_rt.default_allocator;
+            const log = try runtime_allocator.create(home_rt.logger.Log);
+            log.* = home_rt.logger.Log.init(runtime_allocator);
+            const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+            try home_rt.cli.WhyCommand.execStandalone(ctx, args[2..]);
+        } else {
+            try execPantryCommand(allocator, "why", args[2..]);
+        }
         return;
     }
     if (std.mem.eql(u8, command, "publish") or std.mem.eql(u8, command, "pack")) {
-        const runtime_allocator = home_rt.default_allocator;
-        const log = try runtime_allocator.create(home_rt.logger.Log);
-        log.* = home_rt.logger.Log.init(runtime_allocator);
-        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
-        if (std.mem.eql(u8, command, "publish")) {
-            try home_rt.cli.PublishCommand.execStandalone(ctx, args[2..]);
+        if (comptime build_options.enable_jsc) {
+            const runtime_allocator = home_rt.default_allocator;
+            const log = try runtime_allocator.create(home_rt.logger.Log);
+            log.* = home_rt.logger.Log.init(runtime_allocator);
+            const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+            if (std.mem.eql(u8, command, "publish")) {
+                try home_rt.cli.PublishCommand.execStandalone(ctx, args[2..]);
+            } else {
+                try home_rt.cli.PackCommand.execStandalone(ctx, args[2..]);
+            }
         } else {
-            try home_rt.cli.PackCommand.execStandalone(ctx, args[2..]);
+            if (std.mem.eql(u8, command, "publish")) {
+                try execPantryCommand(allocator, "publish", args[2..]);
+            } else {
+                failJavaScriptCoreDisabled(command);
+            }
         }
         return;
     }
     if (std.mem.eql(u8, command, "info")) {
-        const runtime_allocator = home_rt.default_allocator;
-        const log = try runtime_allocator.create(home_rt.logger.Log);
-        log.* = home_rt.logger.Log.init(runtime_allocator);
-        try home_rt.cli.Command.execInfo(runtime_allocator, log);
+        if (comptime build_options.enable_jsc) {
+            const runtime_allocator = home_rt.default_allocator;
+            const log = try runtime_allocator.create(home_rt.logger.Log);
+            log.* = home_rt.logger.Log.init(runtime_allocator);
+            try home_rt.cli.Command.execInfo(runtime_allocator, log);
+        } else {
+            try execPantryCommand(allocator, "info", args[2..]);
+        }
         return;
     }
     if (std.mem.eql(u8, command, "list") or std.mem.eql(u8, command, "whoami")) {
-        const runtime_allocator = home_rt.default_allocator;
-        const log = try runtime_allocator.create(home_rt.logger.Log);
-        log.* = home_rt.logger.Log.init(runtime_allocator);
-        const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
-        try home_rt.cli.PackageManagerCommand.execUtilities(ctx);
+        if (comptime build_options.enable_jsc) {
+            const runtime_allocator = home_rt.default_allocator;
+            const log = try runtime_allocator.create(home_rt.logger.Log);
+            log.* = home_rt.logger.Log.init(runtime_allocator);
+            const ctx = home_rt.cli.Command.initDefaultContext(runtime_allocator, log);
+            try home_rt.cli.PackageManagerCommand.execUtilities(ctx);
+        } else {
+            if (std.mem.eql(u8, command, "list")) {
+                try execPantryCommand(allocator, "list", args[2..]);
+            } else {
+                failJavaScriptCoreDisabled(command);
+            }
+        }
         return;
     }
     // Bun-compatible package-manager utilities routed to their native runtime
     // ports. Commands with standalone ports stay above this shared dispatcher.
     if (std.mem.eql(u8, command, "pm")) {
+        if (comptime !build_options.enable_jsc) {
+            failJavaScriptCoreDisabled("pm");
+        }
         if (args.len < 3) {
             std.debug.print("{s}Error:{s} unsupported 'pm' subcommand\n", .{ Color.Red.code(), Color.Reset.code() });
             std.process.exit(1);
@@ -6051,8 +6097,10 @@ pub fn main(init: std.process.Init) !void {
                 }
                 if (!positional_only and a.len > 0 and a[0] == '-') continue;
                 if (looksLikeRunnableFile(a) or native_vm) {
-                    if (experimental_stream_iter) {
-                        home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+                    if (comptime build_options.enable_jsc) {
+                        if (experimental_stream_iter) {
+                            home_rt.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
+                        }
                     }
                     if (try tryNativePackageRun(args, a, .AutoCommand)) return;
                     try runCommand(allocator, a, args[i + 1 ..]);
@@ -6081,6 +6129,7 @@ fn looksLikeRunnableFile(s: []const u8) bool {
 /// Match clap's separate-token consumption: optional values use only an
 /// attached long-option value, while required/repeated values consume next.
 fn runtimeFlagConsumesNext(flag: []const u8) bool {
+    if (comptime !build_options.enable_jsc) return false;
     inline for (home_rt.cli.Arguments.auto_params) |param| {
         if (comptime param.takes_value == .one or param.takes_value == .many) {
             if (comptime param.names.long) |name| {
