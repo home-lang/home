@@ -35,6 +35,7 @@ const { validateFunction, validateNumber, validateAbortSignal, validatePort, val
 const { isIPv4, isIPv6, isIP } = require("internal/net/isIP");
 
 const ArrayPrototypeIncludes = Array.prototype.includes;
+const ArrayPrototypeJoin = Array.prototype.join;
 const ArrayPrototypePush = Array.prototype.push;
 const MathMax = Math.max;
 
@@ -62,6 +63,7 @@ const owner_symbol = Symbol("owner_symbol");
 const kServerSocket = Symbol("kServerSocket");
 const kBytesWritten = Symbol("kBytesWritten");
 const bunTLSConnectOptions = Symbol.for("::buntlsconnectoptions::");
+const kNativeSecureContextCtor = Symbol.for("::buntlsnativesecurecontextctor::");
 const kReinitializeHandle = Symbol("kReinitializeHandle");
 
 const kRealListen = Symbol("kRealListen");
@@ -78,6 +80,8 @@ const khandlers = Symbol("khandlers");
 const kclosed = Symbol("closed");
 const kended = Symbol("ended");
 const kpendingSession = Symbol("pendingSession");
+const kSNIError = Symbol("kSNIError");
+const kALPNError = Symbol("kALPNError");
 const kwriteCallback = Symbol("writeCallback");
 const kSocketClass = Symbol("kSocketClass");
 
@@ -320,6 +324,44 @@ function SocketEmitEndNT(self, _err?) {
   // }
 }
 
+function toSNIError(err) {
+  return err instanceof Error ? err : Object.assign(new Error("SNI callback error"), { reason: err });
+}
+
+function consumeSNIResult(state, err, context) {
+  if (err) {
+    state.failed = toSNIError(err);
+    return;
+  }
+  if (context == null) return;
+  const innerContext = typeof context === "object" ? context.context : undefined;
+  if (innerContext) {
+    state.selected = innerContext;
+  } else if (state.server?.[kNativeSecureContextCtor] && context instanceof state.server[kNativeSecureContextCtor]) {
+    state.selected = context;
+  } else {
+    state.failed = new Error("Invalid SNI context");
+  }
+}
+
+function stashSNIError(state) {
+  const target = state.socketHandle?.data ?? state.server;
+  if (target) target[kSNIError] = state.failed;
+}
+
+function onSNIResolution(state, err, context) {
+  if (state.settled) return;
+  state.settled = true;
+  consumeSNIResult(state, err, context);
+  if (!state.suspended) return;
+  if (state.failed !== undefined) {
+    stashSNIError(state);
+    state.socketHandle?.resumeSNI(undefined, true);
+  } else {
+    state.socketHandle?.resumeSNI(state.selected, false);
+  }
+}
+
 const ServerHandlers: SocketHandler<NetSocket> = {
   data(socket, buffer) {
     const { data: self } = socket;
@@ -336,6 +378,62 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     if (!self) return;
     self.emit("keylog", line);
     self.server?.emit?.("keylog", line, self);
+  },
+  alpnCallback(socket, servername, protocolsWire) {
+    const self = socket.data;
+    const server = self?.server ?? self;
+    const cb = server?._ALPNCallback;
+    if (typeof cb !== "function") return false;
+    const wire = Buffer.isBuffer(protocolsWire) ? protocolsWire : Buffer.from(protocolsWire);
+    const protocols = [];
+    for (let i = 0; i + 1 <= wire.length; ) {
+      const n = wire[i];
+      protocols.push(wire.toString("latin1", i + 1, i + 1 + n));
+      i += 1 + n;
+    }
+    let result;
+    try {
+      result = cb.$call(self, { servername, protocols });
+    } catch (err) {
+      if (self) self[kALPNError] = err;
+      return undefined;
+    }
+    if (result !== undefined && !ArrayPrototypeIncludes.$call(protocols, result)) {
+      const err = $ERR_TLS_ALPN_CALLBACK_INVALID_RESULT(
+        `ALPN callback returned a value (${result}) that did not match any of the client's offered protocols (${ArrayPrototypeJoin.$call(protocols, ", ")})`,
+      );
+      if (self) self[kALPNError] = err;
+      return undefined;
+    }
+    return result;
+  },
+  serverName(server, servername, socketHandle) {
+    const cb = server?._SNICallback;
+    if (typeof cb !== "function" || !servername) return undefined;
+    const state = {
+      server,
+      socketHandle,
+      selected: undefined,
+      failed: undefined,
+      settled: false,
+      suspended: false,
+    };
+    try {
+      cb.$call(server, servername, onSNIResolution.bind(null, state));
+    } catch (err) {
+      state.settled = true;
+      state.failed = toSNIError(err);
+    }
+    if (!state.settled) {
+      if (!socketHandle) return undefined;
+      state.suspended = true;
+      return true;
+    }
+    if (state.failed !== undefined) {
+      stashSNIError(state);
+      return state.failed;
+    }
+    return state.selected;
   },
   close(socket, err) {
     $debug("Bun.Server close");
@@ -424,10 +522,24 @@ const ServerHandlers: SocketHandler<NetSocket> = {
   },
   handshake(socket, success, verifyError) {
     const self = socket.data;
-    if (!success && verifyError?.code === "ECONNRESET") {
-      const err = new ConnResetException("socket hang up");
+    const server = self.server;
+    if (!success) {
+      if (self._hadError || self.destroyed) return;
+      let err;
+      if (self[kSNIError]) {
+        err = self[kSNIError];
+        self[kSNIError] = undefined;
+      } else if (server?.[kSNIError]) {
+        err = server[kSNIError];
+        server[kSNIError] = undefined;
+      } else if (self[kALPNError]) {
+        err = self[kALPNError];
+        self[kALPNError] = undefined;
+      } else {
+        err = verifyError ?? new ConnResetException("socket hang up");
+      }
       self.emit("_tlsError", err);
-      self.server.emit("tlsClientError", err, self);
+      server?.emit("tlsClientError", err, self);
       self._hadError = true;
       // error before handshake on the server side will only be emitted using tlsClientError
       self.destroy();
@@ -437,7 +549,6 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     self.secureConnecting = false;
     self._secureEstablished = !!success;
     self.servername = socket.getServername();
-    const server = self.server!;
     self.alpnProtocol = socket.alpnProtocol;
     if (self._requestCert || self._rejectUnauthorized) {
       if (verifyError) {
@@ -509,6 +620,19 @@ const ServerHandlers: SocketHandler<NetSocket> = {
   },
   binaryType: "buffer",
 } as const;
+
+const { serverName: _serverNameHandler, alpnCallback: _alpnCallbackHandler, ...ServerHandlersNoSNI } = ServerHandlers;
+const { serverName: _snOnly, ...ServerHandlersALPNOnly } = ServerHandlers;
+const { alpnCallback: _acOnly, ...ServerHandlersSNIOnly } = ServerHandlers;
+
+function serverHandlersFor(server) {
+  const sni = !!server._SNICallback;
+  const alpn = !!server._ALPNCallback;
+  if (sni && alpn) return ServerHandlers;
+  if (sni) return ServerHandlersSNIOnly;
+  if (alpn) return ServerHandlersALPNOnly;
+  return ServerHandlersNoSNI;
+}
 
 // TODO: SocketHandlers2 is a bad name but its temporary. reworking the Server in a followup PR
 const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_handle"]>["data"]> = {
@@ -2428,7 +2552,7 @@ Server.prototype[kRealListen] = function (
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
-      socket: ServerHandlers,
+      socket: serverHandlersFor(this),
       data: this,
     });
   } else if (fd != null) {
@@ -2440,7 +2564,7 @@ Server.prototype[kRealListen] = function (
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
-      socket: ServerHandlers,
+      socket: serverHandlersFor(this),
       data: this,
     });
   } else {
@@ -2452,7 +2576,7 @@ Server.prototype[kRealListen] = function (
       reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
       ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
-      socket: ServerHandlers,
+      socket: serverHandlersFor(this),
       data: this,
     });
   }

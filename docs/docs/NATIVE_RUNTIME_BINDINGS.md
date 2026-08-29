@@ -728,3 +728,62 @@ Evidence: `zig-out/tls543-unit-final.log`, `tls543-regressions.json`,
 successful transformed release compile command for Home's `openssl.c`. The initial
 unrelated `Bun.ArrayBufferSink` unit trap passed on direct replay and the complete
 cached rerun; it is not counted as a successful run.
+
+## Native TLS SNI suspension and ALPN selection (#542)
+
+TLS listeners now carry protected `serverName` and `alpnCallback` handlers from
+the JavaScript socket configuration into Home's Zig listener and accepted-socket
+dispatch. A ClientHello invokes `SNICallback` for every connection, including a
+name equal to the listener hostname. Synchronous callbacks may select a wrapped
+or raw native `SecureContext`, return no context for static/default fallback, or
+abort with the original error. Asynchronous callbacks park BoringSSL's
+select-certificate state and resume it through a real generated `resumeSNI`
+socket method; late and duplicate resolutions release their owned context and
+become harmless no-ops.
+
+The native selector saves and restores the loop's shared BIO routing state
+around JavaScript. Socket destruction inside SNI or ALPN dispatch therefore
+defers SSL teardown until the BoringSSL frame unwinds. Home's checked-in
+uSockets source now contains the matching pending-certificate state, early
+ClientHello server-name parser, static-tree fallback, context ownership rules,
+deferred detach protocol and public resume ABI. It compiles with the pinned
+release object's exact C compile flags and Home headers. The debug binary still
+links the pinned Bun object; this is logical source parity, not a claim that the
+dependency was rebuilt by Home.
+
+Dynamic `ALPNCallback` receives the offered protocol list and SNI name, accepts
+only a protocol the client offered, and reports throws or invalid selections as
+`tlsClientError`. Because ALPN selection is an `SSL_CTX` property, Home also
+reinstalls its selector whenever SNI hands the connection to a synchronous,
+asynchronous, or `addContext` context. This closes a composition boundary not
+covered by Bun's server file: SNI and ALPN now work together when the SNI
+callback rotates certificates.
+
+The complete unchanged `node-tls-server.test.ts` advances from **31 pass / 7
+fail / 122 assertions** to **38 pass / 0 fail / 147 assertions**, exactly
+matching pinned Bun. The seven-file TLS sweep is **120 pass / 1 skip / 3 TODO /
+2 fail / 380 assertions**. Both failures inspect live `bun.sh` OCSP metadata and
+reproduce in pinned Bun; they remain failures. The new native regression covers
+sync and async selection, wrapped and raw contexts, same-host precedence,
+non-Error rejection, ALPN selection/error propagation, combined SNI+ALPN,
+callback destruction, late resolution, repeated connections and forced GC. It
+passes **20/20 independent processes** and VM destruction/JSC exception checks.
+
+Final verification: native build **17/17 steps**, scoped runtime units **1,828
+pass / 19 skips / 0 failures** with **19/19 build steps**, and **63/63 sequential
+runtime regression commands**, including every native regression, full spawn
+and full child-process. Scoped Pickier still reports existing unused-variable
+findings outside these callback changes in the vendored `net.ts`/`tls.ts`; no
+passing lint claim is made. Whitespace checks and Zig formatting for authored
+Zig sources pass. Candidate executable SHA-256:
+`febb4ccec5d7b99ae893c2501f88ace9585f4e45a2743b28a9055049060e5a3d`.
+
+Evidence: `zig-out/tls542-corpus-final.json`, `tls542-unit-final.log`,
+`tls542-regressions.json`, `tls542-repeat.json`, the native destruction run,
+and `tls542-c-source-compile.json` from the successful transformed release
+compile command for Home's `openssl.c`. Verification is Darwin-only and still
+uses pinned C/C++/JSC
+dependencies without a Rust archive. Windows/Linux execution, branch
+integration, skipped/TODO behavior, full source ownership and **100% logical
+Bun-suite compatibility under [#66](https://github.com/home-lang/home/issues/66)
+remain incomplete**.

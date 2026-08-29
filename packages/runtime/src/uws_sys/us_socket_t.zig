@@ -171,6 +171,13 @@ pub const us_socket_t = opaque {
         c.us_socket_set_kind(this, @intFromEnum(k));
     }
 
+    /// Resume a TLS handshake parked by the select-certificate callback.
+    /// `ctx` carries one owned SSL_CTX reference which the C implementation
+    /// consumes, including on late or duplicate resolutions.
+    pub fn sniResolve(this: *us_socket_t, ctx: ?*uws.SslCtx, is_error: bool) void {
+        c.us_socket_sni_resolve(this, ctx, @intFromBool(is_error));
+    }
+
     /// Move this socket to a new group/kind, optionally resizing its ext.
     /// Returns the (possibly relocated) socket; `this` is invalid after.
     pub fn adopt(this: *us_socket_t, g: *SocketGroup, k: SocketKind, old_ext: i32, new_ext: i32) ?*us_socket_t {
@@ -276,6 +283,7 @@ const c = struct {
     extern fn us_socket_group(s: *us_socket_t) *SocketGroup;
     extern fn us_socket_kind(s: *us_socket_t) u8;
     extern fn us_socket_set_kind(s: *us_socket_t, kind: u8) void;
+    extern fn us_socket_sni_resolve(s: *us_socket_t, ctx: ?*uws.SslCtx, is_error: c_int) void;
     extern fn us_socket_set_ssl_raw_tap(s: *us_socket_t, enabled: c_int) void;
     extern fn us_socket_is_tls(s: *us_socket_t) i32;
 

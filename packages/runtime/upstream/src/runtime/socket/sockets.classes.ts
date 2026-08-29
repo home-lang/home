@@ -102,6 +102,10 @@ function generate(ssl) {
         fn: "setNoDelay",
         length: 1,
       },
+      resumeSNI: {
+        fn: "resumeSNI",
+        length: 2,
+      },
       setKeepAlive: {
         fn: "setKeepAlive",
         length: 2,

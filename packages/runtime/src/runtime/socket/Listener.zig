@@ -310,6 +310,9 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
                 _ = listen_socket.addServerName(server_name, secure, null);
             }
         }
+        if (handlers.onServerName != .zero) {
+            listen_socket.onServerName(dispatchServerName);
+        }
     }
 
     listener_allocated = false; // ownership now on `this`; deinit handles cleanup
@@ -318,6 +321,58 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     this.poll_ref.ref(handlers.vm);
 
     return this_value;
+}
+
+/// Dispatch one ClientHello SNI name to the listener's JavaScript handler.
+/// A true result parks the handshake; an Error aborts it; a native
+/// SecureContext supplies one owned SSL_CTX reference to the C caller.
+fn dispatchServerName(
+    listen_socket: *uws.ListenSocket,
+    hostname: [*:0]const u8,
+    abort_handshake: *c_int,
+    raw_socket: ?*anyopaque,
+) callconv(.c) ?*BoringSSL.SSL_CTX {
+    jsc.markBinding(@src());
+    const listener = listen_socket.group().owner(Listener);
+    const handlers = &listener.handlers;
+    if (handlers.vm.isShuttingDown() or handlers.onServerName == .zero) return null;
+
+    // This callback is listener-scoped. Do not enter the accepted-socket
+    // Handlers lifecycle scope: doing so would mutate listener connection
+    // accounting from inside the handshake.
+    const globalObject = handlers.globalObject;
+    const this_value = listener.strong_data.get() orelse .js_undefined;
+    const name_value = ZigString.init(std.mem.span(hostname)).toJS(globalObject);
+    const socket_handle: JSValue = if (raw_socket) |opaque_socket| handle: {
+        const socket: *uws.us_socket_t = @ptrCast(@alignCast(opaque_socket));
+        if (socket.kind() != .bun_socket_tls) break :handle .js_undefined;
+        const tls = socket.ext(?*TLSSocket).* orelse break :handle .js_undefined;
+        break :handle tls.getThisValue(globalObject);
+    } else .js_undefined;
+
+    const result = handlers.onServerName.call(
+        globalObject,
+        this_value,
+        &.{ this_value, name_value, socket_handle },
+    ) catch |err| globalObject.takeError(err);
+
+    if (result.isBoolean() and result.toBoolean()) {
+        abort_handshake.* = 2;
+        return null;
+    }
+    if (result.toError() != null) {
+        abort_handshake.* = 1;
+        return null;
+    }
+    if (result.isUndefinedOrNull()) return null;
+    if (SecureContext.fromJS(result)) |secure| {
+        const ctx = secure.borrow();
+        if (handlers.onALPNCallback != .zero) api.socket.installALPNSelector(ctx);
+        return ctx;
+    }
+
+    abort_handshake.* = 1;
+    return null;
 }
 
 pub fn constructor(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*Listener {
@@ -408,6 +463,8 @@ pub fn addServerName(this: *Listener, global: *jsc.JSGlobalObject, hostname: JSV
             return global.throwValue(bun.BoringSSL.ERR_toJS(global, BoringSSL.ERR_get_error()));
         };
     } else return .js_undefined;
+
+    if (this.handlers.onALPNCallback != .zero) api.socket.installALPNSelector(sni_ctx);
 
     // The C SNI tree SSL_CTX_up_ref()s; drop our build/borrow ref once added.
     ls.removeServerName(server_name);

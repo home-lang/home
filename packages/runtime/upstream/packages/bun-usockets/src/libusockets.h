@@ -350,8 +350,12 @@ void us_listen_socket_remove_server_name(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
 void *us_listen_socket_find_server_name_userdata(struct us_listen_socket_t *ls,
     const char *hostname_pattern) nonnull_fn_decl;
+struct ssl_ctx_st *us_listen_socket_find_server_name_ctx(struct us_listen_socket_t *ls,
+    const char *hostname_pattern) nonnull_fn_decl;
 void us_listen_socket_on_server_name(struct us_listen_socket_t *ls,
-    void (*cb)(struct us_listen_socket_t *, const char *hostname)) nonnull_fn_decl;
+    struct ssl_ctx_st *(*cb)(struct us_listen_socket_t *, const char *hostname,
+        int *abort_handshake, struct us_socket_t *socket)) nonnull_fn_decl;
+void us_socket_sni_resolve(us_socket_r s, struct ssl_ctx_st *ctx, int error);
 void *us_socket_server_name_userdata(us_socket_r s);
 
 /* ── Connect ──────────────────────────────────────────────────────────────

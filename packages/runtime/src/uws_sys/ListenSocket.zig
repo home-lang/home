@@ -46,7 +46,14 @@ pub const ListenSocket = opaque {
         return @ptrCast(@alignCast(c.us_listen_socket_find_server_name_userdata(this, hostname)));
     }
 
-    pub fn onServerName(this: *ListenSocket, cb: *const fn (*ListenSocket, [*:0]const u8) callconv(.c) void) void {
+    pub const ServerNameCallback = *const fn (
+        *ListenSocket,
+        [*:0]const u8,
+        *c_int,
+        ?*anyopaque,
+    ) callconv(.c) ?*uws.SslCtx;
+
+    pub fn onServerName(this: *ListenSocket, cb: ServerNameCallback) void {
         c.us_listen_socket_on_server_name(this, cb);
     }
 };
@@ -60,7 +67,7 @@ const c = struct {
     extern fn us_listen_socket_add_server_name(ls: *ListenSocket, hostname: [*:0]const u8, ssl_ctx: *uws.SslCtx, user: ?*anyopaque) c_int;
     extern fn us_listen_socket_remove_server_name(ls: *ListenSocket, hostname: [*:0]const u8) void;
     extern fn us_listen_socket_find_server_name_userdata(ls: *ListenSocket, hostname: [*:0]const u8) ?*anyopaque;
-    extern fn us_listen_socket_on_server_name(ls: *ListenSocket, cb: *const fn (*ListenSocket, [*:0]const u8) callconv(.c) void) void;
+    extern fn us_listen_socket_on_server_name(ls: *ListenSocket, cb: ListenSocket.ServerNameCallback) void;
 };
 
 const bun = @import("bun");

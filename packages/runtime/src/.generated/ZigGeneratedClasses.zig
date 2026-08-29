@@ -22658,6 +22658,11 @@ const JavaScriptCoreBindings = struct {
           if (comptime Environment.enable_logs) log_zig_method("TCPSocket", "resume", callFrame);
           return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), TCPSocket.resumeFromJS, .{thisValue, globalObject, callFrame}});
         }
+
+        pub fn TCPSocketPrototype__resumeSNI(thisValue: *TCPSocket, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
+          if (comptime Environment.enable_logs) log_zig_method("TCPSocket", "resumeSNI", callFrame);
+          return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), TCPSocket.resumeSNI, .{thisValue, globalObject, callFrame}});
+        }
         
         pub fn TCPSocketPrototype__setKeepAlive(thisValue: *TCPSocket, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
           if (comptime Environment.enable_logs) log_zig_method("TCPSocket", "setKeepAlive", callFrame);
@@ -22773,6 +22778,7 @@ const JavaScriptCoreBindings = struct {
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__getRemotePort, .{ .name = "TCPSocketPrototype__getRemotePort" });
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__renegotiate, .{ .name = "TCPSocketPrototype__renegotiate" });
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__resumeFromJS, .{ .name = "TCPSocketPrototype__resumeFromJS" });
+      @export(&JavaScriptCoreBindings.TCPSocketPrototype__resumeSNI, .{ .name = "TCPSocketPrototype__resumeSNI" });
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__setKeepAlive, .{ .name = "TCPSocketPrototype__setKeepAlive" });
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__setMaxSendFragment, .{ .name = "TCPSocketPrototype__setMaxSendFragment" });
       @export(&JavaScriptCoreBindings.TCPSocketPrototype__setNoDelay, .{ .name = "TCPSocketPrototype__setNoDelay" });
@@ -23317,6 +23323,11 @@ const JavaScriptCoreBindings = struct {
           if (comptime Environment.enable_logs) log_zig_method("TLSSocket", "resume", callFrame);
           return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), TLSSocket.resumeFromJS, .{thisValue, globalObject, callFrame}});
         }
+
+        pub fn TLSSocketPrototype__resumeSNI(thisValue: *TLSSocket, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
+          if (comptime Environment.enable_logs) log_zig_method("TLSSocket", "resumeSNI", callFrame);
+          return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), TLSSocket.resumeSNI, .{thisValue, globalObject, callFrame}});
+        }
         
         pub fn TLSSocketPrototype__setKeepAlive(thisValue: *TLSSocket, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
           if (comptime Environment.enable_logs) log_zig_method("TLSSocket", "setKeepAlive", callFrame);
@@ -23434,6 +23445,7 @@ const JavaScriptCoreBindings = struct {
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__getRemotePort, .{ .name = "TLSSocketPrototype__getRemotePort" });
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__renegotiate, .{ .name = "TLSSocketPrototype__renegotiate" });
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__resumeFromJS, .{ .name = "TLSSocketPrototype__resumeFromJS" });
+      @export(&JavaScriptCoreBindings.TLSSocketPrototype__resumeSNI, .{ .name = "TLSSocketPrototype__resumeSNI" });
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__setKeepAlive, .{ .name = "TLSSocketPrototype__setKeepAlive" });
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__setMaxSendFragment, .{ .name = "TLSSocketPrototype__setMaxSendFragment" });
       @export(&JavaScriptCoreBindings.TLSSocketPrototype__setNoDelay, .{ .name = "TLSSocketPrototype__setNoDelay" });

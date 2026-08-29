@@ -61,11 +61,9 @@ comptime {
         "JS2Zig___src_collections_linear_fifo_zig__TestingAPIs_orderedRemoveProbe",
         "JS2Zig___src_sys_sys_zig__TestingAPIs_translateNtStatusToE",
         "TCPSocketPrototype__getTypeOfService",
-        "TCPSocketPrototype__resumeSNI",
         "TCPSocketPrototype__setKeyCert",
         "TCPSocketPrototype__setTypeOfService",
         "TLSSocketPrototype__getTypeOfService",
-        "TLSSocketPrototype__resumeSNI",
         "TLSSocketPrototype__setKeyCert",
         "TLSSocketPrototype__setTypeOfService",
     }) |name| {

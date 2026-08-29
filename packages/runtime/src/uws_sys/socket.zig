@@ -168,6 +168,16 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             }
         }
 
+        /// Complete an asynchronous SNI selection. Only connected uSockets
+        /// transports can own a parked handshake; release the borrowed context
+        /// ourselves for detached/alternate transports.
+        pub fn sniResolve(this: ThisSocket, ctx: ?*uws.SslCtx, is_error: bool) void {
+            switch (this.socket) {
+                .connected => |socket| socket.sniResolve(ctx, is_error),
+                else => if (ctx) |owned| BoringSSL.SSL_CTX_free(owned),
+            }
+        }
+
         pub fn flush(this: ThisSocket) void {
             switch (this.socket) {
                 .upgradedDuplex => |socket| socket.flush(),

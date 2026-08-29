@@ -14,6 +14,63 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
     // per-connection *TLSSocket is a UAF when handshakes overlap. Read the
     // socket back from the per-SSL ex_data slot set in onOpen instead.
     const this = bun.cast(*TLSSocket, BoringSSL.SSL_get_ex_data(ssl, 0) orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK);
+    const handlers = this.handlers orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK;
+
+    // A configured ALPNCallback receives the SNI name and the client's raw
+    // wire-format protocol list. `false` falls through to the static list; a
+    // string selects exactly that protocol; every other result refuses the
+    // handshake with no_application_protocol.
+    if (handlers.onALPNCallback != .zero and !handlers.vm.isShuttingDown() and in != null and inlen > 0) {
+        var scope = handlers.enter();
+        defer {
+            if (scope.exit()) this.handlers = null;
+        }
+
+        const globalObject = handlers.globalObject;
+        const this_value = this.getThisValue(globalObject);
+        const wire_len: usize = @intCast(inlen);
+        const buffer = JSValue.createBufferFromLength(globalObject, wire_len) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
+            @memcpy(array_buffer.byteSlice(), in[0..wire_len]);
+        }
+        const servername_value: JSValue = if (BoringSSL.SSL_get_servername(ssl, BoringSSL.TLSEXT_NAMETYPE_host_name)) |servername|
+            ZigString.init(std.mem.span(servername)).toJS(globalObject)
+        else
+            .js_undefined;
+
+        var saved_loop_state: [5]?*anyopaque = @splat(null);
+        us_internal_ssl_loop_state_save(ssl.?, &saved_loop_state);
+        defer us_internal_ssl_loop_state_restore(&saved_loop_state);
+
+        const result = handlers.onALPNCallback.call(
+            globalObject,
+            this_value,
+            &.{ this_value, servername_value, buffer },
+        ) catch |err| globalObject.takeException(err);
+        if (result.toError()) |err_value| {
+            _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
+            return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+        if (!result.isBoolean() or result.toBoolean()) {
+            if (!result.isString()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            var chosen = result.toSlice(globalObject, default_allocator) catch |err| {
+                _ = globalObject.takeException(err);
+                return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            };
+            defer chosen.deinit();
+            const chosen_bytes = chosen.slice();
+            if (chosen_bytes.len == 0 or chosen_bytes.len > 255) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+
+            const selected = default_allocator.alloc(u8, chosen_bytes.len + 1) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            selected[0] = @intCast(chosen_bytes.len);
+            @memcpy(selected[1..], chosen_bytes);
+            if (this.flags.owned_protos) {
+                if (this.protos) |old| default_allocator.free(old);
+            }
+            this.protos = selected;
+            this.flags.owned_protos = true;
+        }
+    }
     if (this.protos) |protos| {
         if (protos.len == 0) {
             return BoringSSL.SSL_TLSEXT_ERR_NOACK;
@@ -28,6 +85,12 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
     } else {
         return BoringSSL.SSL_TLSEXT_ERR_NOACK;
     }
+}
+
+/// ALPN selection is stored on SSL_CTX. SNI can replace that context during a
+/// handshake, so every context handoff must carry the Home selector forward.
+pub fn installALPNSelector(ctx: *BoringSSL.SSL_CTX) void {
+    BoringSSL.SSL_CTX_set_alpn_select_cb(ctx, selectALPNCallback, null);
 }
 
 pub const Handlers = @import("./Handlers.zig");
@@ -554,6 +617,26 @@ pub fn NewSocket(comptime ssl: bool) type {
             return handlers.mode.isServer();
         }
 
+        /// Resume a server handshake suspended by an asynchronous SNICallback.
+        /// A late resolution after socket teardown is intentionally a no-op;
+        /// the transport wrapper still releases any borrowed SSL_CTX reference.
+        pub fn resumeSNI(this: *This, _: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
+            jsc.markBinding(@src());
+            const args = callframe.arguments_old(2);
+            const is_error = args.len > 1 and args.ptr[1].toBoolean();
+            const ctx: ?*BoringSSL.SSL_CTX = if (args.len > 0 and !is_error)
+                if (SecureContext.fromJS(args.ptr[0])) |secure| secure.borrow() else null
+            else
+                null;
+            if (ctx) |selected| {
+                if (this.handlers) |handlers| {
+                    if (handlers.onALPNCallback != .zero) installALPNSelector(selected);
+                }
+            }
+            this.socket.sniResolve(ctx, is_error);
+            return .js_undefined;
+        }
+
         pub fn onOpen(this: *This, socket: Socket) void {
             log("onOpen {s} {*} {} {}", .{ if (this.isServer()) "S" else "C", this, this.socket.isDetached(), this.ref_count.get() });
             // Ensure the socket remains alive until this is finished
@@ -586,13 +669,14 @@ pub fn NewSocket(comptime ssl: bool) type {
                                 }
                             }
                         }
+                        if (this.isServer() and (this.protos != null or this.getHandlers().onALPNCallback != .zero)) {
+                            // Per-connection: callback reads `this` from the SSL,
+                            // not the CTX-level arg (shared across the listener).
+                            _ = BoringSSL.SSL_set_ex_data(ssl_ptr, 0, this);
+                            if (BoringSSL.SSL_get_SSL_CTX(ssl_ptr)) |ctx| installALPNSelector(ctx);
+                        }
                         if (this.protos) |protos| {
-                            if (this.isServer()) {
-                                // Per-connection: callback reads `this` from the SSL,
-                                // not the CTX-level arg (shared across the listener).
-                                _ = BoringSSL.SSL_set_ex_data(ssl_ptr, 0, this);
-                                BoringSSL.SSL_CTX_set_alpn_select_cb(BoringSSL.SSL_get_SSL_CTX(ssl_ptr), selectALPNCallback, null);
-                            } else {
+                            if (!this.isServer()) {
                                 _ = BoringSSL.SSL_set_alpn_protos(ssl_ptr, protos.ptr, @as(c_uint, @intCast(protos.len)));
                             }
                         }
@@ -2442,3 +2526,6 @@ const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const ZigString = jsc.ZigString;
 const SecureContext = jsc.API.SecureContext;
+
+extern fn us_internal_ssl_loop_state_save(ssl: *BoringSSL.SSL, state: *[5]?*anyopaque) void;
+extern fn us_internal_ssl_loop_state_restore(state: *[5]?*anyopaque) void;

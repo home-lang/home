@@ -3238,6 +3238,8 @@ pub const jsc = struct {
             onHandshake: JSValue = .zero,
             onSession: JSValue = .zero,
             onKeylog: JSValue = .zero,
+            onServerName: JSValue = .zero,
+            onALPNCallback: JSValue = .zero,
 
             pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SocketConfigHandlers {
                 // Read the socket handler callbacks from the `socket` options
@@ -3249,12 +3251,13 @@ pub const jsc = struct {
                 var result: SocketConfigHandlers = .{};
                 if (!value.isObject()) return result;
                 const pairs = .{
-                    .{ "open", "onOpen" },           .{ "close", "onClose" },
-                    .{ "data", "onData" },           .{ "drain", "onWritable" },
-                    .{ "timeout", "onTimeout" },     .{ "connectError", "onConnectError" },
-                    .{ "end", "onEnd" },             .{ "error", "onError" },
-                    .{ "handshake", "onHandshake" }, .{ "session", "onSession" },
-                    .{ "keylog", "onKeylog" },
+                    .{ "open", "onOpen" },                 .{ "close", "onClose" },
+                    .{ "data", "onData" },                 .{ "drain", "onWritable" },
+                    .{ "timeout", "onTimeout" },           .{ "connectError", "onConnectError" },
+                    .{ "end", "onEnd" },                   .{ "error", "onError" },
+                    .{ "handshake", "onHandshake" },       .{ "session", "onSession" },
+                    .{ "keylog", "onKeylog" },             .{ "serverName", "onServerName" },
+                    .{ "alpnCallback", "onALPNCallback" },
                 };
                 inline for (pairs) |pair| {
                     if (try value.get(globalObject, pair[0])) |v| {
