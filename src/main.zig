@@ -1949,7 +1949,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     // Bun evaluates inline code as a virtual `<cwd>/[eval]` TypeScript module.
     // Keeping that synthetic path is important: relative imports in `-e`
     // resolve from the caller's cwd, not from an implementation temp directory.
-    runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra.items), true, src.items, print_mode) catch |err| {
+    runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra.items), true, src.items, print_mode, null) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
@@ -1978,7 +1978,7 @@ fn inlineEvalArguments(args: []const [:0]const u8) []const [:0]const u8 {
 fn runInlineEvalModeViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8, print_result: bool) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     // Keep the caller's exact text: process._eval exposes this source verbatim.
-    try runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra_args), true, code, print_result);
+    try runFileViaVMOpts(allocator, "[eval]", inlineEvalArguments(extra_args), true, code, print_result, null);
 }
 
 /// Package lookup may fall through to a module. Reuse its parsed context:
@@ -2035,7 +2035,33 @@ fn nativeRuntimeContext(inline_eval: bool) !home_rt.cli.Command.Context {
 }
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
-    return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false);
+    return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false, null);
+}
+
+fn runStandaloneViaVM(graph: *home_rt.StandaloneModuleGraph, extra_args: []const [:0]const u8) !void {
+    return runFileViaVMOpts(home_rt.default_allocator, graph.entryPoint().name, extra_args, false, null, false, graph);
+}
+
+fn standaloneRuntimeContext(graph: *const home_rt.StandaloneModuleGraph) !home_rt.cli.Command.Context {
+    const allocator = home_rt.default_allocator;
+    var parser_args = std.array_list.Managed([:0]const u8).init(allocator);
+    try parser_args.append(home_rt.argv[0]);
+
+    if (home_rt.env_var.BUN_OPTIONS.get()) |options| {
+        const before = parser_args.items.len;
+        try home_rt.appendOptionsEnv(options, [:0]const u8, &parser_args);
+        home_rt.bun_options_argc = parser_args.items.len - before;
+    }
+    if (graph.compile_exec_argv.len > 0) {
+        try home_rt.appendOptionsEnv(graph.compile_exec_argv, [:0]const u8, &parser_args);
+    }
+
+    if (parser_args.items.len == 1) {
+        return home_rt.cli.Cli.initStandaloneContext(allocator);
+    }
+
+    home_rt.clap.args.setProcessArgs(parser_args.items);
+    return try home_rt.cli.Cli.initContext(allocator, .AutoCommand);
 }
 
 fn runFileViaVMOpts(
@@ -2045,12 +2071,22 @@ fn runFileViaVMOpts(
     inject_node_globals: bool,
     eval_source_text: ?[]const u8,
     print_result: bool,
+    standalone_graph: ?*home_rt.StandaloneModuleGraph,
 ) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
     // Parse before resolving the entry: --cwd changes both module resolution
     // and config discovery. Keep Command.get() pointing at this real context.
-    const ctx = try nativeRuntimeContext(std.mem.eql(u8, file_path, "[eval]"));
+    const ctx = if (standalone_graph) |graph|
+        try standaloneRuntimeContext(graph)
+    else
+        try nativeRuntimeContext(std.mem.eql(u8, file_path, "[eval]"));
+
+    if (standalone_graph) |graph| {
+        if (!ctx.debug.loaded_bunfig and !graph.flags.disable_autoload_bunfig) {
+            try home_rt.cli.Arguments.loadConfigPath(ctx.allocator, true, "bunfig.toml", ctx, .RunCommand);
+        }
+    }
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
@@ -2117,16 +2153,28 @@ fn runFileViaVMOpts(
     // User `--require`/`-r`/`--preload` modules (run before the entry).
     try preload_list.appendSlice(allocator, ctx.preloads);
 
-    const vm = try home_rt.jsc.VirtualMachine.init(.{
-        .allocator = arena.allocator(),
-        .args = args,
-        .log = ctx.log,
-        .is_main_thread = true,
-        .eval = print_result,
-        .smol = ctx.runtime_options.smol,
-        .debugger = ctx.runtime_options.debugger,
-        .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
-    });
+    const vm = if (standalone_graph) |graph|
+        try home_rt.jsc.VirtualMachine.initWithModuleGraph(.{
+            .allocator = arena.allocator(),
+            .args = args,
+            .log = ctx.log,
+            .graph = graph,
+            .is_main_thread = true,
+            .smol = ctx.runtime_options.smol,
+            .debugger = ctx.runtime_options.debugger,
+            .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
+        })
+    else
+        try home_rt.jsc.VirtualMachine.init(.{
+            .allocator = arena.allocator(),
+            .args = args,
+            .log = ctx.log,
+            .is_main_thread = true,
+            .eval = print_result,
+            .smol = ctx.runtime_options.smol,
+            .debugger = ctx.runtime_options.debugger,
+            .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
+        });
 
     var b = &vm.transpiler;
     vm.arena = &arena;
@@ -2173,7 +2221,14 @@ fn runFileViaVMOpts(
     b.options.ignore_dce_annotations = ctx.bundler_options.ignore_dce_annotations;
     b.resolver.opts.minify_identifiers = ctx.bundler_options.minify_identifiers;
     b.resolver.opts.minify_whitespace = ctx.bundler_options.minify_whitespace;
-    b.options.env.behavior = .load_all_without_inlining;
+    if (standalone_graph) |graph| {
+        b.options.env.disable_default_env_files = graph.flags.disable_default_env_files;
+        b.options.env.behavior = if (graph.flags.disable_default_env_files) .disable else .load_all_without_inlining;
+        b.resolver.opts.load_tsconfig_json = !graph.flags.disable_autoload_tsconfig;
+        b.resolver.opts.load_package_json = !graph.flags.disable_autoload_package_json;
+    } else {
+        b.options.env.behavior = .load_all_without_inlining;
+    }
     switch (ctx.debug.macros) {
         .disable => b.options.no_macros = true,
         .map => |macros| b.options.macro_remap = macros,
@@ -2516,7 +2571,7 @@ fn runStdinCommand(allocator: std.mem.Allocator, extra_args: []const [:0]const u
     try argv.append(allocator, "-");
     try argv.appendSlice(allocator, extra_args);
 
-    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false);
+    try runFileViaVMOpts(allocator, "[stdin]", argv.items, true, source, false, null);
 }
 
 fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: home_rt.cli.Command.Tag) !home_rt.cli.Command.Context {
@@ -5322,6 +5377,18 @@ pub fn main(init: std.process.Init) !void {
     // node:process reads `bun.argv[0]` (createArgv0) and would panic on an empty
     // slice; the eval/CJS realm paths pass argv explicitly and are unaffected.
     if (home_rt.argv.len == 0 and args.len > 0) home_rt.argv = @constCast(args);
+
+    // `Bun.build({ compile: ... })` embeds its module graph in this executable.
+    // Detect that payload before Home's own command dispatcher can interpret
+    // the compiled program's arguments or fall through to the compiler REPL.
+    // The native VM path owns graph decoding, module loading, and process exit
+    // from this point, matching Bun's standalone runtime lifecycle.
+    if (build_options.enable_jsc and !home_rt.feature_flag.BUN_BE_BUN.get()) {
+        if (try home_rt.StandaloneModuleGraph.fromExecutable(home_rt.default_allocator)) |graph| {
+            try runStandaloneViaVM(graph, args[1..]);
+            return;
+        }
+    }
 
     // `--experimental-http{2,3}-fetch` enable h2/h3 in fetch() TLS ALPN. Home's
     // command dispatch doesn't thread these runtime flags into the JS realm (the

@@ -40,12 +40,8 @@ const assert = std.debug.assert;
 const StringBuilder = @This();
 
 /// `(offset, length)` pair into a backing buffer. Matches the canonical
-/// `bun.StringPointer` extern struct shape — kept extern so callers using
-/// the JSON-codec layout (`schema.api.StringPointer`) can interchange.
-pub const StringPointer = extern struct {
-    offset: u32 = 0,
-    length: u32 = 0,
-};
+/// Canonical serialized pointer shared with the schema and standalone graph.
+pub const StringPointer = home_rt.StringPointer;
 
 len: usize = 0,
 cap: usize = 0,

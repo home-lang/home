@@ -209,6 +209,18 @@ pub const BUN_DEBUG_CSS_ORDER = struct {
     }
 };
 
+pub const BUN_FEATURE_FLAG_DUMP_CODE = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("BUN_FEATURE_FLAG_DUMP_CODE");
+    }
+};
+
+pub const BUN_COMPILE_TARGET_TARBALL_URL = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("BUN_COMPILE_TARGET_TARBALL_URL");
+    }
+};
+
 pub const BUN_INSPECT = struct {
     pub fn get() []const u8 {
         return rawGet("BUN_INSPECT") orelse "";

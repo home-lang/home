@@ -253,7 +253,139 @@ pub fn timestamp() i64 {
 pub const default_thread_stack_size: usize = 2 * 1024 * 1024;
 pub var bun_options_argc: usize = 0;
 
-pub fn appendOptionsEnv(_: []const u8, comptime _: type, _: anytype) OOM!void {}
+pub fn appendOptionsEnv(env: []const u8, comptime ArgType: type, args: *std.array_list.Managed(ArgType)) !void {
+    var i: usize = 0;
+    var offset_in_args: usize = 1;
+    while (i < env.len) {
+        // skip whitespace
+        while (i < env.len and std.ascii.isWhitespace(env[i])) : (i += 1) {}
+        if (i >= env.len) break;
+
+        // Handle all command-line arguments with quotes preserved
+        const start = i;
+        var j = i;
+
+        // Check if this is an option (starts with --)
+        const is_option = j + 2 <= env.len and env[j] == '-' and env[j + 1] == '-';
+
+        if (is_option) {
+            // Find the end of the option flag (--flag)
+            while (j < env.len and !std.ascii.isWhitespace(env[j]) and env[j] != '=') : (j += 1) {}
+
+            const end_of_flag = j;
+            var found_equals = false;
+
+            // Check for equals sign
+            if (j < env.len and env[j] == '=') {
+                found_equals = true;
+                j += 1; // Move past the equals sign
+            } else if (j < env.len and std.ascii.isWhitespace(env[j])) {
+                j += 1; // Move past the space
+                // Skip any additional whitespace
+                while (j < env.len and std.ascii.isWhitespace(env[j])) : (j += 1) {}
+            }
+
+            // Handle quoted values
+            if (j < env.len and (env[j] == '\'' or env[j] == '"')) {
+                const quote_char = env[j];
+                j += 1; // Move past opening quote
+
+                // Find the closing quote
+                while (j < env.len and env[j] != quote_char) : (j += 1) {}
+                if (j < env.len) j += 1; // Move past closing quote
+            } else if (found_equals) {
+                // If we had --flag=value (no quotes), find next whitespace
+                while (j < env.len and !std.ascii.isWhitespace(env[j])) : (j += 1) {}
+            } else {
+                // No value found after flag (e.g., `--flag1 --flag2`).
+                // Reset j to end of flag name so we don't include trailing whitespace.
+                j = end_of_flag;
+            }
+
+            // Copy the entire argument including quotes
+            const arg_len = j - start;
+
+            const arg = switch (ArgType) {
+                String => String.cloneUTF8(env[start..j]),
+                [:0]const u8 => arg: {
+                    const arg = try default_allocator.allocSentinel(u8, arg_len, 0);
+                    @memcpy(arg, env[start..j]);
+                    break :arg arg;
+                },
+                else => @compileError("unexpected arg type"),
+            };
+
+            try args.insert(offset_in_args, arg);
+            offset_in_args += 1;
+
+            i = j;
+            continue;
+        }
+
+        // Non-option arguments or standalone values
+        var buf = std.array_list.Managed(u8).init(default_allocator);
+
+        var in_single = false;
+        var in_double = false;
+        var escape = false;
+        while (i < env.len) : (i += 1) {
+            const ch = env[i];
+            if (escape) {
+                try buf.append(ch);
+                escape = false;
+                continue;
+            }
+
+            if (ch == '\\') {
+                escape = true;
+                continue;
+            }
+
+            if (in_single) {
+                if (ch == '\'') {
+                    in_single = false;
+                } else {
+                    try buf.append(ch);
+                }
+                continue;
+            }
+
+            if (in_double) {
+                if (ch == '"') {
+                    in_double = false;
+                } else {
+                    try buf.append(ch);
+                }
+                continue;
+            }
+
+            if (ch == '\'') {
+                in_single = true;
+            } else if (ch == '"') {
+                in_double = true;
+            } else if (std.ascii.isWhitespace(ch)) {
+                break;
+            } else {
+                try buf.append(ch);
+            }
+        }
+
+        switch (ArgType) {
+            String => {
+                defer buf.deinit();
+                try args.insert(offset_in_args, String.cloneUTF8(buf.items));
+            },
+            [:0]const u8 => {
+                try buf.append(0);
+                const owned = try buf.toOwnedSlice();
+                try args.insert(offset_in_args, owned[0 .. owned.len - 1 :0]);
+            },
+            else => @compileError("unexpected arg type"),
+        }
+
+        offset_in_args += 1;
+    }
+}
 
 pub fn Bun__panic(msg: [*]const u8, msg_len: usize) callconv(.c) noreturn {
     std.debug.panic("Bun panic: {s}", .{msg[0..msg_len]});
@@ -501,7 +633,10 @@ pub fn errnoToZigErr(err: anytype) anyerror {
 }
 pub const Generation = u16;
 pub const Wyhash11 = @import("wyhash/wyhash.zig").Wyhash11;
-pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
+pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig").StandaloneModuleGraph;
+pub const macho = @import("exe_format/macho.zig");
+pub const pe = @import("exe_format/pe.zig");
+pub const elf = @import("exe_format/elf.zig");
 /// Mirrors Bun's `bun.json` (`interchange.json` → `parsers/json.zig`): the
 /// JSON / package.json / tsconfig parser leaf of the resolver/macro/PM cone.
 /// Dead-code-eliminated while the cone's parser probe stays off.
@@ -1082,6 +1217,7 @@ pub const ast = @import("js_parser/js_parser.zig");
 pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord;
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
+pub const StringPointer = schema.api.StringPointer;
 pub const bits = @import("meta/bits.zig");
 
 /// In-memory TypeScript→JavaScript type-strip, mirroring `bun -e`'s default TS
@@ -5805,6 +5941,13 @@ pub const sys = struct {
             };
         }
 
+        pub fn makeOpen(path_: [:0]const u8, flags: i32, mode: Mode) Maybe(File) {
+            return switch (@import("sys/File.zig").makeOpen(path_, flags, mode)) {
+                .result => |file| .{ .result = .{ .handle = file.handle } },
+                .err => |err| .{ .err = err },
+            };
+        }
+
         // Faithful port of `src/sys/File.zig` `from` (line 54). Home only
         // needs the std-file / FD / native-fd shapes the transpiler resolver
         // cone passes; unsupported types fail at comptime like upstream.
@@ -6632,25 +6775,14 @@ pub const exe_format = struct {
 // symbols from `bun.c` (translate-c over `<zstd.h>`); we inline them as
 // `extern fn` decls in `zstd.c` since translate-c isn't wired up yet.
 pub const zstd = struct {
-    pub const zstd = @import("zstd/zstd.zig");
-    pub const CompressResult = union(enum) {
-        success: usize,
-        err: []const u8,
-    };
-
-    pub fn compressBound(input_len: usize) usize {
-        return input_len + (input_len / 8) + 256;
-    }
-
-    pub fn compress(output: []u8, input: []const u8, _: i32) CompressResult {
-        if (output.len < input.len) return .{ .err = "output buffer too small" };
-        @memcpy(output[0..input.len], input);
-        return .{ .success = input.len };
-    }
-
-    pub fn decompressAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-        return allocator.dupe(u8, input);
-    }
+    const impl = @import("zstd/zstd.zig");
+    pub const zstd = impl;
+    pub const CompressResult = impl.Result;
+    pub const compressBound = impl.compressBound;
+    pub const compress = impl.compress;
+    pub const decompress = impl.decompress;
+    pub const decompressAlloc = impl.decompressAlloc;
+    pub const getDecompressedSize = impl.getDecompressedSize;
 };
 
 // ---- src/boringssl_sys/ ------------------------------------------------
@@ -7103,6 +7235,22 @@ test "home_rt: Environment flags exist" {
 
 test "home_rt: strings.indexOfChar reaches the colon-list parser" {
     try std.testing.expectEqual(@as(?usize, 3), strings.indexOfChar("foo:bar", ':'));
+}
+
+test "home_rt: appendOptionsEnv preserves standalone quoted flags and insertion order" {
+    var args = std.array_list.Managed([:0]const u8).init(default_allocator);
+    defer {
+        for (args.items[1..]) |arg| default_allocator.free(arg);
+        args.deinit();
+    }
+
+    try args.append("home");
+    try appendOptionsEnv("--smol", [:0]const u8, &args);
+    try appendOptionsEnv("--title='hello world'", [:0]const u8, &args);
+
+    try std.testing.expectEqual(@as(usize, 3), args.items.len);
+    try std.testing.expectEqualStrings("--title='hello world'", args.items[1]);
+    try std.testing.expectEqualStrings("--smol", args.items[2]);
 }
 
 test {

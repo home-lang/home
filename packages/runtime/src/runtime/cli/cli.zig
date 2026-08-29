@@ -14,6 +14,15 @@ pub const Cli = struct {
         log_ = logger.Log.init(allocator);
         return Command.createContextData(allocator, &log_, command);
     }
+    /// Initialize the context for an embedded standalone graph without parsing
+    /// user arguments as runtime CLI options.
+    pub fn initStandaloneContext(allocator: std.mem.Allocator) Command.Context {
+        is_main_thread = true;
+        start_time = bun.nanoTimestamp();
+        log_ = logger.Log.init(allocator);
+        return Command.initDefaultContext(allocator, &log_);
+    }
+
     pub fn startTransform(_: std.mem.Allocator, _: api.TransformOptions, _: *logger.Log) anyerror!void {}
     pub fn start(allocator: std.mem.Allocator) void {
         is_main_thread = true;

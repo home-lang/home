@@ -84,7 +84,8 @@ fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             }
 
             if (graph.compile_exec_argv.len > 0) {
-                for (graph.compile_exec_argv) |arg| try args.append(bun.String.cloneUTF8(arg));
+                var tokenizer = std.mem.tokenizeAny(u8, graph.compile_exec_argv, " \t\n\r");
+                while (tokenizer.next()) |arg| try args.append(bun.String.cloneUTF8(arg));
             }
 
             const array = try jsc.JSValue.createEmptyArray(globalObject, args.items.len);

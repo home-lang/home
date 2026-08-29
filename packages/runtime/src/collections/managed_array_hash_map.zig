@@ -81,6 +81,14 @@ pub fn ArrayHashMap(
             self.unmanaged.clearAndFree(self.allocator);
         }
 
+        pub fn lockPointers(self: *Self) void {
+            self.unmanaged.lockPointers();
+        }
+
+        pub fn unlockPointers(self: *Self) void {
+            self.unmanaged.unlockPointers();
+        }
+
         pub fn count(self: Self) usize {
             return self.unmanaged.count();
         }

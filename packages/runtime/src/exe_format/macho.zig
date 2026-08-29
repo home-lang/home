@@ -87,8 +87,8 @@ pub const MachoFile = struct {
                                     // Update segment with proper sizes and alignment
                                     self.segment.vmsize = alignVmsize(aligned_size, blob_alignment);
                                     self.segment.filesize = aligned_size;
-                                    self.segment.maxprot = macho.PROT.READ | macho.PROT.WRITE;
-                                    self.segment.initprot = macho.PROT.READ | macho.PROT.WRITE;
+                                    self.segment.maxprot = .{ .READ = true, .WRITE = true };
+                                    self.segment.initprot = .{ .READ = true, .WRITE = true };
 
                                     self.section = .{
                                         .sectname = SECTNAME,
@@ -362,9 +362,11 @@ pub const MachoFile = struct {
 
     pub fn buildAndSign(self: *MachoFile, writer: *std.Io.Writer) !void {
         if (self.header.cputype == macho.CPU_TYPE_ARM64 and code_sign_macho_binary) {
-            var data = std.array_list.Managed(u8).init(self.allocator);
-            defer data.deinit();
-            try self.build(data.writer());
+            var data: std.ArrayListUnmanaged(u8) = .empty;
+            defer data.deinit(self.allocator);
+            var data_writer: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &data);
+            try self.build(&data_writer.writer);
+            data = data_writer.toArrayList();
             var signer = try MachoSigner.init(self.allocator, data.items);
             defer signer.deinit();
             try signer.sign(writer);
@@ -545,14 +547,11 @@ pub const MachoFile = struct {
             self.data.items.len = self.sig_off;
             @memset(self.data.unusedCapacitySlice(), 0);
 
-            // Position writer at signature offset
-            var sig_writer = self.data.writer();
-
             // Write signature components
-            try sig_writer.writeAll(mem.asBytes(&super_blob));
-            try sig_writer.writeAll(mem.asBytes(&blob_index));
-            try sig_writer.writeAll(mem.asBytes(&code_dir));
-            try sig_writer.writeAll(id);
+            try self.data.appendSlice(mem.asBytes(&super_blob));
+            try self.data.appendSlice(mem.asBytes(&blob_index));
+            try self.data.appendSlice(mem.asBytes(&code_dir));
+            try self.data.appendSlice(id);
 
             // Hash and write pages
             var remaining = self.data.items[0..self.sig_off];
@@ -560,16 +559,16 @@ pub const MachoFile = struct {
                 const page = remaining[0..PAGE_SIZE];
                 var digest: [Sha256.digest_length]u8 = undefined;
                 Sha256.hash(page, &digest, .{});
-                try sig_writer.writeAll(&digest);
+                try self.data.appendSlice(&digest);
                 remaining = remaining[PAGE_SIZE..];
             }
 
             if (remaining.len > 0) {
-                var last_page = [_]u8{0}**PAGE_SIZE;
+                var last_page: [PAGE_SIZE]u8 = @splat(0);
                 @memcpy(last_page[0..remaining.len], remaining);
                 var digest: [Sha256.digest_length]u8 = undefined;
                 Sha256.hash(&last_page, &digest, .{});
-                try sig_writer.writeAll(&digest);
+                try self.data.appendSlice(&digest);
             }
 
             // Finally, ensure that the length of data we write matches the total data expected

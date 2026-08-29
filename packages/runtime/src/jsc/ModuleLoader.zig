@@ -1290,8 +1290,46 @@ pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?Reso
                 .source_url = specifier.dupeRef(),
             };
         }
-    } else if (jsc_vm.standalone_module_graph) |_| {
-        return null;
+    } else if (jsc_vm.standalone_module_graph) |graph| {
+        if (graph.files.getPtr(specifier_slice.slice())) |file| {
+            if (file.loader == .sqlite or file.loader == .sqlite_embedded) {
+                const code =
+                    \\/* Generated code */
+                    \\import {Database} from 'bun:sqlite';
+                    \\import {readFileSync} from 'node:fs';
+                    \\export const db = new Database(readFileSync(import.meta.path));
+                    \\
+                    \\export const __esModule = true;
+                    \\export default db;
+                ;
+                return .{
+                    .allocator = null,
+                    .source_code = bun.String.static(code),
+                    .specifier = specifier.dupeRef(),
+                    .source_url = specifier.dupeRef(),
+                    .source_code_needs_deref = false,
+                };
+            }
+
+            return .{
+                .allocator = null,
+                .source_code = file.toWTFString(),
+                .specifier = specifier.dupeRef(),
+                .source_url = specifier.dupeRef(),
+                .bytecode_origin_path = if (file.bytecode_origin_path.len > 0)
+                    bun.String.fromBytes(file.bytecode_origin_path)
+                else
+                    bun.String.empty,
+                .source_code_needs_deref = false,
+                .bytecode_cache = if (file.bytecode.len > 0) file.bytecode.ptr else null,
+                .bytecode_cache_size = file.bytecode.len,
+                .module_info = if (file.module_info.len > 0)
+                    analyze_transpiled_module.ModuleInfoDeserialized.createFromCachedRecord(file.module_info, bun.default_allocator)
+                else
+                    null,
+                .is_commonjs_module = file.module_format == .cjs,
+            };
+        }
     }
 
     return null;

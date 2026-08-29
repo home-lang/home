@@ -265,6 +265,7 @@ pub const ElfFile = struct {
         // the source, so memmove is required.
         if (moved_tail_size != 0) {
             std.mem.copyBackwards(
+                u8,
                 self.data.items[move_dst_start..move_dst_end],
                 self.data.items[move_src_start..move_src_end],
             );
