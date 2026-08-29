@@ -6,12 +6,12 @@ the code you already have, and move code only where moving it pays.
 
 ## Stage one: check what you have
 
-Nothing changes in your repository. Point `home tsc` at the project and it
+Nothing changes in your repository. Point `home-tsc` at the project and it
 reads the `tsconfig.json` that is already there:
 
 ```bash
 cd my-typescript-app
-home tsc --noEmit
+home-tsc --noEmit
 ```
 
 Diagnostics carry the same `TSxxxx` codes as the reference compiler, so CI
@@ -21,23 +21,21 @@ matchers, editor integrations and problem matchers keep working:
 error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
 ```
 
-If a code is unfamiliar, ask:
-
-```bash
-home explain TS2345
-```
+Unfamiliar codes are catalogued in
+[diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS), alongside the codes
+the reference compiler never emits and Home therefore does not either.
 
 This stage is reversible in the literal sense: you can stop after it and have
 lost nothing.
 
 ## Stage two: run it side by side in CI
 
-Add `home tsc` next to your existing type-check rather than replacing it. Any
+Add `home-tsc` next to your existing type-check rather than replacing it. Any
 disagreement between the two is information: either a real bug in Home worth
 reporting, or a case where your build was relying on something surprising.
 
 ```bash
-tsc --noEmit && home tsc --noEmit
+tsc --noEmit && home-tsc --noEmit
 ```
 
 Coarse and byte-for-byte exact conformance against the pinned upstream corpus
@@ -75,7 +73,7 @@ See [editor and CLI tooling](/docs/features/tooling).
 
 | Stage | Cost | What you get back |
 |---|---|---|
-| Check with `home tsc` | One command | A second opinion on your types |
+| Check with `home-tsc` | One command | A second opinion on your types |
 | Run side by side in CI | One CI step | Confidence, and any disagreements surfaced early |
 | Move one hot path | One module rewritten | A real measurement, not an estimate |
 | Adopt the toolchain | Team habit change | One toolchain instead of two |

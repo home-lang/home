@@ -1,500 +1,32 @@
 <p align="center"><img src="https://github.com/home-lang/home/blob/main/.github/art/banner.jpg?raw=true" alt="Social Card of this repo"></p>
 
-A modern programming language for systems, apps, and games. Combines the speed of Zig, the safety of Rust, and the joy of TypeScript.
-
-> **Status**: Home is under active development. The lexer, parser, type
-> inference, and tree-walking interpreter are usable today; native codegen,
-> tooling, the TypeScript frontend, and the Bun-compatible runtime are
-> still maturing. See the [parity status](#parity-status) section
-> below for percentage-based numbers across every area, with
-> per-feature drill-down pages in [`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md),
-> [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md),
-> [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md), and the wider
-> [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md).
-
-For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
-
-## Parity status
-
-The whole status, percentage-based. Every number is a **byte-for-byte,
-file-count, or row-count measurement** against an external baseline —
-not an aspirational target. Each row cites the package, harness, or
-upstream source that produces it.
-
-> Refreshed 2026-08-26. Coarse-mode TS corpus and full exact mode
-> are regression-gated on every PR; Bun port % is file-count progress
-> over integrated Home ports, while raw source presence is reported
-> separately now that the full Bun source backlog has been staged.
-> TS diagnostic-code coverage (1,620 / 2,079 emitted) tracks the catalog-
-> only → emitted ratchet; each `feat(ts-parity): implement TSxxxx`
-> commit moves this row by 1. Note: faithful "100% parity" is the
-> **reachable** subset — the codes the reference compiler
-> (typescript-go) actually emits — and that subset is now effectively
-> complete: **0 reachable parity targets remain**. The ~455 still-
-> unemitted codes are dead in the reference (obsolete/superseded wording
-> it never produces), plus 4 blocked/subsystem-gated references; see
-> [`docs/TS_DIAGNOSTIC_REACHABILITY.md`](./docs/TS_DIAGNOSTIC_REACHABILITY.md).
-
-**Detailed per-feature breakdowns** (the README is the at-a-glance
-view; these are the drill-down pages — modeled after Bun's
-[Node.js compatibility doc](https://bun.com/docs/runtime/nodejs-apis)):
-
-- [`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md) — every TypeScript feature with 🟢 / 🟡 / 🔴 status
-- [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) — every `node:*` module with 🟢 / 🟡 / 🔴 / ❌ status
-- [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) — every Bun API + phase-by-phase port status
-- [`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md) — `packages/compat/` shim symbol-by-symbol status
-- [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md) — full language / codegen / tooling / stdlib matrix
-- [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — parity plan + dated journal entries
-- [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
-- [`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md) — Bun runtime port audit; live counts come from `scripts/measure-parity.sh --values`
-
-### Headline numbers
-
-| Area | Coverage | Source |
-|---|---|---|
-| **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **5,907 / 5,907 — 100%** | Canonical tsgo-generated baselines; 0 exact cases remain |
-| **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
-| **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
-| **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see `docs/TS_DIAGNOSTIC_REACHABILITY.md` |
-| **LSP wire methods** | **76 / ~80 — ~95%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
-| **Bun runtime — source files present** | **1,430 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
-| **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
-| **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md). Not yet wired into the bun-corpus gate |
-| **JSC bring-up (Phase 12.2)** | **JS-callable bridge live** | `home eval` / `HOME_NATIVE_RUN` run through Home's own JSC; 24 `node:*` modules + a broad `Bun.*` surface (spawn/spawnSync/which/file/write/hash/gzipSync/Glob/…) callable & unit-tested. Native subsystems: zlib (`std.compress`), crypto HMAC/pbkdf2 (`std.crypto`), spawn (`std.process`) |
-| **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **~8,415 tests** (unit + integration + conformance-pin) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev.131. The full exact TypeScript conformance corpus is 5,907 / 5,907; the `home_rt` runtime target needs Bun's JSC/uWS C++ artifacts to link. |
-
-### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
-
-Measured by running the upstream TypeScript conformance corpus through
-`packages/ts_conformance/`. The harness compares **byte-for-byte against
-upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`);
-coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
-the same *families* of diagnostics.
-
-**Frontend performance snapshot** (`3e1d2bca1`, Apple M3 Pro, shared workstation;
-30 interleaved runs after three warmups; lower is better):
-
-| Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
-|---|---:|---:|---:|---:|
-| Startup | 59.1 ms | 35.4 ms | **3.0 ms** | **11.90× faster** |
-| 256 files | 204.0 ms | 52.3 ms | **32.9 ms** | **1.59× faster** |
-| Deep types | 126.9 ms | 52.2 ms | **26.4 ms** | **1.98× faster** |
-| 128-module import graph | 126.9 ms | 45.0 ms | **26.7 ms** | **1.68× faster** |
-| 64-leaf barrel graph | 93.1 ms | 40.1 ms | **22.5 ms** | **1.79× faster** |
-| 256 typed TSX components | 158.1 ms | 46.5 ms | **22.5 ms** | **2.06× faster** |
-| 256 generic call groups | 182.5 ms | 56.5 ms | **28.6 ms** | **1.97× faster** |
-| 256 exhaustive control-flow functions | 182.6 ms | 57.0 ms | **34.4 ms** | **1.66× faster** |
-| 256 type-predicate/assertion families | 224.1 ms | 68.9 ms | **41.9 ms** | **1.64× faster** |
-| 2,048 type-predicate/assertion families | 938.0 ms | 322.6 ms | 318.6 ms | 1.01× lower mean; narrow |
-| 256 null-safe-access families | 180.4 ms | 54.6 ms | **38.8 ms** | **1.41× faster** |
-| 128 destructuring/rest/spread families | 131.1 ms | 45.0 ms | **33.7 ms** | **1.34× faster** |
-| 128 × 8 overload calls | 193.6 ms | 62.7 ms | **31.3 ms** | **2.00× faster** |
-| 128 generic class families | 174.7 ms | 49.8 ms | **27.6 ms** | **1.81× faster** |
-| 128 structural object families | 173.6 ms | 55.5 ms | **28.7 ms** | **1.93× faster** |
-| 128 interface/namespace families | 189.2 ms | 61.2 ms | **43.3 ms** | **1.41× faster** |
-| 256 variadic tuple families | 235.5 ms | 75.9 ms | **42.3 ms** | **1.79× faster** |
-| 128 checked-JavaScript/JSDoc families | 201.3 ms | 55.1 ms | **37.6 ms** | **1.46× faster** |
-| 128 checked-CommonJS owners + app | 148.9 ms | 48.3 ms | **42.1 ms** | **1.15× faster** |
-| 256 recursive generic payloads | 147.3 ms | 69.7 ms | **28.8 ms** | **2.42× faster** |
-
-**Cross-platform confirmation** (same admitted corpus, TS 6.0.3 versus native
-TS 7.0.2, 30 interleaved runs after three warmups):
-
-| Platform | Raw result | Home lower means | Narrowest mean lead | Full documentation |
-|---|---|---:|---:|---|
-| Apple M3 Pro / macOS arm64 | `20260829T013535Z` | **20/20** | 1.01×, large predicates | [macOS snapshot](./docs/docs/TS_PERFORMANCE.md#current-snapshot) |
-| Linux arm64 / pinned Bookworm container | `20260829T035150Z` | **20/20** | 1.02×, CheckJS/JSDoc | [Linux checkpoint](./docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
-
-Home has lower means on **20/20 admitted timed workloads**. The new checked
-CommonJS graph passes identical positive and negative controls in all three
-compilers and is **1.15× faster** than native TS 7; the implementation is
-**31.1% faster** than the prior correct Home build in a separate 30-round A/B.
-Large predicates have only a **1.01× mean lead** and 24/30 paired wins, so the
-row is explicitly narrow. All 20 workloads pass admission before timing; all
-600 round files and 1,800 successful samples are retained. This local synthetic
-snapshot is not universal benchmark leadership. Real-project validation and
-additional architectures remain incomplete. See the
-[full results, controls, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#checked-commonjs-graph-performance).
-Earlier snapshots are retained separately, not averaged into this table.
-Async/await coverage is still undergoing validation and is not timed.
-The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
-verify that checking uses the completed graph without reparsing bound sources.
-False reference/global-presence errors are fixed, but cross-file type linkage
-remains incomplete outside the audited feature families. The [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#callable-identity-and-scoped-inference-untimed)
-passes **56/56** after isolating callable metadata and nested generic inference.
-The latest [callable-union audit](./docs/docs/TS_PERFORMANCE.md#callable-union-predicates-and-receivers-untimed)
-improves from **120/256 to 256/256** after fixing predicate composition and
-receiver requirements. These separate correctness audits keep remaining
-failures visible:
-
-| Correctness audit (not a timing result) | TS 6.0.3 | Native TS 7.0.2 | Home |
-|---|---:|---:|---:|
-| Callable identity controls | 56/56 | 56/56 | 56/56 |
-| Callable union controls | 256/256 | 256/256 | 256/256 |
-| Variadic tuple controls | 14/14 | 14/14 | 14/14 |
-| Global declaration controls | 56/56 | 56/56 | 32/56 |
-| [Bound-global discovery controls](./docs/docs/TS_PERFORMANCE.md#program-wide-name-identity-and-bound-global-ownership-untimed) | 56/56 | 56/56 | 44/56 |
-| Imported-owner controls | 20/20 | 20/20 | 12/20 |
-| [Exported generic-factory controls](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed) | 240/240 | 240/240 | 240/240 |
-| [Exported variable-list controls](./docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 96/96 | 96/96 | 80/96 |
-| [Static CommonJS discovery controls](./docs/docs/TS_PERFORMANCE.md#static-commonjs-dependency-discovery-untimed) | 44/44 | 44/44 | 44/44 |
-| [CommonJS instance controls](./docs/docs/TS_PERFORMANCE.md#checked-commonjs-export-type-transfer-untimed) | 66/66 | 66/66 | 66/66 |
-| [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
-| [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
-| [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
-| [Imported generic-class controls](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers) | 120/120 | 120/120 | 120/120 |
-| [Recursive generic-consumer controls](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers) | 288/288 | 288/288 | 288/288 |
-| [Re-export discovery controls](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed) | 28/28 | 28/28 | 28/28 |
-| Export-origin controls | 32/32 | 32/32 | 32/32 |
-| Imported graph admission | 2/2 | 2/2 | 2/2 |
-| Transitive reference probe | 3/3 | 3/3 | 2/3 |
-
-The [re-export discovery and declaration-origin checkpoint](./docs/docs/TS_PERFORMANCE.md#re-export-discovery-and-declaration-origins-untimed)
-fixes omitted dependencies and false alias/ambiguity errors. Automatic cross-file
-type transfer remains incomplete; its historical graph timing claims remain ineligible.
-The [imported static-value checkpoint](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed)
-preserves class values through namespace aliases, captures, destructuring, and
-cycles: its controls improve from 52/84 to 84/84. Bound-class controls now pass
-52/52. The latest [lazy generic-consumer checkpoint](./docs/docs/TS_PERFORMANCE.md#lazy-source-owned-generic-consumers)
-improves recursive controls from 112/288 to 288/288 and imported generic-class
-controls from 118/120 to 120/120. Requested type surfaces expand from cached,
-source-owned definitions while nested references remain symbolic. Eight nominal
-inheritance controls still fail. The newer [exported-factory checkpoint](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed)
-improves factory controls from 130/240 to 240/240 and passes both unchanged graph
-gates. The checked CommonJS checkpoint adds its own six-error admission control,
-bringing Release workload admission to **20/20**. These counts are correctness
-results, separate from the timing table above.
-
-See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
-for workload definitions, uncertainty, environment details, caveats, and exact
-reproduction commands. Expansion and optimization work is tracked in
-[GitHub issue #416](https://github.com/home-lang/home/issues/416).
-
-| Measurement | Pass rate | Notes |
-|---|---|---|
-| **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
-| **Exact mode (byte-for-byte, full corpus)** | **5,907 / 5,907 — 100%** | Compared with canonical tsgo-generated baselines; 0 exact cases remain. |
-| Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
-| Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
-| Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
-| TS diagnostic-code catalogue | **1,620 / 2,079 emitted — ~77.9%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 459 catalog-only entries remain, but **0 are reachable parity targets** (the reachable subset is complete): ~455 are dead-in-reference + 4 blocked/subsystem-gated; see `docs/TS_DIAGNOSTIC_CODE_STATUS.md` + `docs/TS_DIAGNOSTIC_REACHABILITY.md`. |
-
-**Exact mode by 1,000-case slice** (snapshot; the per-slice breakdown is
-recomputed less often than the aggregate above and lags it slightly —
-re-run the command below to refresh):
-
-| Slice | Pass rate | % |
-|---|---|---|
-| `START=0   LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=1000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=2000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=3000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=4000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=5000 LIMIT=907`  | 907 / 907   | 100% |
-
-Reproduce locally:
-
-```bash
-HOME_TS_CONFORMANCE_FULL=1 \
-HOME_TS_CONFORMANCE_EXACT=1 \
-HOME_TS_CONFORMANCE_START=2000 \
-HOME_TS_CONFORMANCE_LIMIT=1000 \
-./pantry/.bin/zig build test -Dfilter=ts_conformance
-```
-
-### Bun runtime port (`packages/runtime/`)
-
-Phase 12 vendors Bun's Zig source under MIT and rewrites it to compile
-against Home's stdlib. **The JS-callable bridge is live**: `home eval` and
-`HOME_NATIVE_RUN=1 home run` execute JavaScript through Home's **own**
-JavaScriptCore realm (not system `bun`), with 24 `node:*` modules and a
-broad `Bun.*` surface callable and unit-tested. The default `home run`
-still delegates to pantry `bun`, and the bun-corpus gate still routes
-through the bootstrap harness — wiring the realm into those is the next
-convergence step (see [`docs/BUN_PARITY_PLAN.md`](./docs/BUN_PARITY_PLAN.md)).
-
-`home build app.ts -o app` (and the equivalent JS/JSX/TSX module extensions)
-now creates a self-contained host executable through LLVM. LLVM compiles the
-native launcher, while the binary embeds the entry source and Home's own
-JavaScriptCore runtime so JavaScript semantics remain faithful to the runtime.
-Arguments and exit status are forwarded to the entrypoint. This first slice is
-single-entrypoint; bundling imported files and cross-target builds remain part
-of the standalone module-graph work. Native JS/TS builds currently require a
-JavaScriptCore-enabled Home compiler plus LLVM/Clang on `PATH`, and are
-available on arm64 and x86-64 macOS/Linux hosts.
-
-| Measurement | Coverage | % |
-|---|---|---|
-| **Runtime Zig source files present** | **1,430 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
-| **Bun source files integrated** | **552 / 1,193** | **~46.3%** |
-| Subsystems scaffolded | 100 directories under `packages/runtime/src/` | — |
-| Functional runtime | 🟡 JS-callable realm live (`home eval` / `HOME_NATIVE_RUN`); default `home run` + corpus gate still delegate | — |
-| JS-callable realm surface | 24 `node:*` modules + broad `Bun.*` | 🟡 subsets, unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) / [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) |
-| JSC bring-up (Phase 12.2) | 151 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
-| `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
-
-Upstream pinned at `fd0b6f1a` (see
-[`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt));
-full audit at
-[`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md).
-The release gate per [`packages/runtime/README.md`](./packages/runtime/README.md):
-Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
-
-**Phase-by-phase status:**
-
-| Sub-phase | Source under `~/Code/bun/src/` | Status |
-|---|---|---|
-| 12.1 — CLI | `cli/` | 🚧 scaffold landed |
-| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (151 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge live |
-| 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🟡 substrate landing (~30+ leaves ported via wave-19+ grinders) |
-| 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
-| 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
-| 12.6 — Home.* JS surface | `bun.zig` (renamed to `Home.*`) | 🚧 blocked on 12.2 |
-| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (28 files: buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty) |
-| 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
-| 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
-| 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
-| 12.11 — Cross-compile + bundles | `build/` | 🚧 not started |
-
-### Bun compatibility shim (`packages/compat/`)
-
-Top-level package that re-exports the minimal Bun surface against
-Home's stdlib so vendored Bun source compiles without modification.
-The build wires `@import("bun")` to this shim (see
-[`build.zig:503-510`](./build.zig)), letting the
-[Bun bundler vendor files](./packages/bundler/src/) and the
-[Bun runtime port](./packages/runtime/src/) keep their upstream
-imports diff-clean and re-syncable.
-
-| Measurement | Coverage | % |
-|---|---|---|
-| **Symbols implemented** | **16 / ~103** | **~15.5%** |
-| Test surfaces | inline (~9 tests) + bundler-side integration (7 tests) | regression-gated |
-
-**Implemented surface (16 symbols across Tier-0 + Tier-1):**
-
-| Symbol | Status | Purpose |
-|---|---|---|
-| `bun.OOM` | 🟢 | `error{OutOfMemory}` alias for explicit error-return signatures (`bun.OOM!void`) |
-| `bun.JSError` | 🟢 | `error{ JSException, OutOfMemory }` union for JSC-touching callers |
-| `bun.Environment` | 🟢 | Build-time flags (`isDebug`, `isWindows`, `isMac`, `ci_assert`, `enable_logs`) |
-| `bun.env_var` | 🟢 | Run-time env-var namespace (`WANTS_LOUD.get()`) |
-| `bun.handleOom` | 🟢 | Unwrap OOM-returning calls or panic on OOM for call sites that can't propagate |
-| `bun.default_allocator` | 🟢 | Process-wide allocator (re-exports `std.heap.smp_allocator`) |
-| `bun.assert` | 🟢 | Alias for `std.debug.assert` |
-| `bun.AllocationScope` | 🟢 | Allocator-scope wrapper for region-style lifetimes |
-| `bun.Output` | 🟢 | Logger / stderr namespace (`enable_ansi_colors_stderr`, `isAIAgent`) |
-| `bun.debugAssert` | 🟢 | Debug-only assert (compiles away in release builds) |
-| `bun.create` | 🟢 | Typed allocator helper: `allocator.create + value` |
-| `bun.StringHashMapUnmanaged` | 🟢 | Alias for the std-lib generic |
-| `bun.String` | 🟢 | Interned-string newtype with `.static(...)` + `.slice()` |
-| `bun.strings` | 🟢 | String utilities (`isValidUTF8` so far) |
-| `bun.ast.Index` | 🟢 | Strongly-typed source-file / module index with `.Int = u32` companion |
-| `bun.fs.Path` | 🟡 | Path record; Tier-0 callers read only `.text` (struct will grow per tier) |
-
-Each subsequent tier opens the door for more vendored Bun files to
-compile. See [`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md)
-for the per-symbol drill-down, planned Tier-2+ categories
-(`bun.JSC.*`, `bun.path`, `bun.options`, `bun.resolver`,
-`bun.MutableString`, `bun.bake`, `bun.css`, `bun.transpiler`,
-`bun.SourceMap`), and the test wiring.
-
-### Node.js compatibility (`packages/runtime/src/node/`)
-
-Node's `node:*` namespace lands as part of the Bun runtime port (Bun
-ships `node:*` shims natively, which we vendor verbatim). Numbers
-below are Zig-side only; the JS-visible `node:*` surface attaches once
-JSC's JS-callable bridge ships (Phase 12.2 has reached M6 — JSON +
-Promise + Iterator + Global helpers — across 151 files).
-
-| Measurement | Coverage | Notes |
-|---|---|---|
-| Node binding files ported | 28 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig`, `url.zig`, `querystring.zig`, `crypto.zig`, `process.zig`, `string_decoder.zig`, `tty.zig` (Phase 12.7 round-15). |
-| Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
-
-### LSP / IDE coverage — `home-lsp` vs `tsserver`
-
-| Measurement | Coverage | % |
-|---|---|---|
-| **Wire methods routed** | **76 / ~80** | **~95%** |
-
-Routed methods (`SUPPORTED_METHODS` in
-[`packages/ts_lsp_server/src/ts_lsp_server.zig`](./packages/ts_lsp_server/src/ts_lsp_server.zig)):
-hover, definition, declaration, typeDefinition, implementation,
-references (cross-file), completion + completionItem/resolve,
-signatureHelp, semanticTokens (full + delta + range), inlayHint
-(+ resolve), codeAction, codeLens (+ resolve), documentLink (+ resolve),
-foldingRange, selectionRange, linkedEditingRange, documentHighlight,
-documentSymbol + workspace/symbol, rename + prepareRename,
-prepareCallHierarchy + incoming/outgoingCalls,
-prepareTypeHierarchy + supertypes/subtypes, willSaveWaitUntil,
-willRenameFiles, executeCommand, moniker (LSIF), inlineValue,
-inlineCompletion, formatting + onTypeFormatting,
-documentColor + colorPresentation, pull-based diagnostic +
-workspace/diagnostic, lifecycle (initialize / initialized /
-shutdown / exit), synchronization (didOpen / didChange / didClose /
-publishDiagnostics).
-
-**Remaining surface:** quick-fix breadth (organize imports + add
-import + add explicit type annotation landed; fix-all,
-missing-return-type, infer-parameter-types pending), FS-event-driven
-push diagnostics, full formatter pass (current `formatDocument`
-returns source unchanged), richer auto-import completion via
-cross-file interner search.
-
-### Language features
-
-16 language rows from the
-[Capability Matrix](./docs/CAPABILITY_MATRIX.md):
-
-| Status | Count | % |
-|---|---|---|
-| ✅ Stable | 3 | 18.8% |
-| 🚧 In progress / partial | 12 | 75.0% |
-| ❌ Not yet | 1 | 6.3% |
-
-**Per-feature:**
-
-| Feature | Status |
-|---|---|
-| Lexer (full token set, escapes, line/col tracking) | ✅ Stable |
-| Recursive-descent parser with error recovery | ✅ Stable |
-| Type inference (primitives, structs, enums, arrays) | ✅ Stable |
-| Pattern matching (`match` over enums, primitives, wildcards) | 🚧 In progress |
-| Closures | 🚧 In progress |
-| Traits / `impl` blocks | 🚧 In progress |
-| Trait objects / dynamic dispatch | 🚧 In progress |
-| Generics (functions and types) | 🚧 In progress |
-| Comptime evaluation | 🚧 In progress |
-| Macros (`todo!`, `assert!`, `unreachable!`, …) | 🚧 In progress |
-| Null-safety operators (`?.`, `?:`, `??`, `?[]`) | 🚧 In progress |
-| Result types and `?` propagation | 🚧 In progress |
-| Async / await | 🚧 In progress |
-| Ownership / move checking | 🚧 In progress |
-| Borrow checker | 🚧 In progress |
-| Const generics | ❌ Not yet |
-
-### Codegen targets
-
-7 codegen rows:
-
-| Status | Count | % |
-|---|---|---|
-| ✅ Stable | 1 | 14.3% |
-| 🚧 In progress / partial | 6 | 85.7% |
-
-**Per-target:**
-
-| Target | Status |
-|---|---|
-| Tree-walking interpreter | ✅ Stable |
-| x86-64 native codegen | 🚧 Substantial (primary target) |
-| arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
-| WebAssembly codegen | 🚧 Stub |
-| LLVM backend | 🚧 JS/TS native launcher shipped; Home AST lowering in progress |
-| ELF object emission | 🚧 In progress |
-| Mach-O object emission | 🚧 In progress |
-
-### Tooling
-
-11 tooling rows:
-
-| Status | Count | % |
-|---|---|---|
-| ✅ Stable | 2 | 18.2% |
-| 🚧 In progress / partial | 9 | 81.8% |
-
-**Per-tool:**
-
-| Tool | Status |
-|---|---|
-| `home check` (type-check) | ✅ Stable |
-| `home run` (interpret) | ✅ Stable |
-| `home build` (native binary) | 🚧 Home native codegen + self-contained LLVM JS/TS entrypoints |
-| `home test` runner | 🚧 In progress |
-| Formatter | 🚧 In progress |
-| Linter | 🚧 In progress |
-| LSP / IDE integration | 🚧 In progress (see [LSP coverage](#lsp--ide-coverage--home-lsp-vs-tsserver)) |
-| VSCode extension | 🚧 In progress |
-| REPL | 🚧 In progress |
-| Package manager (`pkg`) | 🚧 In progress |
-| Incremental compilation / IR cache | 🚧 In progress |
-
-### Standard library
-
-9 stdlib categories tracked in the capability matrix (the project ships
-**136 packages under `packages/`** — most are 🚧 until end-to-end validated):
-
-| Status | Count | % |
-|---|---|---|
-| ✅ Stable | 3 | 33.3% |
-| 🚧 In progress / partial | 6 | 66.7% |
-
-**Per-module:**
-
-| Module | Status |
-|---|---|
-| Core primitives (`int`, `float`, `bool`, `string`, arrays) | ✅ Stable |
-| String methods (`trim`, `upper`, `split`, …) | ✅ Stable |
-| Range methods (`len`, `step`, `contains`, …) | ✅ Stable |
-| HTTP server | 🚧 In progress |
-| Database / SQL | 🚧 In progress |
-| Threading | 🚧 In progress |
-| FFI / C interop | 🚧 In progress |
-| Audio / video / graphics | 🚧 In progress |
-| Kernel / OS modules | 🚧 In progress |
-
-### Capability matrix — combined totals
-
-All 63 rows from [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
-(language + codegen + tooling + stdlib + TypeScript frontend + runtime/Bun):
-
-| Status | Count | % |
-|---|---|---|
-| ✅ Stable | 18 | ~28.6% |
-| 🚧 In progress / partial | 43 | ~68.3% |
-| ❌ Not yet | 2 | ~3.2% |
-
-The conservative bias is intentional: anything not exercised by an
-example or test stays 🚧 even when the underlying code is largely there.
-
-## TypeScript parity
-
-Home is being extended with a drop-in `tsc` / `tsgo` compatible
-TypeScript frontend. The plan is documented in
-[`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md). Phase 4.5 is
-substantially complete: a `home tsc` driver wires lex → parse →
-bind → check → emit end-to-end with multi-file program graph,
-parallel compile, source maps, tsc-compatible diagnostics, and a
-zig-dtsx fast path for `.d.ts` emission.
-
-Top-level shape (each link is a Zig package with its own tests):
-
-- [`packages/ts_lexer`](./packages/ts_lexer/) — full ES2024 + TS keyword scanner (16-byte tokens, comptime perfect-hash keywords)
-- [`packages/ts_parser`](./packages/ts_parser/) — recursive-descent statements, Pratt expressions, JSX, generics, decorators, full type-annotation grammar
-- [`packages/hir`](./packages/hir/) — SoA HIR (21 B/node hot footprint, gated at compile time)
-- [`packages/binder`](./packages/binder/) — symbol table with three TS meaning-spaces and declaration merging
-- [`packages/ts_checker`](./packages/ts_checker/) — type interner, relation cache, expression-level checking
-- [`packages/ts_emit`](./packages/ts_emit/) — streaming JS pretty-printer, V3 source maps, symbol-driven `.d.ts`, zig-dtsx fast path
-- [`packages/ts_driver`](./packages/ts_driver/) — single-file end-to-end compile (lex → parse → bind → check → emit)
-- [`packages/ts_program`](./packages/ts_program/) — multi-file program graph with parallel compileAllParallel
-- [`packages/ts_resolver`](./packages/ts_resolver/) — module resolution across the five tsc strategies + path mapping
-- [`packages/ts_diagnostics`](./packages/ts_diagnostics/) — tsc-compatible diagnostic formatting (default + pretty)
-- [`packages/ts_cli`](./packages/ts_cli/) — `home tsc` CLI flag surface
-- [`packages/ts_conformance`](./packages/ts_conformance/) — tsc-baseline conformance harness
-- [`packages/ts_lsp`](./packages/ts_lsp/) — Language Server query surface (hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, document symbols, …)
-- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (76 LSP-spec methods routed; see [parity status](#lsp-coverage--home-lsp-vs-tsserver))
-- [`packages/ts_cache`](./packages/ts_cache/) — content-addressed compilation cache with sharded disk persistence
-- [`packages/ts_watch`](./packages/ts_watch/) — pluggable `StatFs` + watcher driving incremental recompiles in `home-tsc --watch`
-- [`packages/d_hm`](./packages/d_hm/) — Home declaration files (the `.d.ts` analogue for `.home`)
-- [`pantry/zig-dtsx`](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) — vendored as a pantry dep; powers the `.d.ts` fast path (15-19× faster than tsgo per published benchmarks)
-
-`home-tsc` and `home-lsp` ship as standalone binaries — see the
-[`./pantry/.bin/zig build` invocation](#build-commands) to compile them; they
-install into `zig-out/bin/`.
+<p align="center">
+  A modern programming language for systems, apps, and games —<br>
+  the speed of Zig, the safety of Rust, the joy of TypeScript.
+</p>
+
+<p align="center">
+  <a href="https://home-lang.org">Website</a> ·
+  <a href="https://home-lang.org/docs">Documentation</a> ·
+  <a href="https://home-lang.org/docs/guide/getting-started">Getting started</a> ·
+  <a href="https://home-lang.org/docs/PARITY-STATUS">Parity status</a> ·
+  <a href="./CHANGELOG.md">Changelog</a>
+</p>
+
+---
+
+Home compiles to native binaries with no garbage collector and no runtime to
+ship alongside them. The same toolchain also type-checks and builds the
+TypeScript you already have: `home-tsc` reads your `tsconfig.json` and emits
+`tsc`-compatible diagnostics, and `home run` executes TypeScript and JavaScript
+on Home's own JavaScriptCore realm.
+
+> **Status:** under active development. The lexer, parser, type inference,
+> TypeScript front end, and tree-walking interpreter are usable today; native
+> codegen, tooling, and the Bun-compatible runtime are still maturing.
+> [Project status](#project-status) has the short version and
+> [Parity status](https://home-lang.org/docs/PARITY-STATUS) has every number
+> with the harness that produces it.
 
 ## Install
 
@@ -503,86 +35,84 @@ curl -fsSL https://raw.githubusercontent.com/home-lang/home/main/install.sh | ba
 ```
 
 The installer detects your platform, downloads a release tarball from GitHub
-Releases, verifies its checksum, and installs the `home` binary to
-`~/.home/bin`. It supports macOS (Intel + Apple Silicon), Linux (x64 + arm64),
-and Windows (x64 + arm64, via Git Bash / WSL).
+Releases, verifies its checksum, and installs the `home` binary to `~/.home/bin`.
+macOS (Intel + Apple Silicon), Linux (x64 + arm64), and Windows (x64 + arm64,
+via Git Bash / WSL) are supported.
 
-Useful environment variables:
+Environment variables: `HOME_VERSION` pins a release tag (default `latest`),
+`HOME_INSTALL_DIR` overrides the install location (default `~/.home`), and
+`HOME_BIN_DIR` overrides where the binary is placed.
 
-- `HOME_VERSION=v0.1.0` (or `0.1.0`) &mdash; pin a specific release tag (default: `latest`)
-- `HOME_INSTALL_DIR=/opt/home` &mdash; override install location (default: `~/.home`)
-- `HOME_BIN_DIR=/usr/local/bin` &mdash; override where the binary is placed
-
-## Build from Source
-
-```bash
-git clone https://github.com/home-lang/home.git
-cd home
-pantry install        # installs the pinned Zig 0.17 dev toolchain
-./pantry/.bin/zig build   # ./pantry/.bin/zig is a stable symlink to the pinned toolchain
-
-# Run an example
-./zig-out/bin/home build examples/fibonacci.home
-./examples/fibonacci
-```
-
-Useful commands:
-
-- `./pantry/.bin/zig build` &mdash; build the compiler
-- `./pantry/.bin/zig build test` &mdash; run the unit-test suite
-- `./pantry/.bin/zig build examples` &mdash; run the native example executables (http_router, craft, fullstack, queue)
-- `./pantry/.bin/zig build run -- examples/fibonacci.home` &mdash; build, then run a file
-- `scripts/check-examples.sh` &mdash; `home check` every `.home` example
-- `./pantry/.bin/zig build -Dgenerals=true generals` &mdash; opt in to the C&C Generals example (needs Xcode frameworks)
-
-## Hello World
+## Quick start
 
 ```home
+// hello.home
 fn main() {
   print("Hello, Home!")
 }
 ```
 
-## Language Overview
+```bash
+home build hello.home    # native executable, nothing to install beside it
+./hello                  # Hello, Home!
 
-### Variables
+home run hello.home      # or run it directly
+home check hello.home    # type-check without building
+```
+
+Source files use the `.home` extension, or `.hm` for short. The
+[getting started guide](https://home-lang.org/docs/guide/getting-started) walks
+through a first project.
+
+## Why Home
+
+- **Native binaries, no collector.** Ownership and borrowing settle lifetimes at
+  compile time — no pauses, no runtime shipped beside the binary.
+  ([memory model](https://home-lang.org/docs/advanced/memory))
+- **One toolchain for two languages.** The same compiler builds `.home` files and
+  type-checks TypeScript, so a mixed codebase needs one tool instead of two.
+  ([how it works](https://home-lang.org/docs/features/typescript))
+- **Exhaustive pattern matching.** A missing branch is a compile error, not a
+  runtime surprise. ([pattern matching](https://home-lang.org/docs/features/pattern-matching))
+- **Compile time is just code.** `comptime` runs real Home during compilation.
+  ([comptime](https://home-lang.org/docs/advanced/comptime))
+- **Errors as values.** `Result` types with `?` propagation, plus null-safety
+  operators (`?.`, `?:`, `??`, `?[]`).
+  ([error handling](https://home-lang.org/docs/advanced/error-handling))
+- **Batteries in the stdlib.** HTTP, database, JSON, async, threading and FFI.
+  ([standard library](https://home-lang.org/docs/reference/stdlib))
+
+## Language tour
+
+A condensed pass over the syntax. Each section links to the full page in the
+[language guide](https://home-lang.org/docs).
+
+### Variables and control flow
 
 ```home
 let name = "Alice"           // immutable by default
 let mut counter = 0          // mutable
 let age: int = 25            // explicit type
 const PI = 3.14159           // compile-time constant
-```
 
-### Control Flow
-
-```home
-// if statements (parentheses required)
-if (x > 5) {
+if (counter > 5) {
   print("big")
 } else {
   print("small")
 }
 
-// while loops
-while (count < 10) {
-  count = count + 1
-}
+for (item in items) { print(item) }
+for (i in 0..10) { print(i) }
+for (index, item in items) { print("{index}: {item}") }
 
-// for loops
-for (item in items) {
-  print(item)
-}
-
-for (i in 0..10) {
-  print(i)
-}
-
-// for with index
-for (index, item in items) {
-  print("{index}: {item}")
-}
+while (counter < 10) { counter = counter + 1 }
 ```
+
+Strings interpolate with `{}`, ranges come with `.len()`, `.step()`,
+`.contains()` and `.to_array()`, and arithmetic includes `**` (power) and `~/`
+(truncating integer division). Full reference:
+[variables](https://home-lang.org/docs/guide/variables) and
+[control flow](https://home-lang.org/docs/guide/control-flow).
 
 ### Functions
 
@@ -591,274 +121,109 @@ fn add(a: int, b: int): int {
   return a + b
 }
 
-fn greet(name: string) {
+fn greet(name: string = "World") {   // default parameters
   print("Hello, {name}!")
 }
 
-// default parameter values
-fn greet_with_default(name: string = "World") {
-  print("Hello, {name}!")
-}
-
-greet_with_default()          // prints: Hello, World!
-greet_with_default("Alice")   // prints: Hello, Alice!
-
-// async functions
 fn fetch_data(): async Result<Data> {
   let response = await http.get("/api/data")
   return response.json()
 }
 ```
 
-### Structs
+More: [functions](https://home-lang.org/docs/guide/functions),
+[async](https://home-lang.org/docs/advanced/async).
+
+### Structs, enums and pattern matching
 
 ```home
-struct Point {
-  x: int
-  y: int
-}
-
 struct User {
   id: i64
   name: string
-  email: string
 }
 
-let origin = Point { x: 0, y: 0 }
-let user = User { id: 1, name: "Alice", email: "alice@example.com" }
-```
-
-### Enums
-
-```home
 enum Color {
   Red,
   Green,
-  Blue,
   Custom(r: int, g: int, b: int)
 }
 
-enum Result<T, E> {
-  Ok(T),
-  Err(E)
-}
-```
-
-### Pattern Matching
-
-```home
-match value {
-  Ok(x) => print("Got: {x}"),
-  Err(e) => print("Error: {e}")
-}
+let user = User { id: 1, name: "Alice" }
 
 match color {
   Color.Red => print("red"),
   Color.Green => print("green"),
-  Color.Blue => print("blue"),
   Color.Custom(r, g, b) => print("rgb({r}, {g}, {b})")
 }
 ```
 
-### Expression Forms
-
-If and match can be used as expressions that return values:
+`if` and `match` are expressions, so they return values:
 
 ```home
-// if expression
 let status = if (code == 200) { "ok" } else { "error" }
 
-// match expression
-let name = match x {
+let label = match x {
   1 => "one",
   2 => "two",
   _ => "other"
 }
 ```
 
-### Null Safety Operators
+More: [structs and enums](https://home-lang.org/docs/guide/structs-enums),
+[pattern matching](https://home-lang.org/docs/features/pattern-matching),
+[traits](https://home-lang.org/docs/guide/traits).
+
+### Null safety and errors
 
 ```home
-// Elvis operator (?:) - returns right side if left is null
-let name = user?.name ?: "Anonymous"
+let name = user?.name ?: "Anonymous"   // elvis
+let city = user?.address?.city         // safe navigation
+let first = items?[0]                  // safe indexing
 
-// Null coalescing (??) - same as Elvis
-let value = maybeNull ?? defaultValue
-
-// Safe navigation (?.) - returns null if object is null
-let city = user?.address?.city
-
-// Safe indexing (?[]) - returns null if index out of bounds
-let first = items?[0]
-let safe = items?[10] ?: defaultItem
-```
-
-### Error Handling
-
-```home
 fn read_file(path: string): Result<string, Error> {
-  let file = fs.open(path)?   // ? propagates errors
+  let file = fs.open(path)?            // ? propagates errors
   return Ok(file.read_all())
 }
 
-// handle errors
 match read_file("config.home") {
   Ok(content) => process(content),
   Err(e) => print("Failed: {e}")
 }
-
-// or with default
-let content = read_file("config.home").unwrap_or("default")
 ```
 
-### Arrays and Slices
+More: [type system](https://home-lang.org/docs/features/type-system),
+[error handling](https://home-lang.org/docs/advanced/error-handling).
+
+### Generics and comptime
 
 ```home
-let numbers = [1, 2, 3, 4, 5]
-let first = numbers[0]
-let slice = numbers[1..4]      // [2, 3, 4]
-
-for (n in numbers) {
-  print(n)
-}
-
-// Array methods
-numbers.len()       // 5
-numbers.is_empty()  // false
-numbers.first()     // 1
-numbers.last()      // 5
-```
-
-### String Methods
-
-```home
-let s = "  Hello World  "
-
-// Length
-s.len()              // 15
-
-// Case conversion
-s.upper()            // "  HELLO WORLD  "
-s.lower()            // "  hello world  "
-
-// Trimming
-s.trim()             // "Hello World"
-s.trim_start()       // "Hello World  "
-s.trim_end()         // "  Hello World"
-
-// Searching
-s.contains("World")  // true
-s.starts_with("  H") // true
-s.ends_with("  ")    // true
-
-// Splitting and replacing
-"a,b,c".split(",")           // ["a", "b", "c"]
-s.replace("World", "Home")   // "  Hello Home  "
-
-// Other methods
-"ab".repeat(3)       // "ababab"
-s.is_empty()         // false
-s.char_at(2)         // "H"
-"hello".reverse()    // "olleh"
-
-// Method chaining
-"  HELLO  ".trim().lower()  // "hello"
-```
-
-### Arithmetic Operators
-
-```home
-// Power operator (**)
-let squared = 5 ** 2      // 25
-let cubed = 2 ** 3        // 8
-let power10 = 2 ** 10     // 1024
-
-// Integer division (~/)
-let result = 7 ~/ 2       // 3 (truncates toward zero)
-let another = 17 ~/ 5     // 3
-
-// Standard operators
-let sum = 10 + 5          // 15
-let diff = 10 - 3         // 7
-let prod = 4 * 3          // 12
-let quot = 10 / 4         // 2.5 (regular division)
-let rem = 10 % 3          // 1 (modulo)
-```
-
-### Range Methods
-
-```home
-// Create ranges
-let r = 0..10            // exclusive: 0,1,2,...,9
-let inclusive = 0..=10   // inclusive: 0,1,2,...,10
-
-// Range methods
-r.len()                  // 10
-r.first()                // 0
-r.last()                 // 9
-r.contains(5)            // true
-r.contains(10)           // false (exclusive)
-
-// Step through range
-let stepped = (0..10).step(2)
-stepped.to_array()       // [0, 2, 4, 6, 8]
-
-// Inclusive range
-inclusive.len()          // 11
-inclusive.contains(10)   // true
-inclusive.last()         // 10
-```
-
-### Generics
-
-```home
-fn map<T, U>(items: []T, f: fn(T): U): []U {
-  let result = []U.init(items.len)
-  for (i, item in items) {
-    result[i] = f(item)
-  }
-  return result
-}
-
 struct Stack<T> {
   items: []T
 
-  fn push(self, item: T) {
-    self.items.append(item)
-  }
-
-  fn pop(self): Option<T> {
-    return self.items.pop()
-  }
+  fn push(self, item: T) { self.items.append(item) }
+  fn pop(self): Option<T> { return self.items.pop() }
 }
-```
 
-### Comptime
-
-```home
 comptime fn factorial(n: int): int {
-  if (n <= 1) {
-    return 1
-  }
+  if (n <= 1) { return 1 }
   return n * factorial(n - 1)
 }
 
-const FACT_10 = factorial(10)  // computed at compile time
+const FACT_10 = factorial(10)   // computed at compile time
 ```
 
-## Standard Library
+More: [generics](https://home-lang.org/docs/features/generics),
+[comptime](https://home-lang.org/docs/advanced/comptime),
+[macros](https://home-lang.org/docs/features/macros),
+[FFI](https://home-lang.org/docs/features/ffi).
 
-### HTTP Server
+### A server, end to end
 
 ```home
 import http { Server, Response }
 
 fn main() {
   let server = Server.bind(":3000")
-
-  server.get("/", fn(req) {
-    return "Hello from Home!"
-  })
 
   server.get("/users/:id", fn(req): Response {
     let id = req.param("id")
@@ -869,143 +234,103 @@ fn main() {
 }
 ```
 
-### Database
+More: [standard library](https://home-lang.org/docs/reference/stdlib),
+[web services](https://home-lang.org/docs/use-cases/web-services).
 
-```home
-import database { Connection }
+## TypeScript and JavaScript
 
-fn main() {
-  let db = Connection.open("app.db")
+Home ships a drop-in `tsc` / `tsgo`-compatible TypeScript front end, built as
+its own set of Zig packages (`ts_lexer`, `ts_parser`, `binder`, `ts_checker`,
+`ts_emit`, `ts_program`, `ts_resolver`, `ts_lsp`, …). It runs the upstream
+TypeScript conformance corpus and compares **byte-for-byte** against baselines
+generated by the reference compiler.
 
-  db.exec("CREATE TABLE users (id INTEGER, name TEXT)")
-
-  let stmt = db.prepare("INSERT INTO users VALUES (?, ?)")
-  stmt.bind(1, 42)
-  stmt.bind(2, "Alice")
-  stmt.execute()
-
-  let users = db.query("SELECT * FROM users")
-  for (row in users) {
-    print("User: {row.name}")
-  }
-}
+```bash
+cd my-typescript-app
+home-tsc --noEmit        # same diagnostics, same codes, same exit status
+home-tsc --watch         # incremental recompiles on change
+home-lsp                 # TypeScript language server for your editor
+home run server.ts       # run it on Home's own JavaScriptCore realm
 ```
 
-### Async/Await
+`home-tsc` and `home-lsp` build alongside the compiler into `zig-out/bin/`;
+`home lsp --stdio` is the separate language server for `.home` sources.
+Details: [TypeScript compiler](https://home-lang.org/docs/features/typescript),
+[editor and CLI tooling](https://home-lang.org/docs/features/tooling),
+[TypeScript migration](https://home-lang.org/docs/use-cases/typescript-migration).
 
-```home
-fn fetch_users(): async []User {
-  let response = await http.get("/api/users")
-  return response.json()
-}
+## Project status
 
-fn main(): async {
-  let users = await fetch_users()
-  for (user in users) {
-    print(user.name)
-  }
-}
+Conservative on purpose: anything not exercised by an example or a test stays
+"maturing" even when the underlying code is largely there.
+
+| Area | Status | Detail |
+|---|---|---|
+| Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
+| TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
+| TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
+| Language server methods routed | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
+| Native codegen | Maturing — single-entrypoint LLVM builds work | [Parity status](https://home-lang.org/docs/PARITY-STATUS#codegen-targets) |
+| Bun runtime port | 552 / 1,193 files integrated | [Bun parity](https://home-lang.org/docs/PARITY-BUN) |
+| `node:*` modules JS-callable | 24 / 47 (partial surfaces) | [Node.js parity](https://home-lang.org/docs/PARITY-NODE) |
+| Compiler test suite | ~8,415 tests | [Parity status](https://home-lang.org/docs/PARITY-STATUS) |
+
+Every figure is a file-count, row-count or byte-for-byte measurement against an
+external baseline, refreshed with `scripts/measure-parity.sh`. The full
+breakdown — headline numbers, per-phase runtime port, LSP method list,
+frontend performance snapshots — lives in
+[Parity status](https://home-lang.org/docs/PARITY-STATUS).
+
+## Build from source
+
+Requires the Pantry-pinned Zig 0.17 dev toolchain; nothing is installed globally.
+
+```bash
+git clone https://github.com/home-lang/home.git
+cd home
+pantry install              # installs the pinned Zig 0.17 dev toolchain
+./pantry/.bin/zig build     # ./pantry/.bin/zig is a stable symlink to it
+
+./zig-out/bin/home build examples/fibonacci.home
+./examples/fibonacci
 ```
 
-## Project Structure
+Common commands:
+
+| Command | What it does |
+|---|---|
+| `./pantry/.bin/zig build` | Build the compiler |
+| `./pantry/.bin/zig build test` | Run the unit-test suite |
+| `./pantry/.bin/zig build examples` | Run the native example executables |
+| `./pantry/.bin/zig build run -- examples/fibonacci.home` | Build, then run a file |
+| `scripts/check-examples.sh` | `home check` every `.home` example |
+| `scripts/measure-parity.sh --diff` | Fail if the published parity numbers drifted |
+
+## Repository layout
 
 ```
 home/
-├── src/main.zig           # CLI entry point
-├── packages/              # 130+ Zig packages, each with its own tests
-│   ├── lexer/             # Home tokenization
-│   ├── parser/            # Home AST generation
-│   ├── ast/               # Home syntax tree types
-│   ├── types/             # Home type system
-│   ├── codegen/           # Native code generation (x64 + arm64)
-│   ├── interpreter/       # Tree-walking execution
-│   ├── diagnostics/       # Error reporting
-│   ├── ts_lexer/          # TS scanner (full ES2024 + TS keywords)
-│   ├── ts_parser/         # TS parser (statements, expressions, JSX, generics)
-│   ├── ts_checker/        # TS type interner, relation cache, expression typing
-│   ├── ts_emit/           # JS + .d.ts emit (V3 source maps, zig-dtsx fast path)
-│   ├── ts_driver/         # End-to-end per-file lex→parse→bind→check→emit
-│   ├── ts_program/        # Multi-file graph + parallel compile + watch
-│   ├── ts_resolver/       # Module resolution (5 tsc strategies + paths)
-│   ├── ts_lsp/            # Language Server query surface
-│   ├── ts_lsp_server/     # JSON-RPC framing + dispatch
-│   ├── ts_conformance/    # tsc-baseline conformance harness
-│   ├── hir/               # SoA HIR shared between both frontends
-│   ├── binder/            # Symbol table (3 TS meaning-spaces, decl merging)
-│   └── ...                # http, database, async, ffi, graphics, …
-├── examples/              # Example programs
-├── tests/                 # Integration tests
-└── stdlib/                # Standard library
+├── src/main.zig      # CLI entry point
+├── packages/         # 130+ Zig packages, each with its own tests
+│   ├── lexer/  parser/  ast/  types/  codegen/  interpreter/
+│   ├── ts_lexer/  ts_parser/  ts_checker/  ts_emit/  ts_program/
+│   ├── ts_lsp/  ts_lsp_server/  ts_conformance/  ts_resolver/
+│   ├── hir/  binder/  diagnostics/  compat/  runtime/
+│   └── ...           # http, database, async, ffi, graphics, …
+├── docs/             # Documentation site (home-lang.org)
+├── examples/         # Example programs
+├── tests/            # Integration tests
+└── stdlib/           # Standard library
 ```
 
-## Building
-
-### Prerequisites
-
-- Pantry-installed Zig 0.17 dev (for building the compiler)
-
-```bash
-# Pulls the pinned Zig 0.17 dev build from Pantry.
-pantry install
-```
-
-### Build Commands
-
-```bash
-# Build the compiler
-./pantry/.bin/zig build
-
-# Run tests
-./pantry/.bin/zig build test
-
-# Check all .home examples through `home check`
-scripts/check-examples.sh
-
-# Build and run an example
-./pantry/.bin/zig build run -- examples/fibonacci.home
-```
-
-## File Extensions
-
-- `.home` - Standard source file extension
-- `.hm` - Short alternative
-
-## Features
-
-- **Fast compilation** - Incremental builds with IR caching
-- **Memory safety** - Ownership and borrowing without ceremony
-- **Native performance** - Compiles to native x64 code
-- **Modern syntax** - TypeScript-inspired, clean and readable
-- **Pattern matching** - Exhaustive match expressions
-- **Expression-oriented** - If and match as expressions
-- **Null safety** - Elvis (`?:`), safe navigation (`?.`), safe indexing (`?[]`)
-- **Async/await** - Zero-cost async programming
-- **Generics** - Type-safe generic functions and types
-- **Comptime** - Compile-time code execution
-- **Error handling** - Result types with `?` propagation
-- **Power operator** — `**` for exponentiation (`2 ** 10`)
-- **Integer division** - `~/` for truncating division
-- **Range methods** - `.len()`, `.step()`, `.contains()`, `.to_array()`
-- **Default parameters** - `fn greet(name: string = "World")`
-- **String methods** - `.trim()`, `.upper()`, `.split()`, and more
-
-## Current Status
-
-Home is under active development. For a granular, conservative view of what
-works today vs. what is partial, in progress, or not yet started, see the
-[parity status](#parity-status) section above (percentage-based, per-area
-tables) plus the detailed per-feature pages in
-[`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md),
-[`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md),
-[`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md),
-[`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md), and
-[`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md). Release notes
-live in [`CHANGELOG.md`](./CHANGELOG.md).
+[Monorepo structure](https://home-lang.org/docs/MONOREPO-STRUCTURE) and
+[architecture](https://home-lang.org/docs/ARCHITECTURE) go deeper.
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](./.github/CONTRIBUTING.md).
+Contributions welcome — see [CONTRIBUTING.md](./.github/CONTRIBUTING.md).
+Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
-MIT License - see [LICENSE](./LICENSE)
+MIT — see [LICENSE](./LICENSE).

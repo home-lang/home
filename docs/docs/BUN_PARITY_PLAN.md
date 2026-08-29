@@ -8,7 +8,7 @@
 >
 > **Scope guard:** This document coordinates documentation, measurement,
 > and runtime-parity workstreams. It does not authorize source changes by
-> itself. Agents still follow [`packages/runtime/README.md`](../packages/runtime/README.md)
+> itself. Agents still follow [`packages/runtime/README.md`](https://github.com/home-lang/home/blob/main/packages/runtime/README.md)
 > before touching runtime code.
 
 ---

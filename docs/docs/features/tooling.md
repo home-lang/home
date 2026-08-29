@@ -42,11 +42,12 @@ the terminal:
 
 ```bash
 home explain T0001
-home explain TS2345
 ```
 
-Both Home's own `Txxxx` codes and the TypeScript `TSxxxx` codes are covered.
-The same explanations back hover in the editor.
+`home explain` covers Home's own `Txxxx` codes; the TypeScript `TSxxxx`
+catalogue is published as
+[diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS) and backs hover in
+the editor.
 
 ## Language server
 

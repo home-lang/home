@@ -3,7 +3,7 @@
 Detailed per-API status for Home's Bun-compatible runtime
 (`packages/runtime/`). This is the drill-down view; the at-a-glance
 row is in the
-[README parity status](../README.md#bun-runtime-port-packagesruntime)
+[README parity status](/docs/PARITY-STATUS#bun-runtime-port-packagesruntime)
 section. Execution planning, source/test gates, and agent-sized
 workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 
@@ -21,7 +21,7 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > `packages/runtime/src/runtime/webcore*.zig` as source-first backlog;
 > it is not counted as JS-callable parity until wired and tested.
 > Full audit:
-> [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
+> [`packages/runtime/PORT_AUDIT_2026-05-20.md`](https://github.com/home-lang/home/blob/main/packages/runtime/PORT_AUDIT_2026-05-20.md).
 > Source-presence audit:
 > [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 
@@ -250,7 +250,7 @@ bootstrap-only aliases).
 
 🟡 **Substantial.** Home's bundler is based on Bun's Zig bundler source,
 copied under MIT to `packages/bundler/` with the Tier-0 compatibility shim at
-[`packages/compat/`](../packages/compat/) (see
+[`packages/compat/`](https://github.com/home-lang/home/blob/main/packages/compat/) (see
 [PARITY-BUN-COMPAT.md](./PARITY-BUN-COMPAT.md) for the per-symbol
 status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
@@ -407,7 +407,7 @@ publish corpus green.
 
 🔴 **Blocked on Phase 12.8 + 12.2.** Substrate at
 `packages/runtime/src/runtime/test_runner/`. Acceptance gate per
-[`packages/runtime/README.md`](../packages/runtime/README.md): once
+[`packages/runtime/README.md`](https://github.com/home-lang/home/blob/main/packages/runtime/README.md): once
 feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 

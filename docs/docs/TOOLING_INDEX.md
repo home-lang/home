@@ -21,7 +21,7 @@ Full-featured VSCode extension with:
 - InlayHints
 - CodeLens
 
-#### [Documentation](../docs/TOOLING_COMPLETE.md#vscode-extension)
+#### [Documentation](/docs/internal/TOOLING_COMPLETE#vscode-extension)
 
 ### 2. Package Registry
 
@@ -36,7 +36,7 @@ Centralized package hosting and distribution:
 - Download statistics
 - MongoDB + Redis backend
 
-#### [Documentation](../docs/TOOLING_COMPLETE.md#package-registry)
+#### [Documentation](/docs/internal/TOOLING_COMPLETE#package-registry)
 
 ---
 
@@ -64,8 +64,8 @@ npm run dev
 ## 📖 Documentation
 
 - **[Complete Tooling Documentation](./TOOLING_COMPLETE.md)** - Comprehensive guide
-- **[VSCode Extension Guide](../packages/vscode-home/README.md)** - Extension-specific docs
-- **[Package Registry API](../packages/registry/README.md)** - API reference
+- **[VSCode Extension Guide](https://github.com/home-lang/home/blob/main/packages/vscode-home/README.md)** - Extension-specific docs
+- **[Package Registry API](https://github.com/home-lang/home/blob/main/packages/registry/README.md)** - API reference
 
 ---
 
@@ -186,13 +186,13 @@ Home Tooling
 
 ## 📝 License
 
-MIT License - see [LICENSE](../LICENSE) for details.
+MIT License - see [LICENSE](https://github.com/home-lang/home/blob/main/LICENSE) for details.
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
+Contributions welcome! See [CONTRIBUTING.md](https://github.com/home-lang/home/blob/main/.github/CONTRIBUTING.md) for guidelines.
 
 ---
 

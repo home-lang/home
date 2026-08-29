@@ -1,7 +1,7 @@
 # TypeScript Compiler
 
-Home ships a full TypeScript front end inside the same binary that compiles
-`.home` files. `home tsc` parses, binds, type-checks and emits TypeScript,
+Home ships a full TypeScript front end, built from the same packages as the
+`.home` compiler. `home-tsc` parses, binds, type-checks and emits TypeScript,
 measured against the upstream TypeScript conformance corpus rather than
 against a test suite we wrote ourselves.
 
@@ -18,12 +18,15 @@ has one binary, one cache and one set of diagnostics.
 
 ## Using it
 
-`home tsc` reads the `tsconfig.json` you already have:
+`home-tsc` reads the `tsconfig.json` you already have:
 
 ```bash
 cd my-typescript-app
-home tsc --noEmit
+home-tsc --noEmit
 ```
+
+It builds alongside the compiler into `zig-out/bin/`, next to `home-lsp`, the
+matching language server.
 
 Diagnostics carry the same codes as the reference compiler, so existing
 tooling, editor integrations and CI matchers keep working:
@@ -32,11 +35,10 @@ tooling, editor integrations and CI matchers keep working:
 error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
 ```
 
-Any code can be explained from the terminal:
-
-```bash
-home explain TS2345
-```
+Every emitted code is catalogued in
+[diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS), which also records
+which codes are dead in the reference compiler and therefore deliberately never
+emitted.
 
 ## How parity is measured
 
@@ -90,7 +92,7 @@ type hierarchies, and pull-based diagnostics. See
 
 ## Emit
 
-`home tsc` also emits JavaScript. The printer is checked against Bun's
+`home-tsc` also emits JavaScript. The printer is checked against Bun's
 official Zig implementation, which Home maintains, so downlevelling and syntax
 lowering match what the runtime expects rather than being reinvented.
 

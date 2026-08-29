@@ -7,8 +7,8 @@ they document _what was built_ in a particular session or milestone,
 not the _current_ state of the project.
 
 For an honest view of what is stable today, see
-[`../CAPABILITY_MATRIX.md`](../CAPABILITY_MATRIX.md). For release-flavoured
-changes, see [`../../CHANGELOG.md`](../../CHANGELOG.md).
+[`../CAPABILITY_MATRIX.md`](/docs/CAPABILITY_MATRIX). For release-flavoured
+changes, see [`../../CHANGELOG.md`](https://github.com/home-lang/home/blob/main/CHANGELOG.md).
 
 These documents may be out of date. Treat them as historical notes,
 not as user-facing reference material.
