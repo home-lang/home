@@ -106670,6 +106670,24 @@ pub const Checker = struct {
                 defer self.gpa.free(result);
                 return self.interner.internObjectType(result);
             },
+            .indexed_object => |object| {
+                const members = try self.programExpressionMembers(object.members, declaration, args);
+                defer self.gpa.free(members);
+                var string_index = types.Primitive.none;
+                var number_index = types.Primitive.none;
+                for (object.indices) |index| {
+                    const key = try self.lowerProgramExpression(index.key, declaration, args);
+                    const value = try self.lowerProgramExpression(index.value, declaration, args);
+                    if (key == types.Primitive.string_t) {
+                        string_index = value;
+                    } else if (key == types.Primitive.number_t) {
+                        number_index = value;
+                    } else {
+                        return error.UnsupportedProgramType;
+                    }
+                }
+                return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
+            },
             .tuple => |elements| {
                 const result = try self.gpa.alloc(types.TupleElement, elements.len);
                 defer self.gpa.free(result);
@@ -106698,9 +106716,23 @@ pub const Checker = struct {
                     rest = rest or param.rest;
                 }
                 const this_type = if (function.this_type) |receiver| try self.lowerProgramExpression(receiver, declaration, args) else types.Primitive.none;
-                const sig = try self.interner.internSignatureWithThisType(params, try self.lowerProgramExpression(function.result, declaration, args), false, false, this_type);
+                const sig = try self.interner.internSignatureWithThisType(
+                    params,
+                    try self.lowerProgramExpression(function.result, declaration, args),
+                    function.is_construct,
+                    false,
+                    this_type,
+                );
                 try self.recordSignatureMinArgs(sig, optional);
                 if (this_type != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, this_type);
+                if (function.predicate) |predicate| {
+                    try self.signature_predicates.put(self.gpa, sig, .{
+                        .param_index = predicate.param_index,
+                        .target_type = try self.lowerProgramExpression(predicate.target, declaration, args),
+                        .target_node = hir_mod.none_node_id,
+                        .is_asserts = predicate.is_asserts,
+                    });
+                }
                 if (rest) try self.rest_signatures.put(self.gpa, sig, {});
                 return sig;
             },

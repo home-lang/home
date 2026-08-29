@@ -22,9 +22,18 @@ pub const Member = struct {
 };
 
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
-pub const Function = struct { parameters: []const Element, result: *const Expression, this_type: ?*const Expression = null };
+pub const TypePredicate = struct { param_index: u16, target: *const Expression, is_asserts: bool };
+pub const Function = struct {
+    parameters: []const Element,
+    result: *const Expression,
+    this_type: ?*const Expression = null,
+    predicate: ?TypePredicate = null,
+    is_construct: bool = false,
+};
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
+pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
+pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     parameter: *const Parameter,
@@ -34,6 +43,7 @@ pub const Expression = union(enum) {
     array: *const Expression,
     readonly_array: *const Expression,
     object: []const Member,
+    indexed_object: IndexedObject,
     tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
@@ -87,6 +97,13 @@ pub const Schema = struct {
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
                 },
+                .indexed_object => |object| {
+                    for (object.members) |member| try pending.append(gpa, member.type);
+                    for (object.indices) |index| {
+                        try pending.append(gpa, index.key);
+                        try pending.append(gpa, index.value);
+                    }
+                },
                 .tuple => |elements| for (elements) |element| {
                     try pending.append(gpa, element.type);
                 },
@@ -95,6 +112,7 @@ pub const Schema = struct {
                     if (function.this_type) |receiver| try pending.append(gpa, receiver);
                     for (function.parameters) |param| try pending.append(gpa, param.type);
                     try pending.append(gpa, function.result);
+                    if (function.predicate) |predicate| try pending.append(gpa, predicate.target);
                 },
                 .reference => |ref| {
                     try appendDeclaration(gpa, &pending, ref.declaration);
