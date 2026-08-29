@@ -787,3 +787,41 @@ dependencies without a Rust archive. Windows/Linux execution, branch
 integration, skipped/TODO behavior, full source ownership and **100% logical
 Bun-suite compatibility under [#66](https://github.com/home-lang/home/issues/66)
 remain incomplete**.
+
+## HTTP/3 verification isolation (#539)
+
+The intermittent initial-upload failures tracked in #539 reproduce as a host
+contention artifact, including in the pinned Bun release, rather than a Home
+transport divergence. In a serialized alternating control, the complete
+unchanged `fetch-http3-adversarial.test.ts` passed **12/12 Home processes** and
+**12/12 pinned Bun processes**; every process reported **27 tests / 163
+assertions** under the original five-second case deadlines.
+
+Three deliberately concurrent waves launched eight copies of that same file at
+once. Home passed **11/12** processes and pinned Bun passed **5/12**. Every
+ordinary failure had the historical shape: the first 64 KiB cases expired at
+five seconds, a pull-stream request reset immediately, then later sizes
+recovered. One pinned Bun process extended the same sequence into the first 512
+KiB request. An eight-process socket snapshot showed sixteen distinct UDP
+ports, excluding accidental port sharing. The host simultaneously had an
+unrelated release Zig compile consuming one CPU and about 4.4 GiB, plus other
+active system work, on eleven logical CPUs.
+
+This is the environment correction required by #539: heavyweight HTTP/3 corpus
+files are verified serially and are not launched alongside other native corpus
+processes or builds. The upstream deadlines, workloads, protocol selection and
+assertions remain unchanged; no transport retry, sleep, skip or fallback was
+added. A separate UDP-proxy diagnostic that dropped the first client datagram
+confirmed normal retransmission in all four Home/Bun client-server directions.
+Thirty further Home/Home first-datagram-loss processes passed; an earlier cold
+diagnostic took 10.2 seconds and is retained rather than counted as a passing
+five-second corpus result.
+
+Evidence: `zig-out/h3-539-repro.json`, `h3-539-concurrent.json`,
+`h3-539-sockets.json`, `h3-539-sockets.lsof`, `h3-539-loss.json`, and the
+per-process stdout/stderr artifacts. The checked-in `quic.c`, `quic.h`,
+`H3Client.zig`, and all seven `h3_client` modules match the pinned source. This
+resolves the specific
+intermittent original-file observation; Darwin-only platform/integration,
+native dependency ownership and complete logical Bun-suite parity remain open
+under #530 and #66.
