@@ -4009,6 +4009,11 @@ pub const CheckedTypes = struct {
 
 const TypeOnlyOriginKind = enum { none, import_type, export_type };
 
+const GenericInterfaceRefreshKey = struct {
+    decl: NodeId,
+    instantiated: TypeId,
+};
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -4398,6 +4403,14 @@ pub const Checker = struct {
     /// body. Member refreshes must not fall back to a same-named interface
     /// from another namespace.
     generic_interface_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId),
+    /// Completed generic-interface `extends` refreshes. The substituted body
+    /// is structurally interned, so `(declaration, instantiated body)` is a
+    /// stable identity for repeating the same inheritance work.
+    generic_interface_refresh_cache: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, TypeId) = .empty,
+    /// Exact refreshes currently walking their inherited interfaces. A
+    /// recursive inheritance path cannot contribute new index information
+    /// by re-entering the same substituted body, so defer that edge.
+    generic_interface_refresh_active: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, void) = .empty,
     /// Generic alias instantiations currently being materialized.
     /// Recursive mapped aliases such as
     /// `type Circular<T> = { [K in keyof T]: Circular<T> }` must defer
@@ -5965,6 +5978,8 @@ pub const Checker = struct {
         while (gid_it.next()) |info| self.gpa.free(info.params);
         self.generic_interfaces_by_decl.deinit(self.gpa);
         self.generic_interface_decl_by_instance.deinit(self.gpa);
+        self.generic_interface_refresh_cache.deinit(self.gpa);
+        self.generic_interface_refresh_active.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
         self.variance_relation_in_progress.deinit(self.gpa);
         self.reported_deep_instantiation_nodes.deinit(self.gpa);
@@ -68510,6 +68525,14 @@ pub const Checker = struct {
         if (r.qualifier_len != 0) return;
         const decl = self.findVisibleNamedTypeDecl(ext_node, r.name) orelse return;
         if (self.hir.kindOf(decl) != .interface_decl) return;
+        // Completed interface declarations are back-patched when a later
+        // same-scope merge contributes members. Complete any unchecked merge
+        // siblings, but do not recreate the declaration's type parameters and
+        // inherited shape for every instantiation of every child interface.
+        if (self.hir.typeOf(decl) != types.Primitive.none) {
+            try self.ensureSameScopeInterfaceMergeComplete(decl, r.name);
+            return;
+        }
         if (self.interface_lower_in_progress.contains(decl)) return;
         try self.checkInterfaceDecl(decl);
     }
@@ -68606,6 +68629,13 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl) != .interface_decl) return null;
         const extends = hir_mod.interfaceExtends(self.hir, decl);
         if (extends.len == 0) return null;
+        const refresh_key: GenericInterfaceRefreshKey = .{ .decl = decl, .instantiated = instantiated_t };
+        if (self.generic_interface_refresh_cache.get(refresh_key)) |cached| {
+            return if (cached == instantiated_t) null else cached;
+        }
+        if (self.generic_interface_refresh_active.contains(refresh_key)) return null;
+        try self.generic_interface_refresh_active.put(self.gpa, refresh_key, {});
+        defer _ = self.generic_interface_refresh_active.remove(refresh_key);
 
         try self.pushNarrowScope();
         defer self.popNarrowScope();
@@ -68642,7 +68672,10 @@ pub const Checker = struct {
                 changed = true;
             }
         }
-        if (!changed and inherited_readonly_index == self.readonly_index_types.contains(instantiated_t)) return null;
+        if (!changed and inherited_readonly_index == self.readonly_index_types.contains(instantiated_t)) {
+            try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, instantiated_t);
+            return null;
+        }
         const refreshed = self.interner.internObjectTypeWithIndexAndSymbol(
             self.interner.objectMembers(instantiated_t),
             string_idx,
@@ -68651,6 +68684,7 @@ pub const Checker = struct {
         ) catch return error.OutOfMemory;
         if (inherited_readonly_index) try self.readonly_index_types.put(self.gpa, refreshed, {});
         try self.copyMemberPredicatesFromReceiver(refreshed, instantiated_t);
+        try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, refreshed);
         return refreshed;
     }
 
