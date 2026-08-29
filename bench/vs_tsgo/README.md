@@ -116,11 +116,12 @@ Its 66 cases use explicit JavaScript roots with `allowJs` and `checkJs`, both
 owner/app orders, and identical positives with appended wrong-type or missing
 member controls. Direct, bracket, parenthesized and aliased construction,
 reassignment, nested/shadowed assignments and comment/string decoys are covered.
-Both pinned TypeScript compilers pass all cases; Home currently passes only
-the 22 positives. All 44 missing rejections remain failures under
-[#541](https://github.com/home-lang/home/issues/541), not timing inputs. Query
-reuse under [#536](https://github.com/home-lang/home/issues/536) does not itself
-establish cross-file CommonJS typing.
+Both pinned TypeScript compilers pass all cases. Home passes only the 22
+positives in the frozen baseline and passes all 66 cases after checked owner
+types are transferred under [#541](https://github.com/home-lang/home/issues/541).
+This remains an untimed correctness result. Query reuse under
+[#536](https://github.com/home-lang/home/issues/536) does not itself establish
+cross-file CommonJS typing.
 
 ## Methodology
 

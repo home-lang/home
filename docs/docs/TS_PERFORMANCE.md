@@ -3245,12 +3245,53 @@ categories **86/86** and baseline-aware categories **586/586**. Raw before,
 after, conformance and unchanged-gap logs are retained locally in
 `bench/vs_tsgo/results/commonjs-discovery.JMl1yj/`.
 
-This is a correctness result, not a timed workload or a performance claim. The
-separate CommonJS instance audit remains unchanged at TS 6 **66/66**, native
-TS 7 **66/66**, Home **22/66**: all 44 missing TS2322/TS2339 rejections remain
-open under [#541](https://github.com/home-lang/home/issues/541). Static graph
-discovery is the prerequisite for transferring a checked source owner's actual
-type; it is not a substitute for that transfer.
+This is a correctness result, not a timed workload or a performance claim. At
+this checkpoint the separate CommonJS instance audit remained TS 6 **66/66**,
+native TS 7 **66/66**, Home **22/66**. Static graph discovery was the
+prerequisite for the checked-owner transfer documented in the next section; it
+was not itself a substitute for that transfer.
+
+### Checked CommonJS export type transfer (untimed)
+
+Follow-up [#541](https://github.com/home-lang/home/issues/541) transfers the
+checked declaration owner's actual `module.exports` types into each requiring
+consumer. The projection starts from the owner's checked type IDs, preserving
+inferred fields, literal widening, reassignment unions, functions, tuples,
+arrays, plain objects and class declaration identity. Unsupported shapes remain
+explicitly unsupported; the implementation does not infer types from source
+spelling or add diagnostic-only recovery.
+
+Program resolves the bound dependency graph before checking and checks owners
+before consumers. Serial and streaming execution use the same dependency order.
+Parallel execution retains the ordinary parallel path for programs that do not
+need whole CommonJS export transfer and uses dependency order when those checked
+owner schemas are required. Tests cover all three execution modes and both
+owner/app insertion orders.
+
+The unchanged 66-case audit verifies exact diagnostic-code multisets with
+version-checked TS **6.0.3** and native TS **7.0.2**. Eleven source families each
+run in both root orders with a valid consumer, an otherwise identical TS2322
+control, and an otherwise identical TS2339 control:
+
+| Untimed CommonJS control | TS 6.0.3 | Native TS 7.0.2 | Frozen Home before | Home after |
+|---|---:|---:|---:|---:|
+| Valid instance consumption | 22/22 | 22/22 | 22/22 | 22/22 |
+| Wrong consumed member type (TS2322) | 22/22 | 22/22 | 0/22 | 22/22 |
+| Missing member (TS2339) | 22/22 | 22/22 | 0/22 | 22/22 |
+| **Total** | **66/66** | **66/66** | **22/66** | **66/66** |
+
+The audit performs **198/198** compiler/case checks with zero failures. The
+static-`require` discovery audit also remains **132/132** checks with zero
+failures. The immutable ReleaseFast candidate is
+`commonjs-linkage.gyKMKg/release-v2/bin/home-tsc`, SHA-256
+`3cab7afcaf38cb5bef789081bc228ab0a970166c0bbd1f2bd24cd61359e823a5`.
+Raw audit and harness logs are retained locally under
+`bench/vs_tsgo/results/commonjs-linkage.gyKMKg/`.
+
+Program **145/145**, the 78-test Python harness, checker, driver and CLI suites
+pass. The conformance target reports smoke **16/16**, named categories
+**86/86**, and baseline-aware categories **586/586**. This is a correctness
+benchmark only; no CommonJS timing is admitted by this result.
 
 ### Prepared-query checkpoint performance
 

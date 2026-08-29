@@ -115,7 +115,7 @@ Async/await coverage is still undergoing validation and is not timed.
 The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
 verify that checking uses the completed graph without reparsing bound sources.
 False reference/global-presence errors are fixed, but cross-file type linkage
-remains incomplete. The [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#callable-identity-and-scoped-inference-untimed)
+remains incomplete outside the audited feature families. The [callable-identity audit](./docs/docs/TS_PERFORMANCE.md#callable-identity-and-scoped-inference-untimed)
 passes **56/56** after isolating callable metadata and nested generic inference.
 The latest [callable-union audit](./docs/docs/TS_PERFORMANCE.md#callable-union-predicates-and-receivers-untimed)
 improves from **120/256 to 256/256** after fixing predicate composition and
@@ -133,7 +133,7 @@ failures visible:
 | [Exported generic-factory controls](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed) | 240/240 | 240/240 | 240/240 |
 | [Exported variable-list controls](./docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 96/96 | 96/96 | 80/96 |
 | [Static CommonJS discovery controls](./docs/docs/TS_PERFORMANCE.md#static-commonjs-dependency-discovery-untimed) | 44/44 | 44/44 | 44/44 |
-| [CommonJS instance controls](./docs/docs/TS_PERFORMANCE.md#prepared-commonjs-export-queries) | 66/66 | 66/66 | 22/66 |
+| [CommonJS instance controls](./docs/docs/TS_PERFORMANCE.md#checked-commonjs-export-type-transfer-untimed) | 66/66 | 66/66 | 66/66 |
 | [Imported nominal-identity controls](./docs/docs/TS_PERFORMANCE.md#imported-generic-class-instantiation-untimed) | 52/52 | 52/52 | 44/52 |
 | [Bound-class export controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 52/52 | 52/52 | 52/52 |
 | [Imported static-value controls](./docs/docs/TS_PERFORMANCE.md#imported-static-values-and-module-namespace-consumers-untimed) | 84/84 | 84/84 | 84/84 |
